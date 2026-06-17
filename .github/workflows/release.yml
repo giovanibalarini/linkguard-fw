@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -168,6 +169,5 @@ EOF
             gh release create "${TAG}" "${FILES[@]}" \
               --title "LinkGuard FW ${TAG}" \
               --notes-file release-notes.md \
-              --generate-notes \
               --latest
           fi
