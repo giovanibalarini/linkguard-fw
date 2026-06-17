@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Shield, Database, Download, Pencil, Trash2, Plus } from 'lucide-react';
 import client from '../api/client';
 import type { IptablesTable, IptablesBackup } from '../types';
@@ -10,7 +10,74 @@ interface RuleModalState {
   table: string;
   chain: string;
   line: number;
-  ruleSpec: string;
+  source: string;
+  destination: string;
+  inInterface: string;
+  outInterface: string;
+  protocol: string;
+  jump: string;
+  sourcePort: string;
+  destinationPort: string;
+  extra: string;
+}
+
+const protocolOptions = ['all', 'tcp', 'udp', 'icmp', 'esp', 'ah'];
+const jumpOptions = ['ACCEPT', 'DROP', 'REJECT', 'RETURN', 'LOG', 'MARK', 'MASQUERADE', 'SNAT', 'DNAT'];
+
+function parseRuleSpec(ruleSpec: string) {
+  const tokens: string[] = String(ruleSpec || '').trim().match(/(?:[^"]+|"[^"]*")+/g) || [];
+  const valueFor = (flag: string) => {
+    const idx = tokens.indexOf(flag);
+    if (idx >= 0 && idx + 1 < tokens.length) {
+      return tokens[idx + 1].replace(/^"|"$/g, '');
+    }
+    return '';
+  };
+  const jump = valueFor('-j');
+  const extraFlags = ['-m', '--dport', '--sport', '--dports', '--sports', '--ctstate', '--state', '--tcp-flags', '--mark'];
+  const extras: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (['-s', '-d', '-i', '-o', '-p', '-j'].includes(token)) {
+      i++;
+      continue;
+    }
+    if (extraFlags.includes(token)) {
+      extras.push(token);
+      if (i + 1 < tokens.length && !tokens[i + 1].startsWith('-')) {
+        extras.push(tokens[i + 1]);
+        i++;
+      }
+      continue;
+    }
+    extras.push(token);
+  }
+
+  return {
+    source: valueFor('-s'),
+    destination: valueFor('-d'),
+    inInterface: valueFor('-i'),
+    outInterface: valueFor('-o'),
+    protocol: valueFor('-p') || 'all',
+    jump,
+    sourcePort: valueFor('--sport') || valueFor('--sports'),
+    destinationPort: valueFor('--dport') || valueFor('--dports'),
+    extra: extras.join(' ').trim(),
+  };
+}
+
+function buildRuleSpec(form: RuleModalState) {
+  const parts: string[] = [];
+  if (form.source.trim()) parts.push('-s', form.source.trim());
+  if (form.destination.trim()) parts.push('-d', form.destination.trim());
+  if (form.inInterface.trim()) parts.push('-i', form.inInterface.trim());
+  if (form.outInterface.trim()) parts.push('-o', form.outInterface.trim());
+  if (form.protocol.trim() && form.protocol !== 'all') parts.push('-p', form.protocol.trim());
+  if (form.sourcePort.trim()) parts.push('--sport', form.sourcePort.trim());
+  if (form.destinationPort.trim()) parts.push('--dport', form.destinationPort.trim());
+  if (form.extra.trim()) parts.push(form.extra.trim());
+  if (form.jump.trim()) parts.push('-j', form.jump.trim());
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 export default function Firewall() {
@@ -27,7 +94,15 @@ export default function Firewall() {
     table: 'filter',
     chain: '',
     line: 0,
-    ruleSpec: '',
+    source: '',
+    destination: '',
+    inInterface: '',
+    outInterface: '',
+    protocol: 'all',
+    jump: 'ACCEPT',
+    sourcePort: '',
+    destinationPort: '',
+    extra: '',
   });
 
   const fetchData = async () => {
@@ -73,6 +148,8 @@ export default function Firewall() {
     return '';
   };
 
+  const modalSpec = useMemo(() => buildRuleSpec(modal), [modal]);
+
   const handleDeleteRule = async (table: string, chain: string, line: number) => {
     setUpdatingRule(true);
     setMsg('');
@@ -114,22 +191,40 @@ export default function Firewall() {
 
   const openCreateModal = () => {
     const chain = currentTable?.chains[0]?.name || 'INPUT';
+    const activeChain = currentTable?.chains.find((item) => item.name === chain);
     setModal({
       mode: 'create',
       table: activeTable,
       chain,
       line: 0,
-      ruleSpec: '-s 192.168.0.0/24 -p tcp --dport 443 -j ACCEPT',
+      source: '',
+      destination: '',
+      inInterface: '',
+      outInterface: '',
+      protocol: 'tcp',
+      jump: activeChain?.policy || 'ACCEPT',
+      sourcePort: '',
+      destinationPort: '',
+      extra: '',
     });
   };
 
   const openEditModal = (table: string, chain: string, line: number, currentSpec: string) => {
+    const parsed = parseRuleSpec(currentSpec);
     setModal({
       mode: 'edit',
       table,
       chain,
       line,
-      ruleSpec: currentSpec,
+      source: parsed.source,
+      destination: parsed.destination,
+      inInterface: parsed.inInterface,
+      outInterface: parsed.outInterface,
+      protocol: parsed.protocol,
+      jump: parsed.jump || 'ACCEPT',
+      sourcePort: parsed.sourcePort,
+      destinationPort: parsed.destinationPort,
+      extra: parsed.extra,
     });
   };
 
@@ -139,7 +234,15 @@ export default function Firewall() {
       table,
       chain,
       line,
-      ruleSpec: '',
+      source: '',
+      destination: '',
+      inInterface: '',
+      outInterface: '',
+      protocol: 'all',
+      jump: '',
+      sourcePort: '',
+      destinationPort: '',
+      extra: '',
     });
   };
 
@@ -155,7 +258,7 @@ export default function Firewall() {
     }
 
     if (modal.mode === 'create') {
-      if (!modal.ruleSpec.trim()) {
+      if (!modalSpec.trim()) {
         setMsg('Erro: rule spec não pode ser vazio.');
         return;
       }
@@ -166,7 +269,7 @@ export default function Firewall() {
           table: modal.table,
           chain: modal.chain,
           line: modal.line > 0 ? modal.line : 0,
-          rule_spec: modal.ruleSpec.trim(),
+          rule_spec: modalSpec,
         });
         setMsg('Regra criada com sucesso!');
         closeModal();
@@ -180,7 +283,7 @@ export default function Firewall() {
     }
 
     if (modal.mode === 'edit') {
-      await handleEditRule(modal.table, modal.chain, modal.line, modal.ruleSpec);
+      await handleEditRule(modal.table, modal.chain, modal.line, modalSpec);
       closeModal();
       return;
     }
@@ -267,12 +370,24 @@ export default function Firewall() {
                 ) : (
                   <div className="space-y-1">
                     {chain.rules.map((rule, i) => (
-                      <div key={i} className="bg-gray-800 rounded px-3 py-2 font-mono text-xs text-gray-300 flex items-center justify-between gap-3">
+                      <div
+                        key={i}
+                        className="bg-gray-800 rounded px-3 py-2 font-mono text-xs text-gray-300 flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-700/70 transition-colors"
+                        onClick={() => openEditModal(currentTable.name, chain.name, Number(rule.num || i + 1), defaultRuleSpec(rule))}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            openEditModal(currentTable.name, chain.name, Number(rule.num || i + 1), defaultRuleSpec(rule));
+                          }
+                        }}
+                      >
                         <div className="overflow-x-auto">
                           <span className="text-gray-500 mr-3 select-none">{rule.num || i + 1}</span>
                           {rule.raw}
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                           <button
                             onClick={() => openEditModal(currentTable.name, chain.name, Number(rule.num || i + 1), defaultRuleSpec(rule))}
                             disabled={updatingRule}
@@ -358,15 +473,61 @@ export default function Firewall() {
               </div>
 
               {modal.mode !== 'delete' ? (
-                <div>
-                  <label className="label">Rule Spec</label>
-                  <textarea
-                    className="input w-full min-h-28"
-                    value={modal.ruleSpec}
-                    onChange={(e) => setModal({ ...modal, ruleSpec: e.target.value })}
-                    placeholder="-s 192.168.0.0/24 -p tcp --dport 443 -j ACCEPT"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Dica: inclua apenas o spec da regra, sem -A/-I chain.</p>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">Origem (-s)</label>
+                      <input className="input w-full" placeholder="192.168.0.0/24 ou ! 10.0.0.0/8" value={modal.source} onChange={(e) => setModal({ ...modal, source: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="label">Destino (-d)</label>
+                      <input className="input w-full" placeholder="0.0.0.0/0, IP ou CIDR" value={modal.destination} onChange={(e) => setModal({ ...modal, destination: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="label">Interface entrada (-i)</label>
+                      <input className="input w-full" placeholder="eth0, ppp0..." value={modal.inInterface} onChange={(e) => setModal({ ...modal, inInterface: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="label">Interface saída (-o)</label>
+                      <input className="input w-full" placeholder="eth1, tun0..." value={modal.outInterface} onChange={(e) => setModal({ ...modal, outInterface: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="label">Protocolo (-p)</label>
+                      <select className="input w-full" value={modal.protocol} onChange={(e) => setModal({ ...modal, protocol: e.target.value })}>
+                        {protocolOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Ação / Jump (-j)</label>
+                      <select className="input w-full" value={modal.jump} onChange={(e) => setModal({ ...modal, jump: e.target.value })}>
+                        {jumpOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Porta origem (--sport)</label>
+                      <input className="input w-full" placeholder="443, 1024:65535..." value={modal.sourcePort} onChange={(e) => setModal({ ...modal, sourcePort: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="label">Porta destino (--dport)</label>
+                      <input className="input w-full" placeholder="80,443,1000:2000..." value={modal.destinationPort} onChange={(e) => setModal({ ...modal, destinationPort: e.target.value })} />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="label">Opções extras</label>
+                    <textarea
+                      className="input w-full min-h-24"
+                      value={modal.extra}
+                      onChange={(e) => setModal({ ...modal, extra: e.target.value })}
+                      placeholder='-m conntrack --ctstate NEW,ESTABLISHED'
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Use aqui só o que não entrou nos campos guiados. O preview abaixo é o spec final da regra.</p>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-700 bg-gray-950/60 p-3">
+                    <label className="label mb-2 block">Preview do rule spec</label>
+                    <div className="font-mono text-xs text-gray-200 break-all">{modalSpec || '—'}</div>
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
