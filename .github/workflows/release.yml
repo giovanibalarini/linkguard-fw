@@ -33,8 +33,8 @@ jobs:
       - name: Compute version
         id: version
         run: |
-          if git describe --exact-match --tags HEAD 2>/dev/null; then
-            VERSION=$(git describe --exact-match --tags HEAD)
+          if TAG=$(git describe --exact-match --tags HEAD 2>/dev/null); then
+            VERSION="${TAG}"
           else
             SHORT_SHA=$(git rev-parse --short HEAD)
             DATE=$(date -u +%Y%m%d%H%M%S)

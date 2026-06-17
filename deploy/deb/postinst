@@ -11,12 +11,19 @@ case "$1" in
     install -d -m 0750 "${CONFIG_DIR}"
 
     if [ ! -f "${CONFIG_FILE}" ]; then
-      cat > "${CONFIG_FILE}" <<'CONFIG'
+      # Generate a random JWT secret (64 hex chars) so the service is not
+      # accidentally started with an empty/insecure secret.
+      JWT_SECRET=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 64 || true)
+      if [ -z "${JWT_SECRET}" ]; then
+        JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | head -c 64)
+      fi
+
+      cat > "${CONFIG_FILE}" <<CONFIG
 {
   "listen_addr": "127.0.0.1",
   "port": 9997,
   "db_path": "/var/lib/linkguard-fw/linkguard.db",
-  "jwt_secret": "",
+  "jwt_secret": "${JWT_SECRET}",
   "dry_run": false,
   "debug": false,
   "monitor_interval_seconds": 30,
@@ -29,7 +36,8 @@ case "$1" in
 CONFIG
       chmod 640 "${CONFIG_FILE}"
       echo "[INFO] Default config created at ${CONFIG_FILE}"
-      echo "[WARN] Set a strong jwt_secret in ${CONFIG_FILE} before starting the service!"
+      echo "[INFO] listen_addr is set to 127.0.0.1 (localhost only)."
+      echo "[INFO]   Change to 0.0.0.0 or a specific IP for remote access."
     fi
 
     if command -v systemctl >/dev/null 2>&1; then
