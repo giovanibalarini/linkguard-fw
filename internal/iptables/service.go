@@ -3,6 +3,7 @@ package iptables
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -23,6 +24,7 @@ type Chain struct {
 
 // Rule represents a single iptables rule.
 type Rule struct {
+	Num     string   `json:"num,omitempty"`
 	Raw     string   `json:"raw"`
 	Pkts    string   `json:"pkts,omitempty"`
 	Bytes   string   `json:"bytes,omitempty"`
@@ -82,6 +84,29 @@ func (s *Service) Restore(ctx context.Context, rules string) (string, error) {
 	return s.exec.Execute(ctx, "iptables-restore", "--noflush")
 }
 
+// DeleteRule deletes a rule by table/chain/line number.
+func (s *Service) DeleteRule(ctx context.Context, table, chain string, line int) (string, error) {
+	if table == "" || chain == "" || line <= 0 {
+		return "", fmt.Errorf("table, chain and valid line are required")
+	}
+	return s.exec.Execute(ctx, "iptables", "-t", table, "-D", chain, fmt.Sprintf("%d", line))
+}
+
+// ReplaceRule replaces a rule by table/chain/line number.
+// ruleSpec should contain only rule arguments (e.g. "-s 10.0.0.0/24 -j ACCEPT").
+func (s *Service) ReplaceRule(ctx context.Context, table, chain string, line int, ruleSpec string) (string, error) {
+	if table == "" || chain == "" || line <= 0 {
+		return "", fmt.Errorf("table, chain and valid line are required")
+	}
+	parts := strings.Fields(strings.TrimSpace(ruleSpec))
+	if len(parts) == 0 {
+		return "", fmt.Errorf("rule_spec is required")
+	}
+	args := []string{"-t", table, "-R", chain, fmt.Sprintf("%d", line)}
+	args = append(args, parts...)
+	return s.exec.Execute(ctx, "iptables", args...)
+}
+
 // ─── Parser ──────────────────────────────────────────────────────────────────
 
 func parseIptablesOutput(tableName, output string) Table {
@@ -135,6 +160,7 @@ func parseRuleLine(line string) Rule {
 	// Format: num pkts bytes target prot opt in out source destination [options...]
 	if len(fields) >= 10 {
 		// num pkts bytes target prot opt in out source destination
+		r.Num = fields[0]
 		r.Pkts = fields[1]
 		r.Bytes = fields[2]
 		r.Target = fields[3]

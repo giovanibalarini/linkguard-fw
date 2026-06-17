@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
@@ -145,4 +146,84 @@ func (h *IptablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		"output":  out,
 		"backup":  target,
 	})
+}
+
+// DeleteRule removes a firewall rule by table/chain/line number.
+func (h *IptablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Table string `json:"table"`
+		Chain string `json:"chain"`
+		Line  int    `json:"line"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.Table) == "" || strings.TrimSpace(body.Chain) == "" || body.Line <= 0 {
+		writeError(w, http.StatusBadRequest, "table, chain and line are required")
+		return
+	}
+	backup, err := h.createAutoBackup(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		return
+	}
+	out, err := h.svc.DeleteRule(r.Context(), body.Table, body.Chain, body.Line)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "rule deleted",
+		"output":  out,
+		"backup":  backup,
+	})
+}
+
+// UpdateRule replaces a firewall rule by table/chain/line number.
+func (h *IptablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Table    string `json:"table"`
+		Chain    string `json:"chain"`
+		Line     int    `json:"line"`
+		RuleSpec string `json:"rule_spec"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.Table) == "" || strings.TrimSpace(body.Chain) == "" || body.Line <= 0 || strings.TrimSpace(body.RuleSpec) == "" {
+		writeError(w, http.StatusBadRequest, "table, chain, line and rule_spec are required")
+		return
+	}
+	backup, err := h.createAutoBackup(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		return
+	}
+	out, err := h.svc.ReplaceRule(r.Context(), body.Table, body.Chain, body.Line, body.RuleSpec)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "rule updated",
+		"output":  out,
+		"backup":  backup,
+	})
+}
+
+func (h *IptablesHandler) createAutoBackup(r *http.Request) (*storage.IptablesBackup, error) {
+	rules, err := h.svc.Save(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	backup := &storage.IptablesBackup{
+		Label: "auto-before-change-" + time.Now().Format("2006-01-02T15:04:05"),
+		Rules: rules,
+	}
+	if err := h.db.CreateIptablesBackup(backup); err != nil {
+		return nil, err
+	}
+	return backup, nil
 }

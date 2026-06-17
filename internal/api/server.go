@@ -121,6 +121,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		linksH := handlers.NewLinksHandler(s.linkSvc, s.db)
 		r.Get("/api/links", linksH.List)
 		r.Post("/api/links", linksH.Create)
+		r.Post("/api/links/auto-detect", linksH.AutoDetect)
 		r.Get("/api/links/{id}", linksH.Get)
 		r.Put("/api/links/{id}", linksH.Update)
 		r.Delete("/api/links/{id}", linksH.Delete)
@@ -129,6 +130,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		routesH := handlers.NewRoutesHandler(s.routeSvc)
 		r.Get("/api/routes", routesH.List)
 		r.Get("/api/routes/rules", routesH.ListRules)
+		r.Post("/api/routes", routesH.AddRoute)
+		r.Put("/api/routes", routesH.UpdateRoute)
+		r.Delete("/api/routes", routesH.DeleteRoute)
+		r.Post("/api/routes/rules", routesH.AddRule)
+		r.Put("/api/routes/rules", routesH.UpdateRule)
+		r.Delete("/api/routes/rules", routesH.DeleteRule)
 
 		// iptables
 		iptH := handlers.NewIptablesHandler(s.iptSvc, s.db)
@@ -140,6 +147,8 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.Post("/api/firewall/backup", iptH.Backup)
 		r.Post("/api/firewall/rollback", iptH.Rollback)
 		r.Get("/api/firewall/backups", iptH.ListBackups)
+		r.Put("/api/firewall/rules", iptH.UpdateRule)
+		r.Delete("/api/firewall/rules", iptH.DeleteRule)
 
 		// Failover events
 		failH := handlers.NewFailoverHandler(s.failoverSvc)

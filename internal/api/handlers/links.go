@@ -95,3 +95,13 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// AutoDetect discovers WAN interfaces from system routes and syncs them to DB.
+func (h *LinksHandler) AutoDetect(w http.ResponseWriter, r *http.Request) {
+	res, err := h.svc.DiscoverAndSyncWANLinks()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}

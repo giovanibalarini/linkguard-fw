@@ -2,8 +2,12 @@
 package links
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +25,27 @@ const (
 type Service struct {
 	db *storage.DB
 }
+
+// DetectedWANLink represents a WAN interface detected from system routes.
+type DetectedWANLink struct {
+	Interface string `json:"interface"`
+	IPAddress string `json:"ip_address"`
+	Gateway   string `json:"gateway"`
+}
+
+// DiscoverResult summarizes auto-detection changes.
+type DiscoverResult struct {
+	Detected []DetectedWANLink `json:"detected"`
+	Created  []storage.Link    `json:"created"`
+	Updated  []storage.Link    `json:"updated"`
+	Existing []storage.Link    `json:"existing"`
+}
+
+var readProcNetRoute = func() ([]byte, error) {
+	return os.ReadFile("/proc/net/route")
+}
+
+var listInterfaces = net.Interfaces
 
 // NewService creates a new links Service.
 func NewService(db *storage.DB) *Service {
@@ -97,6 +122,166 @@ func (s *Service) UpdateStatus(id, status string, latencyMs, packetLoss float64)
 	now := time.Now()
 	l.LastCheck = &now
 	return s.db.UpdateLink(l)
+}
+
+// DiscoverAndSyncWANLinks auto-detects WAN interfaces and creates/updates link records.
+func (s *Service) DiscoverAndSyncWANLinks() (*DiscoverResult, error) {
+	detected, err := detectWANLinks()
+	if err != nil {
+		return nil, err
+	}
+
+	res := &DiscoverResult{Detected: detected}
+	existing, err := s.db.GetLinks()
+	if err != nil {
+		return nil, err
+	}
+
+	byInterface := make(map[string]storage.Link, len(existing))
+	for _, l := range existing {
+		byInterface[l.Interface] = l
+	}
+
+	for _, d := range detected {
+		if cur, ok := byInterface[d.Interface]; ok {
+			changed := false
+			if d.IPAddress != "" && d.IPAddress != cur.IPAddress {
+				cur.IPAddress = d.IPAddress
+				changed = true
+			}
+			if d.Gateway != "" && d.Gateway != cur.Gateway {
+				cur.Gateway = d.Gateway
+				changed = true
+			}
+			if strings.TrimSpace(cur.Name) == "" {
+				cur.Name = fmt.Sprintf("WAN %s", d.Interface)
+				changed = true
+			}
+			if changed {
+				if err := s.db.UpdateLink(&cur); err != nil {
+					return nil, err
+				}
+				res.Updated = append(res.Updated, cur)
+			} else {
+				res.Existing = append(res.Existing, cur)
+			}
+			continue
+		}
+
+		created := storage.Link{
+			Name:         fmt.Sprintf("WAN %s", d.Interface),
+			Interface:    d.Interface,
+			IPAddress:    d.IPAddress,
+			Gateway:      d.Gateway,
+			Weight:       100,
+			DNSTest:      "8.8.8.8",
+			MonitorHosts: "1.1.1.1,8.8.8.8",
+			Status:       StatusUnknown,
+			Enabled:      true,
+		}
+		if err := s.Create(&created); err != nil {
+			return nil, err
+		}
+		res.Created = append(res.Created, created)
+	}
+
+	return res, nil
+}
+
+func detectWANLinks() ([]DetectedWANLink, error) {
+	buf, err := readProcNetRoute()
+	if err != nil {
+		return nil, fmt.Errorf("read /proc/net/route: %w", err)
+	}
+	defaultRoutes, err := parseDefaultRoutes(string(buf))
+	if err != nil {
+		return nil, err
+	}
+	if len(defaultRoutes) == 0 {
+		return []DetectedWANLink{}, nil
+	}
+
+	ifaces, err := listInterfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list interfaces: %w", err)
+	}
+
+	links := make([]DetectedWANLink, 0, len(defaultRoutes))
+	for _, iface := range ifaces {
+		gw, ok := defaultRoutes[iface.Name]
+		if !ok {
+			continue
+		}
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		links = append(links, DetectedWANLink{
+			Interface: iface.Name,
+			IPAddress: firstIPv4(&iface),
+			Gateway:   gw,
+		})
+	}
+
+	sort.Slice(links, func(i, j int) bool {
+		return links[i].Interface < links[j].Interface
+	})
+	return links, nil
+}
+
+func parseDefaultRoutes(routeTable string) (map[string]string, error) {
+	routes := map[string]string{}
+	lines := strings.Split(strings.TrimSpace(routeTable), "\n")
+	if len(lines) <= 1 {
+		return routes, nil
+	}
+
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		iface := fields[0]
+		destinationHex := fields[1]
+		gatewayHex := fields[2]
+
+		if destinationHex != "00000000" {
+			continue
+		}
+
+		gw, err := parseRouteHexIPv4(gatewayHex)
+		if err != nil {
+			continue
+		}
+		routes[iface] = gw
+	}
+
+	return routes, nil
+}
+
+func parseRouteHexIPv4(hexAddr string) (string, error) {
+	v, err := strconv.ParseUint(hexAddr, 16, 32)
+	if err != nil {
+		return "", err
+	}
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, uint32(v))
+	return net.IP(buf).String(), nil
+}
+
+func firstIPv4(iface *net.Interface) string {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok {
+			if ipv4 := ipNet.IP.To4(); ipv4 != nil {
+				return ipv4.String()
+			}
+		}
+	}
+	return ""
 }
 
 // ─── Validation ──────────────────────────────────────────────────────────────

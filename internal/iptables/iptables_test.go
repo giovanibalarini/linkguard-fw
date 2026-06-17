@@ -105,6 +105,9 @@ func TestListTableRuleParsing(t *testing.T) {
 	if len(inputChain.Rules) != 2 {
 		t.Errorf("expected 2 INPUT rules, got %d", len(inputChain.Rules))
 	}
+	if inputChain.Rules[0].Num != "1" {
+		t.Errorf("expected first rule num=1, got %s", inputChain.Rules[0].Num)
+	}
 	if inputChain.Rules[0].Target != "ACCEPT" {
 		t.Errorf("expected first rule target=ACCEPT, got %s", inputChain.Rules[0].Target)
 	}
@@ -155,4 +158,34 @@ func TestDryRunExecuteNotRead(t *testing.T) {
 		t.Errorf("expected 1 dry-run command, got %d", len(exec.Commands))
 	}
 	_ = svc // just verify the service compiles and works
+}
+
+func TestDeleteRuleDryRun(t *testing.T) {
+	exec := firewall.NewDryRunExecutor()
+	svc := iptables.NewService(exec)
+
+	if _, err := svc.DeleteRule(context.Background(), "filter", "INPUT", 1); err != nil {
+		t.Fatalf("DeleteRule: %v", err)
+	}
+	if len(exec.Commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(exec.Commands))
+	}
+	if exec.Commands[0] != "iptables -t filter -D INPUT 1" {
+		t.Fatalf("unexpected command: %s", exec.Commands[0])
+	}
+}
+
+func TestReplaceRuleDryRun(t *testing.T) {
+	exec := firewall.NewDryRunExecutor()
+	svc := iptables.NewService(exec)
+
+	if _, err := svc.ReplaceRule(context.Background(), "filter", "INPUT", 2, "-s 10.0.0.0/24 -j ACCEPT"); err != nil {
+		t.Fatalf("ReplaceRule: %v", err)
+	}
+	if len(exec.Commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(exec.Commands))
+	}
+	if exec.Commands[0] != "iptables -t filter -R INPUT 2 -s 10.0.0.0/24 -j ACCEPT" {
+		t.Fatalf("unexpected command: %s", exec.Commands[0])
+	}
 }

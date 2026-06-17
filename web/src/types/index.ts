@@ -112,6 +112,7 @@ export interface IptablesChain {
 }
 
 export interface IptablesRule {
+  num: string;
   raw: string;
   pkts: string;
   bytes: string;

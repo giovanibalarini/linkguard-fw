@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, Shield, Database, Download } from 'lucide-react';
+import { RefreshCw, Shield, Database, Download, Pencil, Trash2 } from 'lucide-react';
 import client from '../api/client';
 import type { IptablesTable, IptablesBackup } from '../types';
 
@@ -10,6 +10,7 @@ export default function Firewall() {
   const [activeTab, setActiveTab] = useState<'rules' | 'backups'>('rules');
   const [activeTable, setActiveTable] = useState<string>('filter');
   const [backingUp, setBackingUp] = useState(false);
+  const [updatingRule, setUpdatingRule] = useState(false);
   const [msg, setMsg] = useState('');
 
   const fetchData = async () => {
@@ -41,6 +42,61 @@ export default function Firewall() {
       setMsg(`Erro: ${e.response?.data?.error || e.message}`);
     } finally {
       setBackingUp(false);
+    }
+  };
+
+  const defaultRuleSpec = (rule: any) => {
+    if (rule.options && rule.options.length > 0) {
+      return rule.options.join(' ');
+    }
+    const parts = String(rule.raw || '').trim().split(/\s+/);
+    if (parts.length > 10) {
+      return parts.slice(10).join(' ');
+    }
+    return '';
+  };
+
+  const handleDeleteRule = async (table: string, chain: string, line: number) => {
+    if (!confirm(`Remover regra ${table}/${chain} linha ${line}?`)) return;
+    setUpdatingRule(true);
+    setMsg('');
+    try {
+      await client.delete('/api/firewall/rules', { data: { table, chain, line } });
+      setMsg('Regra removida com sucesso!');
+      await fetchData();
+    } catch (e: any) {
+      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+    } finally {
+      setUpdatingRule(false);
+    }
+  };
+
+  const handleEditRule = async (table: string, chain: string, line: number, currentSpec: string) => {
+    const nextSpec = prompt(
+      `Edite o rule spec para ${table}/${chain} linha ${line}\n` +
+      'Exemplo: -s 10.0.0.0/24 -p tcp --dport 443 -j ACCEPT',
+      currentSpec
+    );
+    if (nextSpec === null) return;
+    if (!nextSpec.trim()) {
+      setMsg('Erro: rule spec não pode ser vazio.');
+      return;
+    }
+    setUpdatingRule(true);
+    setMsg('');
+    try {
+      await client.put('/api/firewall/rules', {
+        table,
+        chain,
+        line,
+        rule_spec: nextSpec.trim(),
+      });
+      setMsg('Regra atualizada com sucesso!');
+      await fetchData();
+    } catch (e: any) {
+      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+    } finally {
+      setUpdatingRule(false);
     }
   };
 
@@ -118,9 +174,29 @@ export default function Firewall() {
                 ) : (
                   <div className="space-y-1">
                     {chain.rules.map((rule, i) => (
-                      <div key={i} className="bg-gray-800 rounded px-3 py-2 font-mono text-xs text-gray-300 overflow-x-auto">
-                        <span className="text-gray-500 mr-3 select-none">{i + 1}</span>
-                        {rule.raw}
+                      <div key={i} className="bg-gray-800 rounded px-3 py-2 font-mono text-xs text-gray-300 flex items-center justify-between gap-3">
+                        <div className="overflow-x-auto">
+                          <span className="text-gray-500 mr-3 select-none">{rule.num || i + 1}</span>
+                          {rule.raw}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => handleEditRule(currentTable.name, chain.name, Number(rule.num || i + 1), defaultRuleSpec(rule))}
+                            disabled={updatingRule}
+                            className="text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50"
+                            title="Editar regra"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteRule(currentTable.name, chain.name, Number(rule.num || i + 1))}
+                            disabled={updatingRule}
+                            className="text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50"
+                            title="Remover regra"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

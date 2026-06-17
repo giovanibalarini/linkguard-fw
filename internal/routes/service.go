@@ -22,11 +22,11 @@ type Route struct {
 
 // Rule represents an ip rule entry.
 type Rule struct {
-	Priority  string `json:"priority"`
-	Selector  string `json:"selector"`
-	Action    string `json:"action"`
-	Table     string `json:"table,omitempty"`
-	Raw       string `json:"raw"`
+	Priority string `json:"priority"`
+	Selector string `json:"selector"`
+	Action   string `json:"action"`
+	Table    string `json:"table,omitempty"`
+	Raw      string `json:"raw"`
 }
 
 // Service wraps ip route / ip rule operations.
@@ -97,6 +97,21 @@ func (s *Service) AddRule(ctx context.Context, from, table string, priority int)
 		args = append(args, "from", from)
 	}
 	args = append(args, "lookup", table)
+	if priority > 0 {
+		args = append(args, "priority", fmt.Sprintf("%d", priority))
+	}
+	return s.exec.Execute(ctx, "ip", args...)
+}
+
+// DelRule removes an ip rule (dry-run safe).
+func (s *Service) DelRule(ctx context.Context, from, table string, priority int) (string, error) {
+	args := []string{"rule", "del"}
+	if from != "" {
+		args = append(args, "from", from)
+	}
+	if table != "" {
+		args = append(args, "lookup", table)
+	}
 	if priority > 0 {
 		args = append(args, "priority", fmt.Sprintf("%d", priority))
 	}

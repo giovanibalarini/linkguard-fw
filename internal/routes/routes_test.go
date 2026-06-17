@@ -137,8 +137,11 @@ func TestDryRunExecutorCaptures(t *testing.T) {
 	if _, err := svc.DelRoute(ctx, "10.0.0.0/8", ""); err != nil {
 		t.Fatalf("DelRoute: %v", err)
 	}
+	if _, err := svc.DelRule(ctx, "192.168.1.0/24", "100", 100); err != nil {
+		t.Fatalf("DelRule: %v", err)
+	}
 
-	if len(exec.Commands) != 2 {
-		t.Errorf("expected 2 recorded commands, got %d: %v", len(exec.Commands), exec.Commands)
+	if len(exec.Commands) != 3 {
+		t.Errorf("expected 3 recorded commands, got %d: %v", len(exec.Commands), exec.Commands)
 	}
 }
