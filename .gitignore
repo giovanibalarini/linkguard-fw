@@ -33,6 +33,8 @@ go.work.sum
 
 # LinkGuard FW specific
 linkguard-fw
+!cmd/linkguard-fw/
+!cmd/linkguard-fw/main.go
 web/node_modules/
 *.db
 *.db-shm
