@@ -114,47 +114,60 @@ EOF
           cat sha256sums.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: "LinkGuard FW ${{ steps.version.outputs.version }}"
-          body: |
-            Automated release from commit ${{ github.sha }}.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.version }}"
+          DEB_VER="${{ steps.version.outputs.deb_version }}"
 
-            ### Install via .deb (Debian/Ubuntu — recommended)
+          cat > release-notes.md <<EOF
+          Automated release from commit ${{ github.sha }}.
 
-            ```bash
-            # amd64
-            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/linkguard-fw_${{ steps.version.outputs.deb_version }}_amd64.deb
-            sudo dpkg -i linkguard-fw_${{ steps.version.outputs.deb_version }}_amd64.deb
+          ### Install via .deb (Debian/Ubuntu - recommended)
 
-            # Edit config (set jwt_secret before starting)
-            sudo nano /etc/linkguard-fw/config.json
+          \`\`\`bash
+          # amd64
+          wget https://github.com/${{ github.repository }}/releases/download/${TAG}/linkguard-fw_${DEB_VER}_amd64.deb
+          sudo dpkg -i linkguard-fw_${DEB_VER}_amd64.deb
 
-            # Enable and start the service
-            sudo systemctl enable --now linkguard-fw
-            ```
+          # Edit config (set jwt_secret before starting)
+          sudo nano /etc/linkguard-fw/config.json
 
-            ### Install binary manually
+          # Enable and start the service
+          sudo systemctl enable --now linkguard-fw
+          \`\`\`
 
-            ```bash
-            # amd64
-            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/linkguard-fw-linux-amd64
-            chmod +x linkguard-fw-linux-amd64
-            sudo mv linkguard-fw-linux-amd64 /usr/local/bin/linkguard-fw
-            ```
+          ### Install binary manually
 
-            ### Verify checksums
+          \`\`\`bash
+          # amd64
+          wget https://github.com/${{ github.repository }}/releases/download/${TAG}/linkguard-fw-linux-amd64
+          chmod +x linkguard-fw-linux-amd64
+          sudo mv linkguard-fw-linux-amd64 /usr/local/bin/linkguard-fw
+          \`\`\`
 
-            ```bash
-            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/sha256sums.txt
-            sha256sum -c sha256sums.txt
-            ```
-          files: |
+          ### Verify checksums
+
+          \`\`\`bash
+          wget https://github.com/${{ github.repository }}/releases/download/${TAG}/sha256sums.txt
+          sha256sum -c sha256sums.txt
+          \`\`\`
+          EOF
+
+          FILES=(
             dist/linkguard-fw-linux-amd64
             dist/linkguard-fw-linux-arm64
-            dist/linkguard-fw_${{ steps.version.outputs.deb_version }}_amd64.deb
-            dist/linkguard-fw_${{ steps.version.outputs.deb_version }}_arm64.deb
+            "dist/linkguard-fw_${DEB_VER}_amd64.deb"
+            "dist/linkguard-fw_${DEB_VER}_arm64.deb"
             dist/sha256sums.txt
-          make_latest: true
-          generate_release_notes: true
+          )
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${FILES[@]}" --clobber
+          else
+            gh release create "${TAG}" "${FILES[@]}" \
+              --title "LinkGuard FW ${TAG}" \
+              --notes-file release-notes.md \
+              --generate-notes \
+              --latest
+          fi
