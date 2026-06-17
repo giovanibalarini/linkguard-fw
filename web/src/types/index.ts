@@ -159,3 +159,22 @@ export interface HealthStatus {
   status: string;
   link_count: number;
 }
+
+export interface TrafficHistoryPoint {
+  interface: string;
+  step_seconds: number;
+  timestamp: number;
+  rx_bps: number;
+  tx_bps: number;
+}
+
+export interface TrafficHistoryResponse {
+  interface: string;
+  range: string;
+  step_seconds: number;
+  points: TrafficHistoryPoint[];
+}
+
+export interface TrafficRetentionResponse {
+  profile: '30d' | '1y' | '5y';
+}

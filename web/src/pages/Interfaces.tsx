@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Activity, Network, ArrowDownToLine, ArrowUpToLine, Pencil } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import client from '../api/client';
-import type { SystemMetrics } from '../types';
+import type { SystemMetrics, TrafficHistoryResponse, TrafficRetentionResponse } from '../types';
 
 interface RatePoint {
   ts: number;
@@ -69,8 +69,10 @@ export default function Interfaces() {
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [aliasSaving, setAliasSaving] = useState<string>('');
-  const [range, setRange] = useState<'5m' | '30m' | '12h'>('5m');
+  const [range, setRange] = useState<'5m' | '30m' | '12h' | '30d' | '1y' | '5y'>('5m');
+  const [retentionProfile, setRetentionProfile] = useState<'30d' | '1y' | '5y'>('30d');
   const [currentRates, setCurrentRates] = useState<Record<string, { rx: number; tx: number }>>({});
+  const [rrdHistory, setRrdHistory] = useState<Record<string, RatePoint[]>>({});
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const firstLoadRef = useRef(true);
 
@@ -200,11 +202,71 @@ export default function Interfaces() {
     }
   };
 
+  const loadRetentionProfile = async () => {
+    try {
+      const res = await client.get<TrafficRetentionResponse>('/api/system/traffic-retention');
+      setRetentionProfile(res.data.profile || '30d');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const updateRetentionProfile = async (profile: '30d' | '1y' | '5y') => {
+    try {
+      await client.put('/api/system/traffic-retention', { profile });
+      setRetentionProfile(profile);
+    } catch (e) {
+      console.error(e);
+      alert('Erro ao salvar perfil de retencao');
+    }
+  };
+
+  const loadRrdHistory = async () => {
+    if (!sys || (range !== '30d' && range !== '1y' && range !== '5y')) {
+      return;
+    }
+    try {
+      const visible = (sys.interfaces ?? []).filter((i) => i.name !== 'lo');
+      const results = await Promise.all(
+        visible.map((iface) =>
+          client.get<TrafficHistoryResponse>(`/api/system/traffic-history?iface=${encodeURIComponent(iface.name)}&range=${range}`)
+        )
+      );
+
+      const next: Record<string, RatePoint[]> = {};
+      for (const res of results) {
+        const points = (res.data.points ?? []).map((p) => ({
+          ts: p.timestamp * 1000,
+          label: new Date(p.timestamp * 1000).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: range === '30d' ? undefined : '2-digit',
+          }),
+          rx: p.rx_bps,
+          tx: p.tx_bps,
+        }));
+        next[res.data.interface] = points;
+      }
+      setRrdHistory(next);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     fetchData();
+    loadRetentionProfile();
     const interval = setInterval(fetchData, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (range === '30d' || range === '1y' || range === '5y') {
+      loadRrdHistory();
+      const interval = setInterval(loadRrdHistory, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [range, sys]);
 
   const editAlias = async (ifaceName: string, currentAlias?: string) => {
     const nextAlias = window.prompt(
@@ -239,7 +301,10 @@ export default function Interfaces() {
     if (range === '30m') {
       return fiveSecHistoryRef[ifaceName] ?? [];
     }
-    return minuteHistoryRef[ifaceName] ?? [];
+    if (range === '12h') {
+      return minuteHistoryRef[ifaceName] ?? [];
+    }
+    return rrdHistory[ifaceName] ?? [];
   };
 
   const formatRate = (bytesPerSecond: number): string => `${formatBytes(bytesPerSecond)}/s`;
@@ -249,7 +314,7 @@ export default function Interfaces() {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-white">Interfaces</h1>
-          <p className="text-gray-500 text-sm">Métricas vêm de /proc do Linux com visão temporal em 1s, 5s e 1min (estilo RRD).</p>
+          <p className="text-gray-500 text-sm">Métricas vêm de /proc com RRD persistente configurável para 30d, 1y ou 5y.</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center rounded-lg border border-gray-700 bg-gray-900/70 p-1 text-xs">
@@ -271,6 +336,37 @@ export default function Interfaces() {
             >
               12h (1m)
             </button>
+            <button
+              onClick={() => setRange('30d')}
+              className={`px-2 py-1 rounded ${range === '30d' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
+            >
+              30d
+            </button>
+            <button
+              onClick={() => setRange('1y')}
+              className={`px-2 py-1 rounded ${range === '1y' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
+            >
+              1y
+            </button>
+            <button
+              onClick={() => setRange('5y')}
+              className={`px-2 py-1 rounded ${range === '5y' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
+            >
+              5y
+            </button>
+          </div>
+
+          <div className="flex items-center rounded-lg border border-gray-700 bg-gray-900/70 p-1 text-xs">
+            <span className="px-2 py-1 text-gray-500">Retencao</span>
+            {(['30d', '1y', '5y'] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => updateRetentionProfile(p)}
+                className={`px-2 py-1 rounded ${retentionProfile === p ? 'bg-emerald-500/20 text-emerald-300' : 'text-gray-400 hover:text-gray-200'}`}
+              >
+                {p}
+              </button>
+            ))}
           </div>
           <div className="text-xs text-gray-600">Atualizado às {lastUpdated.toLocaleTimeString()}</div>
           <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
@@ -388,7 +484,7 @@ export default function Interfaces() {
                   <div className="mt-4 rounded-lg border border-gray-800 bg-gray-900/70 p-3">
                     <div className="mb-2 flex items-center justify-between">
                       <p className="text-gray-500 text-xs uppercase tracking-wide">Consumo de rede RRD-style ({range})</p>
-                      <p className="text-xs text-gray-500">RX acima, TX abaixo, retenção 1s/5s/1m</p>
+                      <p className="text-xs text-gray-500">RX acima, TX abaixo, perfil ativo: {retentionProfile}</p>
                     </div>
                     {chartData.length < 2 ? (
                       <p className="text-gray-500 text-sm">Aguardando amostras para desenhar o gráfico...</p>

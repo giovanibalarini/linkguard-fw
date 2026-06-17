@@ -334,3 +334,57 @@ func TestGetMissingSetting(t *testing.T) {
 		t.Errorf("expected empty string for missing key, got %s", val)
 	}
 }
+
+// ─── Traffic samples ────────────────────────────────────────────────────────
+
+func TestTrafficSamplesUpsertAndQuery(t *testing.T) {
+	db := newTestDB(t)
+
+	s := storage.TrafficSample{
+		Interface:   "eth0",
+		StepSeconds: 60,
+		Timestamp:   time.Now().Unix(),
+		RxBps:       123.4,
+		TxBps:       432.1,
+	}
+	if err := db.UpsertTrafficSample(s); err != nil {
+		t.Fatalf("UpsertTrafficSample insert: %v", err)
+	}
+
+	// Upsert same key updates values.
+	s.RxBps = 555.0
+	if err := db.UpsertTrafficSample(s); err != nil {
+		t.Fatalf("UpsertTrafficSample update: %v", err)
+	}
+
+	got, err := db.GetTrafficSamples("eth0", 60, s.Timestamp-1, s.Timestamp+1)
+	if err != nil {
+		t.Fatalf("GetTrafficSamples: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(got))
+	}
+	if got[0].RxBps != 555.0 {
+		t.Fatalf("expected updated rx=555.0, got %f", got[0].RxBps)
+	}
+}
+
+func TestTrafficSamplesPrune(t *testing.T) {
+	db := newTestDB(t)
+
+	now := time.Now().Unix()
+	_ = db.UpsertTrafficSample(storage.TrafficSample{Interface: "eth1", StepSeconds: 60, Timestamp: now - 3600, RxBps: 10, TxBps: 20})
+	_ = db.UpsertTrafficSample(storage.TrafficSample{Interface: "eth1", StepSeconds: 60, Timestamp: now - 60, RxBps: 30, TxBps: 40})
+
+	if err := db.PruneTrafficSamples(60, now-600); err != nil {
+		t.Fatalf("PruneTrafficSamples: %v", err)
+	}
+
+	got, err := db.GetTrafficSamples("eth1", 60, now-7200, now)
+	if err != nil {
+		t.Fatalf("GetTrafficSamples: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 remaining sample, got %d", len(got))
+	}
+}

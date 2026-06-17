@@ -435,3 +435,48 @@ func (db *DB) SearchAuditLogs(filter string, limit int) ([]AuditLog, error) {
 	}
 	return logs, rows.Err()
 }
+
+// UpsertTrafficSample stores a traffic sample for an interface and archive step.
+func (db *DB) UpsertTrafficSample(sample TrafficSample) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO traffic_samples (interface, step_seconds, ts_unix, rx_bps, tx_bps)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(interface, step_seconds, ts_unix)
+		DO UPDATE SET rx_bps=excluded.rx_bps, tx_bps=excluded.tx_bps`,
+		sample.Interface, sample.StepSeconds, sample.Timestamp, sample.RxBps, sample.TxBps)
+	return err
+}
+
+// GetTrafficSamples returns samples for a specific interface/step between timestamps.
+func (db *DB) GetTrafficSamples(iface string, stepSeconds int, fromUnix, toUnix int64) ([]TrafficSample, error) {
+	rows, err := db.conn.Query(`
+		SELECT interface, step_seconds, ts_unix, rx_bps, tx_bps
+		FROM traffic_samples
+		WHERE interface = ? AND step_seconds = ? AND ts_unix BETWEEN ? AND ?
+		ORDER BY ts_unix ASC`, iface, stepSeconds, fromUnix, toUnix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TrafficSample
+	for rows.Next() {
+		var s TrafficSample
+		if err := rows.Scan(&s.Interface, &s.StepSeconds, &s.Timestamp, &s.RxBps, &s.TxBps); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	if out == nil {
+		out = []TrafficSample{}
+	}
+	return out, rows.Err()
+}
+
+// PruneTrafficSamples deletes samples older than the cutoff for the given step.
+func (db *DB) PruneTrafficSamples(stepSeconds int, olderThanUnix int64) error {
+	_, err := db.conn.Exec(`
+		DELETE FROM traffic_samples
+		WHERE step_seconds = ? AND ts_unix < ?`, stepSeconds, olderThanUnix)
+	return err
+}

@@ -57,6 +57,7 @@ func (db *DB) migrate() error {
 		createRoutingPoliciesTable,
 		createIptablesBackupsTable,
 		createSettingsTable,
+        createTrafficSamplesTable,
 		insertDefaultAdmin,
 	}
 
@@ -175,4 +176,14 @@ CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+const createTrafficSamplesTable = `
+CREATE TABLE IF NOT EXISTS traffic_samples (
+    interface     TEXT NOT NULL,
+    step_seconds  INTEGER NOT NULL,
+    ts_unix       INTEGER NOT NULL,
+    rx_bps        REAL NOT NULL,
+    tx_bps        REAL NOT NULL,
+    PRIMARY KEY (interface, step_seconds, ts_unix)
 );`

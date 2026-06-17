@@ -28,6 +28,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
+	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
 )
 
 var version = "dev"
@@ -105,6 +106,7 @@ func run() int {
 		CooldownSecs:     cfg.FailoverCooldownSecs,
 	}, db, exec, routeSvc, alertSvc)
 	sysCollector := system.NewCollector()
+	rrdSvc := trafficrrd.NewService(db)
 
 	promReg := prometheus.NewRegistry()
 	appMetrics := metrics.New(promReg)
@@ -115,7 +117,7 @@ func run() int {
 		DryRun:  cfg.DryRun,
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, sysCollector, promReg)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, sysCollector, rrdSvc, promReg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -126,6 +128,7 @@ func run() int {
 
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)
+	go rrdSvc.Run(ctx)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr(),

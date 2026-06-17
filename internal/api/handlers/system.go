@@ -8,6 +8,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
+	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
 )
 
 const interfaceAliasSettingKey = "interface_aliases"
@@ -16,11 +17,12 @@ const interfaceAliasSettingKey = "interface_aliases"
 type SystemHandler struct {
 	sysCol *system.Collector
 	db     *storage.DB
+	rrdSvc *trafficrrd.Service
 }
 
 // NewSystemHandler creates a SystemHandler.
-func NewSystemHandler(sysCol *system.Collector, db *storage.DB) *SystemHandler {
-	return &SystemHandler{sysCol: sysCol, db: db}
+func NewSystemHandler(sysCol *system.Collector, db *storage.DB, rrdSvc *trafficrrd.Service) *SystemHandler {
+	return &SystemHandler{sysCol: sysCol, db: db, rrdSvc: rrdSvc}
 }
 
 // Status returns current system resource metrics.
@@ -143,4 +145,40 @@ func (h *SystemHandler) saveInterfaceAliases(aliases map[string]string) error {
 		return fmt.Errorf("failed to persist interface aliases: %w", err)
 	}
 	return nil
+}
+
+// TrafficHistory returns RRD-like traffic history for an interface and range.
+func (h *SystemHandler) TrafficHistory(w http.ResponseWriter, r *http.Request) {
+	iface := strings.TrimSpace(r.URL.Query().Get("iface"))
+	rangeID := strings.TrimSpace(r.URL.Query().Get("range"))
+	if rangeID == "" {
+		rangeID = "12h"
+	}
+	res, err := h.rrdSvc.GetHistory(iface, rangeID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// GetTrafficRetention returns the active retention profile.
+func (h *SystemHandler) GetTrafficRetention(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"profile": h.rrdSvc.GetProfile()})
+}
+
+// SetTrafficRetention updates the active retention profile.
+func (h *SystemHandler) SetTrafficRetention(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Profile string `json:"profile"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.rrdSvc.SetProfile(body.Profile); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"profile": h.rrdSvc.GetProfile()})
 }

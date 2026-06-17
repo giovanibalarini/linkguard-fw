@@ -108,6 +108,17 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// ─── TrafficSample ──────────────────────────────────────────────────────────
+
+// TrafficSample stores per-interface traffic rates for a specific archive step.
+type TrafficSample struct {
+	Interface   string  `json:"interface"`
+	StepSeconds int     `json:"step_seconds"`
+	Timestamp   int64   `json:"timestamp"`
+	RxBps       float64 `json:"rx_bps"`
+	TxBps       float64 `json:"tx_bps"`
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func nullableTime(t *time.Time) sql.NullTime {

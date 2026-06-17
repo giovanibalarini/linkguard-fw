@@ -25,6 +25,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
+	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
 )
 
 // Server holds all dependencies needed to serve HTTP requests.
@@ -39,6 +40,7 @@ type Server struct {
 	alertSvc    *alerts.Service
 	authSvc     *auth.Service
 	sysCol      *system.Collector
+	rrdSvc      *trafficrrd.Service
 	promReg     *prometheus.Registry
 	webFS       embed.FS
 }
@@ -55,7 +57,7 @@ type Config struct {
 func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, alertSvc *alerts.Service, authSvc *auth.Service,
-	sysCol *system.Collector, promReg *prometheus.Registry) *Server {
+	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
 
 	s := &Server{
 		db:          db,
@@ -67,6 +69,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		alertSvc:    alertSvc,
 		authSvc:     authSvc,
 		sysCol:      sysCol,
+		rrdSvc:      rrdSvc,
 		promReg:     promReg,
 		webFS:       cfg.WebFS,
 	}
@@ -115,10 +118,13 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.Use(s.authSvc.Middleware)
 
 		// System
-		sysH := handlers.NewSystemHandler(s.sysCol, s.db)
+		sysH := handlers.NewSystemHandler(s.sysCol, s.db, s.rrdSvc)
 		r.Get("/api/system/status", sysH.Status)
 		r.Get("/api/system/interface-aliases", sysH.ListInterfaceAliases)
 		r.Put("/api/system/interface-aliases", sysH.UpsertInterfaceAlias)
+		r.Get("/api/system/traffic-history", sysH.TrafficHistory)
+		r.Get("/api/system/traffic-retention", sysH.GetTrafficRetention)
+		r.Put("/api/system/traffic-retention", sysH.SetTrafficRetention)
 
 		// Links
 		linksH := handlers.NewLinksHandler(s.linkSvc, s.db)
