@@ -184,14 +184,14 @@ func (s *Server) mountWebUI(r *chi.Mux) {
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if path == "" {
-			r.URL.Path = "/index.html"
+			r.URL.Path = "/"
 			fileServer.ServeHTTP(w, r)
 			return
 		}
 
 		// If the requested asset is missing (SPA route), serve index.html.
 		if st, err := fs.Stat(webDist, path); err != nil || st.IsDir() {
-			r.URL.Path = "/index.html"
+			r.URL.Path = "/"
 		}
 		fileServer.ServeHTTP(w, r)
 	})
