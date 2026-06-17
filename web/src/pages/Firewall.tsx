@@ -1,0 +1,165 @@
+import { useEffect, useState } from 'react';
+import { RefreshCw, Shield, Database, Download } from 'lucide-react';
+import client from '../api/client';
+import type { IptablesTable, IptablesBackup } from '../types';
+
+export default function Firewall() {
+  const [tables, setTables] = useState<IptablesTable[]>([]);
+  const [backups, setBackups] = useState<IptablesBackup[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'rules' | 'backups'>('rules');
+  const [activeTable, setActiveTable] = useState<string>('filter');
+  const [backingUp, setBackingUp] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [tablesRes, backupsRes] = await Promise.all([
+        client.get<IptablesTable[]>('/api/iptables/rules'),
+        client.get<IptablesBackup[]>('/api/firewall/backups'),
+      ]);
+      setTables(tablesRes.data ?? []);
+      setBackups(backupsRes.data ?? []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, []);
+
+  const handleBackup = async () => {
+    setBackingUp(true);
+    setMsg('');
+    try {
+      await client.post('/api/firewall/backup', { label: '' });
+      setMsg('Backup criado com sucesso!');
+      await fetchData();
+    } catch (e: any) {
+      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
+  const currentTable = tables.find(t => t.name === activeTable);
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-white">Firewall</h1>
+          <p className="text-gray-500 text-sm">Regras iptables — modo somente leitura</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={handleBackup} disabled={backingUp} className="btn-secondary flex items-center gap-2 disabled:opacity-50">
+            <Database className="w-4 h-4" />
+            {backingUp ? 'Salvando...' : 'Backup'}
+          </button>
+          <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
+            <RefreshCw className="w-4 h-4" />
+            Atualizar
+          </button>
+        </div>
+      </div>
+
+      {msg && (
+        <div className={`px-4 py-3 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'}`}>
+          {msg}
+        </div>
+      )}
+
+      <div className="flex gap-2 border-b border-gray-800">
+        <button onClick={() => setActiveTab('rules')} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'rules' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+          Regras
+        </button>
+        <button onClick={() => setActiveTab('backups')} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'backups' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+          Backups ({backups.length})
+        </button>
+      </div>
+
+      {activeTab === 'rules' ? (
+        <>
+          {/* Table tabs */}
+          <div className="flex gap-2">
+            {['filter', 'nat', 'mangle'].map(t => (
+              <button
+                key={t}
+                onClick={() => setActiveTable(t)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  activeTable === t ? 'bg-blue-600/20 text-blue-400' : 'bg-gray-800 text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+
+          {loading ? (
+            <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
+          ) : !currentTable ? (
+            <div className="card text-center py-8">
+              <Shield className="w-12 h-12 text-gray-700 mx-auto mb-3" />
+              <p className="text-gray-500">Tabela não disponível</p>
+            </div>
+          ) : (
+            currentTable.chains.map(chain => (
+              <div key={chain.name} className="card">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-white font-mono font-semibold">{chain.name}</h3>
+                  {chain.policy && (
+                    <span className="text-xs text-gray-500">Política: <span className="text-gray-300">{chain.policy}</span></span>
+                  )}
+                </div>
+                {!chain.rules || chain.rules.length === 0 ? (
+                  <p className="text-gray-600 text-sm">Nenhuma regra</p>
+                ) : (
+                  <div className="space-y-1">
+                    {chain.rules.map((rule, i) => (
+                      <div key={i} className="bg-gray-800 rounded px-3 py-2 font-mono text-xs text-gray-300 overflow-x-auto">
+                        <span className="text-gray-500 mr-3 select-none">{i + 1}</span>
+                        {rule.raw}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </>
+      ) : (
+        <div className="card">
+          {backups.length === 0 ? (
+            <div className="text-center py-12">
+              <Download className="w-12 h-12 text-gray-700 mx-auto mb-3" />
+              <p className="text-gray-400">Nenhum backup disponível</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-800">
+                    <th className="pb-3 pr-4 font-medium">Label</th>
+                    <th className="pb-3 pr-4 font-medium">Tamanho</th>
+                    <th className="pb-3 font-medium">Data</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {backups.map(b => (
+                    <tr key={b.id} className="table-row">
+                      <td className="py-3 pr-4 text-white">{b.label}</td>
+                      <td className="py-3 pr-4 text-gray-400">{(b.rules.length / 1024).toFixed(1)} KB</td>
+                      <td className="py-3 text-gray-400">{new Date(b.created_at).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

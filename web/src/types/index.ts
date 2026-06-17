@@ -1,0 +1,146 @@
+// API type definitions for LinkGuard FW
+
+export type LinkStatus = 'online' | 'offline' | 'degraded' | 'unknown';
+export type AlertSeverity = 'info' | 'warning' | 'critical';
+
+export interface WanLink {
+  id: string;
+  name: string;
+  interface: string;
+  ip_address: string;
+  gateway: string;
+  weight: number;
+  dns_test: string;
+  monitor_hosts: string;
+  status: LinkStatus;
+  latency_ms: number;
+  packet_loss: number;
+  last_check: string | null;
+  enabled: boolean;
+  table_id: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SystemMetrics {
+  uptime_seconds: number;
+  uptime_str: string;
+  cpu_percent: number;
+  mem_total_bytes: number;
+  mem_used_bytes: number;
+  mem_percent: number;
+  disk_total_bytes: number;
+  disk_used_bytes: number;
+  disk_percent: number;
+  load_avg: [number, number, number];
+  interfaces: InterfaceMetrics[];
+}
+
+export interface InterfaceMetrics {
+  name: string;
+  rx_bytes: number;
+  tx_bytes: number;
+  rx_packets: number;
+  tx_packets: number;
+  rx_errors: number;
+  tx_errors: number;
+  rx_dropped: number;
+  tx_dropped: number;
+}
+
+export interface Alert {
+  id: string;
+  type: string;
+  severity: AlertSeverity;
+  title: string;
+  message: string;
+  link_id: string;
+  resolved: boolean;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface AuditLog {
+  id: string;
+  user: string;
+  action: string;
+  resource: string;
+  details: string;
+  ip: string;
+  created_at: string;
+}
+
+export interface FailoverEvent {
+  id: string;
+  link_id: string;
+  link_name: string;
+  from_status: string;
+  to_status: string;
+  reason: string;
+  commands: string;
+  dry_run: boolean;
+  created_at: string;
+}
+
+export interface Route {
+  destination: string;
+  gateway: string;
+  interface: string;
+  metric: string;
+  protocol: string;
+  scope: string;
+  raw: string;
+}
+
+export interface IpRule {
+  priority: string;
+  selector: string;
+  action: string;
+  table: string;
+  raw: string;
+}
+
+export interface IptablesTable {
+  name: string;
+  chains: IptablesChain[];
+}
+
+export interface IptablesChain {
+  name: string;
+  policy: string;
+  rules: IptablesRule[];
+}
+
+export interface IptablesRule {
+  raw: string;
+  pkts: string;
+  bytes: string;
+  target: string;
+  prot: string;
+  in: string;
+  out: string;
+  source: string;
+  dest: string;
+  options: string[];
+}
+
+export interface IptablesBackup {
+  id: string;
+  label: string;
+  rules: string;
+  created_at: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: {
+    id: string;
+    username: string;
+    role: string;
+  };
+}
+
+export interface HealthStatus {
+  status: string;
+  link_count: number;
+}

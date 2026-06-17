@@ -1,0 +1,191 @@
+import { useEffect, useState, useRef } from 'react';
+import { Activity, RefreshCw } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import client from '../api/client';
+import type { WanLink, SystemMetrics } from '../types';
+
+interface HistoryPoint {
+  time: string;
+  [key: string]: number | string;
+}
+
+export default function Monitoring() {
+  const [links, setLinks] = useState<WanLink[]>([]);
+  const [sys, setSys] = useState<SystemMetrics | null>(null);
+  const [latencyHistory, setLatencyHistory] = useState<HistoryPoint[]>([]);
+  const [cpuHistory, setCpuHistory] = useState<HistoryPoint[]>([]);
+  const tickRef = useRef(0);
+
+  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+  const fetchData = async () => {
+    try {
+      const [linksRes, sysRes] = await Promise.all([
+        client.get<WanLink[]>('/api/links'),
+        client.get<SystemMetrics>('/api/system/status'),
+      ]);
+      const newLinks = linksRes.data ?? [];
+      const newSys = sysRes.data;
+      setLinks(newLinks);
+      setSys(newSys);
+
+      // Accumulate history (last 20 points)
+      const timeLabel = new Date().toLocaleTimeString();
+      tickRef.current++;
+
+      const latencyPoint: HistoryPoint = { time: timeLabel };
+      newLinks.forEach(l => { latencyPoint[l.name] = l.latency_ms; });
+      setLatencyHistory(prev => [...prev.slice(-19), latencyPoint]);
+
+      const cpuPoint: HistoryPoint = { time: timeLabel, CPU: newSys.cpu_percent, Memória: newSys.mem_percent };
+      setCpuHistory(prev => [...prev.slice(-19), cpuPoint]);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-white">Monitoramento</h1>
+          <p className="text-gray-500 text-sm">Métricas em tempo real</p>
+        </div>
+        <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
+          <RefreshCw className="w-4 h-4" />
+          Atualizar
+        </button>
+      </div>
+
+      {/* Link status cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {links.map((link, i) => (
+          <div key={link.id} className="card">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-white font-medium">{link.name}</span>
+              <span className={`w-2 h-2 rounded-full ${
+                link.status === 'online' ? 'bg-green-400' :
+                link.status === 'offline' ? 'bg-red-400' :
+                link.status === 'degraded' ? 'bg-yellow-400' : 'bg-gray-400'
+              } animate-pulse`} />
+            </div>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Interface</span>
+                <span className="text-gray-300 font-mono">{link.interface}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Latência</span>
+                <span style={{ color: COLORS[i % COLORS.length] }} className="font-mono">
+                  {link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Perda de pacotes</span>
+                <span className={`font-mono ${link.packet_loss > 10 ? 'text-red-400' : 'text-gray-300'}`}>
+                  {link.packet_loss.toFixed(1)}%
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Última verificação</span>
+                <span className="text-gray-400 text-xs">
+                  {link.last_check ? new Date(link.last_check).toLocaleTimeString() : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Latency chart */}
+      {latencyHistory.length > 1 && links.length > 0 && (
+        <div className="card">
+          <div className="flex items-center gap-2 mb-4">
+            <Activity className="w-4 h-4 text-blue-400" />
+            <h2 className="text-white font-semibold">Latência por Link (ms)</h2>
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={latencyHistory}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="time" tick={{ fill: '#6b7280', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }} />
+              <Legend />
+              {links.map((link, i) => (
+                <Line key={link.id} type="monotone" dataKey={link.name} stroke={COLORS[i % COLORS.length]} dot={false} strokeWidth={2} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* CPU / Memory chart */}
+      {cpuHistory.length > 1 && (
+        <div className="card">
+          <div className="flex items-center gap-2 mb-4">
+            <Activity className="w-4 h-4 text-purple-400" />
+            <h2 className="text-white font-semibold">CPU e Memória (%)</h2>
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={cpuHistory}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="time" tick={{ fill: '#6b7280', fontSize: 11 }} />
+              <YAxis domain={[0, 100]} tick={{ fill: '#6b7280', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }} />
+              <Legend />
+              <Line type="monotone" dataKey="CPU" stroke="#3b82f6" dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="Memória" stroke="#8b5cf6" dot={false} strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Interface traffic */}
+      {sys && sys.interfaces && sys.interfaces.length > 0 && (
+        <div className="card">
+          <h2 className="text-white font-semibold mb-4">Tráfego por Interface</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-800">
+                  <th className="pb-3 pr-4 font-medium">Interface</th>
+                  <th className="pb-3 pr-4 font-medium">RX Bytes</th>
+                  <th className="pb-3 pr-4 font-medium">TX Bytes</th>
+                  <th className="pb-3 pr-4 font-medium">RX Pacotes</th>
+                  <th className="pb-3 pr-4 font-medium">TX Pacotes</th>
+                  <th className="pb-3 font-medium">Erros</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sys.interfaces.filter(i => i.name !== 'lo').map(iface => (
+                  <tr key={iface.name} className="table-row">
+                    <td className="py-3 pr-4 text-white font-mono">{iface.name}</td>
+                    <td className="py-3 pr-4 text-gray-400">{formatBytes(iface.rx_bytes)}</td>
+                    <td className="py-3 pr-4 text-gray-400">{formatBytes(iface.tx_bytes)}</td>
+                    <td className="py-3 pr-4 text-gray-400">{iface.rx_packets.toLocaleString()}</td>
+                    <td className="py-3 pr-4 text-gray-400">{iface.tx_packets.toLocaleString()}</td>
+                    <td className="py-3 text-gray-400">{iface.rx_errors + iface.tx_errors}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
