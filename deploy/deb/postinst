@@ -1,0 +1,50 @@
+#!/bin/sh
+set -e
+
+CONFIG_DIR="/etc/linkguard-fw"
+DATA_DIR="/var/lib/linkguard-fw"
+CONFIG_FILE="${CONFIG_DIR}/config.json"
+
+case "$1" in
+  configure)
+    install -d -m 0750 "${DATA_DIR}"
+    install -d -m 0750 "${CONFIG_DIR}"
+
+    if [ ! -f "${CONFIG_FILE}" ]; then
+      # Generate a random JWT secret (64 hex chars) so the service is not
+      # accidentally started with an empty/insecure secret.
+      JWT_SECRET=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 64 || true)
+      if [ -z "${JWT_SECRET}" ]; then
+        JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | head -c 64)
+      fi
+
+      cat > "${CONFIG_FILE}" <<CONFIG
+{
+  "listen_addr": "127.0.0.1",
+  "port": 9997,
+  "db_path": "/var/lib/linkguard-fw/linkguard.db",
+  "jwt_secret": "${JWT_SECRET}",
+  "dry_run": false,
+  "debug": false,
+  "monitor_interval_seconds": 30,
+  "failover_enabled": true,
+  "failover_threshold": 3,
+  "recovery_threshold": 2,
+  "failover_cooldown_seconds": 60,
+  "metrics_enabled": true
+}
+CONFIG
+      chmod 640 "${CONFIG_FILE}"
+      echo "[INFO] Default config created at ${CONFIG_FILE}"
+      echo "[INFO] listen_addr is set to 127.0.0.1 (localhost only)."
+      echo "[INFO]   Change to 0.0.0.0 or a specific IP for remote access."
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload
+    fi
+
+    echo "[INFO] LinkGuard FW installed."
+    echo "[INFO] Edit ${CONFIG_FILE} then run: systemctl enable --now linkguard-fw"
+    ;;
+esac

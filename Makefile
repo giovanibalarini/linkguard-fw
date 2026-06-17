@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-backend install clean test lint
+.PHONY: all build build-frontend build-backend deb install clean test lint
 
 BINARY_NAME   := linkguard-fw
 VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -34,6 +34,27 @@ build-backend:
 build-dev:
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/linkguard-fw/
+
+# ─── Package ─────────────────────────────────────────────────────────────────
+
+## deb: build a .deb package for the current architecture (requires dpkg-deb)
+deb: build
+	$(eval DEB_VERSION := $(shell echo "$(VERSION)" | sed 's/^v//'))
+	$(eval ARCH        := $(shell dpkg --print-architecture))
+	$(eval PKG         := $(BINARY_NAME)_$(DEB_VERSION)_$(ARCH))
+	$(eval PKG_DIR     := $(BUILD_DIR)/deb/$(PKG))
+	@echo ">>> Building $(PKG).deb..."
+	@mkdir -p $(PKG_DIR)/DEBIAN
+	@mkdir -p $(PKG_DIR)/usr/local/bin
+	@mkdir -p $(PKG_DIR)/lib/systemd/system
+	@install -m 0755 $(BUILD_DIR)/$(BINARY_NAME)            $(PKG_DIR)/usr/local/bin/$(BINARY_NAME)
+	@install -m 0644 deploy/linkguard-fw.service            $(PKG_DIR)/lib/systemd/system/linkguard-fw.service
+	@printf 'Package: $(BINARY_NAME)\nVersion: $(DEB_VERSION)\nArchitecture: $(ARCH)\nMaintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>\nSection: net\nPriority: optional\nHomepage: https://github.com/giovanibalarini/linkguard-fw\nDescription: Linux Firewall Management Tool\n A web-based firewall management tool for Linux.\n' \
+		> $(PKG_DIR)/DEBIAN/control
+	@cp deploy/deb/postinst $(PKG_DIR)/DEBIAN/postinst && chmod 0755 $(PKG_DIR)/DEBIAN/postinst
+	@cp deploy/deb/prerm    $(PKG_DIR)/DEBIAN/prerm    && chmod 0755 $(PKG_DIR)/DEBIAN/prerm
+	@dpkg-deb --build --root-owner-group $(PKG_DIR) $(BUILD_DIR)/$(PKG).deb
+	@echo ">>> Package ready: $(BUILD_DIR)/$(PKG).deb"
 
 # ─── Test ────────────────────────────────────────────────────────────────────
 

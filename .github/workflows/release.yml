@@ -1,0 +1,160 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Compute version
+        id: version
+        run: |
+          if TAG=$(git describe --exact-match --tags HEAD 2>/dev/null); then
+            VERSION="${TAG}"
+          else
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            DATE=$(date -u +%Y%m%d%H%M%S)
+            VERSION="v${DATE}-${SHORT_SHA}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "deb_version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Build Go binaries
+        run: |
+          mkdir -p dist
+          for ARCH in amd64 arm64; do
+            echo ">>> Building linux/${ARCH}..."
+            GOOS=linux GOARCH="${ARCH}" go build \
+              -ldflags="-X main.version=${{ steps.version.outputs.version }} -s -w" \
+              -o "dist/linkguard-fw-linux-${ARCH}" \
+              ./cmd/linkguard-fw/
+          done
+
+      - name: Build .deb packages
+        run: |
+          VERSION_CLEAN="${{ steps.version.outputs.deb_version }}"
+
+          for ARCH in amd64 arm64; do
+            PKG="linkguard-fw_${VERSION_CLEAN}_${ARCH}"
+            PKG_DIR="dist/deb/${PKG}"
+
+            mkdir -p "${PKG_DIR}/DEBIAN"
+            mkdir -p "${PKG_DIR}/usr/local/bin"
+            mkdir -p "${PKG_DIR}/lib/systemd/system"
+
+            cp "dist/linkguard-fw-linux-${ARCH}" "${PKG_DIR}/usr/local/bin/linkguard-fw"
+            chmod 0755 "${PKG_DIR}/usr/local/bin/linkguard-fw"
+
+            cp deploy/linkguard-fw.service "${PKG_DIR}/lib/systemd/system/linkguard-fw.service"
+
+            cat > "${PKG_DIR}/DEBIAN/control" <<EOF
+Package: linkguard-fw
+Version: ${VERSION_CLEAN}
+Architecture: ${ARCH}
+Maintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>
+Section: net
+Priority: optional
+Homepage: https://github.com/giovanibalarini/linkguard-fw
+Description: Linux Firewall Management Tool
+ LinkGuard FW is a web-based firewall management tool for Linux
+ that provides a modern UI to manage iptables rules, static routes,
+ failover policies, and network monitoring.
+EOF
+
+            install -m 0755 deploy/deb/postinst "${PKG_DIR}/DEBIAN/postinst"
+            install -m 0755 deploy/deb/prerm    "${PKG_DIR}/DEBIAN/prerm"
+
+            dpkg-deb --build --root-owner-group "${PKG_DIR}" "dist/${PKG}.deb"
+            echo ">>> Created: dist/${PKG}.deb"
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum \
+            linkguard-fw-linux-amd64 \
+            linkguard-fw-linux-arm64 \
+            "linkguard-fw_${{ steps.version.outputs.deb_version }}_amd64.deb" \
+            "linkguard-fw_${{ steps.version.outputs.deb_version }}_arm64.deb" \
+            > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: "LinkGuard FW ${{ steps.version.outputs.version }}"
+          body: |
+            Automated release from commit ${{ github.sha }}.
+
+            ### Install via .deb (Debian/Ubuntu — recommended)
+
+            ```bash
+            # amd64
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/linkguard-fw_${{ steps.version.outputs.deb_version }}_amd64.deb
+            sudo dpkg -i linkguard-fw_${{ steps.version.outputs.deb_version }}_amd64.deb
+
+            # Edit config (set jwt_secret before starting)
+            sudo nano /etc/linkguard-fw/config.json
+
+            # Enable and start the service
+            sudo systemctl enable --now linkguard-fw
+            ```
+
+            ### Install binary manually
+
+            ```bash
+            # amd64
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/linkguard-fw-linux-amd64
+            chmod +x linkguard-fw-linux-amd64
+            sudo mv linkguard-fw-linux-amd64 /usr/local/bin/linkguard-fw
+            ```
+
+            ### Verify checksums
+
+            ```bash
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/sha256sums.txt
+            sha256sum -c sha256sums.txt
+            ```
+          files: |
+            dist/linkguard-fw-linux-amd64
+            dist/linkguard-fw-linux-arm64
+            dist/linkguard-fw_${{ steps.version.outputs.deb_version }}_amd64.deb
+            dist/linkguard-fw_${{ steps.version.outputs.deb_version }}_arm64.deb
+            dist/sha256sums.txt
+          make_latest: true
+          generate_release_notes: true
