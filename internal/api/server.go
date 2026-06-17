@@ -148,6 +148,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.Post("/api/firewall/backup", iptH.Backup)
 		r.Post("/api/firewall/rollback", iptH.Rollback)
 		r.Get("/api/firewall/backups", iptH.ListBackups)
+		r.Post("/api/firewall/rules", iptH.CreateRule)
 		r.Put("/api/firewall/rules", iptH.UpdateRule)
 		r.Delete("/api/firewall/rules", iptH.DeleteRule)
 

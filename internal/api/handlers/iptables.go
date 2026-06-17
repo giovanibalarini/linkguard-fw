@@ -148,6 +148,39 @@ func (h *IptablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// CreateRule adds a firewall rule to a table/chain.
+func (h *IptablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Table    string `json:"table"`
+		Chain    string `json:"chain"`
+		RuleSpec string `json:"rule_spec"`
+		Line     int    `json:"line"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.Table) == "" || strings.TrimSpace(body.Chain) == "" || strings.TrimSpace(body.RuleSpec) == "" {
+		writeError(w, http.StatusBadRequest, "table, chain and rule_spec are required")
+		return
+	}
+	backup, err := h.createAutoBackup(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		return
+	}
+	out, err := h.svc.CreateRule(r.Context(), body.Table, body.Chain, body.RuleSpec, body.Line)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "rule created",
+		"output":  out,
+		"backup":  backup,
+	})
+}
+
 // DeleteRule removes a firewall rule by table/chain/line number.
 func (h *IptablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	var body struct {

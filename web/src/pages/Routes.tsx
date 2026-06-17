@@ -102,6 +102,7 @@ export default function Routes() {
   const handleAddRule = async () => {
     const from = prompt('Source (from), ex.: 192.168.1.0/24 ou all:', 'all');
     if (from === null) return;
+    const fwmark = prompt('FWMark (opcional, ex.: 0x1):', '') ?? '';
     const table = prompt('Tabela lookup (obrigatória), ex.: main ou 100:', 'main');
     if (!table) return;
     const priorityRaw = prompt('Prioridade (opcional), ex.: 100:', '') ?? '';
@@ -110,7 +111,12 @@ export default function Routes() {
     setSaving(true);
     setMsg('');
     try {
-      await client.post('/api/routes/rules', { from: from.trim(), table: table.trim(), priority: Number.isNaN(priority) ? 0 : priority });
+      await client.post('/api/routes/rules', {
+        from: from.trim(),
+        fwmark: fwmark.trim(),
+        table: table.trim(),
+        priority: Number.isNaN(priority) ? 0 : priority,
+      });
       setMsg('Regra adicionada com sucesso!');
       await fetchData();
     } catch (e: any) {
@@ -124,6 +130,7 @@ export default function Routes() {
     const fromCurrent = parseFromSelector(r.selector);
     const from = prompt('Novo from (ex.: 192.168.1.0/24 ou all):', fromCurrent || 'all');
     if (from === null) return;
+    const fwmark = prompt('Novo fwmark (opcional):', r.fwmark || '') ?? '';
     const table = prompt('Nova tabela lookup:', r.table || 'main');
     if (!table) return;
     const priorityRaw = prompt('Nova prioridade (opcional):', r.priority || '') ?? '';
@@ -134,9 +141,11 @@ export default function Routes() {
     try {
       await client.put('/api/routes/rules', {
         old_from: fromCurrent,
+        old_fwmark: r.fwmark || '',
         old_table: r.table,
         old_priority: Number(r.priority || 0),
         from: from.trim(),
+        fwmark: fwmark.trim(),
         table: table.trim(),
         priority: Number.isNaN(priority) ? 0 : priority,
       });
@@ -157,6 +166,7 @@ export default function Routes() {
       await client.delete('/api/routes/rules', {
         data: {
           from: parseFromSelector(r.selector),
+          fwmark: r.fwmark || '',
           table: r.table,
           priority: Number(r.priority || 0),
         },
@@ -281,6 +291,7 @@ export default function Routes() {
                   <tr className="text-left text-gray-500 border-b border-gray-800">
                     <th className="pb-3 pr-4 font-medium">Prioridade</th>
                     <th className="pb-3 pr-4 font-medium">Seletor</th>
+                    <th className="pb-3 pr-4 font-medium">FWMark</th>
                     <th className="pb-3 pr-4 font-medium">Ação</th>
                     <th className="pb-3 font-medium">Tabela</th>
                     <th className="pb-3 font-medium">Ações</th>
@@ -291,6 +302,7 @@ export default function Routes() {
                     <tr key={i} className="table-row">
                       <td className="py-3 pr-4 text-gray-400 font-mono">{r.priority}</td>
                       <td className="py-3 pr-4 text-white font-mono">{r.selector}</td>
+                      <td className="py-3 pr-4 text-gray-400 font-mono">{r.fwmark || '—'}</td>
                       <td className="py-3 pr-4 text-gray-400">{r.action || '—'}</td>
                       <td className="py-3 text-gray-400 font-mono">{r.table || '—'}</td>
                       <td className="py-3">

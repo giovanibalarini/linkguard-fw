@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, Shield, Database, Download, Pencil, Trash2 } from 'lucide-react';
+import { RefreshCw, Shield, Database, Download, Pencil, Trash2, Plus } from 'lucide-react';
 import client from '../api/client';
 import type { IptablesTable, IptablesBackup } from '../types';
+
+type RuleModalMode = 'create' | 'edit' | 'delete' | null;
+
+interface RuleModalState {
+  mode: RuleModalMode;
+  table: string;
+  chain: string;
+  line: number;
+  ruleSpec: string;
+}
 
 export default function Firewall() {
   const [tables, setTables] = useState<IptablesTable[]>([]);
@@ -12,6 +22,13 @@ export default function Firewall() {
   const [backingUp, setBackingUp] = useState(false);
   const [updatingRule, setUpdatingRule] = useState(false);
   const [msg, setMsg] = useState('');
+  const [modal, setModal] = useState<RuleModalState>({
+    mode: null,
+    table: 'filter',
+    chain: '',
+    line: 0,
+    ruleSpec: '',
+  });
 
   const fetchData = async () => {
     setLoading(true);
@@ -57,7 +74,6 @@ export default function Firewall() {
   };
 
   const handleDeleteRule = async (table: string, chain: string, line: number) => {
-    if (!confirm(`Remover regra ${table}/${chain} linha ${line}?`)) return;
     setUpdatingRule(true);
     setMsg('');
     try {
@@ -72,13 +88,7 @@ export default function Firewall() {
   };
 
   const handleEditRule = async (table: string, chain: string, line: number, currentSpec: string) => {
-    const nextSpec = prompt(
-      `Edite o rule spec para ${table}/${chain} linha ${line}\n` +
-      'Exemplo: -s 10.0.0.0/24 -p tcp --dport 443 -j ACCEPT',
-      currentSpec
-    );
-    if (nextSpec === null) return;
-    if (!nextSpec.trim()) {
+    if (!currentSpec.trim()) {
       setMsg('Erro: rule spec não pode ser vazio.');
       return;
     }
@@ -89,7 +99,7 @@ export default function Firewall() {
         table,
         chain,
         line,
-        rule_spec: nextSpec.trim(),
+        rule_spec: currentSpec.trim(),
       });
       setMsg('Regra atualizada com sucesso!');
       await fetchData();
@@ -102,14 +112,97 @@ export default function Firewall() {
 
   const currentTable = tables.find(t => t.name === activeTable);
 
+  const openCreateModal = () => {
+    const chain = currentTable?.chains[0]?.name || 'INPUT';
+    setModal({
+      mode: 'create',
+      table: activeTable,
+      chain,
+      line: 0,
+      ruleSpec: '-s 192.168.0.0/24 -p tcp --dport 443 -j ACCEPT',
+    });
+  };
+
+  const openEditModal = (table: string, chain: string, line: number, currentSpec: string) => {
+    setModal({
+      mode: 'edit',
+      table,
+      chain,
+      line,
+      ruleSpec: currentSpec,
+    });
+  };
+
+  const openDeleteModal = (table: string, chain: string, line: number) => {
+    setModal({
+      mode: 'delete',
+      table,
+      chain,
+      line,
+      ruleSpec: '',
+    });
+  };
+
+  const closeModal = () => {
+    setModal((m) => ({ ...m, mode: null }));
+  };
+
+  const submitModal = async () => {
+    if (!modal.mode) return;
+    if (!modal.table || !modal.chain) {
+      setMsg('Erro: tabela e chain são obrigatórias.');
+      return;
+    }
+
+    if (modal.mode === 'create') {
+      if (!modal.ruleSpec.trim()) {
+        setMsg('Erro: rule spec não pode ser vazio.');
+        return;
+      }
+      setUpdatingRule(true);
+      setMsg('');
+      try {
+        await client.post('/api/firewall/rules', {
+          table: modal.table,
+          chain: modal.chain,
+          line: modal.line > 0 ? modal.line : 0,
+          rule_spec: modal.ruleSpec.trim(),
+        });
+        setMsg('Regra criada com sucesso!');
+        closeModal();
+        await fetchData();
+      } catch (e: any) {
+        setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+      } finally {
+        setUpdatingRule(false);
+      }
+      return;
+    }
+
+    if (modal.mode === 'edit') {
+      await handleEditRule(modal.table, modal.chain, modal.line, modal.ruleSpec);
+      closeModal();
+      return;
+    }
+
+    await handleDeleteRule(modal.table, modal.chain, modal.line);
+    closeModal();
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">Firewall</h1>
-          <p className="text-gray-500 text-sm">Regras iptables — modo somente leitura</p>
+          <p className="text-gray-500 text-sm">Regras iptables com edição assistida e backup automático</p>
         </div>
         <div className="flex gap-2">
+          {activeTab === 'rules' && (
+            <button onClick={openCreateModal} className="btn-primary flex items-center gap-2">
+              <Plus className="w-4 h-4" />
+              Nova Regra
+            </button>
+          )}
           <button onClick={handleBackup} disabled={backingUp} className="btn-secondary flex items-center gap-2 disabled:opacity-50">
             <Database className="w-4 h-4" />
             {backingUp ? 'Salvando...' : 'Backup'}
@@ -181,7 +274,7 @@ export default function Firewall() {
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <button
-                            onClick={() => handleEditRule(currentTable.name, chain.name, Number(rule.num || i + 1), defaultRuleSpec(rule))}
+                            onClick={() => openEditModal(currentTable.name, chain.name, Number(rule.num || i + 1), defaultRuleSpec(rule))}
                             disabled={updatingRule}
                             className="text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50"
                             title="Editar regra"
@@ -189,7 +282,7 @@ export default function Firewall() {
                             <Pencil className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => handleDeleteRule(currentTable.name, chain.name, Number(rule.num || i + 1))}
+                            onClick={() => openDeleteModal(currentTable.name, chain.name, Number(rule.num || i + 1))}
                             disabled={updatingRule}
                             className="text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50"
                             title="Remover regra"
@@ -234,6 +327,61 @@ export default function Firewall() {
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {modal.mode && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-xl rounded-xl border border-gray-700 bg-gray-900 shadow-2xl">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h3 className="text-white font-semibold">
+                {modal.mode === 'create' && 'Nova Regra de Firewall'}
+                {modal.mode === 'edit' && 'Editar Regra de Firewall'}
+                {modal.mode === 'delete' && 'Confirmar Remoção'}
+              </h3>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="label">Tabela</label>
+                  <input className="input w-full" value={modal.table} onChange={(e) => setModal({ ...modal, table: e.target.value })} disabled={modal.mode === 'edit' || modal.mode === 'delete'} />
+                </div>
+                <div>
+                  <label className="label">Chain</label>
+                  <input className="input w-full" value={modal.chain} onChange={(e) => setModal({ ...modal, chain: e.target.value })} disabled={modal.mode === 'edit' || modal.mode === 'delete'} />
+                </div>
+                <div>
+                  <label className="label">Linha</label>
+                  <input type="number" min={0} className="input w-full" value={modal.line} onChange={(e) => setModal({ ...modal, line: Number(e.target.value || 0) })} disabled={modal.mode === 'delete'} />
+                </div>
+              </div>
+
+              {modal.mode !== 'delete' ? (
+                <div>
+                  <label className="label">Rule Spec</label>
+                  <textarea
+                    className="input w-full min-h-28"
+                    value={modal.ruleSpec}
+                    onChange={(e) => setModal({ ...modal, ruleSpec: e.target.value })}
+                    placeholder="-s 192.168.0.0/24 -p tcp --dport 443 -j ACCEPT"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Dica: inclua apenas o spec da regra, sem -A/-I chain.</p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                  Remover regra {modal.table}/{modal.chain} na linha {modal.line}? Um backup automático será criado antes da alteração.
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <button onClick={submitModal} disabled={updatingRule} className="btn-primary flex-1 disabled:opacity-50">
+                  {updatingRule ? 'Processando...' : modal.mode === 'delete' ? 'Confirmar Remoção' : 'Salvar'}
+                </button>
+                <button onClick={closeModal} type="button" className="btn-secondary flex-1">Cancelar</button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

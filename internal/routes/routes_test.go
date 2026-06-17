@@ -137,7 +137,7 @@ func TestDryRunExecutorCaptures(t *testing.T) {
 	if _, err := svc.DelRoute(ctx, "10.0.0.0/8", ""); err != nil {
 		t.Fatalf("DelRoute: %v", err)
 	}
-	if _, err := svc.DelRule(ctx, "192.168.1.0/24", "100", 100); err != nil {
+	if _, err := svc.DelRule(ctx, "192.168.1.0/24", "", "100", 100); err != nil {
 		t.Fatalf("DelRule: %v", err)
 	}
 

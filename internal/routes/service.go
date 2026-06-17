@@ -26,6 +26,7 @@ type Rule struct {
 	Selector string `json:"selector"`
 	Action   string `json:"action"`
 	Table    string `json:"table,omitempty"`
+	FWMark   string `json:"fwmark,omitempty"`
 	Raw      string `json:"raw"`
 }
 
@@ -91,10 +92,13 @@ func (s *Service) DelRoute(ctx context.Context, dest, table string) (string, err
 }
 
 // AddRule adds an ip rule (dry-run safe).
-func (s *Service) AddRule(ctx context.Context, from, table string, priority int) (string, error) {
+func (s *Service) AddRule(ctx context.Context, from, fwmark, table string, priority int) (string, error) {
 	args := []string{"rule", "add"}
 	if from != "" {
 		args = append(args, "from", from)
+	}
+	if fwmark != "" {
+		args = append(args, "fwmark", fwmark)
 	}
 	args = append(args, "lookup", table)
 	if priority > 0 {
@@ -104,10 +108,13 @@ func (s *Service) AddRule(ctx context.Context, from, table string, priority int)
 }
 
 // DelRule removes an ip rule (dry-run safe).
-func (s *Service) DelRule(ctx context.Context, from, table string, priority int) (string, error) {
+func (s *Service) DelRule(ctx context.Context, from, fwmark, table string, priority int) (string, error) {
 	args := []string{"rule", "del"}
 	if from != "" {
 		args = append(args, "from", from)
+	}
+	if fwmark != "" {
+		args = append(args, "fwmark", fwmark)
 	}
 	if table != "" {
 		args = append(args, "lookup", table)
@@ -203,6 +210,10 @@ func parseRuleLine(line string) Rule {
 			case "from":
 				if i+1 < len(fields) {
 					r.Selector = "from " + fields[i+1]
+				}
+			case "fwmark":
+				if i+1 < len(fields) {
+					r.FWMark = fields[i+1]
 				}
 			}
 		}

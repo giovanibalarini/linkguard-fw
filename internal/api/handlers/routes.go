@@ -123,6 +123,7 @@ func (h *RoutesHandler) UpdateRoute(w http.ResponseWriter, r *http.Request) {
 func (h *RoutesHandler) AddRule(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		From     string `json:"from"`
+		FWMark   string `json:"fwmark"`
 		Table    string `json:"table"`
 		Priority int    `json:"priority"`
 	}
@@ -134,7 +135,7 @@ func (h *RoutesHandler) AddRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "table is required")
 		return
 	}
-	out, err := h.svc.AddRule(r.Context(), body.From, body.Table, body.Priority)
+	out, err := h.svc.AddRule(r.Context(), body.From, body.FWMark, body.Table, body.Priority)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -146,6 +147,7 @@ func (h *RoutesHandler) AddRule(w http.ResponseWriter, r *http.Request) {
 func (h *RoutesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		From     string `json:"from"`
+		FWMark   string `json:"fwmark"`
 		Table    string `json:"table"`
 		Priority int    `json:"priority"`
 	}
@@ -153,7 +155,7 @@ func (h *RoutesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	out, err := h.svc.DelRule(r.Context(), body.From, body.Table, body.Priority)
+	out, err := h.svc.DelRule(r.Context(), body.From, body.FWMark, body.Table, body.Priority)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -165,9 +167,11 @@ func (h *RoutesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 func (h *RoutesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		OldFrom     string `json:"old_from"`
+		OldFWMark   string `json:"old_fwmark"`
 		OldTable    string `json:"old_table"`
 		OldPriority int    `json:"old_priority"`
 		From        string `json:"from"`
+		FWMark      string `json:"fwmark"`
 		Table       string `json:"table"`
 		Priority    int    `json:"priority"`
 	}
@@ -179,11 +183,11 @@ func (h *RoutesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "table is required")
 		return
 	}
-	if _, err := h.svc.DelRule(r.Context(), body.OldFrom, body.OldTable, body.OldPriority); err != nil {
+	if _, err := h.svc.DelRule(r.Context(), body.OldFrom, body.OldFWMark, body.OldTable, body.OldPriority); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	out, err := h.svc.AddRule(r.Context(), body.From, body.Table, body.Priority)
+	out, err := h.svc.AddRule(r.Context(), body.From, body.FWMark, body.Table, body.Priority)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

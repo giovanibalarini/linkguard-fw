@@ -97,7 +97,12 @@ export interface IpRule {
   selector: string;
   action: string;
   table: string;
+  fwmark?: string;
   raw: string;
+}
+
+export interface InterfaceOption {
+  name: string;
 }
 
 export interface IptablesTable {

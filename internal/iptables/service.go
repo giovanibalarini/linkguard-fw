@@ -84,6 +84,30 @@ func (s *Service) Restore(ctx context.Context, rules string) (string, error) {
 	return s.exec.Execute(ctx, "iptables-restore", "--noflush")
 }
 
+// CreateRule inserts/appends a rule in the specified table and chain.
+// ruleSpec should contain only rule arguments (e.g. "-s 10.0.0.0/24 -j ACCEPT").
+func (s *Service) CreateRule(ctx context.Context, table, chain, ruleSpec string, line int) (string, error) {
+	if table == "" || chain == "" {
+		return "", fmt.Errorf("table and chain are required")
+	}
+	if err := validateRuleSpec(ruleSpec); err != nil {
+		return "", err
+	}
+	parts := strings.Fields(strings.TrimSpace(ruleSpec))
+	if len(parts) == 0 {
+		return "", fmt.Errorf("rule_spec is required")
+	}
+
+	args := []string{"-t", table}
+	if line > 0 {
+		args = append(args, "-I", chain, fmt.Sprintf("%d", line))
+	} else {
+		args = append(args, "-A", chain)
+	}
+	args = append(args, parts...)
+	return s.exec.Execute(ctx, "iptables", args...)
+}
+
 // DeleteRule deletes a rule by table/chain/line number.
 func (s *Service) DeleteRule(ctx context.Context, table, chain string, line int) (string, error) {
 	if table == "" || chain == "" || line <= 0 {
@@ -98,6 +122,9 @@ func (s *Service) ReplaceRule(ctx context.Context, table, chain string, line int
 	if table == "" || chain == "" || line <= 0 {
 		return "", fmt.Errorf("table, chain and valid line are required")
 	}
+	if err := validateRuleSpec(ruleSpec); err != nil {
+		return "", err
+	}
 	parts := strings.Fields(strings.TrimSpace(ruleSpec))
 	if len(parts) == 0 {
 		return "", fmt.Errorf("rule_spec is required")
@@ -105,6 +132,43 @@ func (s *Service) ReplaceRule(ctx context.Context, table, chain string, line int
 	args := []string{"-t", table, "-R", chain, fmt.Sprintf("%d", line)}
 	args = append(args, parts...)
 	return s.exec.Execute(ctx, "iptables", args...)
+}
+
+func validateRuleSpec(ruleSpec string) error {
+	parts := strings.Fields(strings.TrimSpace(ruleSpec))
+	blockedShort := map[string]struct{}{
+		"-A": {},
+		"-I": {},
+		"-R": {},
+		"-D": {},
+		"-F": {},
+		"-X": {},
+		"-P": {},
+		"-N": {},
+		"-E": {},
+		"-Z": {},
+	}
+	blockedLong := map[string]struct{}{
+		"--append":       {},
+		"--insert":       {},
+		"--replace":      {},
+		"--delete":       {},
+		"--flush":        {},
+		"--delete-chain": {},
+		"--policy":       {},
+		"--new-chain":    {},
+		"--rename-chain": {},
+		"--zero":         {},
+	}
+	for _, token := range parts {
+		if _, ok := blockedShort[token]; ok {
+			return fmt.Errorf("rule_spec contains blocked operation: %s", token)
+		}
+		if _, ok := blockedLong[strings.ToLower(token)]; ok {
+			return fmt.Errorf("rule_spec contains blocked operation: %s", token)
+		}
+	}
+	return nil
 }
 
 // ─── Parser ──────────────────────────────────────────────────────────────────

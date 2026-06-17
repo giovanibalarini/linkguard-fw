@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Plus, Pencil, Trash2, RefreshCw, Wifi } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
 import client from '../api/client';
-import type { WanLink } from '../types';
+import type { WanLink, SystemMetrics } from '../types';
 
 const emptyLink: Partial<WanLink> = {
   name: '',
@@ -17,18 +17,35 @@ const emptyLink: Partial<WanLink> = {
 
 export default function Links() {
   const [links, setLinks] = useState<WanLink[]>([]);
+  const [interfaces, setInterfaces] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
   const [editLink, setEditLink] = useState<Partial<WanLink>>(emptyLink);
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [wizardLoading, setWizardLoading] = useState(false);
+  const [wizardError, setWizardError] = useState('');
+  const [wizardMode, setWizardMode] = useState<'failover' | 'balance'>('failover');
+  const [wizardPrimary, setWizardPrimary] = useState('');
+  const [wizardSecondary, setWizardSecondary] = useState('');
+  const [wizardLan, setWizardLan] = useState('');
+  const [wizardPrimaryWeight, setWizardPrimaryWeight] = useState(70);
+  const [wizardSecondaryWeight, setWizardSecondaryWeight] = useState(30);
 
   const fetchLinks = async () => {
     setLoading(true);
     try {
-      const res = await client.get<WanLink[]>('/api/links');
+      const [res, sysRes] = await Promise.all([
+        client.get<WanLink[]>('/api/links'),
+        client.get<SystemMetrics>('/api/system/status'),
+      ]);
       setLinks(res.data ?? []);
+      const discovered = (sysRes.data?.interfaces ?? [])
+        .map((iface) => iface.name)
+        .filter((name) => name && name !== 'lo');
+      setInterfaces(discovered);
     } finally {
       setLoading(false);
     }
@@ -41,6 +58,18 @@ export default function Links() {
     setIsEditing(false);
     setError('');
     setShowModal(true);
+  };
+
+  const openWizard = () => {
+    const preferred = links.map((l) => l.interface);
+    setWizardPrimary(preferred[0] || interfaces[0] || '');
+    setWizardSecondary(preferred[1] || interfaces[1] || '');
+    setWizardLan('');
+    setWizardMode('failover');
+    setWizardPrimaryWeight(70);
+    setWizardSecondaryWeight(30);
+    setWizardError('');
+    setShowWizard(true);
   };
 
   const openEdit = (link: WanLink) => {
@@ -79,6 +108,137 @@ export default function Links() {
     }
   };
 
+  const linkMap = useMemo(() => {
+    const map = new Map<string, WanLink>();
+    for (const l of links) {
+      map.set(l.interface, l);
+    }
+    return map;
+  }, [links]);
+
+  const ensureLink = async (iface: string, defaults: Partial<WanLink>) => {
+    const existing = linkMap.get(iface);
+    if (existing) {
+      await client.put(`/api/links/${existing.id}`, {
+        ...existing,
+        ...defaults,
+        interface: iface,
+        enabled: true,
+      });
+      return existing;
+    }
+
+    const payload: Partial<WanLink> = {
+      name: defaults.name || `WAN ${iface}`,
+      interface: iface,
+      ip_address: defaults.ip_address || '',
+      gateway: defaults.gateway || '',
+      weight: defaults.weight || 100,
+      dns_test: defaults.dns_test || '8.8.8.8',
+      monitor_hosts: defaults.monitor_hosts || '1.1.1.1,8.8.8.8',
+      enabled: true,
+    };
+    const created = await client.post<WanLink>('/api/links', payload);
+    return created.data;
+  };
+
+  const applyDualWanWizard = async () => {
+    if (!wizardPrimary || !wizardSecondary || wizardPrimary === wizardSecondary) {
+      setWizardError('Selecione duas interfaces WAN diferentes.');
+      return;
+    }
+    if (wizardMode === 'balance' && !wizardLan.trim()) {
+      setWizardError('Informe a sub-rede LAN para balanceamento (ex.: 192.168.0.0/24).');
+      return;
+    }
+
+    setWizardLoading(true);
+    setWizardError('');
+    setError('');
+    try {
+      // Sync auto-detect first to fill gateway/ip from default routes when available.
+      await client.post('/api/links/auto-detect');
+      await fetchLinks();
+
+      const primary = await ensureLink(wizardPrimary, {
+        name: `WAN Primaria (${wizardPrimary})`,
+        weight: wizardMode === 'balance' ? wizardPrimaryWeight : 100,
+      });
+      const secondary = await ensureLink(wizardSecondary, {
+        name: `WAN Secundaria (${wizardSecondary})`,
+        weight: wizardMode === 'balance' ? wizardSecondaryWeight : 10,
+      });
+
+      const primaryTable = String(primary.table_id || 100);
+      const secondaryTable = String(secondary.table_id || 101);
+
+      if (primary.gateway && primary.interface) {
+        await client.post('/api/routes', {
+          destination: 'default',
+          gateway: primary.gateway,
+          interface: primary.interface,
+          table: primaryTable,
+        });
+      }
+      if (secondary.gateway && secondary.interface) {
+        await client.post('/api/routes', {
+          destination: 'default',
+          gateway: secondary.gateway,
+          interface: secondary.interface,
+          table: secondaryTable,
+        });
+      }
+
+      if (wizardMode === 'failover') {
+        await client.post('/api/routes/rules', {
+          from: 'all',
+          table: primaryTable,
+          priority: 100,
+        });
+        await client.post('/api/routes/rules', {
+          from: 'all',
+          table: secondaryTable,
+          priority: 200,
+        });
+        setError('Assistente aplicado: failover configurado (primario > secundario).');
+      } else {
+        await client.post('/api/firewall/rules', {
+          table: 'mangle',
+          chain: 'PREROUTING',
+          rule_spec: `-s ${wizardLan.trim()} -m conntrack --ctstate NEW -m statistic --mode random --probability ${(wizardPrimaryWeight / 100).toFixed(2)} -j MARK --set-mark 0x1`,
+        });
+        await client.post('/api/firewall/rules', {
+          table: 'mangle',
+          chain: 'PREROUTING',
+          rule_spec: `-s ${wizardLan.trim()} -m conntrack --ctstate NEW -j MARK --set-mark 0x2`,
+        });
+        await client.post('/api/routes/rules', {
+          fwmark: '0x1',
+          table: primaryTable,
+          priority: 110,
+        });
+        await client.post('/api/routes/rules', {
+          fwmark: '0x2',
+          table: secondaryTable,
+          priority: 120,
+        });
+        setError('Assistente aplicado: balanceamento por marca (mangle + ip rule fwmark).');
+      }
+
+      await fetchLinks();
+      setShowWizard(false);
+    } catch (err: any) {
+      setWizardError(err.response?.data?.error || 'Falha ao aplicar assistente de 2 WAN.');
+    } finally {
+      setWizardLoading(false);
+    }
+  };
+
+  const interfaceOptions = useMemo(() => {
+    const merged = new Set<string>([...interfaces, ...links.map((l) => l.interface)]);
+    return Array.from(merged).filter(Boolean).sort();
+  }, [interfaces, links]);
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -87,6 +247,10 @@ export default function Links() {
           <p className="text-gray-500 text-sm">Gerencie os links de internet</p>
         </div>
         <div className="flex gap-2">
+          <button onClick={openWizard} className="btn-secondary flex items-center gap-2">
+            <Wand2 className="w-4 h-4" />
+            Assistente 2 WAN
+          </button>
           <button onClick={fetchLinks} className="btn-secondary flex items-center gap-2">
             <RefreshCw className="w-4 h-4" />
             Atualizar
@@ -177,7 +341,20 @@ export default function Links() {
                 </div>
                 <div>
                   <label className="label">Interface *</label>
-                  <input className="input w-full" placeholder="eth0, ppp0..." value={editLink.interface || ''} onChange={e => setEditLink({...editLink, interface: e.target.value})} required />
+                  <select
+                    className="input w-full"
+                    value={editLink.interface || ''}
+                    onChange={e => setEditLink({...editLink, interface: e.target.value})}
+                    required
+                  >
+                    <option value="">Selecione interface</option>
+                    {interfaceOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  {interfaceOptions.length === 0 && (
+                    <p className="text-xs text-gray-500 mt-1">Nenhuma interface detectada. Verifique permissões do host e atualize.</p>
+                  )}
                 </div>
                 <div>
                   <label className="label">Endereço IP</label>
@@ -214,6 +391,93 @@ export default function Links() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showWizard && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-blue-500/30 bg-gradient-to-b from-gray-900 to-gray-950 shadow-2xl">
+            <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+              <div>
+                <h2 className="text-white font-semibold flex items-center gap-2">
+                  <Network className="w-5 h-5 text-blue-400" />
+                  Assistente Magico de 2 WAN
+                </h2>
+                <p className="text-xs text-gray-400 mt-1">Configura failover rapido ou balanceamento por marcacao de pacotes.</p>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="grid sm:grid-cols-2 gap-3">
+                <button
+                  onClick={() => setWizardMode('failover')}
+                  className={`rounded-xl border p-4 text-left transition ${wizardMode === 'failover' ? 'border-blue-400 bg-blue-500/10' : 'border-gray-700 bg-gray-900/60 hover:border-gray-500'}`}
+                >
+                  <p className="text-white font-medium">Failover inteligente</p>
+                  <p className="text-xs text-gray-400 mt-1">Todo trafego usa WAN principal e troca para secundaria em falha.</p>
+                </button>
+                <button
+                  onClick={() => setWizardMode('balance')}
+                  className={`rounded-xl border p-4 text-left transition ${wizardMode === 'balance' ? 'border-blue-400 bg-blue-500/10' : 'border-gray-700 bg-gray-900/60 hover:border-gray-500'}`}
+                >
+                  <p className="text-white font-medium">Balanceamento por marca</p>
+                  <p className="text-xs text-gray-400 mt-1">Mangle + fwmark + ip rule para dividir clientes entre 2 links.</p>
+                </button>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="label">WAN primaria *</label>
+                  <select className="input w-full" value={wizardPrimary} onChange={(e) => setWizardPrimary(e.target.value)}>
+                    <option value="">Selecione</option>
+                    {interfaceOptions.map((name) => <option key={`p-${name}`} value={name}>{name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="label">WAN secundaria *</label>
+                  <select className="input w-full" value={wizardSecondary} onChange={(e) => setWizardSecondary(e.target.value)}>
+                    <option value="">Selecione</option>
+                    {interfaceOptions.map((name) => <option key={`s-${name}`} value={name}>{name}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {wizardMode === 'balance' && (
+                <>
+                  <div>
+                    <label className="label">Sub-rede LAN dos clientes *</label>
+                    <input
+                      className="input w-full"
+                      placeholder="192.168.0.0/24"
+                      value={wizardLan}
+                      onChange={(e) => setWizardLan(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">Peso WAN primaria (%)</label>
+                      <input type="number" min={1} max={99} className="input w-full" value={wizardPrimaryWeight} onChange={(e) => setWizardPrimaryWeight(Number(e.target.value || 70))} />
+                    </div>
+                    <div>
+                      <label className="label">Peso WAN secundaria (%)</label>
+                      <input type="number" min={1} max={99} className="input w-full" value={wizardSecondaryWeight} onChange={(e) => setWizardSecondaryWeight(Number(e.target.value || 30))} />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {wizardError && <p className="text-red-400 text-sm">{wizardError}</p>}
+
+              <div className="flex gap-3 pt-2">
+                <button onClick={applyDualWanWizard} disabled={wizardLoading} className="btn-primary flex-1 disabled:opacity-50">
+                  {wizardLoading ? 'Aplicando...' : 'Aplicar Assistente'}
+                </button>
+                <button onClick={() => setShowWizard(false)} type="button" className="btn-secondary flex-1">
+                  Fechar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
