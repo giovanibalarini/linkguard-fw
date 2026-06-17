@@ -1,0 +1,42 @@
+#!/bin/sh
+set -e
+
+CONFIG_DIR="/etc/linkguard-fw"
+DATA_DIR="/var/lib/linkguard-fw"
+CONFIG_FILE="${CONFIG_DIR}/config.json"
+
+case "$1" in
+  configure)
+    install -d -m 0750 "${DATA_DIR}"
+    install -d -m 0750 "${CONFIG_DIR}"
+
+    if [ ! -f "${CONFIG_FILE}" ]; then
+      cat > "${CONFIG_FILE}" <<'CONFIG'
+{
+  "listen_addr": "127.0.0.1",
+  "port": 9997,
+  "db_path": "/var/lib/linkguard-fw/linkguard.db",
+  "jwt_secret": "",
+  "dry_run": false,
+  "debug": false,
+  "monitor_interval_seconds": 30,
+  "failover_enabled": true,
+  "failover_threshold": 3,
+  "recovery_threshold": 2,
+  "failover_cooldown_seconds": 60,
+  "metrics_enabled": true
+}
+CONFIG
+      chmod 640 "${CONFIG_FILE}"
+      echo "[INFO] Default config created at ${CONFIG_FILE}"
+      echo "[WARN] Set a strong jwt_secret in ${CONFIG_FILE} before starting the service!"
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload
+    fi
+
+    echo "[INFO] LinkGuard FW installed."
+    echo "[INFO] Edit ${CONFIG_FILE} then run: systemctl enable --now linkguard-fw"
+    ;;
+esac
