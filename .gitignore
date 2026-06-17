@@ -30,3 +30,11 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# LinkGuard FW specific
+linkguard-fw
+web/node_modules/
+*.db
+*.db-shm
+*.db-wal
+dist/
