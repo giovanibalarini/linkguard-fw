@@ -44,14 +44,14 @@ jobs:
           echo "deb_version=${VERSION#v}" >> "$GITHUB_OUTPUT"
           echo "Version: ${VERSION}"
 
-      - name: Run tests
-        run: go test ./...
-
       - name: Build frontend
         run: |
           cd web
           npm ci
           npm run build
+
+      - name: Run tests
+        run: go test ./...
 
       - name: Build Go binaries
         run: |
