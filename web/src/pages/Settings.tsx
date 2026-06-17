@@ -1,8 +1,39 @@
-import { useState } from 'react';
-import { Settings as SettingsIcon, Info } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Settings as SettingsIcon, Info, Database } from 'lucide-react';
+import client from '../api/client';
+import type { TrafficRetentionResponse } from '../types';
 
 export default function Settings() {
   const [activeSection, setActiveSection] = useState('about');
+  const [retentionProfile, setRetentionProfile] = useState<'30d' | '1y' | '5y'>('30d');
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  useEffect(() => {
+    const loadRetention = async () => {
+      try {
+        const res = await client.get<TrafficRetentionResponse>('/api/system/traffic-retention');
+        if (res.data.profile) {
+          setRetentionProfile(res.data.profile);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    loadRetention();
+  }, []);
+
+  const updateRetentionProfile = async (profile: '30d' | '1y' | '5y') => {
+    setSavingProfile(true);
+    try {
+      await client.put('/api/system/traffic-retention', { profile });
+      setRetentionProfile(profile);
+    } catch (e) {
+      console.error(e);
+      alert('Erro ao salvar perfil de retencao');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -16,6 +47,7 @@ export default function Settings() {
           {[
             { id: 'about', label: 'Sobre', icon: Info },
             { id: 'general', label: 'Geral', icon: SettingsIcon },
+            { id: 'traffic-retention', label: 'Retencao de trafego', icon: Database },
           ].map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -83,6 +115,48 @@ export default function Settings() {
                 <p><span className="text-white">failover_enabled:</span> Habilitar failover automático</p>
                 <p><span className="text-white">fail_threshold:</span> Falhas consecutivas para marcar offline</p>
                 <p><span className="text-white">recover_threshold:</span> Sucessos para marcar online</p>
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'traffic-retention' && (
+            <div className="card space-y-4">
+              <h2 className="text-white font-semibold">Retenção de tráfego (RRD)</h2>
+              <p className="text-gray-500 text-sm">
+                Define por quanto tempo as amostras históricas de tráfego ficam persistidas.
+                Esta configuração afeta as janelas de 30d, 1y e 5y usadas na aba Interfaces.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/50 p-2">
+                {(['30d', '1y', '5y'] as const).map((p) => (
+                  <button
+                    key={p}
+                    disabled={savingProfile}
+                    onClick={() => updateRetentionProfile(p)}
+                    className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+                      retentionProfile === p
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        : 'bg-gray-900 text-gray-300 border border-gray-700 hover:border-gray-500'
+                    } disabled:opacity-50`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+
+              <div className="rounded-lg border border-gray-800 bg-gray-950/70 p-4 space-y-2 text-sm text-gray-400">
+                <p>
+                  Perfil ativo: <span className="text-white font-mono">{retentionProfile}</span>
+                </p>
+                <p>
+                  Armazenamento dos dados: <span className="text-blue-400 font-mono">/var/lib/linkguard-fw/linkguard.db</span>
+                </p>
+                <p>
+                  Tabela: <span className="text-blue-400 font-mono">traffic_samples</span>
+                </p>
+                <p className="text-xs text-gray-500">
+                  O caminho do banco pode ser alterado pela chave <span className="font-mono">db_path</span> no arquivo de configuração.
+                </p>
               </div>
             </div>
           )}

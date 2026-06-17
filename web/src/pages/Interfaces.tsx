@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Activity, Network, ArrowDownToLine, ArrowUpToLine, Pencil } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import client from '../api/client';
-import type { SystemMetrics, TrafficHistoryResponse, TrafficRetentionResponse } from '../types';
+import type { SystemMetrics, TrafficHistoryResponse } from '../types';
 
 interface RatePoint {
   ts: number;
@@ -70,7 +70,6 @@ export default function Interfaces() {
   const [loading, setLoading] = useState(true);
   const [aliasSaving, setAliasSaving] = useState<string>('');
   const [range, setRange] = useState<'5m' | '30m' | '12h' | '30d' | '1y' | '5y'>('5m');
-  const [retentionProfile, setRetentionProfile] = useState<'30d' | '1y' | '5y'>('30d');
   const [currentRates, setCurrentRates] = useState<Record<string, { rx: number; tx: number }>>({});
   const [rrdHistory, setRrdHistory] = useState<Record<string, RatePoint[]>>({});
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
@@ -202,25 +201,6 @@ export default function Interfaces() {
     }
   };
 
-  const loadRetentionProfile = async () => {
-    try {
-      const res = await client.get<TrafficRetentionResponse>('/api/system/traffic-retention');
-      setRetentionProfile(res.data.profile || '30d');
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const updateRetentionProfile = async (profile: '30d' | '1y' | '5y') => {
-    try {
-      await client.put('/api/system/traffic-retention', { profile });
-      setRetentionProfile(profile);
-    } catch (e) {
-      console.error(e);
-      alert('Erro ao salvar perfil de retencao');
-    }
-  };
-
   const loadRrdHistory = async () => {
     if (!sys || (range !== '30d' && range !== '1y' && range !== '5y')) {
       return;
@@ -255,7 +235,6 @@ export default function Interfaces() {
 
   useEffect(() => {
     fetchData();
-    loadRetentionProfile();
     const interval = setInterval(fetchData, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -314,7 +293,7 @@ export default function Interfaces() {
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-white">Interfaces</h1>
-          <p className="text-gray-500 text-sm">Métricas vêm de /proc com RRD persistente configurável para 30d, 1y ou 5y.</p>
+          <p className="text-gray-500 text-sm">Métricas vêm de /proc com histórico RRD persistente.</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center rounded-lg border border-gray-700 bg-gray-900/70 p-1 text-xs">
@@ -356,18 +335,6 @@ export default function Interfaces() {
             </button>
           </div>
 
-          <div className="flex items-center rounded-lg border border-gray-700 bg-gray-900/70 p-1 text-xs">
-            <span className="px-2 py-1 text-gray-500">Retencao</span>
-            {(['30d', '1y', '5y'] as const).map((p) => (
-              <button
-                key={p}
-                onClick={() => updateRetentionProfile(p)}
-                className={`px-2 py-1 rounded ${retentionProfile === p ? 'bg-emerald-500/20 text-emerald-300' : 'text-gray-400 hover:text-gray-200'}`}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
           <div className="text-xs text-gray-600">Atualizado às {lastUpdated.toLocaleTimeString()}</div>
           <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
             <RefreshCw className="w-4 h-4" />
@@ -484,13 +451,13 @@ export default function Interfaces() {
                   <div className="mt-4 rounded-lg border border-gray-800 bg-gray-900/70 p-3">
                     <div className="mb-2 flex items-center justify-between">
                       <p className="text-gray-500 text-xs uppercase tracking-wide">Consumo de rede RRD-style ({range})</p>
-                      <p className="text-xs text-gray-500">RX acima, TX abaixo, perfil ativo: {retentionProfile}</p>
+                      <p className="text-xs text-gray-500">RX acima, TX abaixo. Retenção configurável na aba Configurações.</p>
                     </div>
                     {chartData.length < 2 ? (
                       <p className="text-gray-500 text-sm">Aguardando amostras para desenhar o gráfico...</p>
                     ) : (
                       <ResponsiveContainer width="100%" height={200}>
-                        <AreaChart data={plotData} margin={{ left: 4, right: 4, top: 4, bottom: 4 }}>
+                        <LineChart data={plotData} margin={{ left: 4, right: 4, top: 4, bottom: 4 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                           <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 10 }} minTickGap={range === '5m' ? 36 : 20} />
                           <YAxis
@@ -504,9 +471,9 @@ export default function Interfaces() {
                             contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }}
                             formatter={(value: number, name: string) => [formatRate(Math.abs(Number(value))), name === 'rx' ? 'RX' : 'TX']}
                           />
-                          <Area type="monotone" dataKey="rx" stroke="#22d3ee" fill="#06b6d4" fillOpacity={0.35} strokeWidth={2} />
-                          <Area type="monotone" dataKey="tx_neg" name="tx" stroke="#34d399" fill="#10b981" fillOpacity={0.35} strokeWidth={2} />
-                        </AreaChart>
+                          <Line type="linear" dataKey="rx" stroke="#22d3ee" strokeWidth={2} dot={false} isAnimationActive={false} />
+                          <Line type="linear" dataKey="tx_neg" name="tx" stroke="#34d399" strokeWidth={2} dot={false} isAnimationActive={false} />
+                        </LineChart>
                       </ResponsiveContainer>
                     )}
 
