@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Activity, Network, ArrowDownToLine, ArrowUpToLine, Pencil } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import client from '../api/client';
@@ -70,9 +70,9 @@ export default function Interfaces() {
   const [loading, setLoading] = useState(true);
   const [aliasSaving, setAliasSaving] = useState<string>('');
   const [range, setRange] = useState<'5m' | '30m' | '12h'>('5m');
-  const [historyTick, setHistoryTick] = useState(0);
   const [currentRates, setCurrentRates] = useState<Record<string, { rx: number; tx: number }>>({});
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const firstLoadRef = useRef(true);
 
   const prevCountersRef = useState<Record<string, { ts: number; rx: number; tx: number }>>({})[0];
   const secondHistoryRef = useState<Record<string, RatePoint[]>>({})[0];
@@ -162,7 +162,10 @@ export default function Interfaces() {
   };
 
   const fetchData = async () => {
-    setLoading(true);
+    const firstLoad = firstLoadRef.current;
+    if (firstLoad) {
+      setLoading(true);
+    }
     try {
       const res = await client.get<SystemMetrics>('/api/system/status');
       const now = Date.now();
@@ -187,11 +190,13 @@ export default function Interfaces() {
       setCurrentRates((prev) => ({ ...prev, ...nextRates }));
       setSys(res.data);
       setLastUpdated(new Date());
-      setHistoryTick((v) => v + 1);
+      firstLoadRef.current = false;
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (firstLoad) {
+        setLoading(false);
+      }
     }
   };
 
@@ -388,7 +393,7 @@ export default function Interfaces() {
                     {chartData.length < 2 ? (
                       <p className="text-gray-500 text-sm">Aguardando amostras para desenhar o gráfico...</p>
                     ) : (
-                      <ResponsiveContainer width="100%" height={200} key={`${iface.name}-${range}-${historyTick}`}>
+                      <ResponsiveContainer width="100%" height={200}>
                         <AreaChart data={plotData} margin={{ left: 4, right: 4, top: 4, bottom: 4 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                           <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 10 }} minTickGap={range === '5m' ? 36 : 20} />
