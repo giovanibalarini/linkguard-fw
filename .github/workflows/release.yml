@@ -67,9 +67,9 @@ jobs:
 
       - name: Build .deb packages
         run: |
-          VERSION_CLEAN="${{ steps.version.outputs.deb_version }}"
+            VERSION_CLEAN="${{ steps.version.outputs.deb_version }}"
 
-          for ARCH in amd64 arm64; do
+            for ARCH in amd64 arm64; do
             PKG="linkguard-fw_${VERSION_CLEAN}_${ARCH}"
             PKG_DIR="dist/deb/${PKG}"
 
@@ -83,25 +83,25 @@ jobs:
             cp deploy/linkguard-fw.service "${PKG_DIR}/lib/systemd/system/linkguard-fw.service"
 
             cat > "${PKG_DIR}/DEBIAN/control" <<EOF
-Package: linkguard-fw
-Version: ${VERSION_CLEAN}
-Architecture: ${ARCH}
-Maintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>
-Section: net
-Priority: optional
-Homepage: https://github.com/giovanibalarini/linkguard-fw
-Description: Linux Firewall Management Tool
- LinkGuard FW is a web-based firewall management tool for Linux
- that provides a modern UI to manage iptables rules, static routes,
- failover policies, and network monitoring.
-EOF
+            Package: linkguard-fw
+            Version: ${VERSION_CLEAN}
+            Architecture: ${ARCH}
+            Maintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>
+            Section: net
+            Priority: optional
+            Homepage: https://github.com/giovanibalarini/linkguard-fw
+            Description: Linux Firewall Management Tool
+             LinkGuard FW is a web-based firewall management tool for Linux
+             that provides a modern UI to manage iptables rules, static routes,
+             failover policies, and network monitoring.
+            EOF
 
             install -m 0755 deploy/deb/postinst "${PKG_DIR}/DEBIAN/postinst"
             install -m 0755 deploy/deb/prerm    "${PKG_DIR}/DEBIAN/prerm"
 
             dpkg-deb --build --root-owner-group "${PKG_DIR}" "dist/${PKG}.deb"
             echo ">>> Created: dist/${PKG}.deb"
-          done
+            done
 
       - name: Generate checksums
         run: |
