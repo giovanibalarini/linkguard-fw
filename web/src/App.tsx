@@ -10,6 +10,7 @@ import Alerts from './pages/Alerts';
 import Logs from './pages/Logs';
 import Monitoring from './pages/Monitoring';
 import Settings from './pages/Settings';
+import Interfaces from './pages/Interfaces';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -31,6 +32,7 @@ function AppRoutes() {
           <Route path="alerts" element={<Alerts />} />
           <Route path="logs" element={<Logs />} />
           <Route path="monitoring" element={<Monitoring />} />
+          <Route path="interfaces" element={<Interfaces />} />
           <Route path="settings" element={<Settings />} />
         </Route>
       </Routes>

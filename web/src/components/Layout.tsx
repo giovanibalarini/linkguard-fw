@@ -8,6 +8,7 @@ import {
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/links', label: 'Links WAN', icon: Network },
+  { to: '/interfaces', label: 'Interfaces', icon: Network },
   { to: '/routes', label: 'Rotas', icon: Route },
   { to: '/firewall', label: 'Firewall', icon: Shield },
   { to: '/monitoring', label: 'Monitoramento', icon: Activity },
