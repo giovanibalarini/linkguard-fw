@@ -29,6 +29,7 @@ type Metrics struct {
 // InterfaceMetrics holds traffic counters for a network interface.
 type InterfaceMetrics struct {
 	Name        string `json:"name"`
+	Alias       string `json:"alias,omitempty"`
 	Addresses   []InterfaceAddress `json:"addresses,omitempty"`
 	RxBytes     uint64 `json:"rx_bytes"`
 	TxBytes     uint64 `json:"tx_bytes"`

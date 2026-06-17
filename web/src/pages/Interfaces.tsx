@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Activity, Network, ArrowDownToLine, ArrowUpToLine } from 'lucide-react';
+import { RefreshCw, Activity, Network, ArrowDownToLine, ArrowUpToLine, Pencil } from 'lucide-react';
 import client from '../api/client';
 import type { SystemMetrics } from '../types';
 
@@ -26,6 +26,7 @@ function formatUptime(seconds: number): string {
 export default function Interfaces() {
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [aliasSaving, setAliasSaving] = useState<string>('');
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
   const fetchData = async () => {
@@ -46,6 +47,28 @@ export default function Interfaces() {
     const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, []);
+
+  const editAlias = async (ifaceName: string, currentAlias?: string) => {
+    const nextAlias = window.prompt(
+      `Apelido para ${ifaceName} (deixe vazio para remover):`,
+      currentAlias || ''
+    );
+    if (nextAlias === null) return;
+
+    setAliasSaving(ifaceName);
+    try {
+      await client.put('/api/system/interface-aliases', {
+        interface: ifaceName,
+        alias: nextAlias.trim(),
+      });
+      await fetchData();
+    } catch (e) {
+      console.error(e);
+      alert('Erro ao salvar apelido da interface');
+    } finally {
+      setAliasSaving('');
+    }
+  };
 
   const interfaces = useMemo(() => {
     return (sys?.interfaces ?? []).filter((iface) => iface.name !== 'lo');
@@ -89,7 +112,8 @@ export default function Interfaces() {
                         <Network className="w-4 h-4" />
                       </span>
                       <div>
-                        <h2 className="text-white font-semibold text-lg font-mono">{iface.name}</h2>
+                        <h2 className="text-white font-semibold text-lg">{iface.alias || iface.name}</h2>
+                        {iface.alias && <p className="text-gray-500 text-xs font-mono">{iface.name}</p>}
                         <p className="text-gray-500 text-xs">Interface ativa</p>
                       </div>
                     </div>
@@ -98,6 +122,19 @@ export default function Interfaces() {
                     <Activity className="w-3.5 h-3.5 text-green-400" />
                     RX {formatBytes(iface.rx_bytes)}
                   </div>
+                </div>
+
+                <div className="mb-4 flex justify-end">
+                  <button
+                    onClick={() => editAlias(iface.name, iface.alias)}
+                    disabled={aliasSaving === iface.name}
+                    className="rounded-lg border border-gray-700 bg-gray-900/80 px-3 py-1.5 text-xs text-gray-300 hover:border-blue-500/50 hover:text-blue-300 disabled:opacity-50"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Pencil className="w-3.5 h-3.5" />
+                      {aliasSaving === iface.name ? 'Salvando...' : iface.alias ? 'Editar apelido' : 'Adicionar apelido'}
+                    </span>
+                  </button>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -132,7 +169,7 @@ export default function Interfaces() {
                   <div className="flex items-center justify-between gap-3 mb-3">
                     <span className="text-gray-400 text-xs uppercase tracking-wide">Resumo estilo ifconfig</span>
                     <span className={`rounded-full px-2 py-1 text-xs font-medium ${index % 2 === 0 ? 'bg-blue-500/15 text-blue-300' : 'bg-cyan-500/15 text-cyan-300'}`}>
-                      {iface.name}
+                      {iface.alias || iface.name}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">

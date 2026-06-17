@@ -38,6 +38,7 @@ export interface SystemMetrics {
 
 export interface InterfaceMetrics {
   name: string;
+  alias?: string;
   addresses?: InterfaceAddress[];
   rx_bytes: number;
   tx_bytes: number;

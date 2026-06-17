@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
 import client from '../api/client';
-import type { WanLink, SystemMetrics } from '../types';
+import type { WanLink, SystemMetrics, InterfaceMetrics } from '../types';
 
 const emptyLink: Partial<WanLink> = {
   name: '',
@@ -17,7 +17,7 @@ const emptyLink: Partial<WanLink> = {
 
 export default function Links() {
   const [links, setLinks] = useState<WanLink[]>([]);
-  const [interfaces, setInterfaces] = useState<string[]>([]);
+  const [interfaces, setInterfaces] = useState<InterfaceMetrics[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
@@ -43,8 +43,7 @@ export default function Links() {
       ]);
       setLinks(res.data ?? []);
       const discovered = (sysRes.data?.interfaces ?? [])
-        .map((iface) => iface.name)
-        .filter((name) => name && name !== 'lo');
+        .filter((iface) => iface.name && iface.name !== 'lo');
       setInterfaces(discovered);
     } finally {
       setLoading(false);
@@ -62,8 +61,8 @@ export default function Links() {
 
   const openWizard = () => {
     const preferred = links.map((l) => l.interface);
-    setWizardPrimary(preferred[0] || interfaces[0] || '');
-    setWizardSecondary(preferred[1] || interfaces[1] || '');
+    setWizardPrimary(preferred[0] || interfaces[0]?.name || '');
+    setWizardSecondary(preferred[1] || interfaces[1]?.name || '');
     setWizardLan('');
     setWizardMode('failover');
     setWizardPrimaryWeight(70);
@@ -235,9 +234,25 @@ export default function Links() {
   };
 
   const interfaceOptions = useMemo(() => {
-    const merged = new Set<string>([...interfaces, ...links.map((l) => l.interface)]);
+    const merged = new Set<string>([...interfaces.map((iface) => iface.name), ...links.map((l) => l.interface)]);
     return Array.from(merged).filter(Boolean).sort();
   }, [interfaces, links]);
+
+  const interfaceAliasByName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const iface of interfaces) {
+      const alias = iface.alias?.trim();
+      if (alias) {
+        map.set(iface.name, alias);
+      }
+    }
+    return map;
+  }, [interfaces]);
+
+  const formatInterfaceLabel = (name: string) => {
+    const alias = interfaceAliasByName.get(name);
+    return alias ? `${alias} (${name})` : name;
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -293,7 +308,7 @@ export default function Links() {
                       <div className="text-white font-medium">{link.name}</div>
                       {!link.enabled && <span className="text-gray-600 text-xs">desativado</span>}
                     </td>
-                    <td className="py-3 pr-4 text-gray-400 font-mono">{link.interface}</td>
+                    <td className="py-3 pr-4 text-gray-400 font-mono">{formatInterfaceLabel(link.interface)}</td>
                     <td className="py-3 pr-4">
                       <div className="text-gray-400 font-mono text-xs">{link.ip_address || '—'}</div>
                       <div className="text-gray-600 font-mono text-xs">{link.gateway || '—'}</div>
@@ -349,7 +364,7 @@ export default function Links() {
                   >
                     <option value="">Selecione interface</option>
                     {interfaceOptions.map((name) => (
-                      <option key={name} value={name}>{name}</option>
+                      <option key={name} value={name}>{formatInterfaceLabel(name)}</option>
                     ))}
                   </select>
                   {interfaceOptions.length === 0 && (
@@ -431,14 +446,14 @@ export default function Links() {
                   <label className="label">WAN primaria *</label>
                   <select className="input w-full" value={wizardPrimary} onChange={(e) => setWizardPrimary(e.target.value)}>
                     <option value="">Selecione</option>
-                    {interfaceOptions.map((name) => <option key={`p-${name}`} value={name}>{name}</option>)}
+                    {interfaceOptions.map((name) => <option key={`p-${name}`} value={name}>{formatInterfaceLabel(name)}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="label">WAN secundaria *</label>
                   <select className="input w-full" value={wizardSecondary} onChange={(e) => setWizardSecondary(e.target.value)}>
                     <option value="">Selecione</option>
-                    {interfaceOptions.map((name) => <option key={`s-${name}`} value={name}>{name}</option>)}
+                    {interfaceOptions.map((name) => <option key={`s-${name}`} value={name}>{formatInterfaceLabel(name)}</option>)}
                   </select>
                 </div>
               </div>

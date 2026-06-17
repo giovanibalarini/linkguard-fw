@@ -115,8 +115,10 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.Use(s.authSvc.Middleware)
 
 		// System
-		sysH := handlers.NewSystemHandler(s.sysCol)
+		sysH := handlers.NewSystemHandler(s.sysCol, s.db)
 		r.Get("/api/system/status", sysH.Status)
+		r.Get("/api/system/interface-aliases", sysH.ListInterfaceAliases)
+		r.Put("/api/system/interface-aliases", sysH.UpsertInterfaceAlias)
 
 		// Links
 		linksH := handlers.NewLinksHandler(s.linkSvc, s.db)
