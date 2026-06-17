@@ -5,6 +5,7 @@ package system
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ type Metrics struct {
 // InterfaceMetrics holds traffic counters for a network interface.
 type InterfaceMetrics struct {
 	Name        string `json:"name"`
+	Addresses   []InterfaceAddress `json:"addresses,omitempty"`
 	RxBytes     uint64 `json:"rx_bytes"`
 	TxBytes     uint64 `json:"tx_bytes"`
 	RxPackets   uint64 `json:"rx_packets"`
@@ -36,6 +38,14 @@ type InterfaceMetrics struct {
 	TxErrors    uint64 `json:"tx_errors"`
 	RxDropped   uint64 `json:"rx_dropped"`
 	TxDropped   uint64 `json:"tx_dropped"`
+}
+
+// InterfaceAddress represents an IP address configured on an interface.
+type InterfaceAddress struct {
+	Family  string `json:"family"`
+	IP      string `json:"ip"`
+	Subnet  string `json:"subnet"`
+	CIDR    string `json:"cidr"`
 }
 
 // Collector collects system metrics.
@@ -279,7 +289,46 @@ func readNetDev() ([]InterfaceMetrics, error) {
 			TxDropped: parse(fields[11]),
 		})
 	}
-	return ifaces, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return ifaces, err
+	}
+
+	ifaceList, err := net.Interfaces()
+	if err != nil {
+		return ifaces, nil
+	}
+
+	addrByName := make(map[string][]InterfaceAddress, len(ifaceList))
+	for _, iface := range ifaceList {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP == nil {
+				continue
+		}
+			ip := ipNet.IP.String()
+			maskSize, _ := ipNet.Mask.Size()
+			family := "ipv4"
+			if ipNet.IP.To4() == nil {
+				family = "ipv6"
+			}
+			addrByName[iface.Name] = append(addrByName[iface.Name], InterfaceAddress{
+				Family: family,
+				IP:     ip,
+				Subnet: fmt.Sprintf("/%d", maskSize),
+				CIDR:   ipNet.String(),
+			})
+		}
+	}
+
+	for i := range ifaces {
+		ifaces[i].Addresses = addrByName[ifaces[i].Name]
+	}
+
+	return ifaces, nil
 }
 
 // UptimeString returns a human-readable uptime string.

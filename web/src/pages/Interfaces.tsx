@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Activity, Network, ArrowDownToLine, ArrowUpToLine, ChevronRight } from 'lucide-react';
+import { RefreshCw, Activity, Network, ArrowDownToLine, ArrowUpToLine } from 'lucide-react';
 import client from '../api/client';
 import type { SystemMetrics } from '../types';
 
@@ -153,6 +153,24 @@ export default function Interfaces() {
                       <p className="text-white font-mono">UP</p>
                     </div>
                   </div>
+
+                  <div className="mt-4 rounded-lg border border-gray-800 bg-gray-900/70 p-3">
+                    <p className="text-gray-500 text-xs mb-2 uppercase tracking-wide">Enderecos IP / Subnet</p>
+                    {!iface.addresses || iface.addresses.length === 0 ? (
+                      <p className="text-gray-500 text-sm">Sem endereco configurado</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {iface.addresses.map((addr) => (
+                          <div key={`${iface.name}-${addr.cidr}`} className="grid grid-cols-3 gap-2 text-sm">
+                            <span className="text-gray-400 uppercase">{addr.family}</span>
+                            <span className="text-white font-mono">{addr.ip}</span>
+                            <span className="text-cyan-300 font-mono">{addr.subnet}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   {iface.rx_bytes + iface.tx_bytes > 0 && (
                     <div className="mt-4 h-2 rounded-full bg-gray-800 overflow-hidden">
                       <div className="h-full bg-gradient-to-r from-blue-500 via-cyan-400 to-green-400" style={{ width: `${Math.min(100, ((iface.rx_bytes + iface.tx_bytes) / Math.max((sys?.disk_total_bytes || 1), 1)) * 100)}%` }} />

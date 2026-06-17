@@ -38,6 +38,7 @@ export interface SystemMetrics {
 
 export interface InterfaceMetrics {
   name: string;
+  addresses?: InterfaceAddress[];
   rx_bytes: number;
   tx_bytes: number;
   rx_packets: number;
@@ -46,6 +47,13 @@ export interface InterfaceMetrics {
   tx_errors: number;
   rx_dropped: number;
   tx_dropped: number;
+}
+
+export interface InterfaceAddress {
+  family: string;
+  ip: string;
+  subnet: string;
+  cidr: string;
 }
 
 export interface Alert {
