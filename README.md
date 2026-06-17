@@ -1,1 +1,223 @@
-# linkguard-fw
+# LinkGuard FW
+
+A Linux firewall management tool for Debian servers with multiple WAN links. Supports load balancing, failover, iptables management, routing, and real-time monitoring — all through a modern web interface.
+
+## Features
+
+- **Dashboard** — Live view of system health, WAN status, latency, packet loss and bandwidth
+- **WAN Link Management** — Register and monitor multiple internet links (eth0, eth1, ppp0, etc.)
+- **Automatic Failover** — Detects link failures and restores routing automatically; configurable thresholds and cooldown
+- **Route Management** — View and manage routing tables, `ip rule` entries, and gateway configuration
+- **Firewall Rules** — List and inspect iptables rules across filter, NAT, mangle tables
+- **NAT / Mangle** — View PREROUTING, POSTROUTING, FORWARD, MARK and related rules
+- **Prometheus Metrics** — Exposes `/metrics` for integration with Prometheus and Grafana
+- **Alerts** — Visual alerts in the web UI and log file for link events, high resource usage, and errors
+- **Audit Logging** — Full audit trail of configuration changes
+- **Dry-run Mode** — Preview all commands before applying to the live system
+- **Backup & Rollback** — Automatic iptables backup before any change; one-click rollback
+- **JWT Authentication** — Secure web UI with session tokens; change default password on first login
+
+## Architecture
+
+```
+linkguard-fw/
+├── cmd/linkguard-fw/        # Main entry point
+├── internal/
+│   ├── api/                 # HTTP server & REST handlers
+│   │   └── handlers/        # Per-resource handlers
+│   ├── auth/                # JWT authentication & middleware
+│   ├── alerts/              # Alert generation and retrieval
+│   ├── config/              # Configuration loading and defaults
+│   ├── failover/            # Failover state machine
+│   ├── firewall/            # Executor interface (real + dry-run)
+│   ├── iptables/            # iptables-L parser and service
+│   ├── links/               # WAN link CRUD and validation
+│   ├── metrics/             # Prometheus metrics registry
+│   ├── monitoring/          # Background metrics collector
+│   ├── routes/              # ip route / ip rule service
+│   ├── storage/             # SQLite persistence (models + repository)
+│   └── system/              # CPU, memory, disk, network metrics
+├── web/                     # React + Vite frontend
+│   └── src/
+│       ├── api/             # Axios client
+│       ├── components/      # Shared UI components
+│       ├── context/         # Auth context
+│       └── pages/           # Dashboard, Links, Routes, Firewall, etc.
+├── deploy/                  # Deployment files
+│   ├── linkguard-fw.service # systemd unit file
+│   └── install.sh           # Installation script
+├── embed.go                 # Go embed directive for web/dist
+└── Makefile                 # Build, test and install targets
+```
+
+## Requirements
+
+- **OS**: Debian/Ubuntu Linux (requires `iptables`, `iproute2`)
+- **Go**: 1.21+
+- **Node.js**: 18+ (for frontend build)
+- **Permissions**: Root or sudo (for iptables and ip route)
+
+## Quick Start
+
+### Build from source
+
+```bash
+# 1. Build frontend and backend
+make build
+
+# 2. Run in dry-run mode (safe, no system changes)
+./dist/linkguard-fw --dry-run --debug --addr 127.0.0.1 --port 9997
+
+# 3. Open the web UI
+# http://127.0.0.1:9997
+# Login: admin / admin   <-- change immediately!
+```
+
+### Install as systemd service
+
+```bash
+# 1. Build the binary
+make build
+
+# 2. Run the install script as root
+sudo bash deploy/install.sh
+
+# 3. Edit the config (set jwt_secret, listen_addr, etc.)
+sudo nano /etc/linkguard-fw/config.json
+
+# 4. Enable and start the service
+sudo systemctl enable --now linkguard-fw
+
+# 5. Check status
+sudo systemctl status linkguard-fw
+sudo journalctl -u linkguard-fw -f
+```
+
+### Using Make
+
+```
+make build          - Build frontend + backend
+make build-frontend - Build only the React frontend
+make build-backend  - Build only the Go binary
+make test           - Run all Go tests
+make test-coverage  - Run tests with HTML coverage report
+make run            - Build and run in dry-run mode
+make install        - Install binary and service (requires root)
+make uninstall      - Remove binary and service
+make clean          - Remove build artifacts
+make clean-all      - Remove build artifacts and node_modules
+make help           - Show all available targets
+```
+
+## Configuration
+
+Default config file: `/etc/linkguard-fw/config.json`
+
+```json
+{
+  "listen_addr": "127.0.0.1",
+  "port": 9997,
+  "db_path": "/var/lib/linkguard-fw/linkguard.db",
+  "jwt_secret": "change-me-to-a-random-secret",
+  "dry_run": false,
+  "debug": false,
+  "monitor_interval_seconds": 30,
+  "failover_enabled": true,
+  "failover_threshold": 3,
+  "recovery_threshold": 2,
+  "failover_cooldown_seconds": 60,
+  "metrics_enabled": true
+}
+```
+
+CLI flags override config file values:
+
+```
+--config   path to config file
+--dry-run  enable dry-run mode (no system changes)
+--debug    enable debug logging
+--addr     listen address (default: 127.0.0.1)
+--port     listen port (default: 9997)
+```
+
+## API Endpoints
+
+```
+GET  /api/health                  - Health check (no auth)
+GET  /api/system/status           - System metrics
+POST /api/auth/login              - Login, returns JWT token
+POST /api/auth/change-password    - Change password
+
+GET  /api/links                   - List WAN links
+POST /api/links                   - Create WAN link
+GET  /api/links/{id}              - Get WAN link
+PUT  /api/links/{id}              - Update WAN link
+DELETE /api/links/{id}            - Delete WAN link
+
+GET  /api/routes                  - List routing table
+GET  /api/routes/rules            - List ip rules
+GET  /api/routes/all              - List all routing tables
+
+GET  /api/iptables/rules          - List all iptables tables
+GET  /api/iptables/{table}        - List specific table (filter, nat, mangle)
+GET  /api/iptables/backups        - List iptables backups
+POST /api/firewall/preview        - Preview command
+POST /api/firewall/apply          - Apply firewall changes (with auto-backup)
+POST /api/firewall/rollback       - Rollback to previous backup
+
+GET  /api/alerts                  - List alerts
+PUT  /api/alerts/{id}/resolve     - Resolve an alert
+
+GET  /api/failover/events         - List failover events
+
+GET  /api/logs                    - List audit logs
+
+GET  /metrics                     - Prometheus metrics (no auth)
+```
+
+## Prometheus Metrics
+
+Exposed at `/metrics`:
+
+| Metric | Description |
+|--------|-------------|
+| `linkguard_link_status` | WAN link status (1=online, 0=offline) |
+| `linkguard_link_latency_ms` | Average latency per link |
+| `linkguard_link_packet_loss_percent` | Packet loss per link |
+| `linkguard_interface_rx_bytes_total` | Bytes received per interface |
+| `linkguard_interface_tx_bytes_total` | Bytes transmitted per interface |
+| `linkguard_failover_events_total` | Total failover events |
+| `linkguard_alerts_unresolved_total` | Current unresolved alerts |
+| `linkguard_cpu_usage_percent` | System CPU usage |
+| `linkguard_memory_usage_percent` | System memory usage |
+| `linkguard_disk_usage_percent` | System disk usage |
+
+## Security
+
+- The web UI is bound to `127.0.0.1` by default — not exposed to the internet
+- All API endpoints (except `/api/health` and `/api/auth/login`) require a valid JWT token
+- Default admin password is `admin` — **change it immediately after first login**
+- All firewall commands are validated before execution; inputs are never concatenated into shell strings
+- Every configuration change is logged in the audit log
+- Dry-run mode previews commands without applying them
+- Automatic iptables backup before any `apply` operation with one-click rollback
+
+## Development
+
+```bash
+# Backend (hot-recompile with go run)
+go run ./cmd/linkguard-fw/ --dry-run --debug
+
+# Frontend (Vite dev server with HMR)
+cd web && npm run dev
+
+# Run tests
+make test
+
+# Run tests with race detector
+go test -race ./...
+```
+
+## License
+
+MIT
