@@ -50,6 +50,9 @@ func (db *DB) Conn() *sql.DB {
 func (db *DB) migrate() error {
 	migrations := []string{
 		createUsersTable,
+		createRolesTable,
+		createRolePermissionsTable,
+		createUserRolesTable,
 		createLinksTable,
 		createAlertsTable,
 		createAuditLogsTable,
@@ -58,6 +61,7 @@ func (db *DB) migrate() error {
 		createIptablesBackupsTable,
 		createSettingsTable,
         createTrafficSamplesTable,
+		createHostMetadataTable,
 		insertDefaultAdmin,
 	}
 
@@ -80,6 +84,45 @@ CREATE TABLE IF NOT EXISTS users (
     role       TEXT NOT NULL DEFAULT 'admin',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+// ─── RBAC schema ─────────────────────────────────────────────────────────────
+// Roles are user-defined sets of permissions; users are assigned one or more
+// roles. The permission catalog itself lives in code (internal/auth).
+
+const createRolesTable = `
+CREATE TABLE IF NOT EXISTS roles (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    builtin     INTEGER NOT NULL DEFAULT 0,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+const createRolePermissionsTable = `
+CREATE TABLE IF NOT EXISTS role_permissions (
+    role_id    TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    permission TEXT NOT NULL,
+    PRIMARY KEY (role_id, permission)
+);`
+
+const createUserRolesTable = `
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, role_id)
+);`
+
+const createHostMetadataTable = `
+CREATE TABLE IF NOT EXISTS host_metadata (
+    mac        TEXT PRIMARY KEY,
+    ip         TEXT NOT NULL DEFAULT '',
+    hostname   TEXT NOT NULL DEFAULT '',
+    alias      TEXT NOT NULL DEFAULT '',
+    blocked    INTEGER NOT NULL DEFAULT 0,
+    first_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 
 // Default admin password is "admin" (bcrypt hash). User must change it.

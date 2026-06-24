@@ -160,6 +160,54 @@ export interface HealthStatus {
   link_count: number;
 }
 
+// ─── RBAC ──────────────────────────────────────────────────────────────────
+
+export interface AppUser {
+  id: string;
+  username: string;
+  role: string;
+  role_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AppRole {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  permissions: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PermissionCatalogEntry {
+  key: string;
+  area: string;
+  label: string;
+  description: string;
+}
+
+export interface MeResponse {
+  id: string;
+  username: string;
+  role_ids: string[];
+  permissions: string[];
+}
+
+export interface NetHost {
+  ip: string;
+  mac: string;
+  interface: string;
+  state: string;
+  online: boolean;
+  hostname?: string;
+  alias?: string;
+  blocked: boolean;
+  first_seen?: string;
+  last_seen?: string;
+}
+
 export interface TrafficHistoryPoint {
   interface: string;
   step_seconds: number;

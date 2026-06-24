@@ -21,6 +21,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
@@ -88,6 +89,11 @@ func run() int {
 	}
 	defer db.Close()
 
+	if err := seedDefaultRoles(db); err != nil {
+		slog.Error("failed to seed default roles", "err", err)
+		return 1
+	}
+
 	var exec firewall.Executor = firewall.NewRealExecutor(30 * time.Second)
 	if cfg.DryRun {
 		exec = firewall.NewDryRunExecutor()
@@ -105,6 +111,7 @@ func run() int {
 		RecoverThreshold: cfg.RecoverThreshold,
 		CooldownSecs:     cfg.FailoverCooldownSecs,
 	}, db, exec, routeSvc, alertSvc)
+	hostSvc := hosts.NewService(exec, db)
 	sysCollector := system.NewCollector()
 	rrdSvc := trafficrrd.NewService(db)
 
@@ -117,7 +124,7 @@ func run() int {
 		DryRun:  cfg.DryRun,
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, sysCollector, rrdSvc, promReg)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, hostSvc, sysCollector, rrdSvc, promReg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -152,4 +159,27 @@ func run() int {
 	}
 	slog.Info("linkguard-fw stopped")
 	return 0
+}
+
+// seedDefaultRoles seeds the built-in RBAC roles (defined in the auth catalog)
+// on first run, without overwriting any later admin customizations.
+func seedDefaultRoles(db *storage.DB) error {
+	seeds := make([]storage.RoleSeed, 0, len(auth.DefaultRoles))
+	adminRoleID := ""
+	for _, dr := range auth.DefaultRoles {
+		perms := make([]string, len(dr.Permissions))
+		for i, p := range dr.Permissions {
+			perms[i] = string(p)
+			if p == auth.PermUsersManage {
+				adminRoleID = dr.ID
+			}
+		}
+		seeds = append(seeds, storage.RoleSeed{
+			ID:          dr.ID,
+			Name:        dr.Name,
+			Description: dr.Description,
+			Permissions: perms,
+		})
+	}
+	return db.EnsureDefaultRoles(seeds, adminRoleID)
 }

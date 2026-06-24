@@ -11,6 +11,8 @@ import Logs from './pages/Logs';
 import Monitoring from './pages/Monitoring';
 import Settings from './pages/Settings';
 import Interfaces from './pages/Interfaces';
+import Admin from './pages/Admin';
+import Hosts from './pages/Hosts';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -29,11 +31,13 @@ function AppRoutes() {
           <Route path="links" element={<Links />} />
           <Route path="routes" element={<Routes_ />} />
           <Route path="firewall" element={<Firewall />} />
+          <Route path="hosts" element={<Hosts />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="logs" element={<Logs />} />
           <Route path="monitoring" element={<Monitoring />} />
           <Route path="interfaces" element={<Interfaces />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="admin" element={<Admin />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -2,29 +2,39 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
-  Activity, Settings, LogOut, ShieldCheck
+  Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone
 } from 'lucide-react';
 
+// `perm` lists the permissions that reveal a nav item; an item with no `perm`
+// (or matching any of several) is shown when the user holds at least one.
 const navItems = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/links', label: 'Links WAN', icon: Network },
-  { to: '/interfaces', label: 'Interfaces', icon: Network },
-  { to: '/routes', label: 'Rotas', icon: Route },
-  { to: '/firewall', label: 'Firewall', icon: Shield },
-  { to: '/monitoring', label: 'Monitoramento', icon: Activity },
-  { to: '/alerts', label: 'Alertas', icon: Bell },
-  { to: '/logs', label: 'Logs', icon: FileText },
-  { to: '/settings', label: 'Configurações', icon: Settings },
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, perm: ['dashboard.read'] },
+  { to: '/links', label: 'Links WAN', icon: Network, perm: ['links.read'] },
+  { to: '/interfaces', label: 'Interfaces', icon: Network, perm: ['system.read'] },
+  { to: '/routes', label: 'Rotas', icon: Route, perm: ['routes.read'] },
+  { to: '/firewall', label: 'Firewall', icon: Shield, perm: ['firewall.read'] },
+  { to: '/hosts', label: 'Hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
+  { to: '/monitoring', label: 'Monitoramento', icon: Activity, perm: ['monitoring.read'] },
+  { to: '/alerts', label: 'Alertas', icon: Bell, perm: ['monitoring.read'] },
+  { to: '/logs', label: 'Logs', icon: FileText, perm: ['logs.read'] },
+  { to: '/settings', label: 'Configurações', icon: Settings, perm: ['system.read'] },
+  { to: '/admin', label: 'Administração', icon: Users, perm: ['users.manage', 'roles.manage'] },
 ];
 
 export default function Layout() {
-  const { user, logout } = useAuth();
+  const { user, logout, can, permsLoaded } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
+
+  // Until permissions load, show everything to avoid an empty sidebar flash;
+  // afterwards, hide items the user has no permission for.
+  const visibleNav = navItems.filter(
+    (item) => !permsLoaded || item.perm.some((p) => can(p)),
+  );
 
   return (
     <div className="flex h-screen bg-gray-950">
@@ -44,7 +54,7 @@ export default function Layout() {
         {/* Navigation */}
         <nav className="flex-1 px-3 py-4 overflow-y-auto">
           <ul className="space-y-1">
-            {navItems.map(({ to, label, icon: Icon, end }) => (
+            {visibleNav.map(({ to, label, icon: Icon, end }) => (
               <li key={to}>
                 <NavLink
                   to={to}

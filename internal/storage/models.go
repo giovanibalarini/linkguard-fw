@@ -103,9 +103,47 @@ type User struct {
 	ID        string    `json:"id"`
 	Username  string    `json:"username"`
 	Password  string    `json:"-"` // bcrypt hash, never serialised
-	Role      string    `json:"role"`
+	Role      string    `json:"role"` // legacy single-role column (kept for compat)
+	RoleIDs   []string  `json:"role_ids"` // assigned roles (RBAC); populated on demand
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ─── Role (RBAC) ─────────────────────────────────────────────────────────────
+
+// Role is a named, user-defined set of permissions.
+type Role struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Builtin     bool      `json:"builtin"`
+	Permissions []string  `json:"permissions"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// RoleSeed describes a built-in role to seed on first run. It mirrors the
+// in-code permission catalog (internal/auth) without creating an import cycle.
+type RoleSeed struct {
+	ID          string
+	Name        string
+	Description string
+	Permissions []string
+}
+
+// ─── HostMetadata ────────────────────────────────────────────────────────────
+
+// HostMetadata stores admin-set and observed data about a LAN host, keyed by
+// MAC (more stable than IP under DHCP). The live state (interface, NUD state)
+// comes from the neighbour table at list time and is not persisted here.
+type HostMetadata struct {
+	MAC       string    `json:"mac"`
+	IP        string    `json:"ip"`
+	Hostname  string    `json:"hostname"`
+	Alias     string    `json:"alias"`
+	Blocked   bool      `json:"blocked"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
 }
 
 // ─── TrafficSample ──────────────────────────────────────────────────────────

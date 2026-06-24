@@ -20,6 +20,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
@@ -39,6 +40,7 @@ type Server struct {
 	failoverSvc *failover.Service
 	alertSvc    *alerts.Service
 	authSvc     *auth.Service
+	hostSvc     *hosts.Service
 	sysCol      *system.Collector
 	rrdSvc      *trafficrrd.Service
 	promReg     *prometheus.Registry
@@ -57,7 +59,8 @@ type Config struct {
 func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, alertSvc *alerts.Service, authSvc *auth.Service,
-	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
+	hostSvc *hosts.Service, sysCol *system.Collector, rrdSvc *trafficrrd.Service,
+	promReg *prometheus.Registry) *Server {
 
 	s := &Server{
 		db:          db,
@@ -68,6 +71,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		failoverSvc: failoverSvc,
 		alertSvc:    alertSvc,
 		authSvc:     authSvc,
+		hostSvc:     hostSvc,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
@@ -113,65 +117,90 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 	healthH := handlers.NewHealthHandler(s.db, s.sysCol)
 	r.Get("/api/health", healthH.Health)
 
-	// Protected API routes
+	// Protected API routes. Each route is gated by a feature permission
+	// (RBAC); the user's effective permissions are resolved per request.
 	r.Group(func(r chi.Router) {
 		r.Use(s.authSvc.Middleware)
+		require := s.authSvc.Require
+
+		// Current user + effective permissions (authentication only)
+		r.Get("/api/auth/me", authH.Me)
 
 		// System
 		sysH := handlers.NewSystemHandler(s.sysCol, s.db, s.rrdSvc)
-		r.Get("/api/system/status", sysH.Status)
-		r.Get("/api/system/interface-aliases", sysH.ListInterfaceAliases)
-		r.Put("/api/system/interface-aliases", sysH.UpsertInterfaceAlias)
-		r.Get("/api/system/traffic-history", sysH.TrafficHistory)
-		r.Get("/api/system/traffic-retention", sysH.GetTrafficRetention)
-		r.Put("/api/system/traffic-retention", sysH.SetTrafficRetention)
+		r.With(require(auth.PermSystemRead)).Get("/api/system/status", sysH.Status)
+		r.With(require(auth.PermSystemRead)).Get("/api/system/interface-aliases", sysH.ListInterfaceAliases)
+		r.With(require(auth.PermSystemWrite)).Put("/api/system/interface-aliases", sysH.UpsertInterfaceAlias)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/system/traffic-history", sysH.TrafficHistory)
+		r.With(require(auth.PermSystemRead)).Get("/api/system/traffic-retention", sysH.GetTrafficRetention)
+		r.With(require(auth.PermSystemWrite)).Put("/api/system/traffic-retention", sysH.SetTrafficRetention)
 
 		// Links
 		linksH := handlers.NewLinksHandler(s.linkSvc, s.db)
-		r.Get("/api/links", linksH.List)
-		r.Post("/api/links", linksH.Create)
-		r.Post("/api/links/auto-detect", linksH.AutoDetect)
-		r.Get("/api/links/{id}", linksH.Get)
-		r.Put("/api/links/{id}", linksH.Update)
-		r.Delete("/api/links/{id}", linksH.Delete)
+		r.With(require(auth.PermLinksRead)).Get("/api/links", linksH.List)
+		r.With(require(auth.PermLinksWrite)).Post("/api/links", linksH.Create)
+		r.With(require(auth.PermLinksWrite)).Post("/api/links/auto-detect", linksH.AutoDetect)
+		r.With(require(auth.PermLinksRead)).Get("/api/links/{id}", linksH.Get)
+		r.With(require(auth.PermLinksWrite)).Put("/api/links/{id}", linksH.Update)
+		r.With(require(auth.PermLinksWrite)).Delete("/api/links/{id}", linksH.Delete)
 
 		// Routes
 		routesH := handlers.NewRoutesHandler(s.routeSvc)
-		r.Get("/api/routes", routesH.List)
-		r.Get("/api/routes/rules", routesH.ListRules)
-		r.Post("/api/routes", routesH.AddRoute)
-		r.Put("/api/routes", routesH.UpdateRoute)
-		r.Delete("/api/routes", routesH.DeleteRoute)
-		r.Post("/api/routes/rules", routesH.AddRule)
-		r.Put("/api/routes/rules", routesH.UpdateRule)
-		r.Delete("/api/routes/rules", routesH.DeleteRule)
+		r.With(require(auth.PermRoutesRead)).Get("/api/routes", routesH.List)
+		r.With(require(auth.PermRoutesRead)).Get("/api/routes/rules", routesH.ListRules)
+		r.With(require(auth.PermRoutesWrite)).Post("/api/routes", routesH.AddRoute)
+		r.With(require(auth.PermRoutesWrite)).Put("/api/routes", routesH.UpdateRoute)
+		r.With(require(auth.PermRoutesWrite)).Delete("/api/routes", routesH.DeleteRoute)
+		r.With(require(auth.PermRoutesWrite)).Post("/api/routes/rules", routesH.AddRule)
+		r.With(require(auth.PermRoutesWrite)).Put("/api/routes/rules", routesH.UpdateRule)
+		r.With(require(auth.PermRoutesWrite)).Delete("/api/routes/rules", routesH.DeleteRule)
 
-		// iptables
+		// iptables / firewall
 		iptH := handlers.NewIptablesHandler(s.iptSvc, s.db)
-		r.Get("/api/iptables/rules", iptH.ListAll)
-		r.Get("/api/iptables/nat", iptH.ListNat)
-		r.Get("/api/iptables/mangle", iptH.ListMangle)
-		r.Get("/api/iptables/filter", iptH.ListFilter)
-		r.Post("/api/firewall/preview", iptH.Preview)
-		r.Post("/api/firewall/backup", iptH.Backup)
-		r.Post("/api/firewall/rollback", iptH.Rollback)
-		r.Get("/api/firewall/backups", iptH.ListBackups)
-		r.Post("/api/firewall/rules", iptH.CreateRule)
-		r.Put("/api/firewall/rules", iptH.UpdateRule)
-		r.Delete("/api/firewall/rules", iptH.DeleteRule)
+		r.With(require(auth.PermFirewallRead)).Get("/api/iptables/rules", iptH.ListAll)
+		r.With(require(auth.PermFirewallRead)).Get("/api/iptables/nat", iptH.ListNat)
+		r.With(require(auth.PermFirewallRead)).Get("/api/iptables/mangle", iptH.ListMangle)
+		r.With(require(auth.PermFirewallRead)).Get("/api/iptables/filter", iptH.ListFilter)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/preview", iptH.Preview)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/backup", iptH.Backup)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/rollback", iptH.Rollback)
+		r.With(require(auth.PermFirewallRead)).Get("/api/firewall/backups", iptH.ListBackups)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/rules", iptH.CreateRule)
+		r.With(require(auth.PermFirewallWrite)).Put("/api/firewall/rules", iptH.UpdateRule)
+		r.With(require(auth.PermFirewallWrite)).Delete("/api/firewall/rules", iptH.DeleteRule)
 
 		// Failover events
 		failH := handlers.NewFailoverHandler(s.failoverSvc)
-		r.Get("/api/failover/events", failH.ListEvents)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/failover/events", failH.ListEvents)
 
 		// Alerts
 		alertsH := handlers.NewAlertsHandler(s.alertSvc)
-		r.Get("/api/alerts", alertsH.List)
-		r.Put("/api/alerts/{id}/resolve", alertsH.Resolve)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/alerts", alertsH.List)
+		r.With(require(auth.PermMonitoringRead)).Put("/api/alerts/{id}/resolve", alertsH.Resolve)
 
 		// Logs / Audit
 		logsH := handlers.NewLogsHandler(s.db)
-		r.Get("/api/logs", logsH.List)
+		r.With(require(auth.PermLogsRead)).Get("/api/logs", logsH.List)
+
+		// Host inventory
+		hostsH := handlers.NewHostsHandler(s.hostSvc, s.db)
+		r.With(require(auth.PermHostsRead)).Get("/api/hosts", hostsH.List)
+		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/alias", hostsH.SetAlias)
+		r.With(require(auth.PermHostsBlock)).Post("/api/hosts/block", hostsH.SetBlocked)
+
+		// User & role management (RBAC administration)
+		usersH := handlers.NewUsersHandler(s.db)
+		r.With(require(auth.PermUsersManage)).Get("/api/users", usersH.List)
+		r.With(require(auth.PermUsersManage)).Post("/api/users", usersH.Create)
+		r.With(require(auth.PermUsersManage)).Put("/api/users/{id}", usersH.Update)
+		r.With(require(auth.PermUsersManage)).Delete("/api/users/{id}", usersH.Delete)
+
+		rolesH := handlers.NewRolesHandler(s.db)
+		r.With(require(auth.PermRolesManage)).Get("/api/permissions", rolesH.Catalog)
+		r.With(require(auth.PermRolesManage)).Get("/api/roles", rolesH.List)
+		r.With(require(auth.PermRolesManage)).Post("/api/roles", rolesH.Create)
+		r.With(require(auth.PermRolesManage)).Put("/api/roles/{id}", rolesH.Update)
+		r.With(require(auth.PermRolesManage)).Delete("/api/roles/{id}", rolesH.Delete)
 	})
 
 	// Serve embedded frontend for all other routes

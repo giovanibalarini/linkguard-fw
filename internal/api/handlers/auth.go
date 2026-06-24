@@ -48,3 +48,25 @@ writeJSON(w, http.StatusOK, map[string]interface{}{
 },
 })
 }
+
+// Me returns the authenticated user together with their effective permissions,
+// so the frontend can show/hide features. Requires only authentication.
+func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
+claims := auth.ClaimsFromContext(r.Context())
+if claims == nil {
+writeError(w, http.StatusUnauthorized, "unauthorized")
+return
+}
+perms, err := h.svc.EffectivePermissions(claims.UserID)
+if err != nil {
+writeError(w, http.StatusInternalServerError, err.Error())
+return
+}
+roleIDs, _ := h.db.GetUserRoleIDs(claims.UserID)
+writeJSON(w, http.StatusOK, map[string]interface{}{
+"id":          claims.UserID,
+"username":    claims.Username,
+"role_ids":    roleIDs,
+"permissions": perms,
+})
+}

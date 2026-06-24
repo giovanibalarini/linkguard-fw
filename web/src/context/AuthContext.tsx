@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import client from '../api/client';
-import type { LoginResponse } from '../types';
+import type { LoginResponse, MeResponse } from '../types';
 
 interface User {
   id: string;
@@ -11,6 +11,9 @@ interface User {
 interface AuthContextValue {
   user: User | null;
   isAuthenticated: boolean;
+  permissions: Set<string>;
+  permsLoaded: boolean;
+  can: (perm: string) => boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
 }
@@ -26,22 +29,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
   });
+  const [permissions, setPermissions] = useState<Set<string>>(new Set());
+  const [permsLoaded, setPermsLoaded] = useState(false);
+
+  const refreshMe = useCallback(async () => {
+    try {
+      const res = await client.get<MeResponse>('/api/auth/me');
+      setPermissions(new Set(res.data.permissions ?? []));
+    } catch {
+      setPermissions(new Set());
+    } finally {
+      setPermsLoaded(true);
+    }
+  }, []);
+
+  // Load effective permissions on first mount when a session already exists.
+  useEffect(() => {
+    if (localStorage.getItem('token')) {
+      refreshMe();
+    } else {
+      setPermsLoaded(true);
+    }
+  }, [refreshMe]);
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await client.post<LoginResponse>('/api/auth/login', { username, password });
     localStorage.setItem('token', res.data.token);
     localStorage.setItem('user', JSON.stringify(res.data.user));
     setUser(res.data.user);
-  }, []);
+    setPermsLoaded(false);
+    await refreshMe();
+  }, [refreshMe]);
 
   const logout = useCallback(() => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setUser(null);
+    setPermissions(new Set());
   }, []);
 
+  const can = useCallback((perm: string) => permissions.has(perm), [permissions]);
+
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout }}>
+    <AuthContext.Provider
+      value={{ user, isAuthenticated: !!user, permissions, permsLoaded, can, login, logout }}
+    >
       {children}
     </AuthContext.Provider>
   );

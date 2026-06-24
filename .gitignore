@@ -40,3 +40,6 @@ web/node_modules/
 *.db-shm
 *.db-wal
 dist/
+
+# Site-specific / scratch artifacts (e.g. generated production firewall rules)
+downloads/

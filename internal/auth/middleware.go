@@ -36,6 +36,47 @@ c, _ := ctx.Value(claimsKey).(*Claims)
 return c
 }
 
+// Require returns a middleware that allows the request only if the authenticated
+// user holds the given permission. It must be chained after Middleware (which
+// populates the claims). Effective permissions are resolved from the database on
+// each request, so revoking a role takes effect immediately (no need to wait for
+// the JWT to expire).
+func (s *Service) Require(perm Permission) func(http.Handler) http.Handler {
+return func(next http.Handler) http.Handler {
+return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+claims := ClaimsFromContext(r.Context())
+if claims == nil {
+http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+return
+}
+perms, err := s.db.GetUserPermissions(claims.UserID)
+if err != nil {
+http.Error(w, `{"error":"permission lookup failed"}`, http.StatusInternalServerError)
+return
+}
+if !perms[string(perm)] {
+http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+return
+}
+next.ServeHTTP(w, r)
+})
+}
+}
+
+// EffectivePermissions returns the permission keys granted to a user (the union
+// across their roles). Used by /api/auth/me so the frontend can show/hide UI.
+func (s *Service) EffectivePermissions(userID string) ([]string, error) {
+set, err := s.db.GetUserPermissions(userID)
+if err != nil {
+return nil, err
+}
+perms := make([]string, 0, len(set))
+for p := range set {
+perms = append(perms, p)
+}
+return perms, nil
+}
+
 func extractToken(r *http.Request) string {
 header := r.Header.Get("Authorization")
 if strings.HasPrefix(header, "Bearer ") {
