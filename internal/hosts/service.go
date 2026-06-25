@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -34,11 +35,12 @@ var reachableStates = map[string]bool{
 type Service struct {
 	exec firewall.Executor
 	db   *storage.DB
+	nft  *nftables.Service
 }
 
 // NewService creates a hosts Service.
-func NewService(exec firewall.Executor, db *storage.DB) *Service {
-	return &Service{exec: exec, db: db}
+func NewService(exec firewall.Executor, db *storage.DB, nft *nftables.Service) *Service {
+	return &Service{exec: exec, db: db, nft: nft}
 }
 
 // List returns the current host inventory. It records a sighting for every host
@@ -125,12 +127,36 @@ func (s *Service) SetAlias(mac, alias string) error {
 	return s.db.SetHostAlias(mac, alias)
 }
 
-// SetBlocked records the intent to block/unblock a host.
-//
-// NOTE: this persists the flag only. Actual enforcement (a FORWARD drop rule)
-// is applied by the firewall ruleset generator, which is the component that
-// touches the live firewall — wired in a later step. The UI reflects the flag
-// so intent is visible before enforcement is connected.
-func (s *Service) SetBlocked(mac string, blocked bool) error {
-	return s.db.SetHostBlocked(mac, blocked)
+// SetBlocked blocks/unblocks a host: it persists the flag AND enforces it on the
+// live firewall by adding/removing the host's current IP in the nft
+// `blocked_hosts` set (the FORWARD chain drops traffic to/from that set).
+func (s *Service) SetBlocked(ctx context.Context, mac string, blocked bool) error {
+	if err := s.db.SetHostBlocked(mac, blocked); err != nil {
+		return err
+	}
+	ip := s.ipForMAC(mac)
+	if ip == "" {
+		return nil // host IP unknown yet; flag persisted, enforced on next sighting
+	}
+	// Best-effort enforcement: a duplicate add or missing-element delete is not
+	// a hard failure (the persisted flag is the source of truth).
+	if blocked {
+		_, _ = s.nft.BlockHost(ctx, ip)
+	} else {
+		_, _ = s.nft.UnblockHost(ctx, ip)
+	}
+	return nil
+}
+
+func (s *Service) ipForMAC(mac string) string {
+	metas, err := s.db.ListHostMetadata()
+	if err != nil {
+		return ""
+	}
+	for _, m := range metas {
+		if m.MAC == mac {
+			return m.IP
+		}
+	}
+	return ""
 }

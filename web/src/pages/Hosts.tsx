@@ -68,21 +68,21 @@ export default function Hosts() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-white">Hosts da rede</h1>
           <p className="text-gray-500 text-sm">
             {onlineCount} online de {hosts.length} conhecidos
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 w-full sm:w-auto">
           <input
-            className="input"
+            className="input flex-1 sm:w-64"
             placeholder="Filtrar por IP, MAC, apelido..."
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
-          <button onClick={fetchHosts} className="btn-secondary flex items-center gap-2">
+          <button onClick={fetchHosts} className="btn-secondary flex items-center gap-2 whitespace-nowrap">
             <RefreshCw className="w-4 h-4" /> Atualizar
           </button>
         </div>

@@ -69,7 +69,7 @@ func (h *HostsHandler) SetBlocked(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "mac is required")
 		return
 	}
-	if err := h.svc.SetBlocked(body.MAC, body.Blocked); err != nil {
+	if err := h.svc.SetBlocked(r.Context(), body.MAC, body.Blocked); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -1,8 +1,10 @@
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
-  Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone
+  Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
+  Menu, X,
 } from 'lucide-react';
 
 // `perm` lists the permissions that reveal a nav item; an item with no `perm`
@@ -24,6 +26,11 @@ const navItems = [
 export default function Layout() {
   const { user, logout, can, permsLoaded } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Close the mobile drawer whenever the route changes.
+  useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
 
   const handleLogout = () => {
     logout();
@@ -38,10 +45,23 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen bg-gray-950">
-      {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col">
+      {/* Mobile backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Sidebar — static on desktop, slide-in drawer on mobile */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-64 bg-gray-900 border-r border-gray-800 flex flex-col
+          transform transition-transform duration-200 ease-in-out
+          lg:static lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
+      >
         {/* Logo */}
-        <div className="px-6 py-5 border-b border-gray-800">
+        <div className="px-6 py-5 border-b border-gray-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <ShieldCheck className="w-7 h-7 text-blue-500" />
             <div>
@@ -49,6 +69,13 @@ export default function Layout() {
               <p className="text-gray-500 text-xs">Firewall Manager</p>
             </div>
           </div>
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="lg:hidden text-gray-400 hover:text-gray-200"
+            aria-label="Fechar menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
         {/* Navigation */}
@@ -96,10 +123,27 @@ export default function Layout() {
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 overflow-auto">
-        <Outlet />
-      </main>
+      {/* Main column */}
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Mobile top bar with hamburger */}
+        <header className="lg:hidden flex items-center gap-3 px-4 h-14 bg-gray-900 border-b border-gray-800 flex-shrink-0">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="text-gray-300 hover:text-white"
+            aria-label="Abrir menu"
+          >
+            <Menu className="w-6 h-6" />
+          </button>
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-blue-500" />
+            <span className="text-white font-semibold text-sm">LinkGuard FW</span>
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-auto">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

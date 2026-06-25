@@ -23,6 +23,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
@@ -41,6 +42,7 @@ type Server struct {
 	alertSvc    *alerts.Service
 	authSvc     *auth.Service
 	hostSvc     *hosts.Service
+	nftSvc      *nftables.Service
 	sysCol      *system.Collector
 	rrdSvc      *trafficrrd.Service
 	promReg     *prometheus.Registry
@@ -59,8 +61,8 @@ type Config struct {
 func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, alertSvc *alerts.Service, authSvc *auth.Service,
-	hostSvc *hosts.Service, sysCol *system.Collector, rrdSvc *trafficrrd.Service,
-	promReg *prometheus.Registry) *Server {
+	hostSvc *hosts.Service, nftSvc *nftables.Service, sysCol *system.Collector,
+	rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
 
 	s := &Server{
 		db:          db,
@@ -72,6 +74,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		alertSvc:    alertSvc,
 		authSvc:     authSvc,
 		hostSvc:     hostSvc,
+		nftSvc:      nftSvc,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
@@ -168,6 +171,13 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/rules", iptH.CreateRule)
 		r.With(require(auth.PermFirewallWrite)).Put("/api/firewall/rules", iptH.UpdateRule)
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/firewall/rules", iptH.DeleteRule)
+
+		// nftables (native firewall management — replaces iptables)
+		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db)
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/ruleset", nftH.Ruleset)
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/backups", nftH.ListBackups)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/backup", nftH.Backup)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rollback", nftH.Rollback)
 
 		// Failover events
 		failH := handlers.NewFailoverHandler(s.failoverSvc)

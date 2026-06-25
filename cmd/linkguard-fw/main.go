@@ -26,6 +26,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
@@ -111,7 +112,8 @@ func run() int {
 		RecoverThreshold: cfg.RecoverThreshold,
 		CooldownSecs:     cfg.FailoverCooldownSecs,
 	}, db, exec, routeSvc, alertSvc)
-	hostSvc := hosts.NewService(exec, db)
+	nftSvc := nftables.NewService(exec)
+	hostSvc := hosts.NewService(exec, db, nftSvc)
 	sysCollector := system.NewCollector()
 	rrdSvc := trafficrrd.NewService(db)
 
@@ -124,7 +126,7 @@ func run() int {
 		DryRun:  cfg.DryRun,
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, hostSvc, sysCollector, rrdSvc, promReg)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, hostSvc, nftSvc, sysCollector, rrdSvc, promReg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
