@@ -201,6 +201,18 @@ export interface NftManaged {
   blocked_hosts: string[];
 }
 
+export interface NftUserRule {
+  handle: number;
+  raw: string;
+  action: 'accept' | 'drop' | 'reject' | string;
+  iif: string;
+  oif: string;
+  saddr: string;
+  daddr: string;
+  proto: string;
+  dport: string;
+}
+
 export interface NetHost {
   ip: string;
   mac: string;

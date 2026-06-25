@@ -3,6 +3,7 @@ package handlers
 import (
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,6 +96,127 @@ func (h *NftablesHandler) Blocklist(w http.ResponseWriter, r *http.Request) {
 		auditAction(h.db, r, "nft.blocklist.add", cidr, "")
 	}
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ListUserRules returns the custom rules (ordered, with handles + fields).
+func (h *NftablesHandler) ListUserRules(w http.ResponseWriter, r *http.Request) {
+	rules, err := h.svc.ListUserRules(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rules == nil {
+		rules = []nftables.UserRule{}
+	}
+	writeJSON(w, http.StatusOK, rules)
+}
+
+type ruleBody struct {
+	Handle       int    `json:"handle"`
+	BeforeHandle int    `json:"before_handle"`
+	Action       string `json:"action"`
+	Iif          string `json:"iif"`
+	Oif          string `json:"oif"`
+	Saddr        string `json:"saddr"`
+	Daddr        string `json:"daddr"`
+	Proto        string `json:"proto"`
+	Dport        string `json:"dport"`
+}
+
+func (b ruleBody) fields() nftables.RuleFields {
+	return nftables.RuleFields{
+		Action: strings.TrimSpace(b.Action), Iif: strings.TrimSpace(b.Iif), Oif: strings.TrimSpace(b.Oif),
+		Saddr: strings.TrimSpace(b.Saddr), Daddr: strings.TrimSpace(b.Daddr),
+		Proto: strings.TrimSpace(b.Proto), Dport: strings.TrimSpace(b.Dport),
+	}
+}
+
+func validateRuleFields(f nftables.RuleFields) string {
+	if f.Saddr != "" && !validCIDRorIP(f.Saddr) {
+		return "Origem inválida (use IP ou CIDR)"
+	}
+	if f.Daddr != "" && !validCIDRorIP(f.Daddr) {
+		return "Destino inválido (use IP ou CIDR)"
+	}
+	return ""
+}
+
+// CreateUserRule adds a custom rule (optionally before another, for ordering).
+func (h *NftablesHandler) CreateUserRule(w http.ResponseWriter, r *http.Request) {
+	var b ruleBody
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if msg := validateRuleFields(b.fields()); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if _, err := h.svc.AddUserRule(r.Context(), b.fields(), b.BeforeHandle); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auditAction(h.db, r, "nft.rule.add", "user_rules", b.Action)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// UpdateUserRule edits a custom rule in place (keeps its position).
+func (h *NftablesHandler) UpdateUserRule(w http.ResponseWriter, r *http.Request) {
+	var b ruleBody
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if b.Handle <= 0 {
+		writeError(w, http.StatusBadRequest, "handle is required")
+		return
+	}
+	if msg := validateRuleFields(b.fields()); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if _, err := h.svc.UpdateUserRule(r.Context(), b.Handle, b.fields()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auditAction(h.db, r, "nft.rule.update", "user_rules", strconv.Itoa(b.Handle))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// DeleteUserRule removes a custom rule by handle.
+func (h *NftablesHandler) DeleteUserRule(w http.ResponseWriter, r *http.Request) {
+	var b ruleBody
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if b.Handle <= 0 {
+		writeError(w, http.StatusBadRequest, "handle is required")
+		return
+	}
+	if _, err := h.svc.DeleteUserRule(r.Context(), b.Handle); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auditAction(h.db, r, "nft.rule.del", "user_rules", strconv.Itoa(b.Handle))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// MoveUserRule reorders a custom rule up or down.
+func (h *NftablesHandler) MoveUserRule(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Handle int    `json:"handle"`
+		Dir    string `json:"dir"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.svc.MoveUserRule(r.Context(), b.Handle, b.Dir); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

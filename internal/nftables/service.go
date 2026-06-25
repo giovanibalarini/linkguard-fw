@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -181,6 +183,256 @@ func (s *Service) Persist(ctx context.Context) error {
 	}
 	body := "#!/usr/sbin/nft -f\n\nflush ruleset\n\n" + rs + "\n"
 	return os.WriteFile(ConfPath, []byte(body), 0o644)
+}
+
+// ─── User rules (custom allow/block, ordered, edited via modal) ──────────────
+
+// UserChain is the admin-managed chain (evaluated from `forward`).
+const UserChain = "user_rules"
+
+// RuleFields is the structured, UX-friendly description of a custom rule. The
+// admin fills these in a modal; the spec is built server-side so they never see
+// raw nft syntax.
+type RuleFields struct {
+	Action string `json:"action"` // accept | drop | reject
+	Iif    string `json:"iif"`    // input interface
+	Oif    string `json:"oif"`    // output interface
+	Saddr  string `json:"saddr"`  // source IP/CIDR
+	Daddr  string `json:"daddr"`  // destination IP/CIDR
+	Proto  string `json:"proto"`  // tcp | udp | icmp | ""
+	Dport  string `json:"dport"`  // destination port (tcp/udp)
+}
+
+// UserRule is a stored custom rule with its nft handle (stable id) and the
+// parsed fields so the modal can pre-fill on edit.
+type UserRule struct {
+	Handle int    `json:"handle"`
+	Raw    string `json:"raw"`
+	RuleFields
+}
+
+var (
+	reHandle  = regexp.MustCompile(`# handle (\d+)`)
+	reCounter = regexp.MustCompile(`counter packets \d+ bytes \d+`)
+)
+
+// ListUserRules returns the custom rules in order, with handles and fields.
+func (s *Service) ListUserRules(ctx context.Context) ([]UserRule, error) {
+	out, err := s.exec.ExecuteRead(ctx, "nft", "-a", "list", "chain", Family, Table, UserChain)
+	if err != nil {
+		return nil, err
+	}
+	rules := []UserRule{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		// Skip the chain header (`chain user_rules { # handle N`) and any block
+		// delimiters — only actual rule lines carry a handle here.
+		if strings.HasPrefix(line, "chain ") || strings.Contains(line, "{") || strings.HasPrefix(line, "}") {
+			continue
+		}
+		m := reHandle.FindStringSubmatch(line)
+		if m == nil {
+			continue // not a rule line
+		}
+		handle, _ := strconv.Atoi(m[1])
+		clean := reHandle.ReplaceAllString(line, "")
+		clean = reCounter.ReplaceAllString(clean, "")
+		clean = strings.Join(strings.Fields(clean), " ")
+		rules = append(rules, UserRule{Handle: handle, Raw: clean, RuleFields: parseRuleFields(clean)})
+	}
+	return rules, nil
+}
+
+// AddUserRule appends (or inserts before beforeHandle) a custom rule.
+func (s *Service) AddUserRule(ctx context.Context, f RuleFields, beforeHandle int) (string, error) {
+	tokens, err := buildRuleTokens(f)
+	if err != nil {
+		return "", err
+	}
+	out, err := s.addRule(ctx, tokens, beforeHandle)
+	if err != nil {
+		return out, err
+	}
+	return out, s.Persist(ctx)
+}
+
+// UpdateUserRule replaces a rule (by handle) with new fields, keeping its position.
+func (s *Service) UpdateUserRule(ctx context.Context, handle int, f RuleFields) (string, error) {
+	rules, err := s.ListUserRules(ctx)
+	if err != nil {
+		return "", err
+	}
+	before := 0 // the rule that follows the one being edited (to keep position)
+	for i, r := range rules {
+		if r.Handle == handle && i+1 < len(rules) {
+			before = rules[i+1].Handle
+		}
+	}
+	tokens, err := buildRuleTokens(f)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.delRule(ctx, handle); err != nil {
+		return "", err
+	}
+	if _, err := s.addRule(ctx, tokens, before); err != nil {
+		return "", err
+	}
+	return "", s.Persist(ctx)
+}
+
+// DeleteUserRule removes a custom rule by handle.
+func (s *Service) DeleteUserRule(ctx context.Context, handle int) (string, error) {
+	if _, err := s.delRule(ctx, handle); err != nil {
+		return "", err
+	}
+	return "", s.Persist(ctx)
+}
+
+// MoveUserRule reorders a rule up or down by one position.
+func (s *Service) MoveUserRule(ctx context.Context, handle int, dir string) error {
+	rules, err := s.ListUserRules(ctx)
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, r := range rules {
+		if r.Handle == handle {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("rule not found")
+	}
+
+	switch dir {
+	case "up":
+		if idx == 0 {
+			return nil
+		}
+		pred := rules[idx-1]
+		moved := rules[idx]
+		tokens, _ := buildRuleTokens(moved.RuleFields)
+		if _, err := s.delRule(ctx, moved.Handle); err != nil {
+			return err
+		}
+		if _, err := s.addRule(ctx, tokens, pred.Handle); err != nil {
+			return err
+		}
+	case "down":
+		if idx >= len(rules)-1 {
+			return nil
+		}
+		// Move the successor up above this rule (reuses insert-before).
+		succ := rules[idx+1]
+		tokens, _ := buildRuleTokens(succ.RuleFields)
+		if _, err := s.delRule(ctx, succ.Handle); err != nil {
+			return err
+		}
+		if _, err := s.addRule(ctx, tokens, handle); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("invalid direction")
+	}
+	return s.Persist(ctx)
+}
+
+func (s *Service) addRule(ctx context.Context, tokens []string, beforeHandle int) (string, error) {
+	args := []string{}
+	if beforeHandle > 0 {
+		args = append(args, "insert", "rule", Family, Table, UserChain, "position", strconv.Itoa(beforeHandle))
+	} else {
+		args = append(args, "add", "rule", Family, Table, UserChain)
+	}
+	args = append(args, tokens...)
+	return s.exec.Execute(ctx, "nft", args...)
+}
+
+func (s *Service) delRule(ctx context.Context, handle int) (string, error) {
+	return s.exec.Execute(ctx, "nft", "delete", "rule", Family, Table, UserChain, "handle", strconv.Itoa(handle))
+}
+
+// buildRuleTokens turns structured fields into nft rule tokens (validated).
+func buildRuleTokens(f RuleFields) ([]string, error) {
+	action := strings.ToLower(strings.TrimSpace(f.Action))
+	if action != "accept" && action != "drop" && action != "reject" {
+		return nil, fmt.Errorf("ação inválida (use accept, drop ou reject)")
+	}
+	var t []string
+	if f.Iif != "" {
+		t = append(t, "iifname", f.Iif)
+	}
+	if f.Oif != "" {
+		t = append(t, "oifname", f.Oif)
+	}
+	if f.Saddr != "" {
+		t = append(t, "ip", "saddr", f.Saddr)
+	}
+	if f.Daddr != "" {
+		t = append(t, "ip", "daddr", f.Daddr)
+	}
+	proto := strings.ToLower(strings.TrimSpace(f.Proto))
+	switch proto {
+	case "tcp", "udp":
+		if f.Dport != "" {
+			t = append(t, proto, "dport", f.Dport)
+		} else {
+			t = append(t, "ip", "protocol", proto)
+		}
+	case "icmp":
+		t = append(t, "ip", "protocol", "icmp")
+	case "", "all", "any":
+		// no L4 match
+	default:
+		return nil, fmt.Errorf("protocolo inválido")
+	}
+	t = append(t, "counter", action)
+	return t, nil
+}
+
+// parseRuleFields best-effort parses our generated rule text back into fields
+// (so the edit modal can pre-fill). Unknown tokens are ignored.
+func parseRuleFields(clean string) RuleFields {
+	f := RuleFields{}
+	toks := strings.Fields(clean)
+	unq := func(s string) string { return strings.Trim(s, `"`) }
+	for i := 0; i < len(toks); i++ {
+		switch toks[i] {
+		case "iif", "iifname":
+			if i+1 < len(toks) {
+				f.Iif = unq(toks[i+1])
+				i++
+			}
+		case "oif", "oifname":
+			if i+1 < len(toks) {
+				f.Oif = unq(toks[i+1])
+				i++
+			}
+		case "ip":
+			if i+2 < len(toks) {
+				switch toks[i+1] {
+				case "saddr":
+					f.Saddr = toks[i+2]
+				case "daddr":
+					f.Daddr = toks[i+2]
+				case "protocol":
+					f.Proto = toks[i+2]
+				}
+				i += 2
+			}
+		case "tcp", "udp":
+			f.Proto = toks[i]
+			if i+2 < len(toks) && toks[i+1] == "dport" {
+				f.Dport = toks[i+2]
+				i += 2
+			}
+		case "accept", "drop", "reject":
+			f.Action = toks[i]
+		}
+	}
+	return f
 }
 
 // parseElements extracts the comma-separated tokens inside an `elements = { ... }`

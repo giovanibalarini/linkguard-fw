@@ -183,6 +183,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/wan-host", nftH.WanHost)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/blocklist", nftH.Blocklist)
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/blocklist", nftH.Blocklist)
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/rules", nftH.ListUserRules)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules", nftH.CreateUserRule)
+		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/rules", nftH.UpdateUserRule)
+		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/rules", nftH.DeleteUserRule)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules/move", nftH.MoveUserRule)
 
 		// Failover events
 		failH := handlers.NewFailoverHandler(s.failoverSvc)
