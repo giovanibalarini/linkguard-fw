@@ -26,7 +26,9 @@ SyslogIdentifier=linkguard-fw
 # Security hardening (compatible with iptables/iproute2 access)
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw
+# /etc/nftables.conf is writable so the app can persist nft rule edits
+# (nftables.service reloads it at boot).
+ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf
 ProtectHome=yes
 PrivateTmp=yes
 
