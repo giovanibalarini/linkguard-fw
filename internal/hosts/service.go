@@ -3,9 +3,11 @@ package hosts
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -36,11 +38,12 @@ type Service struct {
 	exec firewall.Executor
 	db   *storage.DB
 	nft  *nftables.Service
+	net  netsvc.Provider
 }
 
 // NewService creates a hosts Service.
-func NewService(exec firewall.Executor, db *storage.DB, nft *nftables.Service) *Service {
-	return &Service{exec: exec, db: db, nft: nft}
+func NewService(exec firewall.Executor, db *storage.DB, nft *nftables.Service, net netsvc.Provider) *Service {
+	return &Service{exec: exec, db: db, nft: nft, net: net}
 }
 
 // List returns the current host inventory. It records a sighting for every host
@@ -111,6 +114,23 @@ func (s *Service) List(ctx context.Context) ([]Host, error) {
 			FirstSeen: &first,
 			LastSeen:  &last,
 		})
+	}
+
+	// Enrich with hostnames from DHCP leases (by MAC) — best-effort.
+	if leases, err := s.net.Leases(ctx); err == nil {
+		byMAC := make(map[string]string, len(leases))
+		for _, l := range leases {
+			if l.Hostname != "" {
+				byMAC[strings.ToLower(l.MAC)] = l.Hostname
+			}
+		}
+		for i := range hosts {
+			if hosts[i].Hostname == "" {
+				if hn, ok := byMAC[strings.ToLower(hosts[i].MAC)]; ok {
+					hosts[i].Hostname = hn
+				}
+			}
+		}
 	}
 
 	sort.Slice(hosts, func(i, j int) bool {

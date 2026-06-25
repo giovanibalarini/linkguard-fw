@@ -116,7 +116,7 @@ func run() int {
 	}, db, exec, routeSvc, alertSvc)
 	nftSvc := nftables.NewService(exec)
 	var netSvc netsvc.Provider = keaunbound.NewService(exec)
-	hostSvc := hosts.NewService(exec, db, nftSvc)
+	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
 	sysCollector := system.NewCollector()
 	rrdSvc := trafficrrd.NewService(db)
 
