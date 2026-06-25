@@ -42,6 +42,12 @@ CONFIG
 
     if command -v systemctl >/dev/null 2>&1; then
       systemctl daemon-reload
+      # On upgrade, restart the service if it is enabled so it picks up the new
+      # binary without manual intervention (and stays running). On a fresh
+      # install it is not enabled yet, so this is a no-op.
+      if systemctl is-enabled --quiet linkguard-fw 2>/dev/null; then
+        systemctl restart linkguard-fw 2>/dev/null || true
+      fi
     fi
 
     echo "[INFO] LinkGuard FW installed."
