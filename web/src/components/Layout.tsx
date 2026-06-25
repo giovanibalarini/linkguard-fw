@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
-  Menu, X,
+  Menu, X, AlertTriangle,
 } from 'lucide-react';
 
 // `perm` lists the permissions that reveal a nav item; an item with no `perm`
@@ -28,6 +28,7 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showSecWarn, setShowSecWarn] = useState(true);
 
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
@@ -139,6 +140,20 @@ export default function Layout() {
             <span className="text-white font-semibold text-sm">LinkGuard FW</span>
           </div>
         </header>
+
+        {/* Security nudge: still using the default admin account */}
+        {user?.username === 'admin' && showSecWarn && (
+          <div className="flex items-start gap-3 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-sm flex-shrink-0">
+            <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+            <p className="flex-1">
+              Você está usando a conta padrão <span className="font-semibold">admin</span>. Crie usuários nominais e troque a senha em{' '}
+              <NavLink to="/admin" className="underline font-medium hover:text-amber-200">Administração</NavLink>.
+            </p>
+            <button onClick={() => setShowSecWarn(false)} className="text-amber-400 hover:text-amber-200 flex-shrink-0" aria-label="Dispensar aviso" title="Dispensar">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         <main className="flex-1 overflow-auto">
           <Outlet />

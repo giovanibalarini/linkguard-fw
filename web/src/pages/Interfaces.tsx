@@ -290,7 +290,7 @@ export default function Interfaces() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-white">Interfaces</h1>
           <p className="text-gray-500 text-sm">Métricas vêm de /proc com histórico RRD persistente.</p>
