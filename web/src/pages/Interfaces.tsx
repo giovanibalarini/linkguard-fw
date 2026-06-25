@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, Activity, Network, ArrowDownToLine, ArrowUpToLine, Pencil } from 'lucide-react';
+import { Activity, Network, ArrowDownToLine, ArrowUpToLine, Pencil, Pause, Play } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import client from '../api/client';
 import type { SystemMetrics, TrafficHistoryResponse } from '../types';
@@ -68,12 +68,19 @@ function calcStats(values: number[]): RateStats {
 export default function Interfaces() {
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [aliasSaving, setAliasSaving] = useState<string>('');
+  const [aliasFor, setAliasFor] = useState<string | null>(null);
+  const [aliasValue, setAliasValue] = useState('');
+  const [aliasError, setAliasError] = useState('');
   const [range, setRange] = useState<'5m' | '30m' | '12h' | '30d' | '1y' | '5y'>('5m');
   const [currentRates, setCurrentRates] = useState<Record<string, { rx: number; tx: number }>>({});
   const [rrdHistory, setRrdHistory] = useState<Record<string, RatePoint[]>>({});
+  const [rrdLoading, setRrdLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [paused, setPaused] = useState(false);
   const firstLoadRef = useRef(true);
+  const pausedRef = useRef(false);
 
   const prevCountersRef = useState<Record<string, { ts: number; rx: number; tx: number }>>({})[0];
   const secondHistoryRef = useState<Record<string, RatePoint[]>>({})[0];
@@ -191,9 +198,11 @@ export default function Interfaces() {
       setCurrentRates((prev) => ({ ...prev, ...nextRates }));
       setSys(res.data);
       setLastUpdated(new Date());
+      setError(false);
       firstLoadRef.current = false;
     } catch (e) {
       console.error(e);
+      setError(true);
     } finally {
       if (firstLoad) {
         setLoading(false);
@@ -201,10 +210,11 @@ export default function Interfaces() {
     }
   };
 
-  const loadRrdHistory = async () => {
+  const loadRrdHistory = async (showLoading = false) => {
     if (!sys || (range !== '30d' && range !== '1y' && range !== '5y')) {
       return;
     }
+    if (showLoading) setRrdLoading(true);
     try {
       const visible = (sys.interfaces ?? []).filter((i) => i.name !== 'lo');
       const results = await Promise.all(
@@ -228,42 +238,62 @@ export default function Interfaces() {
         next[res.data.interface] = points;
       }
       setRrdHistory(next);
+      setError(false);
     } catch (e) {
       console.error(e);
+      setError(true);
+    } finally {
+      if (showLoading) setRrdLoading(false);
     }
   };
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 1000);
+    const interval = setInterval(() => {
+      if (!pausedRef.current) fetchData();
+    }, 1000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
     if (range === '30d' || range === '1y' || range === '5y') {
-      loadRrdHistory();
-      const interval = setInterval(loadRrdHistory, 30000);
+      loadRrdHistory(true);
+      const interval = setInterval(() => {
+        if (!pausedRef.current) loadRrdHistory();
+      }, 30000);
       return () => clearInterval(interval);
     }
   }, [range, sys]);
 
-  const editAlias = async (ifaceName: string, currentAlias?: string) => {
-    const nextAlias = window.prompt(
-      `Apelido para ${ifaceName} (deixe vazio para remover):`,
-      currentAlias || ''
-    );
-    if (nextAlias === null) return;
+  const togglePaused = () => {
+    setPaused((p) => {
+      const next = !p;
+      pausedRef.current = next;
+      return next;
+    });
+  };
 
+  const openAlias = (ifaceName: string, currentAlias?: string) => {
+    setAliasFor(ifaceName);
+    setAliasValue(currentAlias || '');
+    setAliasError('');
+  };
+
+  const saveAlias = async () => {
+    if (!aliasFor) return;
+    const ifaceName = aliasFor;
     setAliasSaving(ifaceName);
+    setAliasError('');
     try {
       await client.put('/api/system/interface-aliases', {
         interface: ifaceName,
-        alias: nextAlias.trim(),
+        alias: aliasValue.trim(),
       });
+      setAliasFor(null);
       await fetchData();
     } catch (e) {
       console.error(e);
-      alert('Erro ao salvar apelido da interface');
+      setAliasError('Erro ao salvar apelido da interface');
     } finally {
       setAliasSaving('');
     }
@@ -299,49 +329,63 @@ export default function Interfaces() {
           <div className="flex items-center rounded-lg border border-gray-700 bg-gray-900/70 p-1 text-xs">
             <button
               onClick={() => setRange('5m')}
+              title="Janela de 5 minutos, amostra a cada 1s"
               className={`px-2 py-1 rounded ${range === '5m' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               5m (1s)
             </button>
             <button
               onClick={() => setRange('30m')}
+              title="Janela de 30 minutos, amostra a cada 5s"
               className={`px-2 py-1 rounded ${range === '30m' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               30m (5s)
             </button>
             <button
               onClick={() => setRange('12h')}
+              title="Janela de 12 horas, amostra a cada 1m"
               className={`px-2 py-1 rounded ${range === '12h' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               12h (1m)
             </button>
             <button
               onClick={() => setRange('30d')}
+              title="Histórico de 30 dias (RRD persistente)"
               className={`px-2 py-1 rounded ${range === '30d' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               30d
             </button>
             <button
               onClick={() => setRange('1y')}
+              title="Histórico de 1 ano (RRD persistente)"
               className={`px-2 py-1 rounded ${range === '1y' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               1y
             </button>
             <button
               onClick={() => setRange('5y')}
+              title="Histórico de 5 anos (RRD persistente)"
               className={`px-2 py-1 rounded ${range === '5y' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               5y
             </button>
           </div>
 
-          <div className="text-xs text-gray-600">Atualizado às {lastUpdated.toLocaleTimeString()}</div>
-          <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
-            <RefreshCw className="w-4 h-4" />
-            Atualizar
+          <div className="text-xs text-gray-600">
+            {paused ? 'Pausado' : `Atualizado às ${lastUpdated.toLocaleTimeString()}`}
+          </div>
+          <button
+            onClick={togglePaused}
+            title={paused ? 'Retomar atualização automática (1s)' : 'Pausar atualização automática (1s)'}
+            className="btn-secondary flex items-center gap-2"
+          >
+            {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+            {paused ? 'Retomar' : 'Pausar'}
           </button>
         </div>
       </div>
+
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={() => { fetchData(); loadRrdHistory(true); }} className="underline">Tentar novamente</button></div>}
 
       {loading ? (
         <div className="card text-center py-10 text-gray-500 animate-pulse">Carregando interfaces...</div>
@@ -371,19 +415,18 @@ export default function Interfaces() {
                       <div>
                         <h2 className="text-white font-semibold text-lg">{iface.alias || iface.name}</h2>
                         {iface.alias && <p className="text-gray-500 text-xs font-mono">{iface.name}</p>}
-                        <p className="text-gray-500 text-xs">Interface ativa</p>
                       </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/80 px-3 py-1 text-xs text-gray-300">
-                    <Activity className="w-3.5 h-3.5 text-green-400" />
+                    <Activity className="w-3.5 h-3.5 text-gray-400" />
                     RX {formatBytes(iface.rx_bytes)}
                   </div>
                 </div>
 
                 <div className="mb-4 flex justify-end">
                   <button
-                    onClick={() => editAlias(iface.name, iface.alias)}
+                    onClick={() => openAlias(iface.name, iface.alias)}
                     disabled={aliasSaving === iface.name}
                     className="rounded-lg border border-gray-700 bg-gray-900/80 px-3 py-1.5 text-xs text-gray-300 hover:border-blue-500/50 hover:text-blue-300 disabled:opacity-50"
                   >
@@ -429,7 +472,7 @@ export default function Interfaces() {
                       {iface.alias || iface.name}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
                     <div>
                       <p className="text-gray-500 text-xs mb-1">RX atual</p>
                       <p className="text-white font-mono">{formatRate(rates.rx)}</p>
@@ -442,10 +485,6 @@ export default function Interfaces() {
                       <p className="text-gray-500 text-xs mb-1">Uptime do host</p>
                       <p className="text-white font-mono">{formatUptime(sys?.uptime_seconds || 0)}</p>
                     </div>
-                    <div>
-                      <p className="text-gray-500 text-xs mb-1">Estado</p>
-                      <p className="text-white font-mono">UP</p>
-                    </div>
                   </div>
 
                   <div className="mt-4 rounded-lg border border-gray-800 bg-gray-900/70 p-3">
@@ -454,7 +493,11 @@ export default function Interfaces() {
                       <p className="text-xs text-gray-500">RX acima, TX abaixo. Retenção configurável na aba Configurações.</p>
                     </div>
                     {chartData.length < 2 ? (
-                      <p className="text-gray-500 text-sm">Aguardando amostras para desenhar o gráfico...</p>
+                      <p className="text-gray-500 text-sm">
+                        {(range === '30d' || range === '1y' || range === '5y') && rrdLoading
+                          ? 'Carregando histórico...'
+                          : 'Aguardando amostras para desenhar o gráfico...'}
+                      </p>
                     ) : (
                       <ResponsiveContainer width="100%" height={200}>
                         <LineChart data={plotData} margin={{ left: 4, right: 4, top: 4, bottom: 4 }}>
@@ -521,15 +564,44 @@ export default function Interfaces() {
                     )}
                   </div>
 
-                  {iface.rx_bytes + iface.tx_bytes > 0 && (
-                    <div className="mt-4 h-2 rounded-full bg-gray-800 overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-blue-500 via-cyan-400 to-green-400" style={{ width: `${Math.min(100, ((iface.rx_bytes + iface.tx_bytes) / Math.max((sys?.disk_total_bytes || 1), 1)) * 100)}%` }} />
-                    </div>
-                  )}
                 </div>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {aliasFor && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-sm">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold">Apelido da interface</h2>
+              <p className="text-gray-500 text-xs mt-1 font-mono">{aliasFor}</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <input
+                className="input w-full"
+                placeholder="Ex.: WAN, LAN, Fibra"
+                value={aliasValue}
+                onChange={(e) => setAliasValue(e.target.value)}
+                autoFocus
+              />
+              <p className="text-gray-500 text-xs">Deixe vazio para remover o apelido.</p>
+              {aliasError && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-sm px-3 py-2">{aliasError}</div>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={saveAlias}
+                  disabled={aliasSaving === aliasFor}
+                  className="btn-primary flex-1 disabled:opacity-50"
+                >
+                  {aliasSaving === aliasFor ? 'Salvando...' : 'Salvar'}
+                </button>
+                <button onClick={() => setAliasFor(null)} className="btn-secondary flex-1">Cancelar</button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

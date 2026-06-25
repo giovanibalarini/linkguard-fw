@@ -28,6 +28,13 @@ export default function Admin() {
         )}
       </div>
 
+      {!canUsers && !canRoles && (
+        <div className="card flex flex-col items-center text-center py-12 gap-3">
+          <Lock className="w-8 h-8 text-gray-600" />
+          <p className="text-gray-400 text-sm">Você não tem permissão para administrar usuários ou papéis.</p>
+        </div>
+      )}
+
       {tab === 'users' && canUsers && <UsersTab />}
       {tab === 'roles' && canRoles && <RolesTab />}
     </div>
@@ -65,9 +72,14 @@ function UsersTab() {
   const [form, setForm] = useState(emptyUser);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [fetchError, setFetchError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<AppUser | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const fetchAll = async () => {
     setLoading(true);
+    setFetchError('');
     try {
       const [u, r] = await Promise.all([
         client.get<AppUser[]>('/api/users'),
@@ -75,6 +87,8 @@ function UsersTab() {
       ]);
       setUsers(u.data ?? []);
       setRoles(r.data ?? []);
+    } catch (err: any) {
+      setFetchError(err.response?.data?.error || 'Erro ao carregar usuários e papéis');
     } finally {
       setLoading(false);
     }
@@ -132,30 +146,44 @@ function UsersTab() {
     }
   };
 
-  const handleDelete = async (u: AppUser) => {
-    if (!confirm(`Excluir o usuário "${u.username}"?`)) return;
+  const openDelete = (u: AppUser) => {
+    setDeleteTarget(u);
+    setDeleteError('');
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError('');
     try {
-      await client.delete(`/api/users/${u.id}`);
+      await client.delete(`/api/users/${deleteTarget.id}`);
+      setDeleteTarget(null);
       await fetchAll();
     } catch (err: any) {
-      alert(err.response?.data?.error || 'Erro ao excluir usuário');
+      setDeleteError(err.response?.data?.error || 'Erro ao excluir usuário');
+    } finally {
+      setDeleting(false);
     }
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end gap-2">
-        <button onClick={fetchAll} className="btn-secondary flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:justify-end gap-2">
+        <button onClick={fetchAll} className="btn-secondary flex items-center justify-center gap-2">
           <RefreshCw className="w-4 h-4" /> Atualizar
         </button>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+        <button onClick={openCreate} className="btn-primary flex items-center justify-center gap-2">
           <Plus className="w-4 h-4" /> Novo Usuário
         </button>
       </div>
 
+      {fetchError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{fetchError}</div>}
+
       <div className="card">
         {loading ? (
           <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
+        ) : fetchError ? (
+          <div className="text-center py-12 text-gray-600 text-sm">Não foi possível carregar os dados.</div>
         ) : users.length === 0 ? (
           <div className="text-center py-12 text-gray-500">Nenhum usuário</div>
         ) : (
@@ -189,10 +217,20 @@ function UsersTab() {
                     <td className="py-3 pr-4 text-gray-500 text-xs">{new Date(u.created_at).toLocaleString()}</td>
                     <td className="py-3">
                       <div className="flex gap-2">
-                        <button onClick={() => openEdit(u)} className="text-gray-400 hover:text-blue-400 transition-colors">
+                        <button
+                          onClick={() => openEdit(u)}
+                          title="Editar usuário"
+                          aria-label={`Editar usuário ${u.username}`}
+                          className="text-gray-400 hover:text-blue-400 transition-colors"
+                        >
                           <Pencil className="w-4 h-4" />
                         </button>
-                        <button onClick={() => handleDelete(u)} className="text-gray-400 hover:text-red-400 transition-colors">
+                        <button
+                          onClick={() => openDelete(u)}
+                          title="Excluir usuário"
+                          aria-label={`Excluir usuário ${u.username}`}
+                          className="text-gray-400 hover:text-red-400 transition-colors"
+                        >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
@@ -207,11 +245,11 @@ function UsersTab() {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] flex flex-col">
             <div className="px-6 py-4 border-b border-gray-800">
               <h2 className="text-white font-semibold">{isEditing ? 'Editar Usuário' : 'Novo Usuário'}</h2>
             </div>
-            <form onSubmit={handleSave} className="p-6 space-y-4">
+            <form onSubmit={handleSave} className="p-6 space-y-4 overflow-y-auto">
               <div>
                 <label className="label">Nome de usuário *</label>
                 <input
@@ -231,6 +269,7 @@ function UsersTab() {
                   placeholder={isEditing ? '••••••••' : 'mínimo 8 caracteres'}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                   required={!isEditing}
+                  minLength={!isEditing || form.password ? 8 : undefined}
                 />
               </div>
               <div>
@@ -252,7 +291,7 @@ function UsersTab() {
                   ))}
                 </div>
               </div>
-              {error && <p className="text-red-400 text-sm">{error}</p>}
+              {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
               <div className="flex gap-3 pt-2">
                 <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
                   {saving ? 'Salvando...' : 'Salvar'}
@@ -262,6 +301,35 @@ function UsersTab() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold">Excluir usuário</h2>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-gray-300 text-sm">
+                Tem certeza que deseja excluir o usuário <span className="font-medium text-white">"{deleteTarget.username}"</span>? Esta ação não pode ser desfeita.
+              </p>
+              {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={handleDelete}
+                  className="btn-primary flex-1 bg-red-600 hover:bg-red-500 border-red-600 disabled:opacity-50"
+                >
+                  {deleting ? 'Excluindo...' : 'Excluir'}
+                </button>
+                <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">
+                  Cancelar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -283,9 +351,14 @@ function RolesTab() {
   const [form, setForm] = useState(emptyRole);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [fetchError, setFetchError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<AppRole | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const fetchAll = async () => {
     setLoading(true);
+    setFetchError('');
     try {
       const [r, c] = await Promise.all([
         client.get<AppRole[]>('/api/roles'),
@@ -293,6 +366,8 @@ function RolesTab() {
       ]);
       setRoles(r.data ?? []);
       setCatalog(c.data ?? []);
+    } catch (err: any) {
+      setFetchError(err.response?.data?.error || 'Erro ao carregar papéis e permissões');
     } finally {
       setLoading(false);
     }
@@ -334,6 +409,18 @@ function RolesTab() {
     }));
   };
 
+  const toggleArea = (keys: string[], selectAll: boolean) => {
+    setForm((f) => {
+      const set = new Set(f.permissions);
+      if (selectAll) {
+        for (const k of keys) set.add(k);
+      } else {
+        for (const k of keys) set.delete(k);
+      }
+      return { ...f, permissions: Array.from(set) };
+    });
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -353,30 +440,46 @@ function RolesTab() {
     }
   };
 
-  const handleDelete = async (r: AppRole) => {
-    if (!confirm(`Excluir o papel "${r.name}"?`)) return;
+  const openDelete = (r: AppRole) => {
+    setDeleteTarget(r);
+    setDeleteError('');
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError('');
     try {
-      await client.delete(`/api/roles/${r.id}`);
+      await client.delete(`/api/roles/${deleteTarget.id}`);
+      setDeleteTarget(null);
       await fetchAll();
     } catch (err: any) {
-      alert(err.response?.data?.error || 'Erro ao excluir papel');
+      setDeleteError(err.response?.data?.error || 'Erro ao excluir papel');
+    } finally {
+      setDeleting(false);
     }
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end gap-2">
-        <button onClick={fetchAll} className="btn-secondary flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:justify-end gap-2">
+        <button onClick={fetchAll} className="btn-secondary flex items-center justify-center gap-2">
           <RefreshCw className="w-4 h-4" /> Atualizar
         </button>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+        <button onClick={openCreate} className="btn-primary flex items-center justify-center gap-2">
           <Plus className="w-4 h-4" /> Novo Papel
         </button>
       </div>
 
+      {fetchError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{fetchError}</div>}
+
       <div className="card">
         {loading ? (
           <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
+        ) : fetchError ? (
+          <div className="text-center py-12 text-gray-600 text-sm">Não foi possível carregar os dados.</div>
+        ) : roles.length === 0 ? (
+          <div className="text-center py-12 text-gray-500">Nenhum papel</div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {roles.map((r) => (
@@ -394,11 +497,21 @@ function RolesTab() {
                     <p className="text-gray-500 text-xs mt-0.5">{r.description || '—'}</p>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => openEdit(r)} className="text-gray-400 hover:text-blue-400 transition-colors">
+                    <button
+                      onClick={() => openEdit(r)}
+                      title="Editar papel"
+                      aria-label={`Editar papel ${r.name}`}
+                      className="text-gray-400 hover:text-blue-400 transition-colors"
+                    >
                       <Pencil className="w-4 h-4" />
                     </button>
                     {!r.builtin && (
-                      <button onClick={() => handleDelete(r)} className="text-gray-400 hover:text-red-400 transition-colors">
+                      <button
+                        onClick={() => openDelete(r)}
+                        title="Excluir papel"
+                        aria-label={`Excluir papel ${r.name}`}
+                        className="text-gray-400 hover:text-red-400 transition-colors"
+                      >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     )}
@@ -418,7 +531,7 @@ function RolesTab() {
               <h2 className="text-white font-semibold">{isEditing ? 'Editar Papel' : 'Novo Papel'}</h2>
             </div>
             <form onSubmit={handleSave} className="p-6 space-y-4 overflow-y-auto">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="label">Nome *</label>
                   <input
@@ -441,28 +554,49 @@ function RolesTab() {
               <div>
                 <label className="label">Permissões por funcionalidade</label>
                 <div className="space-y-4 mt-2">
-                  {areas.map(({ area, entries }) => (
-                    <div key={area}>
-                      <p className="text-gray-400 text-xs font-semibold uppercase tracking-wide mb-2">{area}</p>
-                      <div className="grid sm:grid-cols-2 gap-2">
-                        {entries.map((e) => (
-                          <label key={e.key} className="flex items-start gap-2 cursor-pointer" title={e.description}>
+                  {areas.map(({ area, entries }) => {
+                    const keys = entries.map((e) => e.key);
+                    const selectedCount = keys.filter((k) => form.permissions.includes(k)).length;
+                    const allSelected = selectedCount === keys.length && keys.length > 0;
+                    return (
+                      <div key={area}>
+                        <div className="flex items-center justify-between mb-2 gap-2">
+                          <label className="flex items-center gap-2 cursor-pointer">
                             <input
                               type="checkbox"
-                              className="w-4 h-4 mt-0.5"
-                              checked={form.permissions.includes(e.key)}
-                              onChange={() => togglePerm(e.key)}
+                              className="w-4 h-4"
+                              checked={allSelected}
+                              ref={(el) => {
+                                if (el) el.indeterminate = selectedCount > 0 && !allSelected;
+                              }}
+                              onChange={() => toggleArea(keys, !allSelected)}
+                              aria-label={`${allSelected ? 'Limpar' : 'Marcar tudo'} em ${area}`}
+                              title={allSelected ? 'Limpar' : 'Marcar tudo'}
                             />
-                            <span className="text-gray-200 text-sm">{e.label}</span>
+                            <span className="text-gray-400 text-xs font-semibold uppercase tracking-wide">{area}</span>
                           </label>
-                        ))}
+                          <span className="text-gray-600 text-xs whitespace-nowrap">{selectedCount}/{keys.length} selecionadas</span>
+                        </div>
+                        <div className="grid sm:grid-cols-2 gap-2">
+                          {entries.map((e) => (
+                            <label key={e.key} className="flex items-start gap-2 cursor-pointer" title={e.description}>
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 mt-0.5"
+                                checked={form.permissions.includes(e.key)}
+                                onChange={() => togglePerm(e.key)}
+                              />
+                              <span className="text-gray-200 text-sm">{e.label}</span>
+                            </label>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
-              {error && <p className="text-red-400 text-sm">{error}</p>}
+              {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
               <div className="flex gap-3 pt-2">
                 <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
                   {saving ? 'Salvando...' : 'Salvar'}
@@ -472,6 +606,35 @@ function RolesTab() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold">Excluir papel</h2>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-gray-300 text-sm">
+                Tem certeza que deseja excluir o papel <span className="font-medium text-white">"{deleteTarget.name}"</span>? Esta ação não pode ser desfeita.
+              </p>
+              {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={handleDelete}
+                  className="btn-primary flex-1 bg-red-600 hover:bg-red-500 border-red-600 disabled:opacity-50"
+                >
+                  {deleting ? 'Excluindo...' : 'Excluir'}
+                </button>
+                <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">
+                  Cancelar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

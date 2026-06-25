@@ -3,13 +3,25 @@ import { Settings as SettingsIcon, Info, Database } from 'lucide-react';
 import client from '../api/client';
 import type { TrafficRetentionResponse } from '../types';
 
+type RetentionProfile = '30d' | '1y' | '5y';
+
+// Ordem crescente de retenção; índice menor = janela mais curta.
+const PROFILE_ORDER: RetentionProfile[] = ['30d', '1y', '5y'];
+
 export default function Settings() {
   const [activeSection, setActiveSection] = useState('about');
-  const [retentionProfile, setRetentionProfile] = useState<'30d' | '1y' | '5y'>('30d');
+  const [retentionProfile, setRetentionProfile] = useState<RetentionProfile>('30d');
   const [savingProfile, setSavingProfile] = useState(false);
+  const [loadingRetention, setLoadingRetention] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [profileError, setProfileError] = useState('');
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [pendingShorten, setPendingShorten] = useState<RetentionProfile | null>(null);
 
   useEffect(() => {
     const loadRetention = async () => {
+      setLoadingRetention(true);
+      setLoadError('');
       try {
         const res = await client.get<TrafficRetentionResponse>('/api/system/traffic-retention');
         if (res.data.profile) {
@@ -17,22 +29,42 @@ export default function Settings() {
         }
       } catch (e) {
         console.error(e);
+        setLoadError('Não foi possível carregar o perfil de retenção atual.');
+      } finally {
+        setLoadingRetention(false);
       }
     };
     loadRetention();
   }, []);
 
-  const updateRetentionProfile = async (profile: '30d' | '1y' | '5y') => {
+  const persistRetentionProfile = async (profile: RetentionProfile) => {
     setSavingProfile(true);
+    setProfileError('');
+    setProfileSaved(false);
     try {
       await client.put('/api/system/traffic-retention', { profile });
       setRetentionProfile(profile);
+      setProfileSaved(true);
+      setTimeout(() => setProfileSaved(false), 3000);
     } catch (e) {
       console.error(e);
-      alert('Erro ao salvar perfil de retencao');
+      setProfileError('Erro ao salvar perfil de retenção.');
     } finally {
       setSavingProfile(false);
     }
+  };
+
+  const updateRetentionProfile = (profile: RetentionProfile) => {
+    if (profile === retentionProfile) return;
+    setProfileError('');
+    setProfileSaved(false);
+    // Confirmar apenas quando a retenção for reduzida (janela mais curta).
+    const isShortening = PROFILE_ORDER.indexOf(profile) < PROFILE_ORDER.indexOf(retentionProfile);
+    if (isShortening) {
+      setPendingShorten(profile);
+      return;
+    }
+    persistRetentionProfile(profile);
   };
 
   return (
@@ -47,7 +79,7 @@ export default function Settings() {
           {[
             { id: 'about', label: 'Sobre', icon: Info },
             { id: 'general', label: 'Geral', icon: SettingsIcon },
-            { id: 'traffic-retention', label: 'Retencao de trafego', icon: Database },
+            { id: 'traffic-retention', label: 'Retenção de tráfego', icon: Database },
           ].map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -98,6 +130,9 @@ export default function Settings() {
           {activeSection === 'general' && (
             <div className="card space-y-4">
               <h2 className="text-white font-semibold">Configurações Gerais</h2>
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+                Somente leitura — editável via arquivo de configuração.
+              </div>
               <p className="text-gray-500 text-sm">
                 As configurações são gerenciadas via arquivo de configuração JSON.
                 Reinicie o serviço após alterar as configurações.
@@ -127,22 +162,37 @@ export default function Settings() {
                 Esta configuração afeta as janelas de 30d, 1y e 5y usadas na aba Interfaces.
               </p>
 
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/50 p-2">
-                {(['30d', '1y', '5y'] as const).map((p) => (
-                  <button
-                    key={p}
-                    disabled={savingProfile}
-                    onClick={() => updateRetentionProfile(p)}
-                    className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
-                      retentionProfile === p
-                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                        : 'bg-gray-900 text-gray-300 border border-gray-700 hover:border-gray-500'
-                    } disabled:opacity-50`}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
+              {loadError && (
+                <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{loadError}</div>
+              )}
+              {profileError && (
+                <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{profileError}</div>
+              )}
+              {profileSaved && (
+                <div className="px-4 py-3 rounded-lg text-sm bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Perfil salvo</div>
+              )}
+
+              {loadingRetention ? (
+                <div className="text-gray-500 text-sm py-2 animate-pulse">Carregando perfil de retenção...</div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/50 p-2">
+                  {PROFILE_ORDER.map((p) => (
+                    <button
+                      key={p}
+                      disabled={savingProfile}
+                      title={p === '30d' ? '30 dias' : p === '1y' ? '1 ano' : '5 anos'}
+                      onClick={() => updateRetentionProfile(p)}
+                      className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+                        retentionProfile === p
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-gray-900 text-gray-300 border border-gray-700 hover:border-gray-500'
+                      } disabled:opacity-50`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               <div className="rounded-lg border border-gray-800 bg-gray-950/70 p-4 space-y-2 text-sm text-gray-400">
                 <p>
@@ -162,6 +212,46 @@ export default function Settings() {
           )}
         </div>
       </div>
+
+      {pendingShorten && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold">Reduzir retenção de tráfego</h2>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-gray-300 text-sm">
+                Reduzir a retenção pode descartar amostras antigas. Continuar?
+              </p>
+              <p className="text-gray-500 text-xs">
+                Perfil atual: <span className="font-mono text-gray-300">{retentionProfile}</span> →{' '}
+                novo perfil: <span className="font-mono text-gray-300">{pendingShorten}</span>
+              </p>
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  disabled={savingProfile}
+                  onClick={() => {
+                    const target = pendingShorten;
+                    setPendingShorten(null);
+                    if (target) persistRetentionProfile(target);
+                  }}
+                  className="btn-primary flex-1 disabled:opacity-50"
+                >
+                  Continuar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingShorten(null)}
+                  className="btn-secondary flex-1"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

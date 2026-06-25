@@ -1,7 +1,24 @@
-import { useEffect, useState } from 'react';
-import { RefreshCw, Route as RouteIcon, Plus, Pencil, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { RefreshCw, Route as RouteIcon, Plus, Pencil, Trash2, ListTree } from 'lucide-react';
 import client from '../api/client';
 import type { Route, IpRule } from '../types';
+
+type RouteForm = {
+  destination: string;
+  gateway: string;
+  interface: string;
+  table: string;
+};
+
+type RuleForm = {
+  from: string;
+  fwmark: string;
+  table: string;
+  priority: string;
+};
+
+const emptyRouteForm: RouteForm = { destination: 'default', gateway: '', interface: '', table: '' };
+const emptyRuleForm: RuleForm = { from: 'all', fwmark: '', table: 'main', priority: '' };
 
 export default function Routes() {
   const [routes, setRoutes] = useState<Route[]>([]);
@@ -10,6 +27,35 @@ export default function Routes() {
   const [activeTab, setActiveTab] = useState<'routes' | 'rules'>('routes');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
+
+  // Route modal state.
+  const [showRouteModal, setShowRouteModal] = useState(false);
+  const [routeEditing, setRouteEditing] = useState<Route | null>(null);
+  const [routeForm, setRouteForm] = useState<RouteForm>(emptyRouteForm);
+  const [routeError, setRouteError] = useState('');
+
+  // Rule modal state.
+  const [showRuleModal, setShowRuleModal] = useState(false);
+  const [ruleEditing, setRuleEditing] = useState<IpRule | null>(null);
+  const [ruleForm, setRuleForm] = useState<RuleForm>(emptyRuleForm);
+  const [ruleError, setRuleError] = useState('');
+
+  const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-dismiss the status banner after ~4s.
+  useEffect(() => {
+    if (!msg) return;
+    if (msgTimer.current) clearTimeout(msgTimer.current);
+    msgTimer.current = setTimeout(() => setMsg(''), 4000);
+    return () => {
+      if (msgTimer.current) clearTimeout(msgTimer.current);
+    };
+  }, [msg]);
+
+  // Clear the banner when switching tabs.
+  useEffect(() => {
+    setMsg('');
+  }, [activeTab]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -37,48 +83,73 @@ export default function Routes() {
     return '';
   };
 
-  const handleAddRoute = async () => {
-    const destination = prompt('Destino da rota (ex.: default ou 10.0.0.0/24):', 'default');
-    if (!destination) return;
-    const gateway = prompt('Gateway (opcional):', '') ?? '';
-    const iface = prompt('Interface (opcional):', '') ?? '';
-    const table = prompt('Tabela (opcional, ex.: 100):', '') ?? '';
-
-    setSaving(true);
-    setMsg('');
-    try {
-      await client.post('/api/routes', { destination: destination.trim(), gateway: gateway.trim(), interface: iface.trim(), table: table.trim() });
-      setMsg('Rota adicionada com sucesso!');
-      await fetchData();
-    } catch (e: any) {
-      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
-    } finally {
-      setSaving(false);
+  // The Route type carries no explicit table field; non-main routes come from
+  // `ip route show table all`, which appends a `table <name>` token to the raw
+  // line. Extract it so edit/delete can target the correct table.
+  const parseRouteTable = (r: Route) => {
+    const fields = (r.raw || '').trim().split(/\s+/);
+    const idx = fields.indexOf('table');
+    if (idx >= 0 && idx + 1 < fields.length) {
+      const table = fields[idx + 1];
+      if (table && table !== 'main') return table;
     }
+    return '';
   };
 
-  const handleEditRoute = async (r: Route) => {
-    const destination = prompt('Novo destino da rota:', r.destination);
-    if (!destination) return;
-    const gateway = prompt('Gateway:', r.gateway || '') ?? '';
-    const iface = prompt('Interface:', r.interface || '') ?? '';
-    const table = prompt('Tabela (opcional):', '') ?? '';
+  // ─── Route modal ──────────────────────────────────────────────────────────
+  const openAddRoute = () => {
+    setRouteEditing(null);
+    setRouteForm({ ...emptyRouteForm });
+    setRouteError('');
+    setShowRouteModal(true);
+  };
+
+  const openEditRoute = (r: Route) => {
+    setRouteEditing(r);
+    setRouteForm({
+      destination: r.destination,
+      gateway: r.gateway || '',
+      interface: r.interface || '',
+      table: parseRouteTable(r),
+    });
+    setRouteError('');
+    setShowRouteModal(true);
+  };
+
+  const submitRoute = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!routeForm.destination.trim()) {
+      setRouteError('Informe o destino da rota.');
+      return;
+    }
 
     setSaving(true);
+    setRouteError('');
     setMsg('');
     try {
-      await client.put('/api/routes', {
-        old_destination: r.destination,
-        old_table: '',
-        destination: destination.trim(),
-        gateway: gateway.trim(),
-        interface: iface.trim(),
-        table: table.trim(),
-      });
-      setMsg('Rota atualizada com sucesso!');
+      if (routeEditing) {
+        await client.put('/api/routes', {
+          old_destination: routeEditing.destination,
+          old_table: parseRouteTable(routeEditing),
+          destination: routeForm.destination.trim(),
+          gateway: routeForm.gateway.trim(),
+          interface: routeForm.interface.trim(),
+          table: routeForm.table.trim(),
+        });
+        setMsg('Rota atualizada com sucesso!');
+      } else {
+        await client.post('/api/routes', {
+          destination: routeForm.destination.trim(),
+          gateway: routeForm.gateway.trim(),
+          interface: routeForm.interface.trim(),
+          table: routeForm.table.trim(),
+        });
+        setMsg('Rota adicionada com sucesso!');
+      }
+      setShowRouteModal(false);
       await fetchData();
-    } catch (e: any) {
-      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+    } catch (err: any) {
+      setRouteError(err.response?.data?.error || err.message || 'Erro ao salvar rota.');
     } finally {
       setSaving(false);
     }
@@ -89,7 +160,7 @@ export default function Routes() {
     setSaving(true);
     setMsg('');
     try {
-      await client.delete('/api/routes', { data: { destination: r.destination, table: '' } });
+      await client.delete('/api/routes', { data: { destination: r.destination, table: parseRouteTable(r) } });
       setMsg('Rota removida com sucesso!');
       await fetchData();
     } catch (e: any) {
@@ -99,60 +170,64 @@ export default function Routes() {
     }
   };
 
-  const handleAddRule = async () => {
-    const from = prompt('Source (from), ex.: 192.168.1.0/24 ou all:', 'all');
-    if (from === null) return;
-    const fwmark = prompt('FWMark (opcional, ex.: 0x1):', '') ?? '';
-    const table = prompt('Tabela lookup (obrigatória), ex.: main ou 100:', 'main');
-    if (!table) return;
-    const priorityRaw = prompt('Prioridade (opcional), ex.: 100:', '') ?? '';
-    const priority = Number(priorityRaw || 0);
-
-    setSaving(true);
-    setMsg('');
-    try {
-      await client.post('/api/routes/rules', {
-        from: from.trim(),
-        fwmark: fwmark.trim(),
-        table: table.trim(),
-        priority: Number.isNaN(priority) ? 0 : priority,
-      });
-      setMsg('Regra adicionada com sucesso!');
-      await fetchData();
-    } catch (e: any) {
-      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
-    } finally {
-      setSaving(false);
-    }
+  // ─── Rule modal ───────────────────────────────────────────────────────────
+  const openAddRule = () => {
+    setRuleEditing(null);
+    setRuleForm({ ...emptyRuleForm });
+    setRuleError('');
+    setShowRuleModal(true);
   };
 
-  const handleEditRule = async (r: IpRule) => {
-    const fromCurrent = parseFromSelector(r.selector);
-    const from = prompt('Novo from (ex.: 192.168.1.0/24 ou all):', fromCurrent || 'all');
-    if (from === null) return;
-    const fwmark = prompt('Novo fwmark (opcional):', r.fwmark || '') ?? '';
-    const table = prompt('Nova tabela lookup:', r.table || 'main');
-    if (!table) return;
-    const priorityRaw = prompt('Nova prioridade (opcional):', r.priority || '') ?? '';
-    const priority = Number(priorityRaw || 0);
+  const openEditRule = (r: IpRule) => {
+    setRuleEditing(r);
+    setRuleForm({
+      from: parseFromSelector(r.selector) || 'all',
+      fwmark: r.fwmark || '',
+      table: r.table || 'main',
+      priority: r.priority || '',
+    });
+    setRuleError('');
+    setShowRuleModal(true);
+  };
+
+  const submitRule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ruleForm.table.trim()) {
+      setRuleError('Informe a tabela lookup (ex.: main ou 100).');
+      return;
+    }
+    const priorityNum = Number(ruleForm.priority || 0);
+    const priority = Number.isNaN(priorityNum) ? 0 : priorityNum;
 
     setSaving(true);
+    setRuleError('');
     setMsg('');
     try {
-      await client.put('/api/routes/rules', {
-        old_from: fromCurrent,
-        old_fwmark: r.fwmark || '',
-        old_table: r.table,
-        old_priority: Number(r.priority || 0),
-        from: from.trim(),
-        fwmark: fwmark.trim(),
-        table: table.trim(),
-        priority: Number.isNaN(priority) ? 0 : priority,
-      });
-      setMsg('Regra atualizada com sucesso!');
+      if (ruleEditing) {
+        await client.put('/api/routes/rules', {
+          old_from: parseFromSelector(ruleEditing.selector),
+          old_fwmark: ruleEditing.fwmark || '',
+          old_table: ruleEditing.table,
+          old_priority: Number(ruleEditing.priority || 0),
+          from: ruleForm.from.trim(),
+          fwmark: ruleForm.fwmark.trim(),
+          table: ruleForm.table.trim(),
+          priority,
+        });
+        setMsg('Regra atualizada com sucesso!');
+      } else {
+        await client.post('/api/routes/rules', {
+          from: ruleForm.from.trim(),
+          fwmark: ruleForm.fwmark.trim(),
+          table: ruleForm.table.trim(),
+          priority,
+        });
+        setMsg('Regra adicionada com sucesso!');
+      }
+      setShowRuleModal(false);
       await fetchData();
-    } catch (e: any) {
-      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+    } catch (err: any) {
+      setRuleError(err.response?.data?.error || err.message || 'Erro ao salvar regra.');
     } finally {
       setSaving(false);
     }
@@ -189,12 +264,12 @@ export default function Routes() {
         </div>
         <div className="flex gap-2">
           {activeTab === 'routes' ? (
-            <button onClick={handleAddRoute} disabled={saving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
+            <button onClick={openAddRoute} disabled={saving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
               <Plus className="w-4 h-4" />
               Nova Rota
             </button>
           ) : (
-            <button onClick={handleAddRule} disabled={saving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
+            <button onClick={openAddRule} disabled={saving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
               <Plus className="w-4 h-4" />
               Nova Regra
             </button>
@@ -255,8 +330,8 @@ export default function Routes() {
                   </tr>
                 </thead>
                 <tbody>
-                  {routes.map((r, i) => (
-                    <tr key={i} className="table-row">
+                  {routes.map((r) => (
+                    <tr key={`${r.destination}|${parseRouteTable(r) || 'main'}`} className="table-row">
                       <td className="py-3 pr-4 text-white font-mono">{r.destination}</td>
                       <td className="py-3 pr-4 text-gray-400 font-mono">{r.gateway || '—'}</td>
                       <td className="py-3 pr-4 text-gray-400 font-mono">{r.interface || '—'}</td>
@@ -265,7 +340,7 @@ export default function Routes() {
                       <td className="py-3 text-gray-400">{r.scope || '—'}</td>
                       <td className="py-3">
                         <div className="flex gap-2">
-                          <button onClick={() => handleEditRoute(r)} disabled={saving} className="text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
+                          <button onClick={() => openEditRoute(r)} disabled={saving} className="text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
                             <Pencil className="w-4 h-4" />
                           </button>
                           <button onClick={() => handleDeleteRoute(r)} disabled={saving} className="text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50">
@@ -282,6 +357,7 @@ export default function Routes() {
         ) : (
           rules.length === 0 ? (
             <div className="text-center py-12">
+              <ListTree className="w-12 h-12 text-gray-700 mx-auto mb-3" />
               <p className="text-gray-500">Nenhuma regra ip rule disponível</p>
             </div>
           ) : (
@@ -298,8 +374,8 @@ export default function Routes() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rules.map((r, i) => (
-                    <tr key={i} className="table-row">
+                  {rules.map((r) => (
+                    <tr key={`${r.selector}|${r.priority}`} className="table-row">
                       <td className="py-3 pr-4 text-gray-400 font-mono">{r.priority}</td>
                       <td className="py-3 pr-4 text-white font-mono">{r.selector}</td>
                       <td className="py-3 pr-4 text-gray-400 font-mono">{r.fwmark || '—'}</td>
@@ -307,7 +383,7 @@ export default function Routes() {
                       <td className="py-3 text-gray-400 font-mono">{r.table || '—'}</td>
                       <td className="py-3">
                         <div className="flex gap-2">
-                          <button onClick={() => handleEditRule(r)} disabled={saving} className="text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
+                          <button onClick={() => openEditRule(r)} disabled={saving} className="text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
                             <Pencil className="w-4 h-4" />
                           </button>
                           <button onClick={() => handleDeleteRule(r)} disabled={saving} className="text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50">
@@ -323,6 +399,136 @@ export default function Routes() {
           )
         )}
       </div>
+
+      {/* Route modal */}
+      {showRouteModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold">
+                {routeEditing ? 'Editar Rota' : 'Nova Rota'}
+              </h2>
+            </div>
+            <form onSubmit={submitRoute} className="p-6 space-y-4">
+              <div>
+                <label className="label">Destino *</label>
+                <input
+                  className="input w-full"
+                  placeholder="default ou 10.0.0.0/24"
+                  value={routeForm.destination}
+                  onChange={(e) => setRouteForm({ ...routeForm, destination: e.target.value })}
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="label">Gateway</label>
+                  <input
+                    className="input w-full"
+                    placeholder="192.168.1.254"
+                    value={routeForm.gateway}
+                    onChange={(e) => setRouteForm({ ...routeForm, gateway: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="label">Interface</label>
+                  <input
+                    className="input w-full"
+                    placeholder="eth0"
+                    value={routeForm.interface}
+                    onChange={(e) => setRouteForm({ ...routeForm, interface: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="label">Tabela</label>
+                <input
+                  className="input w-full"
+                  placeholder="main ou 100"
+                  value={routeForm.table}
+                  onChange={(e) => setRouteForm({ ...routeForm, table: e.target.value })}
+                />
+                <p className="text-xs text-gray-500 mt-1">Deixe vazio para usar a tabela principal (main).</p>
+              </div>
+              {routeError && (
+                <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{routeError}</div>
+              )}
+              <div className="flex gap-3 pt-2">
+                <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
+                  {saving ? 'Salvando...' : 'Salvar'}
+                </button>
+                <button type="button" onClick={() => setShowRouteModal(false)} className="btn-secondary flex-1">
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Rule modal */}
+      {showRuleModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold">
+                {ruleEditing ? 'Editar Regra ip rule' : 'Nova Regra ip rule'}
+              </h2>
+            </div>
+            <form onSubmit={submitRule} className="p-6 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="label">Origem (from)</label>
+                  <input
+                    className="input w-full"
+                    placeholder="192.168.1.0/24 ou all"
+                    value={ruleForm.from}
+                    onChange={(e) => setRuleForm({ ...ruleForm, from: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="label">FWMark</label>
+                  <input
+                    className="input w-full"
+                    placeholder="0x1"
+                    value={ruleForm.fwmark}
+                    onChange={(e) => setRuleForm({ ...ruleForm, fwmark: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="label">Tabela lookup *</label>
+                  <input
+                    className="input w-full"
+                    placeholder="main ou 100"
+                    value={ruleForm.table}
+                    onChange={(e) => setRuleForm({ ...ruleForm, table: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="label">Prioridade</label>
+                  <input
+                    type="number"
+                    className="input w-full"
+                    placeholder="100"
+                    value={ruleForm.priority}
+                    onChange={(e) => setRuleForm({ ...ruleForm, priority: e.target.value })}
+                  />
+                </div>
+              </div>
+              {ruleError && (
+                <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{ruleError}</div>
+              )}
+              <div className="flex gap-3 pt-2">
+                <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
+                  {saving ? 'Salvando...' : 'Salvar'}
+                </button>
+                <button type="button" onClick={() => setShowRuleModal(false)} className="btn-secondary flex-1">
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -25,8 +25,13 @@ export default function Links() {
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const [wizardLoading, setWizardLoading] = useState(false);
   const [wizardError, setWizardError] = useState('');
+  const [wizardConfirm, setWizardConfirm] = useState(false);
   const [wizardMode, setWizardMode] = useState<'failover' | 'balance'>('failover');
   const [wizardPrimary, setWizardPrimary] = useState('');
   const [wizardSecondary, setWizardSecondary] = useState('');
@@ -52,6 +57,13 @@ export default function Links() {
 
   useEffect(() => { fetchLinks(); }, []);
 
+  // Auto-dismiss the page-level success banner after ~4s.
+  useEffect(() => {
+    if (!success) return;
+    const t = setTimeout(() => setSuccess(''), 4000);
+    return () => clearTimeout(t);
+  }, [success]);
+
   const openCreate = () => {
     setEditLink({ ...emptyLink });
     setIsEditing(false);
@@ -68,6 +80,7 @@ export default function Links() {
     setWizardPrimaryWeight(70);
     setWizardSecondaryWeight(30);
     setWizardError('');
+    setWizardConfirm(false);
     setShowWizard(true);
   };
 
@@ -97,13 +110,24 @@ export default function Links() {
     }
   };
 
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Excluir link "${name}"?`)) return;
+  const requestDelete = (id: string, name: string) => {
+    setDeleteError('');
+    setDeleteTarget({ id, name });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError('');
     try {
-      await client.delete(`/api/links/${id}`);
+      await client.delete(`/api/links/${deleteTarget.id}`);
+      setDeleteTarget(null);
+      setSuccess(`Link "${deleteTarget.name}" excluído com sucesso.`);
       await fetchLinks();
     } catch (err: any) {
-      alert(err.response?.data?.error || 'Erro ao excluir link');
+      setDeleteError(err.response?.data?.error || 'Erro ao excluir link');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -141,13 +165,34 @@ export default function Links() {
     return created.data;
   };
 
-  const applyDualWanWizard = async () => {
+  const validateWizard = () => {
     if (!wizardPrimary || !wizardSecondary || wizardPrimary === wizardSecondary) {
       setWizardError('Selecione duas interfaces WAN diferentes.');
-      return;
+      return false;
     }
-    if (wizardMode === 'balance' && !wizardLan.trim()) {
-      setWizardError('Informe a sub-rede LAN para balanceamento (ex.: 192.168.0.0/24).');
+    if (wizardMode === 'balance') {
+      if (!wizardLan.trim()) {
+        setWizardError('Informe a sub-rede LAN para balanceamento (ex.: 192.168.0.0/24).');
+        return false;
+      }
+      if (wizardPrimaryWeight + wizardSecondaryWeight !== 100) {
+        setWizardError('A soma dos pesos das WANs deve ser 100%.');
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // First step: validate and move to the confirmation/preview screen.
+  const reviewWizard = () => {
+    if (!validateWizard()) return;
+    setWizardError('');
+    setWizardConfirm(true);
+  };
+
+  const applyDualWanWizard = async () => {
+    if (!validateWizard()) {
+      setWizardConfirm(false);
       return;
     }
 
@@ -160,11 +205,11 @@ export default function Links() {
       await fetchLinks();
 
       const primary = await ensureLink(wizardPrimary, {
-        name: `WAN Primaria (${wizardPrimary})`,
+        name: `WAN Primária (${wizardPrimary})`,
         weight: wizardMode === 'balance' ? wizardPrimaryWeight : 100,
       });
       const secondary = await ensureLink(wizardSecondary, {
-        name: `WAN Secundaria (${wizardSecondary})`,
+        name: `WAN Secundária (${wizardSecondary})`,
         weight: wizardMode === 'balance' ? wizardSecondaryWeight : 10,
       });
 
@@ -199,7 +244,7 @@ export default function Links() {
           table: secondaryTable,
           priority: 200,
         });
-        setError('Assistente aplicado: failover configurado (primario > secundario).');
+        setSuccess('Assistente aplicado: failover configurado (primária > secundária).');
       } else {
         await client.post('/api/firewall/rules', {
           table: 'mangle',
@@ -221,13 +266,15 @@ export default function Links() {
           table: secondaryTable,
           priority: 120,
         });
-        setError('Assistente aplicado: balanceamento por marca (mangle + ip rule fwmark).');
+        setSuccess('Assistente aplicado: balanceamento por marca (mangle + ip rule fwmark).');
       }
 
       await fetchLinks();
+      setWizardConfirm(false);
       setShowWizard(false);
     } catch (err: any) {
       setWizardError(err.response?.data?.error || 'Falha ao aplicar assistente de 2 WAN.');
+      setWizardConfirm(false);
     } finally {
       setWizardLoading(false);
     }
@@ -276,6 +323,10 @@ export default function Links() {
           </button>
         </div>
       </div>
+
+      {success && (
+        <div className="px-4 py-3 rounded-lg text-sm bg-green-500/10 text-green-400 border border-green-500/20">{success}</div>
+      )}
 
       <div className="card">
         {loading ? (
@@ -326,7 +377,7 @@ export default function Links() {
                         <button onClick={() => openEdit(link)} className="text-gray-400 hover:text-blue-400 transition-colors">
                           <Pencil className="w-4 h-4" />
                         </button>
-                        <button onClick={() => handleDelete(link.id, link.name)} className="text-gray-400 hover:text-red-400 transition-colors">
+                        <button onClick={() => requestDelete(link.id, link.name)} className="text-gray-400 hover:text-red-400 transition-colors">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
@@ -342,14 +393,14 @@ export default function Links() {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-800">
               <h2 className="text-white font-semibold">
                 {isEditing ? 'Editar Link WAN' : 'Novo Link WAN'}
               </h2>
             </div>
             <form onSubmit={handleSave} className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="label">Nome *</label>
                   <input className="input w-full" value={editLink.name || ''} onChange={e => setEditLink({...editLink, name: e.target.value})} required />
@@ -396,7 +447,7 @@ export default function Links() {
                 <input type="checkbox" id="enabled" checked={editLink.enabled ?? true} onChange={e => setEditLink({...editLink, enabled: e.target.checked})} className="w-4 h-4" />
                 <label htmlFor="enabled" className="text-gray-400 text-sm">Link habilitado</label>
               </div>
-              {error && <p className="text-red-400 text-sm">{error}</p>}
+              {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
               <div className="flex gap-3 pt-2">
                 <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
                   {saving ? 'Salvando...' : 'Salvar'}
@@ -412,25 +463,27 @@ export default function Links() {
 
       {showWizard && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="w-full max-w-2xl rounded-2xl border border-blue-500/30 bg-gradient-to-b from-gray-900 to-gray-950 shadow-2xl">
+          <div className="w-full max-w-2xl rounded-2xl border border-blue-500/30 bg-gradient-to-b from-gray-900 to-gray-950 shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
               <div>
                 <h2 className="text-white font-semibold flex items-center gap-2">
                   <Network className="w-5 h-5 text-blue-400" />
-                  Assistente Magico de 2 WAN
+                  Assistente Mágico de 2 WAN
                 </h2>
-                <p className="text-xs text-gray-400 mt-1">Configura failover rapido ou balanceamento por marcacao de pacotes.</p>
+                <p className="text-xs text-gray-400 mt-1">Configura failover rápido ou balanceamento por marcação de pacotes.</p>
               </div>
             </div>
 
             <div className="p-6 space-y-5">
+              {!wizardConfirm && (
+              <div className="space-y-5">
               <div className="grid sm:grid-cols-2 gap-3">
                 <button
                   onClick={() => setWizardMode('failover')}
                   className={`rounded-xl border p-4 text-left transition ${wizardMode === 'failover' ? 'border-blue-400 bg-blue-500/10' : 'border-gray-700 bg-gray-900/60 hover:border-gray-500'}`}
                 >
                   <p className="text-white font-medium">Failover inteligente</p>
-                  <p className="text-xs text-gray-400 mt-1">Todo trafego usa WAN principal e troca para secundaria em falha.</p>
+                  <p className="text-xs text-gray-400 mt-1">Todo tráfego usa a WAN principal e troca para a secundária em falha.</p>
                 </button>
                 <button
                   onClick={() => setWizardMode('balance')}
@@ -443,14 +496,14 @@ export default function Links() {
 
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="label">WAN primaria *</label>
+                  <label className="label">WAN primária *</label>
                   <select className="input w-full" value={wizardPrimary} onChange={(e) => setWizardPrimary(e.target.value)}>
                     <option value="">Selecione</option>
                     {interfaceOptions.map((name) => <option key={`p-${name}`} value={name}>{formatInterfaceLabel(name)}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="label">WAN secundaria *</label>
+                  <label className="label">WAN secundária *</label>
                   <select className="input w-full" value={wizardSecondary} onChange={(e) => setWizardSecondary(e.target.value)}>
                     <option value="">Selecione</option>
                     {interfaceOptions.map((name) => <option key={`s-${name}`} value={name}>{formatInterfaceLabel(name)}</option>)}
@@ -471,25 +524,145 @@ export default function Links() {
                   </div>
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="label">Peso WAN primaria (%)</label>
-                      <input type="number" min={1} max={99} className="input w-full" value={wizardPrimaryWeight} onChange={(e) => setWizardPrimaryWeight(Number(e.target.value || 70))} />
+                      <label className="label">Peso WAN primária (%)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={99}
+                        className="input w-full"
+                        value={wizardPrimaryWeight}
+                        onChange={(e) => {
+                          const primaryW = Number(e.target.value || 70);
+                          setWizardPrimaryWeight(primaryW);
+                          setWizardSecondaryWeight(100 - primaryW);
+                        }}
+                      />
                     </div>
                     <div>
-                      <label className="label">Peso WAN secundaria (%)</label>
-                      <input type="number" min={1} max={99} className="input w-full" value={wizardSecondaryWeight} onChange={(e) => setWizardSecondaryWeight(Number(e.target.value || 30))} />
+                      <label className="label">Peso WAN secundária (%)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={99}
+                        className="input w-full"
+                        value={wizardSecondaryWeight}
+                        onChange={(e) => {
+                          const secondaryW = Number(e.target.value || 30);
+                          setWizardSecondaryWeight(secondaryW);
+                          setWizardPrimaryWeight(100 - secondaryW);
+                        }}
+                      />
                     </div>
                   </div>
+                  <p className="text-xs text-gray-500 -mt-1">Os pesos são complementares e devem somar 100%.</p>
                 </>
               )}
+              </div>
+              )}
 
-              {wizardError && <p className="text-red-400 text-sm">{wizardError}</p>}
+              {wizardConfirm && (
+                <div className="space-y-4">
+                  <div className="px-4 py-3 rounded-lg text-sm bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                    <p className="font-medium">Revise antes de aplicar</p>
+                    <p className="mt-1 text-amber-300/90">
+                      As alterações abaixo serão aplicadas ao roteamento e firewall do host. A conectividade pode cair por alguns instantes durante a aplicação.
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-gray-700 bg-gray-900/60 p-4 space-y-3 text-sm">
+                    <p className="text-gray-400">
+                      Modo: <span className="text-white font-medium">{wizardMode === 'failover' ? 'Failover inteligente' : 'Balanceamento por marca'}</span>
+                    </p>
+                    <div>
+                      <p className="text-gray-500 mb-1 font-medium">Links WAN que serão criados/atualizados:</p>
+                      <ul className="list-disc list-inside text-gray-300 space-y-0.5">
+                        <li>WAN Primária em <span className="font-mono text-white">{formatInterfaceLabel(wizardPrimary)}</span>{wizardMode === 'balance' && ` (peso ${wizardPrimaryWeight}%)`}</li>
+                        <li>WAN Secundária em <span className="font-mono text-white">{formatInterfaceLabel(wizardSecondary)}</span>{wizardMode === 'balance' && ` (peso ${wizardSecondaryWeight}%)`}</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <p className="text-gray-500 mb-1 font-medium">Rotas padrão por tabela:</p>
+                      <ul className="list-disc list-inside text-gray-300 space-y-0.5">
+                        <li>Rota <span className="font-mono">default</span> via gateway da primária na tabela própria do link.</li>
+                        <li>Rota <span className="font-mono">default</span> via gateway da secundária na tabela própria do link.</li>
+                      </ul>
+                    </div>
+                    {wizardMode === 'failover' ? (
+                      <div>
+                        <p className="text-gray-500 mb-1 font-medium">Regras ip rule:</p>
+                        <ul className="list-disc list-inside text-gray-300 space-y-0.5">
+                          <li><span className="font-mono">from all</span> → tabela da primária (prioridade 100).</li>
+                          <li><span className="font-mono">from all</span> → tabela da secundária (prioridade 200).</li>
+                        </ul>
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <p className="text-gray-500 mb-1 font-medium">Regras mangle MARK (PREROUTING) para a LAN <span className="font-mono">{wizardLan.trim()}</span>:</p>
+                          <ul className="list-disc list-inside text-gray-300 space-y-0.5">
+                            <li>MARK <span className="font-mono">0x1</span> aleatório com probabilidade {(wizardPrimaryWeight / 100).toFixed(2)}.</li>
+                            <li>MARK <span className="font-mono">0x2</span> para o tráfego restante.</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 mb-1 font-medium">Regras ip rule por fwmark:</p>
+                          <ul className="list-disc list-inside text-gray-300 space-y-0.5">
+                            <li><span className="font-mono">fwmark 0x1</span> → tabela da primária (prioridade 110).</li>
+                            <li><span className="font-mono">fwmark 0x2</span> → tabela da secundária (prioridade 120).</li>
+                          </ul>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {wizardError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{wizardError}</div>}
 
               <div className="flex gap-3 pt-2">
-                <button onClick={applyDualWanWizard} disabled={wizardLoading} className="btn-primary flex-1 disabled:opacity-50">
-                  {wizardLoading ? 'Aplicando...' : 'Aplicar Assistente'}
+                {!wizardConfirm ? (
+                  <>
+                    <button onClick={reviewWizard} disabled={wizardLoading} className="btn-primary flex-1 disabled:opacity-50">
+                      Revisar alterações
+                    </button>
+                    <button onClick={() => setShowWizard(false)} type="button" className="btn-secondary flex-1">
+                      Fechar
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={applyDualWanWizard} disabled={wizardLoading} className="btn-primary flex-1 disabled:opacity-50">
+                      {wizardLoading ? 'Aplicando...' : 'Confirmar e aplicar'}
+                    </button>
+                    <button onClick={() => setWizardConfirm(false)} disabled={wizardLoading} type="button" className="btn-secondary flex-1 disabled:opacity-50">
+                      Voltar
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold">Excluir Link WAN</h2>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-gray-400 text-sm">
+                Tem certeza que deseja excluir o link <span className="text-white font-medium">"{deleteTarget.name}"</span>? Esta ação não pode ser desfeita.
+              </p>
+              {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
+              <div className="flex gap-3 pt-2">
+                <button onClick={confirmDelete} disabled={deleting} className="btn-primary flex-1 disabled:opacity-50 bg-red-600 hover:bg-red-500">
+                  {deleting ? 'Excluindo...' : 'Excluir'}
                 </button>
-                <button onClick={() => setShowWizard(false)} type="button" className="btn-secondary flex-1">
-                  Fechar
+                <button onClick={() => setDeleteTarget(null)} disabled={deleting} type="button" className="btn-secondary flex-1 disabled:opacity-50">
+                  Cancelar
                 </button>
               </div>
             </div>

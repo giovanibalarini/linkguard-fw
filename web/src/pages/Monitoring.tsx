@@ -14,11 +14,16 @@ export default function Monitoring() {
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [latencyHistory, setLatencyHistory] = useState<HistoryPoint[]>([]);
   const [cpuHistory, setCpuHistory] = useState<HistoryPoint[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const tickRef = useRef(0);
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
   const fetchData = async () => {
+    setLoading(true);
     try {
       const [linksRes, sysRes] = await Promise.all([
         client.get<WanLink[]>('/api/links'),
@@ -37,10 +42,15 @@ export default function Monitoring() {
       newLinks.forEach(l => { latencyPoint[l.name] = l.latency_ms; });
       setLatencyHistory(prev => [...prev.slice(-19), latencyPoint]);
 
-      const cpuPoint: HistoryPoint = { time: timeLabel, CPU: newSys.cpu_percent, Memória: newSys.mem_percent };
+      const cpuPoint: HistoryPoint = { time: timeLabel, CPU: newSys?.cpu_percent ?? 0, Memória: newSys?.mem_percent ?? 0 };
       setCpuHistory(prev => [...prev.slice(-19), cpuPoint]);
+      setLastUpdated(new Date());
+      setError(false);
     } catch (e) {
       console.error(e);
+      setError(true);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -50,18 +60,42 @@ export default function Monitoring() {
     return () => clearInterval(interval);
   }, []);
 
+  // Tick once per second to refresh the "atualizado há Xs" caption
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const secondsAgo = lastUpdated ? Math.max(0, Math.floor((now - lastUpdated.getTime()) / 1000)) : null;
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-white">Monitoramento</h1>
           <p className="text-gray-500 text-sm">Métricas em tempo real</p>
+          <p className="text-gray-600 text-xs mt-0.5">
+            Atualização automática a cada 10s
+            {secondsAgo !== null && ` · atualizado há ${secondsAgo}s`}
+          </p>
         </div>
         <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
-          <RefreshCw className="w-4 h-4" />
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           Atualizar
         </button>
       </div>
+
+      {/* Error banner */}
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm flex items-center justify-between"><span>Falha ao carregar dados do firewall. Exibindo últimos dados conhecidos.</span><button onClick={fetchData} className="btn-secondary">Tentar novamente</button></div>}
+
+      {/* Initial loading skeleton */}
+      {loading && links.length === 0 && !sys && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[0, 1, 2].map(i => (
+            <div key={i} className="card text-gray-500 text-sm animate-pulse">Carregando...</div>
+          ))}
+        </div>
+      )}
 
       {/* Link status cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -69,7 +103,7 @@ export default function Monitoring() {
           <div key={link.id} className="card">
             <div className="flex items-center justify-between mb-3">
               <span className="text-white font-medium">{link.name}</span>
-              <span className={`w-2 h-2 rounded-full ${
+              <span title={link.status} className={`w-2 h-2 rounded-full ${
                 link.status === 'online' ? 'bg-green-400' :
                 link.status === 'offline' ? 'bg-red-400' :
                 link.status === 'degraded' ? 'bg-yellow-400' : 'bg-gray-400'
@@ -104,34 +138,38 @@ export default function Monitoring() {
       </div>
 
       {/* Latency chart */}
-      {latencyHistory.length > 1 && links.length > 0 && (
+      {links.length > 0 && (
         <div className="card">
           <div className="flex items-center gap-2 mb-4">
             <Activity className="w-4 h-4 text-blue-400" />
             <h2 className="text-white font-semibold">Latência por Link (ms)</h2>
           </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={latencyHistory}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-              <XAxis dataKey="time" tick={{ fill: '#6b7280', fontSize: 11 }} />
-              <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }} />
-              <Legend />
-              {links.map((link, i) => (
-                <Line key={link.id} type="monotone" dataKey={link.name} stroke={COLORS[i % COLORS.length]} dot={false} strokeWidth={2} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
+          {latencyHistory.length > 1 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={latencyHistory}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                <XAxis dataKey="time" tick={{ fill: '#6b7280', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} />
+                <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }} />
+                <Legend />
+                {links.map((link, i) => (
+                  <Line key={link.id} type="monotone" dataKey={link.name} stroke={COLORS[i % COLORS.length]} dot={false} strokeWidth={2} />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-gray-500 text-sm text-center py-12">Coletando dados…</p>
+          )}
         </div>
       )}
 
       {/* CPU / Memory chart */}
-      {cpuHistory.length > 1 && (
-        <div className="card">
-          <div className="flex items-center gap-2 mb-4">
-            <Activity className="w-4 h-4 text-purple-400" />
-            <h2 className="text-white font-semibold">CPU e Memória (%)</h2>
-          </div>
+      <div className="card">
+        <div className="flex items-center gap-2 mb-4">
+          <Activity className="w-4 h-4 text-purple-400" />
+          <h2 className="text-white font-semibold">CPU e Memória (%)</h2>
+        </div>
+        {cpuHistory.length > 1 ? (
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={cpuHistory}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
@@ -143,8 +181,10 @@ export default function Monitoring() {
               <Line type="monotone" dataKey="Memória" stroke="#8b5cf6" dot={false} strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>
-        </div>
-      )}
+        ) : (
+          <p className="text-gray-500 text-sm text-center py-12">Coletando dados…</p>
+        )}
+      </div>
 
       {/* Interface traffic */}
       {sys && sys.interfaces && sys.interfaces.length > 0 && (
@@ -155,8 +195,8 @@ export default function Monitoring() {
               <thead>
                 <tr className="text-left text-gray-500 border-b border-gray-800">
                   <th className="pb-3 pr-4 font-medium">Interface</th>
-                  <th className="pb-3 pr-4 font-medium">RX Bytes</th>
-                  <th className="pb-3 pr-4 font-medium">TX Bytes</th>
+                  <th className="pb-3 pr-4 font-medium">RX total</th>
+                  <th className="pb-3 pr-4 font-medium">TX total</th>
                   <th className="pb-3 pr-4 font-medium">RX Pacotes</th>
                   <th className="pb-3 pr-4 font-medium">TX Pacotes</th>
                   <th className="pb-3 font-medium">Erros</th>

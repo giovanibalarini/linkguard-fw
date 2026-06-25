@@ -1,26 +1,38 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, FileText } from 'lucide-react';
+import { RefreshCw, FileText, X } from 'lucide-react';
 import client from '../api/client';
 import type { AuditLog } from '../types';
+
+const ACTIONS = ['create', 'update', 'delete', 'login', 'failover'] as const;
+const LIMIT = 200;
 
 export default function Logs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [filter, setFilter] = useState('');
+  const [action, setAction] = useState('');
 
-  const fetchLogs = async () => {
+  const fetchData = async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ limit: '200' });
-      if (filter) params.append('filter', filter);
+      const params = new URLSearchParams({ limit: String(LIMIT) });
+      const term = [action, filter].filter(Boolean).join(' ').trim();
+      if (term) params.append('filter', term);
       const res = await client.get<AuditLog[]>(`/api/logs?${params}`);
       setLogs(res.data ?? []);
+      setError(false);
+    } catch (e) {
+      console.error(e);
+      setError(true);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { fetchLogs(); }, []);
+  useEffect(() => { fetchData(); }, []);
+
+  const hasFilter = filter !== '' || action !== '';
 
   const actionColors: Record<string, string> = {
     create: 'text-green-400',
@@ -35,28 +47,61 @@ export default function Logs() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-white">Logs de Auditoria</h1>
-          <p className="text-gray-500 text-sm">{logs.length} entradas</p>
+          <p className="text-gray-500 text-sm">
+            {logs.length} entrada{logs.length !== 1 ? 's' : ''}{hasFilter ? ' (filtradas)' : ''}
+          </p>
         </div>
-        <button onClick={fetchLogs} className="btn-secondary flex items-center gap-2">
-          <RefreshCw className="w-4 h-4" />
+        <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           Atualizar
         </button>
       </div>
 
-      <div className="flex gap-2">
-        <input
-          className="input flex-1"
-          placeholder="Filtrar por ação..."
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && fetchLogs()}
-        />
-        <button onClick={fetchLogs} className="btn-secondary">Buscar</button>
+      {/* Error banner */}
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm flex items-center justify-between"><span>Falha ao carregar dados do firewall. Exibindo últimos dados conhecidos.</span><button onClick={fetchData} className="btn-secondary">Tentar novamente</button></div>}
+
+      <div className="flex flex-col sm:flex-row gap-2">
+        <select
+          className="input sm:w-48"
+          value={action}
+          onChange={e => { setAction(e.target.value); }}
+        >
+          <option value="">Todas as ações</option>
+          {ACTIONS.map(a => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        <div className="relative flex-1">
+          <input
+            className="input w-full pr-9"
+            placeholder="Buscar (usuário, recurso, detalhes)…"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && fetchData()}
+          />
+          {filter && (
+            <button
+              type="button"
+              onClick={() => setFilter('')}
+              aria-label="Limpar busca"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+        <button onClick={fetchData} className="btn-secondary">Buscar</button>
       </div>
 
       <div className="card">
-        {loading ? (
+        {loading && logs.length === 0 ? (
           <div className="text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
+        ) : logs.length === 0 && error ? (
+          <div className="text-center py-12">
+            <FileText className="w-12 h-12 text-gray-700 mx-auto mb-3" />
+            <p className="text-gray-400 font-medium">Não foi possível carregar os logs</p>
+            <p className="text-gray-600 text-sm mt-1">Verifique a conexão com o firewall e tente novamente</p>
+          </div>
         ) : logs.length === 0 ? (
           <div className="text-center py-12">
             <FileText className="w-12 h-12 text-gray-700 mx-auto mb-3" />
@@ -85,11 +130,16 @@ export default function Logs() {
                       </span>
                     </td>
                     <td className="py-3 pr-4 text-gray-400 font-mono text-xs">{log.resource || '—'}</td>
-                    <td className="py-3 text-gray-500 text-xs max-w-xs truncate">{log.details || '—'}</td>
+                    <td className="py-3 text-gray-500 text-xs max-w-xs truncate" title={log.details}>{log.details || '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            {logs.length >= LIMIT && (
+              <p className="text-gray-600 text-xs text-center mt-4">
+                Mostrando as {LIMIT} entradas mais recentes
+              </p>
+            )}
           </div>
         )}
       </div>

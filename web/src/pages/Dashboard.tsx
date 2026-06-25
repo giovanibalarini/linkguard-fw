@@ -19,9 +19,10 @@ export default function Dashboard() {
   const [wanLinks, setWanLinks] = useState<WanLink[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
-  const fetchAll = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [sysRes, linksRes, alertsRes] = await Promise.all([
         client.get<SystemMetrics>('/api/system/status'),
@@ -32,18 +33,20 @@ export default function Dashboard() {
       setWanLinks(linksRes.data ?? []);
       setAlerts(alertsRes.data ?? []);
       setLastUpdated(new Date());
+      setError(false);
     } catch (e) {
       console.error('Dashboard fetch error:', e);
+      setError(true);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 15000);
+    fetchData();
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
-  }, [fetchAll]);
+  }, [fetchData]);
 
   if (loading) {
     return (
@@ -65,10 +68,17 @@ export default function Dashboard() {
           <h1 className="text-xl font-bold text-white">Dashboard</h1>
           <p className="text-gray-500 text-sm mt-0.5">Visão geral do sistema</p>
         </div>
-        <div className="text-gray-600 text-xs">
-          Atualizado às {lastUpdated.toLocaleTimeString()}
+        <div className="text-xs">
+          {error ? (
+            <span className="text-amber-400">Dados desatualizados desde {lastUpdated.toLocaleTimeString()}</span>
+          ) : (
+            <span className="text-gray-600">Atualizado às {lastUpdated.toLocaleTimeString()}</span>
+          )}
         </div>
       </div>
+
+      {/* Error banner */}
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm flex items-center justify-between"><span>Falha ao carregar dados do firewall. Exibindo últimos dados conhecidos.</span><button onClick={fetchData} className="btn-secondary">Tentar novamente</button></div>}
 
       {/* Critical alerts banner */}
       {criticalAlerts > 0 && (
@@ -89,26 +99,26 @@ export default function Dashboard() {
             value={sys.uptime_str || '—'}
             icon={Clock}
             iconColor="text-green-400"
-            subtitle={`Load: ${sys.load_avg[0].toFixed(2)} ${sys.load_avg[1].toFixed(2)} ${sys.load_avg[2].toFixed(2)}`}
+            subtitle={`Load: ${(sys.load_avg?.[0] ?? 0).toFixed(2)} ${(sys.load_avg?.[1] ?? 0).toFixed(2)} ${(sys.load_avg?.[2] ?? 0).toFixed(2)}`}
           />
           <ProgressCard
             title="CPU"
-            percent={sys.cpu_percent}
-            value={`${sys.cpu_percent.toFixed(1)}%`}
+            percent={sys.cpu_percent ?? 0}
+            value={`${(sys.cpu_percent ?? 0).toFixed(1)}%`}
             icon={Cpu}
             iconColor="text-blue-400"
           />
           <ProgressCard
             title="Memória"
-            percent={sys.mem_percent}
-            value={`${formatBytes(sys.mem_used_bytes)} / ${formatBytes(sys.mem_total_bytes)}`}
+            percent={sys.mem_percent ?? 0}
+            value={`${formatBytes(sys.mem_used_bytes ?? 0)} / ${formatBytes(sys.mem_total_bytes ?? 0)}`}
             icon={MemoryStick}
             iconColor="text-purple-400"
           />
           <ProgressCard
             title="Disco"
-            percent={sys.disk_percent}
-            value={`${formatBytes(sys.disk_used_bytes)} / ${formatBytes(sys.disk_total_bytes)}`}
+            percent={sys.disk_percent ?? 0}
+            value={`${formatBytes(sys.disk_used_bytes ?? 0)} / ${formatBytes(sys.disk_total_bytes ?? 0)}`}
             icon={HardDrive}
             iconColor="text-orange-400"
           />

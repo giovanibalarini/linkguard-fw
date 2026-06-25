@@ -9,16 +9,24 @@ export default function Hosts() {
   const canManage = can('hosts.block');
   const [hosts, setHosts] = useState<NetHost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [filter, setFilter] = useState('');
   const [aliasFor, setAliasFor] = useState<NetHost | null>(null);
   const [aliasValue, setAliasValue] = useState('');
+  const [aliasError, setAliasError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [confirmFor, setConfirmFor] = useState<NetHost | null>(null);
+  const [confirmError, setConfirmError] = useState('');
+  const [confirming, setConfirming] = useState(false);
 
   const fetchHosts = async () => {
     setLoading(true);
+    setError(false);
     try {
       const res = await client.get<NetHost[]>('/api/hosts');
       setHosts(res.data ?? []);
+    } catch {
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -39,30 +47,43 @@ export default function Hosts() {
   const openAlias = (h: NetHost) => {
     setAliasFor(h);
     setAliasValue(h.alias ?? '');
+    setAliasError('');
   };
 
   const saveAlias = async () => {
     if (!aliasFor) return;
     setSaving(true);
+    setAliasError('');
     try {
       await client.put('/api/hosts/alias', { mac: aliasFor.mac, alias: aliasValue.trim() });
       setAliasFor(null);
       await fetchHosts();
     } catch (err: any) {
-      alert(err.response?.data?.error || 'Erro ao salvar apelido');
+      setAliasError(err.response?.data?.error || 'Erro ao salvar apelido');
     } finally {
       setSaving(false);
     }
   };
 
-  const toggleBlock = async (h: NetHost) => {
+  const openConfirm = (h: NetHost) => {
+    setConfirmFor(h);
+    setConfirmError('');
+  };
+
+  const confirmToggleBlock = async () => {
+    const h = confirmFor;
+    if (!h) return;
     const verb = h.blocked ? 'desbloquear' : 'bloquear';
-    if (!confirm(`Deseja ${verb} o host ${h.alias || h.ip} (${h.mac})?`)) return;
+    setConfirming(true);
+    setConfirmError('');
     try {
       await client.post('/api/hosts/block', { mac: h.mac, blocked: !h.blocked });
+      setConfirmFor(null);
       await fetchHosts();
     } catch (err: any) {
-      alert(err.response?.data?.error || `Erro ao ${verb} host`);
+      setConfirmError(err.response?.data?.error || `Erro ao ${verb} host`);
+    } finally {
+      setConfirming(false);
     }
   };
 
@@ -79,74 +100,141 @@ export default function Hosts() {
           <input
             className="input flex-1 sm:w-64"
             placeholder="Filtrar por IP, MAC, apelido..."
+            aria-label="Filtrar hosts"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
-          <button onClick={fetchHosts} className="btn-secondary flex items-center gap-2 whitespace-nowrap">
-            <RefreshCw className="w-4 h-4" /> Atualizar
+          <button onClick={fetchHosts} disabled={loading} className="btn-secondary flex items-center gap-2 whitespace-nowrap disabled:opacity-50">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar
           </button>
         </div>
       </div>
 
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchHosts} className="underline">Tentar novamente</button></div>}
+
       <div className="card">
-        {loading ? (
+        {loading && hosts.length === 0 ? (
           <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
+        ) : error && hosts.length === 0 ? (
+          <div className="text-center py-12 text-gray-500">Não foi possível carregar os hosts.</div>
         ) : filtered.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">Nenhum host encontrado</div>
+          <div className="text-center py-12 text-gray-500">
+            {hosts.length === 0 ? 'Nenhum host encontrado' : 'Nenhum host corresponde ao filtro'}
+          </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-800">
-                  <th className="pb-3 pr-4 font-medium">Host</th>
-                  <th className="pb-3 pr-4 font-medium">IP</th>
-                  <th className="pb-3 pr-4 font-medium">MAC</th>
-                  <th className="pb-3 pr-4 font-medium">Interface</th>
-                  <th className="pb-3 pr-4 font-medium">Estado</th>
-                  {canManage && <th className="pb-3 font-medium">Ações</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((h) => (
-                  <tr key={h.mac || h.ip} className="table-row">
-                    <td className="py-3 pr-4">
-                      <div className="text-white font-medium">{h.alias || h.hostname || '—'}</div>
-                      {h.blocked && (
-                        <span className="inline-flex items-center gap-1 text-xs text-red-400">
-                          <Ban className="w-3 h-3" /> bloqueado
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 pr-4 text-gray-400 font-mono text-xs">{h.ip || '—'}</td>
-                    <td className="py-3 pr-4 text-gray-500 font-mono text-xs">{h.mac}</td>
-                    <td className="py-3 pr-4 text-gray-400 font-mono text-xs">{h.interface || '—'}</td>
-                    <td className="py-3 pr-4">
+          <>
+            {/* Mobile: stacked cards (< sm) */}
+            <div className="sm:hidden space-y-2">
+              {filtered.map((h) => (
+                <div
+                  key={h.mac || h.ip}
+                  className={`rounded-lg border bg-gray-950/40 p-3 ${h.blocked ? 'border-l-2 border-l-red-500 border-gray-800 opacity-75' : 'border-gray-800'}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-white font-medium truncate">{h.alias || h.hostname || '—'}</div>
                       <span className={`inline-flex items-center gap-1.5 text-xs ${h.online ? 'text-green-400' : 'text-gray-600'}`}>
                         <Circle className={`w-2 h-2 ${h.online ? 'fill-green-400' : 'fill-gray-600'}`} />
                         {h.online ? h.state : 'offline'}
                       </span>
-                    </td>
+                    </div>
                     {canManage && (
-                      <td className="py-3">
-                        <div className="flex gap-2">
-                          <button onClick={() => openAlias(h)} title="Apelido" className="text-gray-400 hover:text-blue-400 transition-colors">
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => toggleBlock(h)}
-                            title={h.blocked ? 'Desbloquear' : 'Bloquear'}
-                            className={`transition-colors ${h.blocked ? 'text-red-400 hover:text-green-400' : 'text-gray-400 hover:text-red-400'}`}
-                          >
-                            {h.blocked ? <ShieldCheck className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
-                          </button>
-                        </div>
-                      </td>
+                      <div className="flex shrink-0 gap-3">
+                        <button
+                          onClick={() => openAlias(h)}
+                          aria-label="Apelido"
+                          className="text-gray-400 hover:text-blue-400 transition-colors"
+                        >
+                          <Pencil className="w-5 h-5" />
+                        </button>
+                        <button
+                          onClick={() => openConfirm(h)}
+                          aria-label={h.blocked ? 'Desbloquear' : 'Bloquear'}
+                          className={`transition-colors ${h.blocked ? 'text-red-400 hover:text-green-400' : 'text-gray-400 hover:text-red-400'}`}
+                        >
+                          {h.blocked ? <ShieldCheck className="w-5 h-5" /> : <Ban className="w-5 h-5" />}
+                        </button>
+                      </div>
                     )}
+                  </div>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-gray-500">IP</dt>
+                    <dd className="text-gray-400 font-mono">{h.ip || '—'}</dd>
+                    <dt className="text-gray-500">MAC</dt>
+                    <dd className="text-gray-500 font-mono">{h.mac}</dd>
+                    <dt className="text-gray-500">Interface</dt>
+                    <dd className="text-gray-400 font-mono">{h.interface || '—'}</dd>
+                  </dl>
+                  {h.blocked && (
+                    <span className="mt-2 inline-flex items-center gap-1 text-xs text-red-400">
+                      <Ban className="w-3 h-3" /> bloqueado
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop: table (>= sm) */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className="hidden sm:table w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-800">
+                    <th className="pb-3 pr-4 font-medium">Host</th>
+                    <th className="pb-3 pr-4 font-medium">IP</th>
+                    <th className="pb-3 pr-4 font-medium">MAC</th>
+                    <th className="pb-3 pr-4 font-medium">Interface</th>
+                    <th className="pb-3 pr-4 font-medium">Estado</th>
+                    {canManage && <th className="pb-3 font-medium">Ações</th>}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {filtered.map((h) => (
+                    <tr key={h.mac || h.ip} className={`table-row ${h.blocked ? 'border-l-2 border-l-red-500 opacity-75' : ''}`}>
+                      <td className="py-3 pr-4">
+                        <div className="text-white font-medium">{h.alias || h.hostname || '—'}</div>
+                        {h.blocked && (
+                          <span className="inline-flex items-center gap-1 text-xs text-red-400">
+                            <Ban className="w-3 h-3" /> bloqueado
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 pr-4 text-gray-400 font-mono text-xs">{h.ip || '—'}</td>
+                      <td className="py-3 pr-4 text-gray-500 font-mono text-xs">{h.mac}</td>
+                      <td className="py-3 pr-4 text-gray-400 font-mono text-xs">{h.interface || '—'}</td>
+                      <td className="py-3 pr-4">
+                        <span className={`inline-flex items-center gap-1.5 text-xs ${h.online ? 'text-green-400' : 'text-gray-600'}`}>
+                          <Circle className={`w-2 h-2 ${h.online ? 'fill-green-400' : 'fill-gray-600'}`} />
+                          {h.online ? h.state : 'offline'}
+                        </span>
+                      </td>
+                      {canManage && (
+                        <td className="py-3">
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => openAlias(h)}
+                              title="Apelido"
+                              aria-label="Apelido"
+                              className="text-gray-400 hover:text-blue-400 transition-colors"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => openConfirm(h)}
+                              title={h.blocked ? 'Desbloquear' : 'Bloquear'}
+                              aria-label={h.blocked ? 'Desbloquear' : 'Bloquear'}
+                              className={`transition-colors ${h.blocked ? 'text-red-400 hover:text-green-400' : 'text-gray-400 hover:text-red-400'}`}
+                            >
+                              {h.blocked ? <ShieldCheck className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
 
@@ -165,11 +253,48 @@ export default function Hosts() {
                 onChange={(e) => setAliasValue(e.target.value)}
                 autoFocus
               />
+              {aliasError && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-sm px-3 py-2">{aliasError}</div>
+              )}
               <div className="flex gap-3">
                 <button onClick={saveAlias} disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
                   {saving ? 'Salvando...' : 'Salvar'}
                 </button>
                 <button onClick={() => setAliasFor(null)} className="btn-secondary flex-1">Cancelar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmFor && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-sm">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h2 className="text-white font-semibold">
+                {confirmFor.blocked ? 'Desbloquear host' : 'Bloquear host'}
+              </h2>
+              <p className="text-gray-500 text-xs mt-1 font-mono">{confirmFor.mac}</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-300">
+                Deseja {confirmFor.blocked ? 'desbloquear' : 'bloquear'} o host{' '}
+                <span className="text-white font-medium">{confirmFor.alias || confirmFor.ip || confirmFor.mac}</span>?
+              </p>
+              {confirmError && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-sm px-3 py-2">{confirmError}</div>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={confirmToggleBlock}
+                  disabled={confirming}
+                  className={`flex-1 disabled:opacity-50 ${confirmFor.blocked ? 'btn-primary' : 'btn-primary bg-red-600 hover:bg-red-500'}`}
+                >
+                  {confirming ? 'Processando...' : confirmFor.blocked ? 'Desbloquear' : 'Bloquear'}
+                </button>
+                <button onClick={() => setConfirmFor(null)} disabled={confirming} className="btn-secondary flex-1 disabled:opacity-50">
+                  Cancelar
+                </button>
               </div>
             </div>
           </div>

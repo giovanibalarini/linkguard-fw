@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
-  Menu, X, AlertTriangle,
+  Menu, X, AlertTriangle, Cable,
 } from 'lucide-react';
 
 // `perm` lists the permissions that reveal a nav item; an item with no `perm`
@@ -12,7 +12,7 @@ import {
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, perm: ['dashboard.read'] },
   { to: '/links', label: 'Links WAN', icon: Network, perm: ['links.read'] },
-  { to: '/interfaces', label: 'Interfaces', icon: Network, perm: ['system.read'] },
+  { to: '/interfaces', label: 'Interfaces', icon: Cable, perm: ['system.read'] },
   { to: '/routes', label: 'Rotas', icon: Route, perm: ['routes.read'] },
   { to: '/firewall', label: 'Firewall', icon: Shield, perm: ['firewall.read'] },
   { to: '/hosts', label: 'Hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
@@ -43,6 +43,12 @@ export default function Layout() {
   const visibleNav = navItems.filter(
     (item) => !permsLoaded || item.perm.some((p) => can(p)),
   );
+
+  // Current page label for the mobile top bar (longest matching path wins).
+  const currentLabel = [...navItems]
+    .sort((a, b) => b.to.length - a.to.length)
+    .find((n) => (n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to)))?.label
+    ?? 'LinkGuard FW';
 
   return (
     <div className="flex h-screen bg-gray-950">
@@ -117,6 +123,7 @@ export default function Layout() {
               onClick={handleLogout}
               className="text-gray-500 hover:text-red-400 transition-colors flex-shrink-0"
               title="Sair"
+              aria-label="Sair"
             >
               <LogOut className="w-4 h-4" />
             </button>
@@ -135,9 +142,9 @@ export default function Layout() {
           >
             <Menu className="w-6 h-6" />
           </button>
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-blue-500" />
-            <span className="text-white font-semibold text-sm">LinkGuard FW</span>
+          <div className="flex items-center gap-2 min-w-0">
+            <ShieldCheck className="w-5 h-5 text-blue-500 flex-shrink-0" />
+            <span className="text-white font-semibold text-sm truncate">{currentLabel}</span>
           </div>
         </header>
 
