@@ -43,8 +43,11 @@ func DefaultConfig() Config {
 		Gateway:      "192.168.3.3",
 		LeaseHours:   12,
 		DNSToClients: []string{"192.168.3.3"}, // clients use unbound (so filtering/logging work)
-		Upstreams:    []string{"1.1.1.1", "8.8.8.8"},
-		LogQueries:   false,
+		// Empty = unbound resolves recursively from the root (more private and
+		// independent; matches the previous bind9 behaviour). Set upstreams to
+		// forward instead.
+		Upstreams:  []string{},
+		LogQueries: false,
 	}
 }
 

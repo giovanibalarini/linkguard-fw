@@ -41,8 +41,8 @@ func TestGenerateKeaConfigValidJSON(t *testing.T) {
 	}
 }
 
-func TestGenerateUnboundConfig(t *testing.T) {
-	cfg := netsvc.DefaultConfig()
+func TestGenerateUnboundConfigRecursiveByDefault(t *testing.T) {
+	cfg := netsvc.DefaultConfig() // empty upstreams = recursive
 	out := GenerateUnboundConfig(cfg, []string{"ads.example.com"})
 	wants := []string{
 		"server:",
@@ -51,17 +51,28 @@ func TestGenerateUnboundConfig(t *testing.T) {
 		"access-control: 192.168.3.0/24 allow",
 		"num-threads: 2",
 		"local-zone: \"ads.example.com.\" always_nxdomain",
-		"forward-zone:",
-		"forward-addr: 1.1.1.1",
-		"forward-addr: 8.8.8.8",
 	}
 	for _, w := range wants {
 		if !strings.Contains(out, w) {
 			t.Errorf("unbound config missing %q\n--- got ---\n%s", w, out)
 		}
 	}
+	if strings.Contains(out, "forward-zone") {
+		t.Errorf("default should be recursive (no forward-zone)\n%s", out)
+	}
 	if strings.Contains(out, "log-queries") {
 		t.Errorf("log-queries should be off by default")
+	}
+}
+
+func TestGenerateUnboundConfigForwarding(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	cfg.Upstreams = []string{"1.1.1.1", "8.8.8.8"}
+	out := GenerateUnboundConfig(cfg, nil)
+	for _, w := range []string{"forward-zone:", "forward-addr: 1.1.1.1", "forward-addr: 8.8.8.8"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("forwarding config missing %q\n%s", w, out)
+		}
 	}
 }
 
