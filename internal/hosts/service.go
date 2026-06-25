@@ -61,6 +61,9 @@ func (s *Service) List(ctx context.Context) ([]Host, error) {
 		meta[m.MAC] = m
 	}
 
+	// Collect sightings and persist them in one transaction at the end (one
+	// write per host on every List was extremely slow without WAL).
+	sightings := make(map[string]string)
 	seen := make(map[string]bool)
 	var hosts []Host
 	for _, n := range neighbors {
@@ -68,8 +71,7 @@ func (s *Service) List(ctx context.Context) ([]Host, error) {
 			continue // can't track a host without a stable identifier
 		}
 		seen[n.MAC] = true
-		// Record the sighting; best-effort (don't fail the listing on write error).
-		_ = s.db.UpsertHostSighting(n.MAC, n.IP)
+		sightings[n.MAC] = n.IP
 
 		h := Host{
 			IP:        n.IP,
@@ -86,6 +88,9 @@ func (s *Service) List(ctx context.Context) ([]Host, error) {
 		}
 		hosts = append(hosts, h)
 	}
+
+	// Persist all sightings at once; best-effort (don't fail listing on write error).
+	_ = s.db.UpsertHostSightings(sightings)
 
 	// Add known-but-currently-absent hosts as offline entries.
 	for _, m := range metaList {

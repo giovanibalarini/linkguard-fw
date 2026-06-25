@@ -4,6 +4,7 @@ package iptables
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -78,10 +79,23 @@ func (s *Service) Save(ctx context.Context) (string, error) {
 	return s.exec.ExecuteRead(ctx, "iptables-save")
 }
 
-// Restore applies rules from an iptables-save dump.
+// Restore applies rules from an iptables-save dump. The rules are written to a
+// temp file and passed to iptables-restore as an argument (the command runs
+// without a shell, so stdin redirection is not available).
 func (s *Service) Restore(ctx context.Context, rules string) (string, error) {
-	// Write rules to a temp file and call iptables-restore
-	return s.exec.Execute(ctx, "iptables-restore", "--noflush")
+	f, err := os.CreateTemp("", "linkguard-iptables-*.rules")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(rules); err != nil {
+		f.Close()
+		return "", fmt.Errorf("write rules: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("close temp file: %w", err)
+	}
+	return s.exec.Execute(ctx, "iptables-restore", f.Name())
 }
 
 // CreateRule inserts/appends a rule in the specified table and chain.

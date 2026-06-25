@@ -699,13 +699,36 @@ func replaceRolePermissions(tx *sql.Tx, roleID string, perms []string) error {
 // UpsertHostSighting records that a host (by MAC) was seen with the given IP,
 // refreshing last_seen. Admin-set fields (alias, blocked) are preserved.
 func (db *DB) UpsertHostSighting(mac, ip string) error {
+	return db.UpsertHostSightings(map[string]string{mac: ip})
+}
+
+// UpsertHostSightings records many sightings in a SINGLE transaction. Doing one
+// write per host (as List does on every call) was pathologically slow — each
+// commit fsyncs the journal — so the whole batch is committed at once.
+func (db *DB) UpsertHostSightings(sightings map[string]string) error {
+	if len(sightings) == 0 {
+		return nil
+	}
 	now := time.Now()
-	_, err := db.conn.Exec(`
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`
 		INSERT INTO host_metadata (mac, ip, first_seen, last_seen)
 		VALUES (?, ?, ?, ?)
-		ON CONFLICT(mac) DO UPDATE SET ip = excluded.ip, last_seen = excluded.last_seen`,
-		mac, ip, now, now)
-	return err
+		ON CONFLICT(mac) DO UPDATE SET ip = excluded.ip, last_seen = excluded.last_seen`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for mac, ip := range sightings {
+		if _, err := stmt.Exec(mac, ip, now, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ListHostMetadata returns all stored host metadata.

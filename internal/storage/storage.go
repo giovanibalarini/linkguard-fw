@@ -20,7 +20,11 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("create db directory: %w", err)
 	}
 
-	conn, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on")
+	// NOTE: modernc.org/sqlite uses the `_pragma=` connection-string syntax.
+	// The older `_journal_mode=WAL&_foreign_keys=on` form (mattn/go-sqlite3) is
+	// silently ignored by this driver, which left WAL and FK enforcement OFF.
+	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
