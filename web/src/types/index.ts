@@ -195,6 +195,12 @@ export interface MeResponse {
   permissions: string[];
 }
 
+export interface NftManaged {
+  wan_hosts: { ip: string; mark: string }[];
+  blocklist: string[];
+  blocked_hosts: string[];
+}
+
 export interface NetHost {
   ip: string;
   mac: string;

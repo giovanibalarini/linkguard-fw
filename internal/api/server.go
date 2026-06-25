@@ -175,9 +175,14 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// nftables (native firewall management — replaces iptables)
 		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/ruleset", nftH.Ruleset)
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/managed", nftH.Managed)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/backups", nftH.ListBackups)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/backup", nftH.Backup)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rollback", nftH.Rollback)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/wan-host", nftH.WanHost)
+		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/wan-host", nftH.WanHost)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/blocklist", nftH.Blocklist)
+		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/blocklist", nftH.Blocklist)
 
 		// Failover events
 		failH := handlers.NewFailoverHandler(s.failoverSvc)
