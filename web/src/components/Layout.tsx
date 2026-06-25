@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
-  Menu, X, AlertTriangle, Cable,
+  Menu, X, AlertTriangle, Cable, Server, Globe,
 } from 'lucide-react';
 
 // `perm` lists the permissions that reveal a nav item; an item with no `perm`
@@ -16,6 +16,8 @@ const navItems = [
   { to: '/routes', label: 'Rotas', icon: Route, perm: ['routes.read'] },
   { to: '/firewall', label: 'Firewall', icon: Shield, perm: ['firewall.read'] },
   { to: '/hosts', label: 'Hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
+  { to: '/dhcp', label: 'DHCP', icon: Server, perm: ['dhcp.read'] },
+  { to: '/dns', label: 'DNS', icon: Globe, perm: ['dns.read'] },
   { to: '/monitoring', label: 'Monitoramento', icon: Activity, perm: ['monitoring.read'] },
   { to: '/alerts', label: 'Alertas', icon: Bell, perm: ['monitoring.read'] },
   { to: '/logs', label: 'Logs', icon: FileText, perm: ['logs.read'] },

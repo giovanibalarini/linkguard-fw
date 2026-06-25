@@ -23,6 +23,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
+	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -43,6 +44,7 @@ type Server struct {
 	authSvc     *auth.Service
 	hostSvc     *hosts.Service
 	nftSvc      *nftables.Service
+	netSvc      netsvc.Provider
 	sysCol      *system.Collector
 	rrdSvc      *trafficrrd.Service
 	promReg     *prometheus.Registry
@@ -61,8 +63,8 @@ type Config struct {
 func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, alertSvc *alerts.Service, authSvc *auth.Service,
-	hostSvc *hosts.Service, nftSvc *nftables.Service, sysCol *system.Collector,
-	rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
+	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
+	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
 
 	s := &Server{
 		db:          db,
@@ -75,6 +77,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		authSvc:     authSvc,
 		hostSvc:     hostSvc,
 		nftSvc:      nftSvc,
+		netSvc:      netSvc,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
@@ -201,6 +204,19 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// Logs / Audit
 		logsH := handlers.NewLogsHandler(s.db)
 		r.With(require(auth.PermLogsRead)).Get("/api/logs", logsH.List)
+
+		// DHCP / DNS (Kea + unbound)
+		netH := handlers.NewNetsvcHandler(s.db, s.netSvc)
+		r.With(require(auth.PermDHCPRead)).Get("/api/dhcp", netH.GetDHCP)
+		r.With(require(auth.PermDHCPWrite)).Put("/api/dhcp/config", netH.UpdateDHCPConfig)
+		r.With(require(auth.PermDHCPWrite)).Post("/api/dhcp/reservations", netH.UpsertReservation)
+		r.With(require(auth.PermDHCPWrite)).Delete("/api/dhcp/reservations", netH.DeleteReservation)
+		r.With(require(auth.PermDNSRead)).Get("/api/dns", netH.GetDNS)
+		r.With(require(auth.PermDNSWrite)).Put("/api/dns/config", netH.UpdateDNSConfig)
+		r.With(require(auth.PermDNSWrite)).Post("/api/dns/blocklist", netH.AddBlocklist)
+		r.With(require(auth.PermDNSWrite)).Delete("/api/dns/blocklist", netH.DeleteBlocklist)
+		r.With(require(auth.PermDHCPRead)).Get("/api/netsvc/preview", netH.Preview)
+		r.With(require(auth.PermDHCPWrite)).Post("/api/netsvc/apply", netH.Apply)
 
 		// Host inventory
 		hostsH := handlers.NewHostsHandler(s.hostSvc, s.db)

@@ -213,6 +213,24 @@ export interface NftUserRule {
   dport: string;
 }
 
+export interface NetsvcConfig {
+  backend: string;
+  interface: string;
+  subnet_cidr: string;
+  range_start: string;
+  range_end: string;
+  gateway: string;
+  lease_hours: number;
+  dns_to_clients: string[];
+  upstreams: string[];
+  log_queries: boolean;
+  domain_suffix: string;
+}
+export interface DHCPReservation { mac: string; ip: string; hostname: string; created_at?: string; updated_at?: string; }
+export interface DHCPLease { expiry: number; mac: string; ip: string; hostname: string; }
+export interface DHCPData { config: NetsvcConfig; reservations: DHCPReservation[]; leases: DHCPLease[]; backend: string; }
+export interface DNSData { config: NetsvcConfig; blocklist: string[]; backend: string; }
+
 export interface NetHost {
   ip: string;
   mac: string;

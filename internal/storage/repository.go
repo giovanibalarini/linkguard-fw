@@ -496,6 +496,18 @@ func (db *DB) EnsureDefaultRoles(seeds []RoleSeed, adminRoleID string) error {
 			return err
 		}
 		if exists > 0 {
+			// Existing role: only re-apply permissions for AlwaysSync roles (the
+			// admin role), so new catalog permissions reach it after upgrades.
+			// Customizable roles (operator/viewer) are left untouched.
+			if s.AlwaysSync {
+				for _, p := range s.Permissions {
+					if _, err := tx.Exec(`
+						INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, ?)`,
+						s.ID, p); err != nil {
+						return err
+					}
+				}
+			}
 			continue
 		}
 		if _, err := tx.Exec(`
@@ -772,6 +784,74 @@ func (db *DB) SetHostBlocked(mac string, blocked bool) error {
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(mac) DO UPDATE SET blocked = excluded.blocked`,
 		mac, boolToInt(blocked), now, now)
+	return err
+}
+
+// ─── DHCP/DNS repository ─────────────────────────────────────────────────────
+
+// ListDHCPReservations returns all static reservations ordered by IP.
+func (db *DB) ListDHCPReservations() ([]DHCPReservation, error) {
+	rows, err := db.conn.Query(`
+		SELECT mac, ip, hostname, created_at, updated_at FROM dhcp_reservations ORDER BY ip`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DHCPReservation{}
+	for rows.Next() {
+		var r DHCPReservation
+		if err := rows.Scan(&r.MAC, &r.IP, &r.Hostname, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UpsertDHCPReservation creates or updates a reservation (keyed by MAC).
+func (db *DB) UpsertDHCPReservation(mac, ip, hostname string) error {
+	now := time.Now()
+	_, err := db.conn.Exec(`
+		INSERT INTO dhcp_reservations (mac, ip, hostname, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(mac) DO UPDATE SET ip = excluded.ip, hostname = excluded.hostname, updated_at = excluded.updated_at`,
+		mac, ip, hostname, now, now)
+	return err
+}
+
+// DeleteDHCPReservation removes a reservation by MAC.
+func (db *DB) DeleteDHCPReservation(mac string) error {
+	_, err := db.conn.Exec(`DELETE FROM dhcp_reservations WHERE mac = ?`, mac)
+	return err
+}
+
+// ListDNSBlocklist returns all blocked domains ordered alphabetically.
+func (db *DB) ListDNSBlocklist() ([]string, error) {
+	rows, err := db.conn.Query(`SELECT domain FROM dns_blocklist ORDER BY domain`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// AddDNSBlocklist adds a domain to the DNS blocklist.
+func (db *DB) AddDNSBlocklist(domain string) error {
+	_, err := db.conn.Exec(`INSERT OR IGNORE INTO dns_blocklist (domain) VALUES (?)`, domain)
+	return err
+}
+
+// DeleteDNSBlocklist removes a domain from the DNS blocklist.
+func (db *DB) DeleteDNSBlocklist(domain string) error {
+	_, err := db.conn.Exec(`DELETE FROM dns_blocklist WHERE domain = ?`, domain)
 	return err
 }
 

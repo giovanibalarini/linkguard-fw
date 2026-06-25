@@ -19,6 +19,8 @@ const (
 	PermFirewallRead   Permission = "firewall.read"
 	PermHostsRead      Permission = "hosts.read"
 	PermSystemRead     Permission = "system.read"
+	PermDHCPRead       Permission = "dhcp.read"
+	PermDNSRead        Permission = "dns.read"
 
 	// Write / action access per feature area.
 	PermLinksWrite    Permission = "links.write"
@@ -27,6 +29,8 @@ const (
 	PermHostsBlock    Permission = "hosts.block"
 	PermHostsAssign   Permission = "hosts.assign" // mover host/grupo para uma WAN
 	PermSystemWrite   Permission = "system.write" // settings, retenção, aliases
+	PermDHCPWrite     Permission = "dhcp.write"   // ranges, reservas, aplicar
+	PermDNSWrite      Permission = "dns.write"    // upstreams, blocklist, aplicar
 
 	// Administrative.
 	PermUsersManage Permission = "users.manage" // criar/editar/remover usuários
@@ -63,6 +67,12 @@ var Catalog = []CatalogEntry{
 
 	{PermSystemRead, "Sistema", "Ver sistema", "Métricas de sistema e configurações"},
 	{PermSystemWrite, "Sistema", "Alterar configurações", "Retenção, aliases de interface e ajustes globais"},
+
+	{PermDHCPRead, "DHCP", "Ver DHCP", "Ver config, reservas e leases ativos"},
+	{PermDHCPWrite, "DHCP", "Gerenciar DHCP", "Editar range/reservas e aplicar (Kea)"},
+
+	{PermDNSRead, "DNS", "Ver DNS", "Ver upstreams, cache e blocklist"},
+	{PermDNSWrite, "DNS", "Gerenciar DNS", "Editar upstreams/blocklist e aplicar (unbound)"},
 
 	{PermUsersManage, "Administração", "Gerenciar usuários", "Criar, editar e remover usuários e seus papéis"},
 	{PermRolesManage, "Administração", "Gerenciar papéis", "Criar, editar e remover papéis e suas permissões"},
@@ -104,7 +114,7 @@ func readOnlyPermissions() []Permission {
 		switch e.Key {
 		case PermDashboardRead, PermMonitoringRead, PermLogsRead,
 			PermLinksRead, PermRoutesRead, PermFirewallRead,
-			PermHostsRead, PermSystemRead:
+			PermHostsRead, PermSystemRead, PermDHCPRead, PermDNSRead:
 			perms = append(perms, e.Key)
 		}
 	}
@@ -130,6 +140,7 @@ var DefaultRoles = []DefaultRole{
 			PermFirewallRead, PermFirewallWrite,
 			PermHostsRead, PermHostsBlock, PermHostsAssign,
 			PermSystemRead,
+			PermDHCPRead, PermDHCPWrite, PermDNSRead, PermDNSWrite,
 		},
 	},
 	{

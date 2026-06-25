@@ -23,9 +23,11 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
+	"github.com/giovanibalarini/linkguard-fw/internal/keaunbound"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
+	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -113,6 +115,7 @@ func run() int {
 		CooldownSecs:     cfg.FailoverCooldownSecs,
 	}, db, exec, routeSvc, alertSvc)
 	nftSvc := nftables.NewService(exec)
+	var netSvc netsvc.Provider = keaunbound.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc)
 	sysCollector := system.NewCollector()
 	rrdSvc := trafficrrd.NewService(db)
@@ -126,7 +129,7 @@ func run() int {
 		DryRun:  cfg.DryRun,
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, hostSvc, nftSvc, sysCollector, rrdSvc, promReg)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, sysCollector, rrdSvc, promReg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -181,6 +184,8 @@ func seedDefaultRoles(db *storage.DB) error {
 			Name:        dr.Name,
 			Description: dr.Description,
 			Permissions: perms,
+			// Keep the admin role in sync with the catalog across upgrades.
+			AlwaysSync: dr.ID == adminRoleID,
 		})
 	}
 	return db.EnsureDefaultRoles(seeds, adminRoleID)

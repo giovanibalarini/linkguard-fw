@@ -129,6 +129,9 @@ type RoleSeed struct {
 	Name        string
 	Description string
 	Permissions []string
+	// AlwaysSync re-applies the permission set on every startup (used for the
+	// admin role so new catalog permissions reach it after an upgrade).
+	AlwaysSync bool
 }
 
 // ─── HostMetadata ────────────────────────────────────────────────────────────
@@ -144,6 +147,17 @@ type HostMetadata struct {
 	Blocked   bool      `json:"blocked"`
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
+}
+
+// ─── DHCPReservation ─────────────────────────────────────────────────────────
+
+// DHCPReservation is a static DHCP lease (stable IP for a MAC).
+type DHCPReservation struct {
+	MAC       string    `json:"mac"`
+	IP        string    `json:"ip"`
+	Hostname  string    `json:"hostname"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ─── TrafficSample ──────────────────────────────────────────────────────────

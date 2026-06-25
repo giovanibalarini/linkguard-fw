@@ -66,6 +66,8 @@ func (db *DB) migrate() error {
 		createSettingsTable,
         createTrafficSamplesTable,
 		createHostMetadataTable,
+		createDHCPReservationsTable,
+		createDNSBlocklistTable,
 		insertDefaultAdmin,
 	}
 
@@ -127,6 +129,23 @@ CREATE TABLE IF NOT EXISTS host_metadata (
     blocked    INTEGER NOT NULL DEFAULT 0,
     first_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+// ─── DHCP/DNS schema ─────────────────────────────────────────────────────────
+
+const createDHCPReservationsTable = `
+CREATE TABLE IF NOT EXISTS dhcp_reservations (
+    mac        TEXT PRIMARY KEY,
+    ip         TEXT NOT NULL,
+    hostname   TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+const createDNSBlocklistTable = `
+CREATE TABLE IF NOT EXISTS dns_blocklist (
+    domain     TEXT PRIMARY KEY,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 
 // Default admin password is "admin" (bcrypt hash). User must change it.
