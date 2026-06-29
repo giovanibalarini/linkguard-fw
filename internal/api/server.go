@@ -66,6 +66,7 @@ type Config struct {
 	DryRun  bool
 	WebFS   embed.FS
 	PromReg *prometheus.Registry
+	Version string
 }
 
 // New creates and wires up the HTTP server.
@@ -244,6 +245,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// Logs / Audit
 		logsH := handlers.NewLogsHandler(s.db)
 		r.With(require(auth.PermLogsRead)).Get("/api/logs", logsH.List)
+
+		// Backup / restore (admin: system.write)
+		backupH := handlers.NewBackupHandler(s.db, cfg.Version)
+		r.With(require(auth.PermSystemWrite)).Get("/api/backup", backupH.Export)
+		r.With(require(auth.PermSystemWrite)).Post("/api/backup/restore", backupH.Restore)
 
 		// DHCP / DNS (Kea + unbound)
 		netH := handlers.NewNetsvcHandler(s.db, s.netSvc)

@@ -876,6 +876,24 @@ func (db *DB) SetSetting(key, value string) error {
 	return err
 }
 
+// ExportSettings returns every key/value in the settings table (for backups).
+func (db *DB) ExportSettings() (map[string]string, error) {
+	rows, err := db.conn.Query(`SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
 // ─── Routing Policies ────────────────────────────────────────────────────────
 
 // GetRoutingPolicies returns all routing policies.
