@@ -19,6 +19,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
+	"github.com/giovanibalarini/linkguard-fw/internal/dnslog"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
@@ -250,6 +251,10 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermDNSWrite)).Delete("/api/dns/blocklist", netH.DeleteBlocklist)
 		r.With(require(auth.PermDHCPRead)).Get("/api/netsvc/preview", netH.Preview)
 		r.With(require(auth.PermDHCPWrite)).Post("/api/netsvc/apply", netH.Apply)
+
+		// DNS query log (unbound journal; opt-in via DNS log_queries)
+		dnsLogH := handlers.NewDNSLogHandler(dnslog.NewService(s.exec))
+		r.With(require(auth.PermDNSRead)).Get("/api/dns/queries", dnsLogH.Recent)
 
 		// VPN (WireGuard road-warrior)
 		vpnH := handlers.NewVPNHandler(s.db, s.vpnSvc)

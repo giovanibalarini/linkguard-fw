@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw, Globe, Ban, Plus, X, Play } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import DnsQueryLog from '../components/DnsQueryLog';
 import type { DNSData, NetsvcConfig } from '../types';
 
 export default function Dns() {
@@ -91,6 +92,12 @@ export default function Dns() {
               ))}
             </div>
           </div>
+
+          <DnsQueryLog
+            loggingEnabled={!!cfg?.log_queries}
+            canBlock={canWrite}
+            onBlock={(domain) => run(() => client.post('/api/dns/blocklist', { domain }), `Domínio ${domain} bloqueado.`)}
+          />
         </>
       )}
     </div>
