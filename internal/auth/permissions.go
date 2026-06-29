@@ -21,6 +21,7 @@ const (
 	PermSystemRead     Permission = "system.read"
 	PermDHCPRead       Permission = "dhcp.read"
 	PermDNSRead        Permission = "dns.read"
+	PermVPNRead        Permission = "vpn.read"
 
 	// Write / action access per feature area.
 	PermLinksWrite    Permission = "links.write"
@@ -31,6 +32,7 @@ const (
 	PermSystemWrite   Permission = "system.write" // settings, retenção, aliases
 	PermDHCPWrite     Permission = "dhcp.write"   // ranges, reservas, aplicar
 	PermDNSWrite      Permission = "dns.write"    // upstreams, blocklist, aplicar
+	PermVPNWrite      Permission = "vpn.write"    // configurar VPN e clientes (WireGuard)
 
 	// Administrative.
 	PermUsersManage Permission = "users.manage" // criar/editar/remover usuários
@@ -74,6 +76,9 @@ var Catalog = []CatalogEntry{
 	{PermDNSRead, "DNS", "Ver DNS", "Ver upstreams, cache e blocklist"},
 	{PermDNSWrite, "DNS", "Gerenciar DNS", "Editar upstreams/blocklist e aplicar (unbound)"},
 
+	{PermVPNRead, "VPN", "Ver VPN", "Ver status do servidor WireGuard e clientes"},
+	{PermVPNWrite, "VPN", "Gerenciar VPN", "Ativar/configurar a VPN e criar/remover clientes"},
+
 	{PermUsersManage, "Administração", "Gerenciar usuários", "Criar, editar e remover usuários e seus papéis"},
 	{PermRolesManage, "Administração", "Gerenciar papéis", "Criar, editar e remover papéis e suas permissões"},
 }
@@ -114,7 +119,7 @@ func readOnlyPermissions() []Permission {
 		switch e.Key {
 		case PermDashboardRead, PermMonitoringRead, PermLogsRead,
 			PermLinksRead, PermRoutesRead, PermFirewallRead,
-			PermHostsRead, PermSystemRead, PermDHCPRead, PermDNSRead:
+			PermHostsRead, PermSystemRead, PermDHCPRead, PermDNSRead, PermVPNRead:
 			perms = append(perms, e.Key)
 		}
 	}
@@ -141,6 +146,7 @@ var DefaultRoles = []DefaultRole{
 			PermHostsRead, PermHostsBlock, PermHostsAssign,
 			PermSystemRead,
 			PermDHCPRead, PermDHCPWrite, PermDNSRead, PermDNSWrite,
+			PermVPNRead, PermVPNWrite,
 		},
 	},
 	{

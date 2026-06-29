@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Wand2, ChevronRight, ChevronDown, Ban, Gauge, Pin, ShieldOff, Network, Lock, ArrowRightLeft,
+  Wand2, ChevronRight, ChevronDown, Ban, Gauge, Pin, ShieldOff, Network, Lock, ArrowRightLeft, KeyRound,
 } from 'lucide-react';
 
 /**
@@ -102,6 +102,20 @@ const recipes: Recipe[] = [
       <>Abra a tela <b>Links WAN</b>.</>,
       <>Ajuste o <b>peso</b> de cada link: maior peso recebe mais tráfego.</>,
       <>Com dois links, o LinkGuard equilibra o uso e troca sozinho se um cair (<b>failover</b>).</>,
+    ],
+  },
+  {
+    id: 'vpn-access',
+    icon: KeyRound,
+    title: 'Acessar minha rede de fora (VPN)',
+    summary: 'Entrar na sua rede com segurança quando estiver na rua.',
+    to: '/vpn',
+    cta: 'Ir para VPN',
+    steps: [
+      <>Abra a tela <b>VPN</b> e informe o <b>endereço público</b> (IP fixo ou um DDNS) do seu firewall.</>,
+      <><b>Ative</b> a VPN e garanta que a porta (UDP {`51820`}) chegue ao firewall (encaminhe no modem se houver).</>,
+      <>Clique em <b>Adicionar</b> cliente, dê um nome ao aparelho e <b>baixe/importe</b> o arquivo no app WireGuard.</>,
+      <>Pronto: de qualquer lugar, conecte a VPN e você estará "dentro" da sua rede.</>,
     ],
   },
   {

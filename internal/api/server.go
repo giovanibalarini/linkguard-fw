@@ -31,6 +31,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
+	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
 
 // Server holds all dependencies needed to serve HTTP requests.
@@ -48,6 +49,7 @@ type Server struct {
 	hostSvc     *hosts.Service
 	nftSvc      *nftables.Service
 	netSvc      netsvc.Provider
+	vpnSvc      *wireguard.Service
 	trafficSvc  *hosttraffic.Service
 	sysCol      *system.Collector
 	rrdSvc      *trafficrrd.Service
@@ -68,8 +70,8 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
-	trafficSvc *hosttraffic.Service, sysCol *system.Collector, rrdSvc *trafficrrd.Service,
-	promReg *prometheus.Registry) *Server {
+	vpnSvc *wireguard.Service, trafficSvc *hosttraffic.Service, sysCol *system.Collector,
+	rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
 
 	s := &Server{
 		db:          db,
@@ -84,6 +86,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		hostSvc:     hostSvc,
 		nftSvc:      nftSvc,
 		netSvc:      netSvc,
+		vpnSvc:      vpnSvc,
 		trafficSvc:  trafficSvc,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
@@ -238,6 +241,14 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermDNSWrite)).Delete("/api/dns/blocklist", netH.DeleteBlocklist)
 		r.With(require(auth.PermDHCPRead)).Get("/api/netsvc/preview", netH.Preview)
 		r.With(require(auth.PermDHCPWrite)).Post("/api/netsvc/apply", netH.Apply)
+
+		// VPN (WireGuard road-warrior)
+		vpnH := handlers.NewVPNHandler(s.db, s.vpnSvc)
+		r.With(require(auth.PermVPNRead)).Get("/api/vpn", vpnH.Get)
+		r.With(require(auth.PermVPNWrite)).Put("/api/vpn/config", vpnH.UpdateConfig)
+		r.With(require(auth.PermVPNWrite)).Post("/api/vpn/peers", vpnH.AddPeer)
+		r.With(require(auth.PermVPNWrite)).Delete("/api/vpn/peers/{id}", vpnH.DeletePeer)
+		r.With(require(auth.PermVPNRead)).Get("/api/vpn/peers/{id}/config", vpnH.PeerConfig)
 
 		// Host inventory
 		hostsH := handlers.NewHostsHandler(s.hostSvc, s.db)

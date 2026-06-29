@@ -5,7 +5,7 @@ import { useUIMode } from '../context/UIModeContext';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
-  Menu, X, AlertTriangle, Cable, Server, Globe, ChevronDown, Sparkles, SlidersHorizontal,
+  Menu, X, AlertTriangle, Cable, Server, Globe, ChevronDown, Sparkles, SlidersHorizontal, Lock,
 } from 'lucide-react';
 
 interface NavItem {
@@ -36,6 +36,7 @@ const navGroups: NavGroup[] = [
       { to: '/hosts', label: 'Hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
       { to: '/dhcp', label: 'DHCP', icon: Server, perm: ['dhcp.read'] },
       { to: '/dns', label: 'DNS', icon: Globe, perm: ['dns.read'] },
+      { to: '/vpn', label: 'VPN', icon: Lock, perm: ['vpn.read'] },
     ],
   },
   {

@@ -16,6 +16,7 @@ import Admin from './pages/Admin';
 import Hosts from './pages/Hosts';
 import Dhcp from './pages/Dhcp';
 import Dns from './pages/Dns';
+import Vpn from './pages/Vpn';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -37,6 +38,7 @@ function AppRoutes() {
           <Route path="hosts" element={<Hosts />} />
           <Route path="dhcp" element={<Dhcp />} />
           <Route path="dns" element={<Dns />} />
+          <Route path="vpn" element={<Vpn />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="logs" element={<Logs />} />
           <Route path="monitoring" element={<Monitoring />} />

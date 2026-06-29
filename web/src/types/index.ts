@@ -213,6 +213,37 @@ export interface NftUserRule {
   dport: string;
 }
 
+// ─── VPN (WireGuard) ─────────────────────────────────────────────────────────
+
+export interface VPNPeer {
+  id: string;
+  name: string;
+  public_key: string;
+  allowed_ip: string;
+  created_at: string;
+}
+
+export interface VPNConfig {
+  enabled: boolean;
+  public_key: string;
+  listen_port: number;
+  address: string;
+  subnet: string;
+  endpoint: string;
+  dns: string;
+  peers: VPNPeer[];
+}
+
+export interface VPNView {
+  config: VPNConfig;
+  status: string;
+}
+
+export interface AddPeerResponse {
+  peer: VPNPeer;
+  config: string;
+}
+
 export interface PortForward {
   id: string;
   name: string;
