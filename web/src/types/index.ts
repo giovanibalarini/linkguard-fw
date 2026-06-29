@@ -213,6 +213,17 @@ export interface NftUserRule {
   dport: string;
 }
 
+export interface PortForward {
+  id: string;
+  name: string;
+  enabled: boolean;
+  proto: 'tcp' | 'udp';
+  interface: string; // WAN iif; empty = any
+  ext_port: number;
+  dest_ip: string;
+  dest_port: number;
+}
+
 export interface NetsvcConfig {
   backend: string;
   interface: string;

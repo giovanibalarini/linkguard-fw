@@ -7,6 +7,7 @@ package nftables
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -183,6 +184,87 @@ func (s *Service) Persist(ctx context.Context) error {
 	}
 	body := "#!/usr/sbin/nft -f\n\nflush ruleset\n\n" + rs + "\n"
 	return os.WriteFile(ConfPath, []byte(body), 0o644)
+}
+
+// ─── Port forwarding (DNAT) ──────────────────────────────────────────────────
+
+// DNATChain is the prerouting nat chain that holds port-forward rules. It is
+// created on demand and fully rebuilt on every apply, so it is always an exact
+// reflection of the stored forwards.
+const DNATChain = "prerouting_dnat"
+
+// PortForward describes a single external-port → internal-host:port mapping.
+type PortForward struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Enabled   bool   `json:"enabled"`
+	Proto     string `json:"proto"`     // tcp | udp
+	Interface string `json:"interface"` // WAN iif; empty = any
+	ExtPort   int    `json:"ext_port"`
+	DestIP    string `json:"dest_ip"`
+	DestPort  int    `json:"dest_port"`
+}
+
+// ApplyPortForwards rebuilds the DNAT chain from the given forwards atomically
+// (`nft -f` with flush + re-add) and persists the ruleset. Only enabled,
+// well-formed entries are emitted.
+func (s *Service) ApplyPortForwards(ctx context.Context, fwds []PortForward) error {
+	var b strings.Builder
+	// Idempotent chain create, then flush + re-add inside one atomic load.
+	fmt.Fprintf(&b, "add chain %s %s %s { type nat hook prerouting priority dstnat ; policy accept ; }\n",
+		Family, Table, DNATChain)
+	fmt.Fprintf(&b, "flush chain %s %s %s\n", Family, Table, DNATChain)
+	for _, f := range fwds {
+		if !f.Enabled {
+			continue
+		}
+		rule, err := dnatRule(f)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&b, "add rule %s %s %s %s\n", Family, Table, DNATChain, rule)
+	}
+
+	f, err := os.CreateTemp("", "linkguard-dnat-*.conf")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(b.String()); err != nil {
+		f.Close()
+		return fmt.Errorf("write dnat: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if _, err := s.exec.Execute(ctx, "nft", "-f", f.Name()); err != nil {
+		return fmt.Errorf("apply port forwards: %w", err)
+	}
+	return s.Persist(ctx)
+}
+
+// dnatRule renders one PortForward into an nft rule body (inet family DNAT to an
+// IPv4 destination requires the `dnat ip to` form).
+func dnatRule(f PortForward) (string, error) {
+	proto := strings.ToLower(strings.TrimSpace(f.Proto))
+	if proto != "tcp" && proto != "udp" {
+		return "", fmt.Errorf("protocolo inválido: %q (use tcp ou udp)", f.Proto)
+	}
+	if f.ExtPort < 1 || f.ExtPort > 65535 || f.DestPort < 1 || f.DestPort > 65535 {
+		return "", fmt.Errorf("porta fora do intervalo 1-65535")
+	}
+	if net.ParseIP(f.DestIP) == nil || strings.Contains(f.DestIP, ":") {
+		return "", fmt.Errorf("IP de destino inválido: %q", f.DestIP)
+	}
+	var parts []string
+	if iif := strings.TrimSpace(f.Interface); iif != "" {
+		parts = append(parts, fmt.Sprintf("iifname %q", iif))
+	}
+	parts = append(parts,
+		fmt.Sprintf("%s dport %d", proto, f.ExtPort),
+		fmt.Sprintf("dnat ip to %s:%d", f.DestIP, f.DestPort),
+	)
+	return strings.Join(parts, " "), nil
 }
 
 // ─── User rules (custom allow/block, ordered, edited via modal) ──────────────

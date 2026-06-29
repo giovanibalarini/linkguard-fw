@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Wand2, ChevronRight, ChevronDown, Ban, Gauge, Pin, ShieldOff, Network, Lock,
+  Wand2, ChevronRight, ChevronDown, Ban, Gauge, Pin, ShieldOff, Network, Lock, ArrowRightLeft,
 } from 'lucide-react';
 
 /**
@@ -61,6 +61,20 @@ const recipes: Recipe[] = [
       <>Abra a tela <b>DHCP</b> e vá em <b>Reservas</b>.</>,
       <>Informe o <b>MAC</b>, o <b>IP fixo</b> desejado e um nome, e salve.</>,
       <>Clique em <b>Aplicar</b>. Na próxima conexão o aparelho receberá esse IP.</>,
+    ],
+  },
+  {
+    id: 'port-forward',
+    icon: ArrowRightLeft,
+    title: 'Liberar / encaminhar uma porta',
+    summary: 'Deixar algo de fora acessar um serviço seu (servidor, câmera, jogo).',
+    to: '/firewall',
+    cta: 'Ir para Firewall',
+    steps: [
+      <>Reserve um <b>IP fixo</b> para o aparelho no <b>DHCP</b> (assim o encaminhamento não muda de dono).</>,
+      <>Abra <b>Firewall → Encaminhamento</b>.</>,
+      <>Informe a <b>porta externa</b>, o <b>protocolo</b> (TCP/UDP) e o <b>IP:porta interna</b> do aparelho, e salve.</>,
+      <>Abra só o necessário — cada porta aberta é uma porta de entrada na sua rede.</>,
     ],
   },
   {

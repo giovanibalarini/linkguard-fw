@@ -5,9 +5,10 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import PortForwarding from '../components/PortForwarding';
 import type { IptablesBackup, NftManaged, NftUserRule, SystemMetrics } from '../types';
 
-type Tab = 'rules' | 'ruleset' | 'backups';
+type Tab = 'rules' | 'portforward' | 'ruleset' | 'backups';
 type Action = 'accept' | 'drop' | 'reject';
 
 const ACTIONS: Record<Action, { label: string; color: string; ring: string; Icon: typeof Check }> = {
@@ -144,7 +145,7 @@ export default function Firewall() {
       )}
 
       <div className="flex gap-2 border-b border-gray-800">
-        {([['rules', 'Regras'], ['ruleset', 'Ruleset'], ['backups', `Snapshots (${backups.length})`]] as [Tab, string][]).map(([id, label]) => (
+        {([['rules', 'Regras'], ['portforward', 'Encaminhamento'], ['ruleset', 'Ruleset'], ['backups', `Snapshots (${backups.length})`]] as [Tab, string][]).map(([id, label]) => (
           <button key={id} onClick={() => setActiveTab(id)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === id ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{label}</button>
         ))}
       </div>
@@ -239,6 +240,8 @@ export default function Firewall() {
             </div>
           </div>
         </div>
+      ) : activeTab === 'portforward' ? (
+        <PortForwarding ifaces={ifaces} canWrite={canWrite} onMsg={setMsg} />
       ) : activeTab === 'ruleset' ? (
         <div className="card p-0 overflow-hidden">
           <div className="px-4 py-2 border-b border-gray-800 flex items-center gap-2 text-xs text-gray-500"><Terminal className="w-3.5 h-3.5" /><span className="font-mono">nft list ruleset</span></div>

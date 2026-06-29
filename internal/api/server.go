@@ -199,6 +199,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/rules", nftH.DeleteUserRule)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules/move", nftH.MoveUserRule)
 
+		// Port forwarding (DNAT)
+		pfH := handlers.NewPortForwardHandler(s.db, s.nftSvc)
+		r.With(require(auth.PermFirewallRead)).Get("/api/portforward", pfH.List)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/portforward", pfH.Upsert)
+		r.With(require(auth.PermFirewallWrite)).Delete("/api/portforward", pfH.Delete)
+
 		// Failover events
 		failH := handlers.NewFailoverHandler(s.failoverSvc)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/failover/events", failH.ListEvents)
