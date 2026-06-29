@@ -33,6 +33,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
+	"github.com/giovanibalarini/linkguard-fw/internal/updater"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
 
@@ -250,6 +251,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		backupH := handlers.NewBackupHandler(s.db, cfg.Version)
 		r.With(require(auth.PermSystemWrite)).Get("/api/backup", backupH.Export)
 		r.With(require(auth.PermSystemWrite)).Post("/api/backup/restore", backupH.Restore)
+
+		// In-app update (admin: system.write)
+		updateH := handlers.NewUpdateHandler(s.db, updater.NewService(s.exec, cfg.Version))
+		r.With(require(auth.PermSystemRead)).Get("/api/system/update/check", updateH.Check)
+		r.With(require(auth.PermSystemWrite)).Post("/api/system/update/apply", updateH.Apply)
 
 		// DHCP / DNS (Kea + unbound)
 		netH := handlers.NewNetsvcHandler(s.db, s.netSvc)

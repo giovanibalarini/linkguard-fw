@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, Info, Database, Bell, ShieldCheck, Download } from 'lucide-react';
+import { Settings as SettingsIcon, Info, Database, Bell, ShieldCheck, Download, RefreshCw } from 'lucide-react';
 import client from '../api/client';
 import NotificationSettings from '../components/NotificationSettings';
 import TwoFactorSettings from '../components/TwoFactorSettings';
 import HttpsInfo from '../components/HttpsInfo';
 import BackupRestore from '../components/BackupRestore';
+import UpdateChecker from '../components/UpdateChecker';
 import type { TrafficRetentionResponse } from '../types';
 
 type RetentionProfile = '30d' | '1y' | '5y';
@@ -86,6 +87,7 @@ export default function Settings() {
             { id: 'security', label: 'Segurança', icon: ShieldCheck },
             { id: 'notifications', label: 'Notificações', icon: Bell },
             { id: 'backup', label: 'Backup', icon: Download },
+            { id: 'updates', label: 'Atualizações', icon: RefreshCw },
             { id: 'traffic-retention', label: 'Retenção de tráfego', icon: Database },
           ].map(({ id, label, icon: Icon }) => (
             <button
@@ -228,6 +230,8 @@ export default function Settings() {
           {activeSection === 'notifications' && <NotificationSettings />}
 
           {activeSection === 'backup' && <BackupRestore />}
+
+          {activeSection === 'updates' && <UpdateChecker />}
         </div>
       </div>
 
