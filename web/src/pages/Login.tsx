@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useI18n } from '../i18n';
 import { ShieldCheck, Eye, EyeOff, KeyRound } from 'lucide-react';
 
 export default function Login() {
   const { login } = useAuth();
+  const { t } = useI18n();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
@@ -23,11 +25,11 @@ export default function Login() {
       const data = ax?.response?.data;
       if (data?.totp_required) {
         setNeedCode(true);
-        setError(needCode && code ? 'Código inválido. Tente novamente.' : '');
+        setError(needCode && code ? t('login.invalidCode') : '');
       } else if (data?.locked_out) {
-        setError('Muitas tentativas. Aguarde alguns minutos e tente de novo.');
+        setError(t('login.locked'));
       } else {
-        setError('Usuário ou senha inválidos');
+        setError(t('login.invalid'));
       }
     } finally {
       setLoading(false);
@@ -42,14 +44,14 @@ export default function Login() {
             <ShieldCheck className="w-8 h-8 text-blue-400" />
           </div>
           <h1 className="text-2xl font-bold text-white">LinkGuard FW</h1>
-          <p className="text-gray-500 mt-1">Gestão de Firewall Linux</p>
+          <p className="text-gray-500 mt-1">{t('login.subtitle')}</p>
         </div>
 
         <div className="card">
-          <h2 className="text-lg font-semibold text-white mb-6">Entrar</h2>
+          <h2 className="text-lg font-semibold text-white mb-6">{t('login.title')}</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="label" htmlFor="login-username">Usuário</label>
+              <label className="label" htmlFor="login-username">{t('login.username')}</label>
               <input
                 id="login-username"
                 type="text"
@@ -63,7 +65,7 @@ export default function Login() {
               />
             </div>
             <div>
-              <label className="label" htmlFor="login-password">Senha</label>
+              <label className="label" htmlFor="login-password">{t('login.password')}</label>
               <div className="relative">
                 <input
                   id="login-password"
@@ -89,7 +91,7 @@ export default function Login() {
             {needCode && (
               <div>
                 <label className="label flex items-center gap-1.5" htmlFor="login-code">
-                  <KeyRound className="w-3.5 h-3.5 text-blue-400" /> Código de verificação (2FA)
+                  <KeyRound className="w-3.5 h-3.5 text-blue-400" /> {t('login.code')}
                 </label>
                 <input
                   id="login-code"
@@ -103,7 +105,7 @@ export default function Login() {
                   autoFocus
                   required
                 />
-                <p className="text-gray-600 text-xs mt-1">Abra seu app autenticador e digite o código de 6 dígitos.</p>
+                <p className="text-gray-600 text-xs mt-1">{t('login.code.hint')}</p>
               </div>
             )}
             {error && (
@@ -116,7 +118,7 @@ export default function Login() {
               disabled={loading}
               className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? 'Entrando...' : needCode ? 'Verificar' : 'Entrar'}
+              {loading ? t('login.loading') : needCode ? t('login.verify') : t('login.submit')}
             </button>
           </form>
           <p className="text-gray-600 text-xs text-center mt-4">

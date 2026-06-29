@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useUIMode } from '../context/UIModeContext';
+import { useI18n } from '../i18n';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
@@ -26,34 +27,35 @@ interface NavGroup {
 // Grouped navigation. The "Avançado" group is collapsed in Simple mode (one
 // click expands it) and expanded in Advanced mode. `perm` lists the permissions
 // that reveal an item; the item shows when the user holds at least one.
+// `label` holds an i18n key resolved with t() at render time.
 const navGroups: NavGroup[] = [
   {
     id: 'main', label: null,
     items: [
-      { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, perm: ['dashboard.read'] },
-      { to: '/links', label: 'Links WAN', icon: Network, perm: ['links.read'] },
-      { to: '/firewall', label: 'Firewall', icon: Shield, perm: ['firewall.read'] },
-      { to: '/hosts', label: 'Hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
-      { to: '/dhcp', label: 'DHCP', icon: Server, perm: ['dhcp.read'] },
-      { to: '/dns', label: 'DNS', icon: Globe, perm: ['dns.read'] },
-      { to: '/vpn', label: 'VPN', icon: Lock, perm: ['vpn.read'] },
+      { to: '/', label: 'nav.dashboard', icon: LayoutDashboard, end: true, perm: ['dashboard.read'] },
+      { to: '/links', label: 'nav.links', icon: Network, perm: ['links.read'] },
+      { to: '/firewall', label: 'nav.firewall', icon: Shield, perm: ['firewall.read'] },
+      { to: '/hosts', label: 'nav.hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
+      { to: '/dhcp', label: 'nav.dhcp', icon: Server, perm: ['dhcp.read'] },
+      { to: '/dns', label: 'nav.dns', icon: Globe, perm: ['dns.read'] },
+      { to: '/vpn', label: 'nav.vpn', icon: Lock, perm: ['vpn.read'] },
     ],
   },
   {
-    id: 'advanced', label: 'Avançado', advanced: true,
+    id: 'advanced', label: 'group.advanced', advanced: true,
     items: [
-      { to: '/interfaces', label: 'Interfaces', icon: Cable, perm: ['system.read'] },
-      { to: '/routes', label: 'Rotas', icon: Route, perm: ['routes.read'] },
-      { to: '/monitoring', label: 'Monitoramento', icon: Activity, perm: ['monitoring.read'] },
-      { to: '/alerts', label: 'Alertas', icon: Bell, perm: ['monitoring.read'] },
-      { to: '/logs', label: 'Logs', icon: FileText, perm: ['logs.read'] },
+      { to: '/interfaces', label: 'nav.interfaces', icon: Cable, perm: ['system.read'] },
+      { to: '/routes', label: 'nav.routes', icon: Route, perm: ['routes.read'] },
+      { to: '/monitoring', label: 'nav.monitoring', icon: Activity, perm: ['monitoring.read'] },
+      { to: '/alerts', label: 'nav.alerts', icon: Bell, perm: ['monitoring.read'] },
+      { to: '/logs', label: 'nav.logs', icon: FileText, perm: ['logs.read'] },
     ],
   },
   {
-    id: 'system', label: 'Sistema',
+    id: 'system', label: 'group.system',
     items: [
-      { to: '/settings', label: 'Configurações', icon: Settings, perm: ['system.read'] },
-      { to: '/admin', label: 'Administração', icon: Users, perm: ['users.manage', 'roles.manage'] },
+      { to: '/settings', label: 'nav.settings', icon: Settings, perm: ['system.read'] },
+      { to: '/admin', label: 'nav.admin', icon: Users, perm: ['users.manage', 'roles.manage'] },
     ],
   },
 ];
@@ -63,6 +65,7 @@ const allItems = navGroups.flatMap((g) => g.items);
 export default function Layout() {
   const { user, logout, can, permsLoaded } = useAuth();
   const { isSimple, mode, setMode } = useUIMode();
+  const { t, lang, setLang } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -80,10 +83,10 @@ export default function Layout() {
   const itemVisible = (item: NavItem) => !permsLoaded || item.perm.some((p) => can(p));
 
   // Current page label for the mobile top bar (longest matching path wins).
-  const currentLabel = [...allItems]
+  const currentItem = [...allItems]
     .sort((a, b) => b.to.length - a.to.length)
-    .find((n) => (n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to)))?.label
-    ?? 'LinkGuard FW';
+    .find((n) => (n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to)));
+  const currentLabel = currentItem ? t(currentItem.label) : 'LinkGuard FW';
 
   // The advanced group expands automatically in advanced mode, when the active
   // route lives inside it, or when the user clicks to expand it.
@@ -108,7 +111,7 @@ export default function Layout() {
           }
         >
           <Icon className="w-4 h-4 flex-shrink-0" />
-          {label}
+          {t(label)}
         </NavLink>
       </li>
     );
@@ -137,7 +140,7 @@ export default function Layout() {
             <ShieldCheck className="w-7 h-7 text-blue-500" />
             <div>
               <p className="text-white font-bold text-sm">LinkGuard FW</p>
-              <p className="text-gray-500 text-xs">Firewall Manager</p>
+              <p className="text-gray-500 text-xs">{t('app.tagline')}</p>
             </div>
           </div>
           <button
@@ -164,7 +167,7 @@ export default function Layout() {
                     className="flex w-full items-center justify-between px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-300"
                     aria-expanded={advExpanded}
                   >
-                    <span>{group.label}</span>
+                    <span>{group.label ? t(group.label) : ''}</span>
                     <ChevronDown className={`w-3.5 h-3.5 transition-transform ${advExpanded ? '' : '-rotate-90'}`} />
                   </button>
                   {advExpanded && <ul className="mt-1 space-y-1">{items.map(renderItem)}</ul>}
@@ -175,7 +178,7 @@ export default function Layout() {
             return (
               <div key={group.id} className={group.label ? 'mt-4' : ''}>
                 {group.label && (
-                  <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">{group.label}</p>
+                  <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">{t(group.label)}</p>
                 )}
                 <ul className="space-y-1">{items.map(renderItem)}</ul>
               </div>
@@ -183,27 +186,38 @@ export default function Layout() {
           })}
         </nav>
 
-        {/* Mode switch: Simples ↔ Avançado */}
-        <div className="px-3 pt-3 border-t border-gray-800">
+        {/* Mode switch + language */}
+        <div className="px-3 pt-3 border-t border-gray-800 space-y-2">
           <div className="flex items-center gap-1 rounded-lg bg-gray-800 p-1" role="group" aria-label="Modo de exibição">
             <button
               onClick={() => setMode('simple')}
               className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
                 mode === 'simple' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
               }`}
-              title="Menos opções, mais ajuda — ideal para começar"
             >
-              <Sparkles className="w-3.5 h-3.5" /> Simples
+              <Sparkles className="w-3.5 h-3.5" /> {t('mode.simple')}
             </button>
             <button
               onClick={() => setMode('advanced')}
               className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
                 mode === 'advanced' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
               }`}
-              title="Todas as telas e controles à mostra"
             >
-              <SlidersHorizontal className="w-3.5 h-3.5" /> Avançado
+              <SlidersHorizontal className="w-3.5 h-3.5" /> {t('mode.advanced')}
             </button>
+          </div>
+          <div className="flex items-center gap-1 rounded-lg bg-gray-800 p-1" role="group" aria-label="Language">
+            {(['pt', 'en'] as const).map((l) => (
+              <button
+                key={l}
+                onClick={() => setLang(l)}
+                className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                  lang === l ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {l === 'pt' ? 'Português' : 'English'}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -220,8 +234,8 @@ export default function Layout() {
             <button
               onClick={handleLogout}
               className="text-gray-500 hover:text-red-400 transition-colors flex-shrink-0"
-              title="Sair"
-              aria-label="Sair"
+              title={t('action.logout')}
+              aria-label={t('action.logout')}
             >
               <LogOut className="w-4 h-4" />
             </button>

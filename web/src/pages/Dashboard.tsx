@@ -6,6 +6,7 @@ import Recipes from '../components/Recipes';
 import StatusBadge from '../components/StatusBadge';
 import { AlertBadge } from '../components/StatusBadge';
 import client from '../api/client';
+import { useI18n } from '../i18n';
 import type { SystemMetrics, WanLink, Alert } from '../types';
 
 function formatBytes(bytes: number): string {
@@ -17,6 +18,7 @@ function formatBytes(bytes: number): string {
 }
 
 export default function Dashboard() {
+  const { t } = useI18n();
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [wanLinks, setWanLinks] = useState<WanLink[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -73,8 +75,8 @@ export default function Dashboard() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-white">Dashboard</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Visão geral do sistema</p>
+          <h1 className="text-xl font-bold text-white">{t('dashboard.title')}</h1>
+          <p className="text-gray-500 text-sm mt-0.5">{t('dashboard.subtitle')}</p>
         </div>
         <div className="text-xs">
           {error ? (
