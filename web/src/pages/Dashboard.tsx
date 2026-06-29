@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Cpu, MemoryStick, HardDrive, Clock, Wifi, AlertTriangle, Activity, Server } from 'lucide-react';
 import MetricCard, { ProgressCard } from '../components/MetricCard';
 import GettingStarted from '../components/GettingStarted';
+import Recipes from '../components/Recipes';
 import StatusBadge from '../components/StatusBadge';
 import { AlertBadge } from '../components/StatusBadge';
 import client from '../api/client';
@@ -65,6 +66,9 @@ export default function Dashboard() {
     <div className="p-6 space-y-6">
       {/* Guided onboarding (beginners) — auto-hides once setup is complete/dismissed */}
       <GettingStarted />
+
+      {/* Task recipes — "what do you want to do?" entry point for everyday tasks */}
+      <Recipes />
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">

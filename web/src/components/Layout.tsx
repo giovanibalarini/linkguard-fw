@@ -1,36 +1,72 @@
 import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useUIMode } from '../context/UIModeContext';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
-  Menu, X, AlertTriangle, Cable, Server, Globe,
+  Menu, X, AlertTriangle, Cable, Server, Globe, ChevronDown, Sparkles, SlidersHorizontal,
 } from 'lucide-react';
 
-// `perm` lists the permissions that reveal a nav item; an item with no `perm`
-// (or matching any of several) is shown when the user holds at least one.
-const navItems = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, perm: ['dashboard.read'] },
-  { to: '/links', label: 'Links WAN', icon: Network, perm: ['links.read'] },
-  { to: '/interfaces', label: 'Interfaces', icon: Cable, perm: ['system.read'] },
-  { to: '/routes', label: 'Rotas', icon: Route, perm: ['routes.read'] },
-  { to: '/firewall', label: 'Firewall', icon: Shield, perm: ['firewall.read'] },
-  { to: '/hosts', label: 'Hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
-  { to: '/dhcp', label: 'DHCP', icon: Server, perm: ['dhcp.read'] },
-  { to: '/dns', label: 'DNS', icon: Globe, perm: ['dns.read'] },
-  { to: '/monitoring', label: 'Monitoramento', icon: Activity, perm: ['monitoring.read'] },
-  { to: '/alerts', label: 'Alertas', icon: Bell, perm: ['monitoring.read'] },
-  { to: '/logs', label: 'Logs', icon: FileText, perm: ['logs.read'] },
-  { to: '/settings', label: 'Configurações', icon: Settings, perm: ['system.read'] },
-  { to: '/admin', label: 'Administração', icon: Users, perm: ['users.manage', 'roles.manage'] },
+interface NavItem {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  perm: string[];
+  end?: boolean;
+}
+
+interface NavGroup {
+  id: string;
+  label: string | null;
+  advanced?: boolean;
+  items: NavItem[];
+}
+
+// Grouped navigation. The "Avançado" group is collapsed in Simple mode (one
+// click expands it) and expanded in Advanced mode. `perm` lists the permissions
+// that reveal an item; the item shows when the user holds at least one.
+const navGroups: NavGroup[] = [
+  {
+    id: 'main', label: null,
+    items: [
+      { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, perm: ['dashboard.read'] },
+      { to: '/links', label: 'Links WAN', icon: Network, perm: ['links.read'] },
+      { to: '/firewall', label: 'Firewall', icon: Shield, perm: ['firewall.read'] },
+      { to: '/hosts', label: 'Hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
+      { to: '/dhcp', label: 'DHCP', icon: Server, perm: ['dhcp.read'] },
+      { to: '/dns', label: 'DNS', icon: Globe, perm: ['dns.read'] },
+    ],
+  },
+  {
+    id: 'advanced', label: 'Avançado', advanced: true,
+    items: [
+      { to: '/interfaces', label: 'Interfaces', icon: Cable, perm: ['system.read'] },
+      { to: '/routes', label: 'Rotas', icon: Route, perm: ['routes.read'] },
+      { to: '/monitoring', label: 'Monitoramento', icon: Activity, perm: ['monitoring.read'] },
+      { to: '/alerts', label: 'Alertas', icon: Bell, perm: ['monitoring.read'] },
+      { to: '/logs', label: 'Logs', icon: FileText, perm: ['logs.read'] },
+    ],
+  },
+  {
+    id: 'system', label: 'Sistema',
+    items: [
+      { to: '/settings', label: 'Configurações', icon: Settings, perm: ['system.read'] },
+      { to: '/admin', label: 'Administração', icon: Users, perm: ['users.manage', 'roles.manage'] },
+    ],
+  },
 ];
+
+const allItems = navGroups.flatMap((g) => g.items);
 
 export default function Layout() {
   const { user, logout, can, permsLoaded } = useAuth();
+  const { isSimple, mode, setMode } = useUIMode();
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSecWarn, setShowSecWarn] = useState(true);
+  const [advOpen, setAdvOpen] = useState(false);
 
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
@@ -40,17 +76,42 @@ export default function Layout() {
     navigate('/login');
   };
 
-  // Until permissions load, show everything to avoid an empty sidebar flash;
-  // afterwards, hide items the user has no permission for.
-  const visibleNav = navItems.filter(
-    (item) => !permsLoaded || item.perm.some((p) => can(p)),
-  );
+  const itemVisible = (item: NavItem) => !permsLoaded || item.perm.some((p) => can(p));
 
   // Current page label for the mobile top bar (longest matching path wins).
-  const currentLabel = [...navItems]
+  const currentLabel = [...allItems]
     .sort((a, b) => b.to.length - a.to.length)
     .find((n) => (n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to)))?.label
     ?? 'LinkGuard FW';
+
+  // The advanced group expands automatically in advanced mode, when the active
+  // route lives inside it, or when the user clicks to expand it.
+  const onAdvancedRoute = navGroups
+    .find((g) => g.advanced)!
+    .items.some((i) => location.pathname.startsWith(i.to) && i.to !== '/');
+  const advExpanded = !isSimple || advOpen || onAdvancedRoute;
+
+  const renderItem = (item: NavItem) => {
+    const { to, label, icon: Icon, end } = item;
+    return (
+      <li key={to}>
+        <NavLink
+          to={to}
+          end={end}
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive
+                ? 'bg-blue-600/20 text-blue-400 font-medium'
+                : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+            }`
+          }
+        >
+          <Icon className="w-4 h-4 flex-shrink-0" />
+          {label}
+        </NavLink>
+      </li>
+    );
+  };
 
   return (
     <div className="flex h-screen bg-gray-950">
@@ -89,30 +150,64 @@ export default function Layout() {
 
         {/* Navigation */}
         <nav className="flex-1 px-3 py-4 overflow-y-auto">
-          <ul className="space-y-1">
-            {visibleNav.map(({ to, label, icon: Icon, end }) => (
-              <li key={to}>
-                <NavLink
-                  to={to}
-                  end={end}
-                  className={({ isActive }) =>
-                    `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                      isActive
-                        ? 'bg-blue-600/20 text-blue-400 font-medium'
-                        : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
-                    }`
-                  }
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  {label}
-                </NavLink>
-              </li>
-            ))}
-          </ul>
+          {navGroups.map((group) => {
+            const items = group.items.filter(itemVisible);
+            if (items.length === 0) return null;
+
+            // Advanced group: collapsible in Simple mode, plain section otherwise.
+            if (group.advanced && isSimple) {
+              return (
+                <div key={group.id} className="mt-4">
+                  <button
+                    onClick={() => setAdvOpen((v) => !v)}
+                    className="flex w-full items-center justify-between px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-300"
+                    aria-expanded={advExpanded}
+                  >
+                    <span>{group.label}</span>
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${advExpanded ? '' : '-rotate-90'}`} />
+                  </button>
+                  {advExpanded && <ul className="mt-1 space-y-1">{items.map(renderItem)}</ul>}
+                </div>
+              );
+            }
+
+            return (
+              <div key={group.id} className={group.label ? 'mt-4' : ''}>
+                {group.label && (
+                  <p className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">{group.label}</p>
+                )}
+                <ul className="space-y-1">{items.map(renderItem)}</ul>
+              </div>
+            );
+          })}
         </nav>
 
+        {/* Mode switch: Simples ↔ Avançado */}
+        <div className="px-3 pt-3 border-t border-gray-800">
+          <div className="flex items-center gap-1 rounded-lg bg-gray-800 p-1" role="group" aria-label="Modo de exibição">
+            <button
+              onClick={() => setMode('simple')}
+              className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+                mode === 'simple' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
+              }`}
+              title="Menos opções, mais ajuda — ideal para começar"
+            >
+              <Sparkles className="w-3.5 h-3.5" /> Simples
+            </button>
+            <button
+              onClick={() => setMode('advanced')}
+              className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+                mode === 'advanced' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
+              }`}
+              title="Todas as telas e controles à mostra"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" /> Avançado
+            </button>
+          </div>
+        </div>
+
         {/* User / Logout */}
-        <div className="px-3 py-4 border-t border-gray-800">
+        <div className="px-3 py-4">
           <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-gray-800">
             <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
               {user?.username?.[0]?.toUpperCase() ?? 'U'}
