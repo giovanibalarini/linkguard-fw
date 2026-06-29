@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { ShieldCheck, Eye, EyeOff } from 'lucide-react';
+import { ShieldCheck, Eye, EyeOff, KeyRound } from 'lucide-react';
 
 export default function Login() {
   const { login } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [needCode, setNeedCode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -15,9 +17,18 @@ export default function Login() {
     setError('');
     setLoading(true);
     try {
-      await login(username, password);
-    } catch {
-      setError('Usuário ou senha inválidos');
+      await login(username, password, needCode ? code : undefined);
+    } catch (err) {
+      const ax = err as { response?: { status?: number; data?: { totp_required?: boolean; locked_out?: boolean } } };
+      const data = ax?.response?.data;
+      if (data?.totp_required) {
+        setNeedCode(true);
+        setError(needCode && code ? 'Código inválido. Tente novamente.' : '');
+      } else if (data?.locked_out) {
+        setError('Muitas tentativas. Aguarde alguns minutos e tente de novo.');
+      } else {
+        setError('Usuário ou senha inválidos');
+      }
     } finally {
       setLoading(false);
     }
@@ -75,6 +86,26 @@ export default function Login() {
                 </button>
               </div>
             </div>
+            {needCode && (
+              <div>
+                <label className="label flex items-center gap-1.5" htmlFor="login-code">
+                  <KeyRound className="w-3.5 h-3.5 text-blue-400" /> Código de verificação (2FA)
+                </label>
+                <input
+                  id="login-code"
+                  type="text"
+                  inputMode="numeric"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="input w-full tracking-[0.4em] text-center font-mono"
+                  placeholder="000000"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  required
+                />
+                <p className="text-gray-600 text-xs mt-1">Abra seu app autenticador e digite o código de 6 dígitos.</p>
+              </div>
+            )}
             {error && (
               <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 rounded-lg text-sm">
                 {error}
@@ -85,7 +116,7 @@ export default function Login() {
               disabled={loading}
               className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? 'Entrando...' : 'Entrar'}
+              {loading ? 'Entrando...' : needCode ? 'Verificar' : 'Entrar'}
             </button>
           </form>
           <p className="text-gray-600 text-xs text-center mt-4">

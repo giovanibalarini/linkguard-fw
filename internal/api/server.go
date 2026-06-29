@@ -146,6 +146,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// Current user + effective permissions (authentication only)
 		r.Get("/api/auth/me", authH.Me)
 
+		// Two-factor (self-service; any authenticated user manages their own)
+		r.Get("/api/auth/2fa", authH.TwoFAStatus)
+		r.Post("/api/auth/2fa/setup", authH.TwoFASetup)
+		r.Post("/api/auth/2fa/activate", authH.TwoFAActivate)
+		r.Post("/api/auth/2fa/disable", authH.TwoFADisable)
+
 		// System
 		sysH := handlers.NewSystemHandler(s.sysCol, s.db, s.rrdSvc)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/status", sysH.Status)

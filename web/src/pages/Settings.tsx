@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, Info, Database, Bell } from 'lucide-react';
+import { Settings as SettingsIcon, Info, Database, Bell, ShieldCheck } from 'lucide-react';
 import client from '../api/client';
 import NotificationSettings from '../components/NotificationSettings';
+import TwoFactorSettings from '../components/TwoFactorSettings';
 import type { TrafficRetentionResponse } from '../types';
 
 type RetentionProfile = '30d' | '1y' | '5y';
@@ -80,6 +81,7 @@ export default function Settings() {
           {[
             { id: 'about', label: 'Sobre', icon: Info },
             { id: 'general', label: 'Geral', icon: SettingsIcon },
+            { id: 'security', label: 'Segurança', icon: ShieldCheck },
             { id: 'notifications', label: 'Notificações', icon: Bell },
             { id: 'traffic-retention', label: 'Retenção de tráfego', icon: Database },
           ].map(({ id, label, icon: Icon }) => (
@@ -212,6 +214,8 @@ export default function Settings() {
               </div>
             </div>
           )}
+
+          {activeSection === 'security' && <TwoFactorSettings />}
 
           {activeSection === 'notifications' && <NotificationSettings />}
         </div>

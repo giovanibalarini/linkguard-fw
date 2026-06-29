@@ -14,7 +14,7 @@ interface AuthContextValue {
   permissions: Set<string>;
   permsLoaded: boolean;
   can: (perm: string) => boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string, code?: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -52,8 +52,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshMe]);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const res = await client.post<LoginResponse>('/api/auth/login', { username, password });
+  const login = useCallback(async (username: string, password: string, code?: string) => {
+    const res = await client.post<LoginResponse>('/api/auth/login', { username, password, code });
     localStorage.setItem('token', res.data.token);
     localStorage.setItem('user', JSON.stringify(res.data.user));
     setUser(res.data.user);
