@@ -35,6 +35,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
+	"github.com/giovanibalarini/linkguard-fw/internal/tlscert"
 	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
@@ -176,8 +177,18 @@ func run() int {
 		}
 	}()
 
-	slog.Info("linkguard-fw starting", "version", version, "addr", cfg.Addr(), "dry_run", cfg.DryRun)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	slog.Info("linkguard-fw starting", "version", version, "addr", cfg.Addr(),
+		"dry_run", cfg.DryRun, "tls", cfg.TLSEnabled)
+
+	serve := httpServer.ListenAndServe
+	if cfg.TLSEnabled {
+		if err := tlscert.EnsureSelfSigned(cfg.TLSCert, cfg.TLSKey); err != nil {
+			slog.Error("tls certificate setup failed", "err", err)
+			return 1
+		}
+		serve = func() error { return httpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey) }
+	}
+	if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server failed", "err", err)
 		return 1
 	}

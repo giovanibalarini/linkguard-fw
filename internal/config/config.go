@@ -19,6 +19,12 @@ type Config struct {
 	// Security
 	JWTSecret string `json:"jwt_secret"`
 
+	// HTTPS / TLS. When TLSEnabled is true the panel is served over HTTPS; if
+	// the cert/key files are missing they are auto-generated (self-signed).
+	TLSEnabled bool   `json:"tls_enabled"`
+	TLSCert    string `json:"tls_cert"`
+	TLSKey     string `json:"tls_key"`
+
 	// Operation mode
 	DryRun bool `json:"dry_run"`
 	Debug  bool `json:"debug"`
@@ -43,6 +49,9 @@ func Default() *Config {
 		Port:                 8080,
 		DBPath:               "/var/lib/linkguard-fw/linkguard.db",
 		JWTSecret:            "change-me-in-production",
+		TLSEnabled:           false,
+		TLSCert:              "/etc/linkguard-fw/tls/cert.pem",
+		TLSKey:               "/etc/linkguard-fw/tls/key.pem",
 		DryRun:               true,
 		Debug:                false,
 		MonitorInterval:      30,

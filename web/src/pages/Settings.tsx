@@ -3,6 +3,7 @@ import { Settings as SettingsIcon, Info, Database, Bell, ShieldCheck, Download }
 import client from '../api/client';
 import NotificationSettings from '../components/NotificationSettings';
 import TwoFactorSettings from '../components/TwoFactorSettings';
+import HttpsInfo from '../components/HttpsInfo';
 import BackupRestore from '../components/BackupRestore';
 import type { TrafficRetentionResponse } from '../types';
 
@@ -217,7 +218,12 @@ export default function Settings() {
             </div>
           )}
 
-          {activeSection === 'security' && <TwoFactorSettings />}
+          {activeSection === 'security' && (
+            <div className="space-y-6">
+              <TwoFactorSettings />
+              <HttpsInfo />
+            </div>
+          )}
 
           {activeSection === 'notifications' && <NotificationSettings />}
 
