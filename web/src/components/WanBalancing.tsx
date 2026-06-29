@@ -263,13 +263,13 @@ export default function WanBalancing({ links, onChanged }: Props) {
         >
           <span className="flex items-center gap-2 text-sm font-medium text-white">
             <Clock className="w-4 h-4 text-blue-400" /> Rebalanceamento agendado
-            <span className="text-gray-600 text-xs font-normal">({status.config.schedules.length})</span>
+            <span className="text-gray-600 text-xs font-normal">({(status.config.schedules ?? []).length})</span>
           </span>
           <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${showSchedules ? '' : '-rotate-90'}`} />
         </button>
         {showSchedules && (
           <ScheduleEditor
-            schedules={status.config.schedules}
+            schedules={status.config.schedules ?? []}
             links={wanLinks}
             busy={busy}
             onChange={persistSchedules}

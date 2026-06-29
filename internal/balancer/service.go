@@ -76,6 +76,11 @@ func (c *Config) normalize() {
 	if c.ArmSeconds <= 0 {
 		c.ArmSeconds = defaultArmSecs
 	}
+	// Never expose a nil slice: it marshals to JSON null and crashes clients
+	// that read schedules.length / .map directly.
+	if c.Schedules == nil {
+		c.Schedules = []Schedule{}
+	}
 }
 
 // Nexthop is one WAN link's contribution to the multipath default route.
@@ -165,7 +170,7 @@ func (s *Service) planWith(ctx context.Context, cfg Config) (Plan, error) {
 		return Plan{}, err
 	}
 
-	var online, excluded []Nexthop
+	online, excluded := []Nexthop{}, []Nexthop{}
 	for _, l := range all {
 		if !l.Enabled || l.Gateway == "" || l.Interface == "" {
 			if l.Gateway != "" || l.Interface != "" {

@@ -113,6 +113,11 @@ func TestConfigNormalize(t *testing.T) {
 	if c.ArmSeconds != defaultArmSecs {
 		t.Errorf("default arm = %d, want %d", c.ArmSeconds, defaultArmSecs)
 	}
+	// Regression: Schedules must never be nil, or it marshals to JSON null and
+	// crashes the Links page (schedules.length on null).
+	if c.Schedules == nil {
+		t.Error("normalize must leave Schedules as a non-nil slice")
+	}
 
 	c2 := Config{Mode: "bogus"}
 	c2.normalize()
