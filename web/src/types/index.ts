@@ -233,6 +233,51 @@ export interface DNSData { config: NetsvcConfig; blocklist: string[]; backend: s
 
 export interface HostTraffic { ip: string; rx_bytes: number; tx_bytes: number; }
 
+// ─── Multi-WAN balancing ─────────────────────────────────────────────────────
+
+export interface BalanceNexthop {
+  link_id: string;
+  name: string;
+  gateway: string;
+  interface: string;
+  raw_weight: number;
+  weight: number;
+  online: boolean;
+}
+
+export interface BalanceSchedule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  days: number[]; // 0=Sun .. 6=Sat
+  at: string; // "HH:MM"
+  weights: Record<string, number>; // link_id -> weight
+}
+
+export interface BalanceConfig {
+  mode: 'failover' | 'balance';
+  table: string;
+  arm_seconds: number;
+  schedules: BalanceSchedule[];
+}
+
+export interface BalancePlan {
+  mode: 'failover' | 'balance';
+  table: string;
+  nexthops: BalanceNexthop[];
+  excluded: BalanceNexthop[];
+  command: string;
+  current_default: string;
+  pending: boolean;
+  pending_expiry: number;
+  arm_seconds: number;
+}
+
+export interface BalanceStatus {
+  config: BalanceConfig;
+  plan: BalancePlan;
+}
+
 export interface NetHost {
   ip: string;
   mac: string;

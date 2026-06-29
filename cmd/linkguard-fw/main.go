@@ -18,6 +18,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
+	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -116,6 +117,7 @@ func run() int {
 		CooldownSecs:     cfg.FailoverCooldownSecs,
 	}, db, exec, routeSvc, alertSvc)
 	nftSvc := nftables.NewService(exec)
+	balancerSvc := balancer.NewService(db, exec, linkSvc, alertSvc)
 	var netSvc netsvc.Provider = keaunbound.NewService(exec)
 	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
@@ -131,18 +133,27 @@ func run() int {
 		DryRun:  cfg.DryRun,
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, trafficSvc, sysCollector, rrdSvc, promReg)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, trafficSvc, sysCollector, rrdSvc, promReg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
 	monitor := links.NewMonitor(db, linkSvc, interval)
-	monitor.OnStatusChange(failoverSvc.HandleStatusChange)
+	// On a link state change, balance mode rebuilds the weighted multipath
+	// default route; otherwise the legacy per-table failover handles it.
+	monitor.OnStatusChange(func(link *storage.Link, oldStatus, newStatus string) {
+		if balancerSvc.Active() {
+			balancerSvc.OnLinkChange(link, oldStatus, newStatus)
+			return
+		}
+		failoverSvc.HandleStatusChange(link, oldStatus, newStatus)
+	})
 
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)
+	go balancerSvc.Run(ctx)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr(),

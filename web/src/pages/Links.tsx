@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import WanBalancing from '../components/WanBalancing';
 import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
 import client from '../api/client';
@@ -327,6 +328,8 @@ export default function Links() {
       {success && (
         <div className="px-4 py-3 rounded-lg text-sm bg-green-500/10 text-green-400 border border-green-500/20">{success}</div>
       )}
+
+      {!loading && links.length >= 2 && <WanBalancing links={links} onChanged={fetchLinks} />}
 
       <div className="card">
         {loading ? (

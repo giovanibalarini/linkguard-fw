@@ -18,6 +18,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
+	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
@@ -41,6 +42,7 @@ type Server struct {
 	iptSvc      *iptables.Service
 	routeSvc    *routes.Service
 	failoverSvc *failover.Service
+	balancerSvc *balancer.Service
 	alertSvc    *alerts.Service
 	authSvc     *auth.Service
 	hostSvc     *hosts.Service
@@ -64,7 +66,7 @@ type Config struct {
 // New creates and wires up the HTTP server.
 func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
-	failoverSvc *failover.Service, alertSvc *alerts.Service, authSvc *auth.Service,
+	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
 	trafficSvc *hosttraffic.Service, sysCol *system.Collector, rrdSvc *trafficrrd.Service,
 	promReg *prometheus.Registry) *Server {
@@ -76,6 +78,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		iptSvc:      iptSvc,
 		routeSvc:    routeSvc,
 		failoverSvc: failoverSvc,
+		balancerSvc: balancerSvc,
 		alertSvc:    alertSvc,
 		authSvc:     authSvc,
 		hostSvc:     hostSvc,
@@ -199,6 +202,14 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// Failover events
 		failH := handlers.NewFailoverHandler(s.failoverSvc)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/failover/events", failH.ListEvents)
+
+		// Multi-WAN balancing (weighted multipath default route + scheduling)
+		routingH := handlers.NewRoutingHandler(s.balancerSvc, s.db)
+		r.With(require(auth.PermRoutesRead)).Get("/api/routing/balance", routingH.Status)
+		r.With(require(auth.PermRoutesWrite)).Put("/api/routing/balance", routingH.UpdateConfig)
+		r.With(require(auth.PermRoutesWrite)).Post("/api/routing/balance/apply", routingH.Apply)
+		r.With(require(auth.PermRoutesWrite)).Post("/api/routing/balance/confirm", routingH.Confirm)
+		r.With(require(auth.PermRoutesWrite)).Post("/api/routing/balance/rollback", routingH.Rollback)
 
 		// Alerts
 		alertsH := handlers.NewAlertsHandler(s.alertSvc)
