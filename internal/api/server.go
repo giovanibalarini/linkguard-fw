@@ -27,6 +27,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/notify"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
@@ -50,6 +51,7 @@ type Server struct {
 	nftSvc      *nftables.Service
 	netSvc      netsvc.Provider
 	vpnSvc      *wireguard.Service
+	notifySvc   *notify.Service
 	trafficSvc  *hosttraffic.Service
 	sysCol      *system.Collector
 	rrdSvc      *trafficrrd.Service
@@ -70,8 +72,8 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
-	vpnSvc *wireguard.Service, trafficSvc *hosttraffic.Service, sysCol *system.Collector,
-	rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
+	vpnSvc *wireguard.Service, notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
+	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
 
 	s := &Server{
 		db:          db,
@@ -87,6 +89,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		nftSvc:      nftSvc,
 		netSvc:      netSvc,
 		vpnSvc:      vpnSvc,
+		notifySvc:   notifySvc,
 		trafficSvc:  trafficSvc,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
@@ -224,6 +227,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		alertsH := handlers.NewAlertsHandler(s.alertSvc)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/alerts", alertsH.List)
 		r.With(require(auth.PermMonitoringRead)).Put("/api/alerts/{id}/resolve", alertsH.Resolve)
+
+		// Notification channels (webhook/Telegram/e-mail)
+		notifyH := handlers.NewNotifyHandler(s.db, s.notifySvc)
+		r.With(require(auth.PermSystemRead)).Get("/api/notifications", notifyH.Get)
+		r.With(require(auth.PermSystemWrite)).Put("/api/notifications", notifyH.Update)
+		r.With(require(auth.PermSystemWrite)).Post("/api/notifications/test", notifyH.Test)
 
 		// Logs / Audit
 		logsH := handlers.NewLogsHandler(s.db)

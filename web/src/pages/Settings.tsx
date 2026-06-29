@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, Info, Database } from 'lucide-react';
+import { Settings as SettingsIcon, Info, Database, Bell } from 'lucide-react';
 import client from '../api/client';
+import NotificationSettings from '../components/NotificationSettings';
 import type { TrafficRetentionResponse } from '../types';
 
 type RetentionProfile = '30d' | '1y' | '5y';
@@ -79,6 +80,7 @@ export default function Settings() {
           {[
             { id: 'about', label: 'Sobre', icon: Info },
             { id: 'general', label: 'Geral', icon: SettingsIcon },
+            { id: 'notifications', label: 'Notificações', icon: Bell },
             { id: 'traffic-retention', label: 'Retenção de tráfego', icon: Database },
           ].map(({ id, label, icon: Icon }) => (
             <button
@@ -210,6 +212,8 @@ export default function Settings() {
               </div>
             </div>
           )}
+
+          {activeSection === 'notifications' && <NotificationSettings />}
         </div>
       </div>
 

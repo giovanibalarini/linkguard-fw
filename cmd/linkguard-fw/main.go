@@ -31,6 +31,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/notify"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
@@ -106,6 +107,8 @@ func run() int {
 	}
 
 	alertSvc := alerts.NewService(db)
+	notifySvc := notify.NewService(db)
+	alertSvc.SetNotifier(notifySvc)
 	authSvc := auth.NewService(db, cfg.JWTSecret)
 	linkSvc := links.NewService(db)
 	iptSvc := iptables.NewService(exec)
@@ -135,7 +138,7 @@ func run() int {
 		DryRun:  cfg.DryRun,
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, vpnSvc, trafficSvc, sysCollector, rrdSvc, promReg)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, vpnSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -24,14 +24,26 @@ SeverityWarning  = "warning"
 SeverityCritical = "critical"
 )
 
+// Notifier delivers an alert to external channels (webhook/Telegram/e-mail).
+// Implemented by internal/notify; kept as a local interface to avoid a cycle.
+type Notifier interface {
+Notify(severity, title, message string)
+}
+
 // Service manages alert generation and retrieval.
 type Service struct {
-db *storage.DB
+db       *storage.DB
+notifier Notifier
 }
 
 // NewService creates a new alerts Service.
 func NewService(db *storage.DB) *Service {
 return &Service{db: db}
+}
+
+// SetNotifier wires an external-delivery observer (best-effort, async).
+func (s *Service) SetNotifier(n Notifier) {
+s.notifier = n
 }
 
 // Create creates a new alert.
@@ -48,6 +60,9 @@ slog.Error("create alert", "err", err)
 return err
 }
 slog.Info("alert created", "type", alertType, "severity", severity, "title", title)
+if s.notifier != nil {
+s.notifier.Notify(severity, title, message)
+}
 return nil
 }
 
