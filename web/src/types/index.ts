@@ -231,6 +231,8 @@ export interface DHCPLease { expiry: number; mac: string; ip: string; hostname: 
 export interface DHCPData { config: NetsvcConfig; reservations: DHCPReservation[]; leases: DHCPLease[]; backend: string; }
 export interface DNSData { config: NetsvcConfig; blocklist: string[]; backend: string; }
 
+export interface HostTraffic { ip: string; rx_bytes: number; tx_bytes: number; }
+
 export interface NetHost {
   ip: string;
   mac: string;

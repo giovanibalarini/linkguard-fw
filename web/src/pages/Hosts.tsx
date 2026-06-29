@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Pencil, Ban, ShieldCheck, Circle } from 'lucide-react';
+import { RefreshCw, Pencil, Ban, ShieldCheck, Circle, TrendingUp, ArrowDown, ArrowUp } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
-import type { NetHost } from '../types';
+import type { NetHost, HostTraffic } from '../types';
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const u = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(1)} ${u[i]}`;
+}
 
 export default function Hosts() {
   const { can } = useAuth();
@@ -19,6 +27,8 @@ export default function Hosts() {
   const [confirmError, setConfirmError] = useState('');
   const [confirming, setConfirming] = useState(false);
 
+  const [talkers, setTalkers] = useState<HostTraffic[]>([]);
+
   const fetchHosts = async () => {
     setLoading(true);
     setError(false);
@@ -30,6 +40,11 @@ export default function Hosts() {
     } finally {
       setLoading(false);
     }
+    // Top talkers — best-effort (requires conntrack accounting).
+    try {
+      const t = await client.get<HostTraffic[]>('/api/hosts/traffic');
+      setTalkers(t.data ?? []);
+    } catch { /* ignore */ }
   };
 
   useEffect(() => { fetchHosts(); }, []);
@@ -111,6 +126,39 @@ export default function Hosts() {
       </div>
 
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchHosts} className="underline">Tentar novamente</button></div>}
+
+      {talkers.length > 0 && (
+        <div className="card">
+          <div className="flex items-center gap-2 mb-3">
+            <TrendingUp className="w-4 h-4 text-blue-400" />
+            <h3 className="text-white font-semibold">Top consumidores</h3>
+            <span className="text-xs text-gray-600">— quem está usando a banda agora (fluxos ativos)</span>
+          </div>
+          <div className="space-y-2.5">
+            {talkers.slice(0, 8).map((t) => {
+              const total = t.rx_bytes + t.tx_bytes;
+              const max = (talkers[0].rx_bytes + talkers[0].tx_bytes) || 1;
+              const host = hosts.find((h) => h.ip === t.ip);
+              const name = host?.alias || host?.hostname || t.ip;
+              return (
+                <div key={t.ip} className="flex items-center gap-3">
+                  <div className="w-36 sm:w-44 shrink-0 min-w-0">
+                    <div className="text-white text-sm truncate">{name}</div>
+                    <div className="text-gray-600 text-xs font-mono truncate">{t.ip}</div>
+                  </div>
+                  <div className="flex-1 h-2 rounded-full bg-gray-800 overflow-hidden">
+                    <div className="h-full bg-blue-500" style={{ width: `${(total / max) * 100}%` }} />
+                  </div>
+                  <div className="shrink-0 text-xs text-gray-400 flex items-center justify-end gap-3 w-32 sm:w-40">
+                    <span className="inline-flex items-center gap-1" title="Download"><ArrowDown className="w-3 h-3 text-green-400" />{fmtBytes(t.rx_bytes)}</span>
+                    <span className="inline-flex items-center gap-1" title="Upload"><ArrowUp className="w-3 h-3 text-orange-400" />{fmtBytes(t.tx_bytes)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="card">
         {loading && hosts.length === 0 ? (

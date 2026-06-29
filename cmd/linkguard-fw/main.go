@@ -22,6 +22,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
+	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/keaunbound"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
@@ -116,6 +117,7 @@ func run() int {
 	}, db, exec, routeSvc, alertSvc)
 	nftSvc := nftables.NewService(exec)
 	var netSvc netsvc.Provider = keaunbound.NewService(exec)
+	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
 	sysCollector := system.NewCollector()
 	rrdSvc := trafficrrd.NewService(db)
@@ -129,7 +131,7 @@ func run() int {
 		DryRun:  cfg.DryRun,
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, sysCollector, rrdSvc, promReg)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, trafficSvc, sysCollector, rrdSvc, promReg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

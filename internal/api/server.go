@@ -21,6 +21,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
+	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
@@ -45,6 +46,7 @@ type Server struct {
 	hostSvc     *hosts.Service
 	nftSvc      *nftables.Service
 	netSvc      netsvc.Provider
+	trafficSvc  *hosttraffic.Service
 	sysCol      *system.Collector
 	rrdSvc      *trafficrrd.Service
 	promReg     *prometheus.Registry
@@ -64,7 +66,8 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
-	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
+	trafficSvc *hosttraffic.Service, sysCol *system.Collector, rrdSvc *trafficrrd.Service,
+	promReg *prometheus.Registry) *Server {
 
 	s := &Server{
 		db:          db,
@@ -78,6 +81,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		hostSvc:     hostSvc,
 		nftSvc:      nftSvc,
 		netSvc:      netSvc,
+		trafficSvc:  trafficSvc,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
@@ -221,6 +225,8 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// Host inventory
 		hostsH := handlers.NewHostsHandler(s.hostSvc, s.db)
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts", hostsH.List)
+		trafficH := handlers.NewTrafficHandler(s.trafficSvc, s.db)
+		r.With(require(auth.PermHostsRead)).Get("/api/hosts/traffic", trafficH.TopTalkers)
 		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/alias", hostsH.SetAlias)
 		r.With(require(auth.PermHostsBlock)).Post("/api/hosts/block", hostsH.SetBlocked)
 
