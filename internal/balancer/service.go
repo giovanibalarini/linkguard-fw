@@ -290,11 +290,24 @@ func (s *Service) Rebuild(ctx context.Context) error {
 	return nil
 }
 
-// OnLinkChange is the monitor callback used while in balance mode.
+// OnLinkChange is the monitor callback used while in balance mode. Besides
+// rebuilding the route, it raises alerts on up/down/degraded transitions so the
+// notification channels (WhatsApp, e-mail, …) fire — otherwise a single link
+// dropping while balancing would be silent.
 func (s *Service) OnLinkChange(link *storage.Link, oldStatus, newStatus string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	slog.Info("balancer: link change", "link", link.Name, "from", oldStatus, "to", newStatus)
+
+	switch newStatus {
+	case links.StatusOffline:
+		_ = s.alertSvc.LinkOffline(link.Name, link.ID)
+	case links.StatusOnline:
+		_ = s.alertSvc.LinkOnline(link.Name, link.ID)
+	case links.StatusDegraded:
+		_ = s.alertSvc.LinkDegraded(link.Name, link.ID)
+	}
+
 	if err := s.Rebuild(ctx); err != nil {
 		slog.Warn("balancer: rebuild on link change failed", "link", link.Name, "err", err)
 	}
