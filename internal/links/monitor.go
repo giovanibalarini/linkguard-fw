@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -14,17 +15,17 @@ import (
 
 // CheckResult holds the result of a single connectivity check.
 type CheckResult struct {
-	Host      string
-	Latency   time.Duration
-	Success   bool
-	Error     string
+	Host    string
+	Latency time.Duration
+	Success bool
+	Error   string
 }
 
 // Monitor periodically checks link connectivity and updates link status.
 type Monitor struct {
-	db         *storage.DB
-	svc        *Service
-	interval   time.Duration
+	db             *storage.DB
+	svc            *Service
+	interval       time.Duration
 	onStatusChange func(link *storage.Link, oldStatus, newStatus string)
 
 	mu     sync.Mutex
@@ -32,10 +33,10 @@ type Monitor struct {
 }
 
 type linkState struct {
-	consecutiveFails    int
+	consecutiveFails     int
 	consecutiveSuccesses int
-	lastStatus          string
-	cooldownUntil       time.Time
+	lastStatus           string
+	cooldownUntil        time.Time
 }
 
 // NewMonitor creates a new Monitor.
@@ -103,7 +104,7 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	var totalLatency time.Duration
 	successCount := 0
 	for _, host := range hosts {
-		r := tcpCheck(ctx, host, 5*time.Second)
+		r := tcpCheck(ctx, host, l.Interface, 5*time.Second)
 		if r.Success {
 			successCount++
 			totalLatency += r.Latency
@@ -172,20 +173,45 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 
 // ─── Connectivity checks ─────────────────────────────────────────────────────
 
-// tcpCheck tries a TCP connection to determine if a host is reachable.
-// It tries common ports (443, 80, 53) to maximise success chance.
-func tcpCheck(ctx context.Context, host string, timeout time.Duration) CheckResult {
+// tcpCheck tries a TCP connection to determine if a host is reachable THROUGH a
+// specific link. Binding the probe to the link's interface (SO_BINDTODEVICE) is
+// what makes per-link health work in balance mode: without it, a generic probe
+// egresses via whichever WAN is alive in the multipath default and always
+// succeeds, so a single link's failure (especially a "soft" ISP outage where the
+// interface stays up) would go undetected. It tries common ports (443, 80, 53).
+func tcpCheck(ctx context.Context, host, device string, timeout time.Duration) CheckResult {
+	dialer := bindDialer(device, timeout)
 	ports := []string{"443", "80", "53"}
 	for _, port := range ports {
 		start := time.Now()
 		addr := net.JoinHostPort(host, port)
-		conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", addr)
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err == nil {
 			conn.Close()
 			return CheckResult{Host: host, Latency: time.Since(start), Success: true}
 		}
 	}
 	return CheckResult{Host: host, Success: false, Error: "all ports unreachable"}
+}
+
+// bindDialer builds a TCP dialer that forces egress through the given interface
+// via SO_BINDTODEVICE (Linux; requires CAP_NET_RAW — the service runs as root).
+// An empty device yields a plain dialer (default routing).
+func bindDialer(device string, timeout time.Duration) *net.Dialer {
+	d := &net.Dialer{Timeout: timeout}
+	if device == "" {
+		return d
+	}
+	d.Control = func(_, _ string, c syscall.RawConn) error {
+		var serr error
+		if err := c.Control(func(fd uintptr) {
+			serr = syscall.SetsockoptString(int(fd), syscall.SOL_SOCKET, syscall.SO_BINDTODEVICE, device)
+		}); err != nil {
+			return err
+		}
+		return serr
+	}
+	return d
 }
 
 func parseHosts(s string) []string {
