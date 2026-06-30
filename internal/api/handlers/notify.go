@@ -26,6 +26,9 @@ func redactOut(c notify.Config) notify.Config {
 	if c.Telegram.Token != "" {
 		c.Telegram.Token = secretMask
 	}
+	if c.WhatsApp.Token != "" {
+		c.WhatsApp.Token = secretMask
+	}
 	if c.Email.Password != "" {
 		c.Email.Password = secretMask
 	}
@@ -37,6 +40,9 @@ func redactOut(c notify.Config) notify.Config {
 func mergeSecrets(incoming, existing notify.Config) notify.Config {
 	if incoming.Telegram.Token == secretMask {
 		incoming.Telegram.Token = existing.Telegram.Token
+	}
+	if incoming.WhatsApp.Token == secretMask {
+		incoming.WhatsApp.Token = existing.WhatsApp.Token
 	}
 	if incoming.Email.Password == secretMask {
 		incoming.Email.Password = existing.Email.Password

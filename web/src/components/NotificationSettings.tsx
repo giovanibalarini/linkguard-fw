@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Bell, Webhook, Send, Mail, Loader2, Check, AlertTriangle } from 'lucide-react';
+import { Bell, Webhook, Send, Mail, Loader2, Check, AlertTriangle, MessageCircle } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
 
 interface WebhookCfg { enabled: boolean; url: string }
 interface TelegramCfg { enabled: boolean; token: string; chat_id: string }
+interface WhatsAppCfg { enabled: boolean; url: string; token: string; phone: string }
 interface EmailCfg { enabled: boolean; host: string; port: number; username: string; password: string; from: string; to: string }
 interface NotifyConfig {
   min_severity: 'info' | 'warning' | 'critical';
   webhook: WebhookCfg;
   telegram: TelegramCfg;
+  whatsapp: WhatsAppCfg;
   email: EmailCfg;
 }
 
@@ -17,6 +19,7 @@ const empty: NotifyConfig = {
   min_severity: 'warning',
   webhook: { enabled: false, url: '' },
   telegram: { enabled: false, token: '', chat_id: '' },
+  whatsapp: { enabled: false, url: '', token: '', phone: '' },
   email: { enabled: false, host: '', port: 587, username: '', password: '', from: '', to: '' },
 };
 
@@ -34,7 +37,7 @@ export default function NotificationSettings() {
   const fetchCfg = async () => {
     try {
       const { data } = await client.get<NotifyConfig>('/api/notifications');
-      setCfg({ ...empty, ...data, webhook: { ...empty.webhook, ...data.webhook }, telegram: { ...empty.telegram, ...data.telegram }, email: { ...empty.email, ...data.email } });
+      setCfg({ ...empty, ...data, webhook: { ...empty.webhook, ...data.webhook }, telegram: { ...empty.telegram, ...data.telegram }, whatsapp: { ...empty.whatsapp, ...data.whatsapp }, email: { ...empty.email, ...data.email } });
     } catch { /* ignore */ }
   };
   useEffect(() => { fetchCfg(); }, []);
@@ -97,6 +100,21 @@ export default function NotificationSettings() {
           <input value={cfg.telegram.chat_id} onChange={(e) => setCfg({ ...cfg, telegram: { ...cfg.telegram, chat_id: e.target.value } })}
             placeholder="Chat ID" className="input w-full" />
         </div>
+      </Channel>
+
+      {/* WhatsApp (zapvite) */}
+      <Channel icon={MessageCircle} title="WhatsApp" enabled={cfg.whatsapp.enabled}
+        onToggle={(v) => setCfg({ ...cfg, whatsapp: { ...cfg.whatsapp, enabled: v } })}
+        onTest={() => test('whatsapp')} testing={testing === 'whatsapp'} canTest={!!cfg.whatsapp.token && !!cfg.whatsapp.phone}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <input value={cfg.whatsapp.phone} onChange={(e) => setCfg({ ...cfg, whatsapp: { ...cfg.whatsapp, phone: e.target.value } })}
+            placeholder="Telefone com DDI (ex.: 5527999999999)" className="input w-full" />
+          <input value={cfg.whatsapp.token} onChange={(e) => setCfg({ ...cfg, whatsapp: { ...cfg.whatsapp, token: e.target.value } })}
+            placeholder="Token (Bearer) — expira, atualize aqui" className="input w-full" />
+          <input value={cfg.whatsapp.url} onChange={(e) => setCfg({ ...cfg, whatsapp: { ...cfg.whatsapp, url: e.target.value } })}
+            placeholder="URL da API" className="input w-full sm:col-span-2" />
+        </div>
+        <p className="text-gray-600 text-xs mt-1">Provedor zapvite. O token expira — quando parar de enviar, gere um novo e cole aqui.</p>
       </Channel>
 
       {/* Email */}

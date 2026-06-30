@@ -21,6 +21,9 @@ import (
 
 const settingKey = "notifications"
 
+// defaultWhatsAppURL is the zapvite messages endpoint used when none is set.
+const defaultWhatsAppURL = "https://api.zapvite.com.br/api/v1/messages"
+
 // WebhookCfg posts a JSON payload to an arbitrary URL.
 type WebhookCfg struct {
 	Enabled bool   `json:"enabled"`
@@ -32,6 +35,15 @@ type TelegramCfg struct {
 	Enabled bool   `json:"enabled"`
 	Token   string `json:"token"`
 	ChatID  string `json:"chat_id"`
+}
+
+// WhatsAppCfg sends via the zapvite WhatsApp API (Bearer token; the token
+// expires, so it is meant to be updated from the UI).
+type WhatsAppCfg struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
+	Token   string `json:"token"`
+	Phone   string `json:"phone"`
 }
 
 // EmailCfg sends via SMTP (STARTTLS, e.g. port 587).
@@ -50,6 +62,7 @@ type Config struct {
 	MinSeverity string      `json:"min_severity"` // info | warning | critical
 	Webhook     WebhookCfg  `json:"webhook"`
 	Telegram    TelegramCfg `json:"telegram"`
+	WhatsApp    WhatsAppCfg `json:"whatsapp"`
 	Email       EmailCfg    `json:"email"`
 }
 
@@ -72,6 +85,9 @@ func (s *Service) LoadConfig() Config {
 	}
 	if c.MinSeverity == "" {
 		c.MinSeverity = "warning"
+	}
+	if c.WhatsApp.URL == "" {
+		c.WhatsApp.URL = defaultWhatsAppURL
 	}
 	return c
 }
@@ -116,6 +132,9 @@ func (s *Service) send(ctx context.Context, cfg Config, severity, title, message
 	if cfg.Telegram.Enabled && cfg.Telegram.Token != "" && cfg.Telegram.ChatID != "" {
 		errs = append(errs, s.sendTelegram(ctx, cfg.Telegram, severity, title, message))
 	}
+	if cfg.WhatsApp.Enabled && cfg.WhatsApp.Token != "" && cfg.WhatsApp.Phone != "" {
+		errs = append(errs, s.sendWhatsApp(ctx, cfg.WhatsApp, severity, title, message))
+	}
 	if cfg.Email.Enabled && cfg.Email.Host != "" && cfg.Email.To != "" {
 		errs = append(errs, s.sendEmail(cfg.Email, severity, title, message))
 	}
@@ -132,6 +151,8 @@ func (s *Service) Test(ctx context.Context, channel string, cfg Config) error {
 		return s.sendWebhook(ctx, cfg.Webhook, "info", t, m)
 	case "telegram":
 		return s.sendTelegram(ctx, cfg.Telegram, "info", t, m)
+	case "whatsapp":
+		return s.sendWhatsApp(ctx, cfg.WhatsApp, "info", t, m)
 	case "email":
 		return s.sendEmail(cfg.Email, "info", t, m)
 	default:
@@ -182,6 +203,30 @@ func (s *Service) sendTelegram(ctx context.Context, c TelegramCfg, severity, tit
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("telegram: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *Service) sendWhatsApp(ctx context.Context, c WhatsAppCfg, severity, title, message string) error {
+	url := c.URL
+	if url == "" {
+		url = defaultWhatsAppURL
+	}
+	body := fmt.Sprintf("%s *%s*\n%s", severityEmoji(severity), title, message)
+	payload, _ := json.Marshal(map[string]string{"phone": c.Phone, "body": body})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("whatsapp: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("whatsapp: status %d", resp.StatusCode)
 	}
 	return nil
 }
