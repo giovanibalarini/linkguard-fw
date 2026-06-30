@@ -3,6 +3,8 @@ package balancer
 import (
 	"strings"
 	"testing"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 func TestNormalizeWeights(t *testing.T) {
@@ -99,6 +101,84 @@ func TestRestoreArgsFromShow_Empty(t *testing.T) {
 	if restoreArgsFromShow("", "main") != nil {
 		t.Error("expected nil for empty show output")
 	}
+}
+
+func TestSelectNexthops(t *testing.T) {
+	link := func(name, iface, gw, status string, loss, lat float64) storage.Link {
+		return storage.Link{Name: name, Interface: iface, Gateway: gw, Weight: 100,
+			Enabled: true, Status: status, PacketLoss: loss, LatencyMs: lat}
+	}
+	names := func(nhs []Nexthop) []string {
+		out := []string{}
+		for _, n := range nhs {
+			out = append(out, n.Name)
+		}
+		return out
+	}
+	eq := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	t.Run("both online -> balance both", func(t *testing.T) {
+		c, _ := selectNexthops([]storage.Link{
+			link("A", "eth0", "10.0.0.1", "online", 0, 10),
+			link("B", "eth1", "10.0.1.1", "online", 0, 12),
+		})
+		if !eq(names(c), []string{"A", "B"}) {
+			t.Errorf("chosen=%v, want [A B]", names(c))
+		}
+	})
+
+	t.Run("one degraded -> use only healthy", func(t *testing.T) {
+		c, ex := selectNexthops([]storage.Link{
+			link("A", "eth0", "10.0.0.1", "online", 0, 10),
+			link("B", "eth1", "10.0.1.1", "degraded", 40, 500),
+		})
+		if !eq(names(c), []string{"A"}) {
+			t.Errorf("chosen=%v, want [A] (degraded B must sit out)", names(c))
+		}
+		if !eq(names(ex), []string{"B"}) {
+			t.Errorf("excluded=%v, want [B]", names(ex))
+		}
+	})
+
+	t.Run("both degraded -> least degraded by loss", func(t *testing.T) {
+		c, _ := selectNexthops([]storage.Link{
+			link("A", "eth0", "10.0.0.1", "degraded", 60, 200),
+			link("B", "eth1", "10.0.1.1", "degraded", 30, 400),
+		})
+		if !eq(names(c), []string{"B"}) { // B has less loss
+			t.Errorf("chosen=%v, want [B] (lowest loss)", names(c))
+		}
+	})
+
+	t.Run("both degraded equal loss -> least latency", func(t *testing.T) {
+		c, _ := selectNexthops([]storage.Link{
+			link("A", "eth0", "10.0.0.1", "degraded", 30, 600),
+			link("B", "eth1", "10.0.1.1", "degraded", 30, 250),
+		})
+		if !eq(names(c), []string{"B"}) { // equal loss, B lower latency
+			t.Errorf("chosen=%v, want [B] (lowest latency)", names(c))
+		}
+	})
+
+	t.Run("offline excluded", func(t *testing.T) {
+		c, _ := selectNexthops([]storage.Link{
+			link("A", "eth0", "10.0.0.1", "online", 0, 10),
+			link("B", "eth1", "10.0.1.1", "offline", 100, 0),
+		})
+		if !eq(names(c), []string{"A"}) {
+			t.Errorf("chosen=%v, want [A]", names(c))
+		}
+	})
 }
 
 func TestConfigNormalize(t *testing.T) {

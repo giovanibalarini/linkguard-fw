@@ -13,6 +13,14 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
+// Health classification thresholds.
+const (
+	probeFailThreshold    = 3     // consecutive unreachable checks → offline
+	probeRecoverThreshold = 2     // consecutive good checks → online
+	degradedLossPct       = 25.0  // packet loss above this → degraded
+	degradedLatencyMs     = 300.0 // average latency above this → degraded
+)
+
 // CheckResult holds the result of a single connectivity check.
 type CheckResult struct {
 	Host    string
@@ -126,25 +134,32 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	}
 	m.mu.Unlock()
 
-	// Determine new status
-	var newStatus string
-	if successCount == 0 {
-		state.consecutiveFails++
-		state.consecutiveSuccesses = 0
-	} else if packetLoss > 25 {
+	// Classify this sample. "Degraded" = reachable but lossy/slow — a STABLE
+	// state: a consistently degraded link must NOT escalate to offline, so the
+	// balancer can keep it as a last resort and switch back when it recovers.
+	// "Offline" = no host answered for several consecutive checks.
+	reachable := successCount > 0
+	degradedNow := reachable && (packetLoss > degradedLossPct || avgLatency > degradedLatencyMs)
+
+	if !reachable {
 		state.consecutiveFails++
 		state.consecutiveSuccesses = 0
 	} else {
 		state.consecutiveFails = 0
-		state.consecutiveSuccesses++
+		if degradedNow {
+			state.consecutiveSuccesses = 0
+		} else {
+			state.consecutiveSuccesses++
+		}
 	}
 
+	var newStatus string
 	switch {
-	case state.consecutiveFails >= 3:
+	case state.consecutiveFails >= probeFailThreshold:
 		newStatus = StatusOffline
-	case packetLoss > 25 && successCount > 0:
+	case degradedNow:
 		newStatus = StatusDegraded
-	case state.consecutiveSuccesses >= 2:
+	case state.consecutiveSuccesses >= probeRecoverThreshold:
 		newStatus = StatusOnline
 	default:
 		newStatus = l.Status

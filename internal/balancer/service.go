@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -85,13 +86,16 @@ func (c *Config) normalize() {
 
 // Nexthop is one WAN link's contribution to the multipath default route.
 type Nexthop struct {
-	LinkID    string `json:"link_id"`
-	Name      string `json:"name"`
-	Gateway   string `json:"gateway"`
-	Interface string `json:"interface"`
-	RawWeight int    `json:"raw_weight"`
-	Weight    int    `json:"weight"` // normalized to the kernel range 1..256
-	Online    bool   `json:"online"`
+	LinkID     string  `json:"link_id"`
+	Name       string  `json:"name"`
+	Gateway    string  `json:"gateway"`
+	Interface  string  `json:"interface"`
+	RawWeight  int     `json:"raw_weight"`
+	Weight     int     `json:"weight"` // normalized to the kernel range 1..256
+	Online     bool    `json:"online"`
+	Status     string  `json:"status"`      // online | degraded | offline | ...
+	PacketLoss float64 `json:"packet_loss"` // last measured, %
+	LatencyMs  float64 `json:"latency_ms"`  // last measured
 }
 
 // Plan is the computed routing intent plus live context for the UI.
@@ -170,32 +174,16 @@ func (s *Service) planWith(ctx context.Context, cfg Config) (Plan, error) {
 		return Plan{}, err
 	}
 
-	online, excluded := []Nexthop{}, []Nexthop{}
-	for _, l := range all {
-		if !l.Enabled || l.Gateway == "" || l.Interface == "" {
-			if l.Gateway != "" || l.Interface != "" {
-				excluded = append(excluded, toNexthop(l))
-			}
-			continue
-		}
-		nh := toNexthop(l)
-		if l.Status == links.StatusOnline || l.Status == links.StatusDegraded {
-			online = append(online, nh)
-		} else {
-			excluded = append(excluded, nh)
-		}
-	}
-
-	normalizeWeights(online)
+	chosen, excluded := selectNexthops(all)
 
 	p := Plan{
 		Mode:       cfg.Mode,
 		Table:      cfg.Table,
-		Nexthops:   online,
+		Nexthops:   chosen,
 		Excluded:   excluded,
 		ArmSeconds: cfg.ArmSeconds,
 	}
-	if args := buildReplaceArgs(cfg.Table, online); args != nil {
+	if args := buildReplaceArgs(cfg.Table, chosen); args != nil {
 		p.Command = "ip " + strings.Join(args, " ")
 	}
 
@@ -461,13 +449,65 @@ func (s *Service) restore(ctx context.Context, args []string) error {
 
 func toNexthop(l storage.Link) Nexthop {
 	return Nexthop{
-		LinkID:    l.ID,
-		Name:      l.Name,
-		Gateway:   l.Gateway,
-		Interface: l.Interface,
-		RawWeight: l.Weight,
-		Online:    l.Status == links.StatusOnline || l.Status == links.StatusDegraded,
+		LinkID:     l.ID,
+		Name:       l.Name,
+		Gateway:    l.Gateway,
+		Interface:  l.Interface,
+		RawWeight:  l.Weight,
+		Status:     l.Status,
+		PacketLoss: l.PacketLoss,
+		LatencyMs:  l.LatencyMs,
+		Online:     l.Status == links.StatusOnline || l.Status == links.StatusDegraded,
 	}
+}
+
+// selectNexthops applies the degradation-aware policy:
+//   - if any links are healthy (online), use ONLY those (degraded links sit out);
+//   - else if any are degraded, use the single LEAST-degraded one (lowest loss,
+//     then latency) and stay there until a link normalizes;
+//   - else nothing is eligible.
+//
+// It returns the chosen nexthops (weights normalized) and the ones left out.
+func selectNexthops(all []storage.Link) (chosen, excluded []Nexthop) {
+	healthy, degraded := []Nexthop{}, []Nexthop{}
+	excluded = []Nexthop{}
+	for _, l := range all {
+		if !l.Enabled || l.Gateway == "" || l.Interface == "" {
+			if l.Gateway != "" || l.Interface != "" {
+				excluded = append(excluded, toNexthop(l))
+			}
+			continue
+		}
+		nh := toNexthop(l)
+		switch l.Status {
+		case links.StatusOnline:
+			healthy = append(healthy, nh)
+		case links.StatusDegraded:
+			degraded = append(degraded, nh)
+		default:
+			excluded = append(excluded, nh)
+		}
+	}
+
+	switch {
+	case len(healthy) > 0:
+		chosen = healthy
+		excluded = append(excluded, degraded...)
+	case len(degraded) > 0:
+		sort.Slice(degraded, func(i, j int) bool {
+			if degraded[i].PacketLoss != degraded[j].PacketLoss {
+				return degraded[i].PacketLoss < degraded[j].PacketLoss
+			}
+			return degraded[i].LatencyMs < degraded[j].LatencyMs
+		})
+		chosen = degraded[:1:1]
+		excluded = append(excluded, degraded[1:]...)
+	default:
+		chosen = []Nexthop{}
+	}
+
+	normalizeWeights(chosen)
+	return chosen, excluded
 }
 
 // normalizeWeights scales raw link weights into the kernel range 1..256 while
