@@ -129,6 +129,9 @@ type Service struct {
 
 	schedMu   sync.Mutex
 	lastFired map[string]string // schedule ID -> "2006-01-02 15:04" last applied
+
+	rebuildMu sync.Mutex
+	lastSig   string // signature of the last-applied nexthop set (skip no-op rebuilds)
 }
 
 // NewService creates a balancer Service.
@@ -255,27 +258,50 @@ func (s *Service) Rollback(ctx context.Context) error {
 	return s.restore(ctx, p.restore)
 }
 
-// Rebuild recomputes and applies the route without arming a rollback. Used by
-// the link monitor when a WAN changes state while in balance mode.
+// Rebuild recomputes and applies the route. It is idempotent: if the desired
+// nexthop set is unchanged since the last apply it does nothing (so the periodic
+// reconcile is quiet). Used both on link state changes and on a timer, so a link
+// whose interface comes back up is re-added even without an explicit event.
 func (s *Service) Rebuild(ctx context.Context) error {
 	cfg := s.LoadConfig()
 	if cfg.Mode != ModeBalance {
 		return nil
 	}
+
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+
 	plan, err := s.planWith(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	sig := routeSignature(plan.Nexthops)
+	if sig == s.lastSig {
+		return nil // nothing changed
+	}
 	if len(plan.Nexthops) == 0 {
-		_ = s.alertSvc.RuleError("Balanceamento: nenhum link WAN online — rota mantida")
-		return fmt.Errorf("no online links")
+		s.lastSig = sig // remember the empty state so we alert only once
+		_ = s.alertSvc.RuleError("Balanceamento: nenhuma interface WAN ativa — rota mantida")
+		return fmt.Errorf("no up interfaces")
 	}
 	args := buildReplaceArgs(cfg.Table, plan.Nexthops)
 	if _, err := s.exec.Execute(ctx, "ip", args...); err != nil {
-		return fmt.Errorf("rebuild route: %w", err)
+		return fmt.Errorf("rebuild route: %w", err) // keep lastSig so we retry next tick
 	}
+	s.lastSig = sig
 	slog.Info("balancer: rebuilt multipath default", "table", cfg.Table, "nexthops", len(plan.Nexthops))
 	return nil
+}
+
+// routeSignature is a stable fingerprint of a nexthop set (link + weight),
+// used to skip no-op rebuilds.
+func routeSignature(nhs []Nexthop) string {
+	parts := make([]string, len(nhs))
+	for i, n := range nhs {
+		parts[i] = fmt.Sprintf("%s:%d", n.LinkID, n.Weight)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 // OnLinkChange is the monitor callback used while in balance mode. Besides
@@ -315,6 +341,10 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.tick(ctx, time.Now())
+			// Reconcile the route to current link/interface state. This is what
+			// re-adds a link whose interface just came back up (a recovery that
+			// fires no probe-status event). No-op when nothing changed.
+			_ = s.Rebuild(ctx)
 		}
 	}
 }
