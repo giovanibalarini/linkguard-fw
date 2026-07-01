@@ -161,6 +161,10 @@ func run() int {
 	// this; it previously came from /etc/network/linkguard-routing.sh via rc.local).
 	balancerSvc.EnsureSteerRouting(ctx)
 
+	// Enable conntrack byte accounting so per-host traffic (top talkers) can be
+	// computed; without it /proc/net/nf_conntrack has no byte counters.
+	trafficSvc.EnsureAccounting()
+
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)
