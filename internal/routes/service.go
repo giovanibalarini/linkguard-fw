@@ -4,12 +4,23 @@ package routes
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
+	"os"
 	"regexp"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
+
+// ForwardingSysctl is the kernel knob that lets the box route packets between
+// interfaces. A firewall/router is useless with it off, and it defaults to 0 on
+// a fresh system.
+const ForwardingSysctl = "/proc/sys/net/ipv4/ip_forward"
+
+// forwardingDropIn persists the sysctl so it survives reboots (the runtime
+// /proc write is not persistent on its own).
+const forwardingDropIn = "/etc/sysctl.d/99-linkguard-forwarding.conf"
 
 // Route represents an entry from the kernel routing table.
 type Route struct {
@@ -35,11 +46,42 @@ type Rule struct {
 // Service wraps ip route / ip rule operations.
 type Service struct {
 	exec firewall.Executor
+
+	// Paths are fields (not consts) so tests can point them at a temp dir.
+	fwdPath        string
+	fwdPersistPath string
 }
 
 // NewService creates a new routes Service.
 func NewService(exec firewall.Executor) *Service {
-	return &Service{exec: exec}
+	return &Service{
+		exec:           exec,
+		fwdPath:        ForwardingSysctl,
+		fwdPersistPath: forwardingDropIn,
+	}
+}
+
+// EnsureForwarding turns on IPv4 forwarding so the box can route between LAN and
+// WAN, and persists it so it survives reboots. LinkGuard owns this runtime
+// prerequisite rather than relying on external sysctl config (mirrors
+// hosttraffic.EnsureAccounting). Best-effort: it logs and returns on failure
+// instead of blocking startup, and is a no-op in dry-run mode. Requires root.
+func (s *Service) EnsureForwarding() {
+	if s.exec.IsDryRun() {
+		slog.Info("dry-run: skipping ip_forward enable")
+		return
+	}
+	if err := os.WriteFile(s.fwdPath, []byte("1\n"), 0o644); err != nil {
+		slog.Warn("could not enable ip_forward; routing between interfaces will not work",
+			"path", s.fwdPath, "err", err)
+		return
+	}
+	drop := "# Managed by LinkGuard: required to route between LAN and WAN.\n" +
+		"net.ipv4.ip_forward = 1\n"
+	if err := os.WriteFile(s.fwdPersistPath, []byte(drop), 0o644); err != nil {
+		slog.Warn("enabled ip_forward but could not persist it across reboots",
+			"path", s.fwdPersistPath, "err", err)
+	}
 }
 
 // ListRoutes returns the main routing table entries.
