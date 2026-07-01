@@ -1,6 +1,13 @@
 package hosttraffic
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+)
 
 // Real-ish conntrack lines (with nf_conntrack_acct=1). NATed LAN->internet flow:
 // orig src is the LAN host (upload bytes), reply bytes are the download.
@@ -33,5 +40,52 @@ func TestParseConntrack(t *testing.T) {
 func TestParseConntrackBadSubnet(t *testing.T) {
 	if len(parseConntrack(sample, "not-a-cidr")) != 0 {
 		t.Error("bad subnet should yield no results")
+	}
+}
+
+// TestEnsureAccountingEnablesAndPersists is the regression test for the root
+// cause of "per-host traffic stopped calculating": nf_conntrack_acct was off.
+func TestEnsureAccountingEnablesAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	acct := filepath.Join(dir, "nf_conntrack_acct")
+	persist := filepath.Join(dir, "99-linkguard-conntrack.conf")
+	// Simulate accounting disabled by the kernel.
+	if err := os.WriteFile(acct, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Service{exec: firewall.NewRealExecutor(0), acctPath: acct, persistPath: persist}
+	s.EnsureAccounting()
+
+	got, err := os.ReadFile(acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "1\n" {
+		t.Errorf("acct not enabled: got %q, want %q", got, "1\n")
+	}
+	drop, err := os.ReadFile(persist)
+	if err != nil {
+		t.Fatalf("drop-in not written: %v", err)
+	}
+	if !strings.Contains(string(drop), "nf_conntrack_acct = 1") {
+		t.Errorf("drop-in missing sysctl line: %q", drop)
+	}
+}
+
+// TestEnsureAccountingDryRunNoWrite ensures dry-run mode never touches the kernel.
+func TestEnsureAccountingDryRunNoWrite(t *testing.T) {
+	dir := t.TempDir()
+	acct := filepath.Join(dir, "nf_conntrack_acct")
+	if err := os.WriteFile(acct, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Service{exec: firewall.NewDryRunExecutor(), acctPath: acct, persistPath: filepath.Join(dir, "drop.conf")}
+	s.EnsureAccounting()
+
+	got, _ := os.ReadFile(acct)
+	if string(got) != "0\n" {
+		t.Errorf("dry-run modified acct: got %q, want %q", got, "0\n")
 	}
 }

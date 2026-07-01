@@ -6,7 +6,9 @@ package hosttraffic
 
 import (
 	"context"
+	"log/slog"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +20,15 @@ import (
 // nf_conntrack_acct is enabled).
 const ConntrackPath = "/proc/net/nf_conntrack"
 
+// AccountingSysctl is the kernel knob that makes conntrack keep per-flow byte
+// counters. With it off, /proc/net/nf_conntrack has no bytes= fields and
+// per-host traffic can't be computed (every host aggregates to zero).
+const AccountingSysctl = "/proc/sys/net/netfilter/nf_conntrack_acct"
+
+// accountingDropIn persists the sysctl so it survives reboots (the runtime
+// /proc write is not persistent on its own).
+const accountingDropIn = "/etc/sysctl.d/99-linkguard-conntrack.conf"
+
 // HostTraffic is the aggregated active-flow byte counters for one LAN host.
 type HostTraffic struct {
 	IP      string `json:"ip"`
@@ -28,11 +39,45 @@ type HostTraffic struct {
 // Service reads conntrack and aggregates per-host traffic.
 type Service struct {
 	exec firewall.Executor
+
+	// Paths are fields (not consts) so tests can point them at a temp dir.
+	acctPath    string
+	persistPath string
 }
 
 // NewService creates a hosttraffic Service.
 func NewService(exec firewall.Executor) *Service {
-	return &Service{exec: exec}
+	return &Service{
+		exec:        exec,
+		acctPath:    AccountingSysctl,
+		persistPath: accountingDropIn,
+	}
+}
+
+// EnsureAccounting turns on conntrack byte accounting so per-host traffic (top
+// talkers) can be computed, and persists it so it survives reboots. LinkGuard
+// owns this runtime prerequisite rather than relying on external sysctl config.
+// Best-effort: it logs and returns on failure instead of blocking startup, and
+// is a no-op in dry-run mode. Requires root (the daemon runs as root).
+//
+// Note: enabling accounting only starts counters for flows created afterwards;
+// already-established flows stay uncounted until they are replaced.
+func (s *Service) EnsureAccounting() {
+	if s.exec.IsDryRun() {
+		slog.Info("dry-run: skipping conntrack accounting enable")
+		return
+	}
+	if err := os.WriteFile(s.acctPath, []byte("1\n"), 0o644); err != nil {
+		slog.Warn("could not enable conntrack accounting; per-host traffic will be empty",
+			"path", s.acctPath, "err", err)
+		return
+	}
+	drop := "# Managed by LinkGuard: required for per-host traffic accounting.\n" +
+		"net.netfilter.nf_conntrack_acct = 1\n"
+	if err := os.WriteFile(s.persistPath, []byte(drop), 0o644); err != nil {
+		slog.Warn("enabled conntrack accounting but could not persist it across reboots",
+			"path", s.persistPath, "err", err)
+	}
 }
 
 // TopTalkers returns LAN hosts ranked by active-flow bytes (descending).
