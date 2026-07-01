@@ -71,7 +71,8 @@ export default function LinkStressTest({ links, canRun }: Props) {
 
   // samples includes the t=0 baseline sample, so subtract it before scaling by
   // the 2s interval (otherwise the bar reaches 100% one interval early).
-  const elapsed = test && running ? Math.min(test.duration_sec, Math.max(0, test.samples.length - 1) * 2) : 0;
+  const samples = test?.samples ?? [];
+  const elapsed = test && running ? Math.min(test.duration_sec, Math.max(0, samples.length - 1) * 2) : 0;
   const pct = test?.duration_sec ? Math.min(100, (elapsed / test.duration_sec) * 100) : 0;
 
   return (
@@ -174,10 +175,10 @@ export default function LinkStressTest({ links, canRun }: Props) {
           {test.message && <p className="text-gray-400 text-xs">{test.message}</p>}
 
           {/* Timeline */}
-          {test.samples.length > 0 && (
+          {samples.length > 0 && (
             <div>
               <div className="flex gap-0.5 flex-wrap">
-                {test.samples.map((s, i) => (
+                {samples.map((s, i) => (
                   <div key={i}
                     title={`${s.t} · ${s.phase}\nping ${s.ping ? 'ok' : 'FALHA'} · dns ${s.dns ? 'ok' : 'FALHA'}\n${s.route}`}
                     className={`w-2.5 h-6 rounded-sm ${
