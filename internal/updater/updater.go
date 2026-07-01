@@ -133,7 +133,9 @@ func (s *Service) verifyChecksum(ctx context.Context, rel Release, debURL, path 
 	var expected string
 	for _, line := range strings.Split(string(sums), "\n") {
 		f := strings.Fields(line)
-		if len(f) >= 2 && filepath.Base(f[1]) == debName {
+		// sha256sum binary mode writes "HASH *name"; strip the '*' so both text
+		// and binary formats match.
+		if len(f) >= 2 && filepath.Base(strings.TrimPrefix(f[1], "*")) == debName {
 			expected = strings.ToLower(f[0])
 			break
 		}

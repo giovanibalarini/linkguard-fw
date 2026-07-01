@@ -13,12 +13,17 @@ import (
 
 // Strict validators for values rendered into unbound/Kea configs.
 var (
-	reDNSDomain = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$`)
+	// reDNSDomain is intentionally lenient about structure — single-label names
+	// ("lan", "localhost") and underscore labels ("_dmarc.example.com") are all
+	// legitimate for a DNS blocklist or a DHCP domain suffix — but strict about
+	// charset. The value is written into unbound.conf, so anything outside
+	// [a-z0-9._-] (quotes, spaces, ';', newlines) must be rejected.
+	reDNSDomain = regexp.MustCompile(`^[a-z0-9_]([a-z0-9._-]*[a-z0-9_])?$`)
 	reNetIface  = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
 )
 
 func validDomain(d string) bool {
-	return len(d) <= 253 && reDNSDomain.MatchString(d)
+	return d != "" && len(d) <= 253 && reDNSDomain.MatchString(d)
 }
 
 func validIface(s string) bool { return reNetIface.MatchString(s) }
@@ -259,7 +264,13 @@ func (h *NetsvcHandler) blocklist(w http.ResponseWriter, r *http.Request, add bo
 		return
 	}
 	d := strings.ToLower(strings.TrimSpace(b.Domain))
-	if !validDomain(d) {
+	if d == "" {
+		writeError(w, http.StatusBadRequest, "domínio vazio")
+		return
+	}
+	// Validate charset only when adding; a delete must always be able to remove
+	// an already-stored entry, including ones saved under an older, laxer rule.
+	if add && !validDomain(d) {
 		writeError(w, http.StatusBadRequest, "domínio inválido")
 		return
 	}

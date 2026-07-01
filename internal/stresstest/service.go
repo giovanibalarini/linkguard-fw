@@ -102,11 +102,24 @@ type StartParams struct {
 	DurationSec int    `json:"duration_sec"`
 }
 
-// Status returns the current or last test (nil if none ran).
+// Status returns a snapshot of the current or last test (nil if none ran).
+// It returns a deep copy so callers (e.g. an HTTP handler that json.Marshals
+// the result) never read Samples while the run goroutine appends to it.
 func (s *Service) Status() *Test {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.active
+	return snapshot(s.active)
+}
+
+// snapshot deep-copies a Test (including its Samples slice) so the returned
+// value is safe to read without s.mu. Callers must hold s.mu while calling it.
+func snapshot(t *Test) *Test {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	cp.Samples = append([]Sample(nil), t.Samples...)
+	return &cp
 }
 
 // Stop aborts a running test (the run loop restores on its way out).
@@ -197,7 +210,13 @@ func (s *Service) Start(p StartParams) (*Test, error) {
 	s.mu.Unlock()
 
 	go s.run(ctx, t)
-	return t, nil
+
+	// Return a snapshot: run() begins appending samples immediately, so handing
+	// back the live *t would race the caller's json.Marshal.
+	s.mu.Lock()
+	out := snapshot(t)
+	s.mu.Unlock()
+	return out, nil
 }
 
 type linkInfo struct {

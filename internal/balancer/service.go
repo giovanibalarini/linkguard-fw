@@ -228,6 +228,11 @@ func (s *Service) Apply(ctx context.Context, arm bool) (Plan, error) {
 	if _, err := s.exec.Execute(ctx, "ip", args...); err != nil {
 		return plan, fmt.Errorf("aplicar rota: %w", err)
 	}
+	// Record what we just installed so the periodic reconcile agrees with the
+	// kernel and doesn't re-apply (or, after a rollback, fight it) needlessly.
+	s.rebuildMu.Lock()
+	s.lastSig = routeSignature(plan.Nexthops)
+	s.rebuildMu.Unlock()
 	slog.Info("balancer: applied multipath default", "table", cfg.Table,
 		"nexthops", len(plan.Nexthops), "armed", arm)
 
@@ -270,6 +275,16 @@ func (s *Service) Rebuild(ctx context.Context) error {
 		return nil
 	}
 
+	// Don't fight an armed manual Apply: while a rollback is pending, that flow
+	// owns the route for its window (otherwise the reconcile re-imposes the very
+	// route a rollback is meant to undo).
+	s.mu.Lock()
+	pending := s.pending != nil
+	s.mu.Unlock()
+	if pending {
+		return nil
+	}
+
 	s.rebuildMu.Lock()
 	defer s.rebuildMu.Unlock()
 
@@ -278,13 +293,19 @@ func (s *Service) Rebuild(ctx context.Context) error {
 		return err
 	}
 	sig := routeSignature(plan.Nexthops)
-	if sig == s.lastSig {
-		return nil // nothing changed
-	}
 	if len(plan.Nexthops) == 0 {
-		s.lastSig = sig // remember the empty state so we alert only once
+		// Alert exactly once on entering the empty state. A distinct sentinel is
+		// used (not routeSignature([])=="") so the very first reconcile at boot —
+		// where lastSig is still "" — is not mistaken for "already alerted".
+		if s.lastSig == emptySig {
+			return fmt.Errorf("no up interfaces")
+		}
+		s.lastSig = emptySig
 		_ = s.alertSvc.RuleError("Balanceamento: nenhuma interface WAN ativa — rota mantida")
 		return fmt.Errorf("no up interfaces")
+	}
+	if sig == s.lastSig {
+		return nil // nothing changed
 	}
 	args := buildReplaceArgs(cfg.Table, plan.Nexthops)
 	if _, err := s.exec.Execute(ctx, "ip", args...); err != nil {
@@ -295,12 +316,18 @@ func (s *Service) Rebuild(ctx context.Context) error {
 	return nil
 }
 
-// routeSignature is a stable fingerprint of a nexthop set (link + weight),
-// used to skip no-op rebuilds.
+// emptySig marks the "no up interfaces" state; distinct from routeSignature([])
+// (== "") so the first reconcile at boot isn't mistaken for "already alerted".
+const emptySig = "\x00empty"
+
+// routeSignature is a stable fingerprint of a nexthop set, used to skip no-op
+// rebuilds. It includes Gateway and Interface (not just link+weight) so a WAN
+// whose gateway/interface changes — e.g. a DHCP renewal — is re-applied to the
+// kernel instead of silently leaving the route pointing at the stale gateway.
 func routeSignature(nhs []Nexthop) string {
 	parts := make([]string, len(nhs))
 	for i, n := range nhs {
-		parts[i] = fmt.Sprintf("%s:%d", n.LinkID, n.Weight)
+		parts[i] = fmt.Sprintf("%s|%s|%s|%d", n.LinkID, n.Gateway, n.Interface, n.Weight)
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ",")
@@ -699,7 +726,10 @@ func parseUpInterfaces(out string) map[string]bool {
 	up := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) >= 2 && f[1] == "UP" {
+		// Treat UNKNOWN as up too: tun/ppp/VPN WAN devices commonly report
+		// operstate UNKNOWN even when fully working, so excluding them would drop
+		// a healthy link from the route. Only an explicit DOWN counts as down.
+		if len(f) >= 2 && (f[1] == "UP" || f[1] == "UNKNOWN") {
 			up[strings.TrimSuffix(f[0], ":")] = true
 		}
 	}

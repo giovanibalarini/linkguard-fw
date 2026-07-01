@@ -69,7 +69,9 @@ export default function LinkStressTest({ links, canRun }: Props) {
     finally { setBusy(false); }
   };
 
-  const elapsed = test && running ? Math.min(test.duration_sec, (test.samples.length) * 2) : 0;
+  // samples includes the t=0 baseline sample, so subtract it before scaling by
+  // the 2s interval (otherwise the bar reaches 100% one interval early).
+  const elapsed = test && running ? Math.min(test.duration_sec, Math.max(0, test.samples.length - 1) * 2) : 0;
   const pct = test?.duration_sec ? Math.min(100, (elapsed / test.duration_sec) * 100) : 0;
 
   return (

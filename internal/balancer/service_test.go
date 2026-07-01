@@ -225,6 +225,7 @@ func TestSelectNexthops(t *testing.T) {
 func TestParseUpInterfaces(t *testing.T) {
 	out := "lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>\n" +
 		"enp5s0           UP             b8:ca:3a:fc:d6:03 <BROADCAST,MULTICAST,UP,LOWER_UP>\n" +
+		"tun0             UNKNOWN        00:00:00:00:00:00 <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP>\n" +
 		"enp3s0           DOWN           f4:f2:6d:05:e2:f0 <BROADCAST,MULTICAST>"
 	up := parseUpInterfaces(out)
 	if !up["enp5s0"] {
@@ -233,8 +234,31 @@ func TestParseUpInterfaces(t *testing.T) {
 	if up["enp3s0"] {
 		t.Error("enp3s0 is DOWN, must not be up")
 	}
-	if up["lo"] {
-		t.Error("lo state is UNKNOWN, must not count as up")
+	// UNKNOWN counts as up: tun/ppp/VPN WAN devices report operstate UNKNOWN even
+	// when working, so excluding them would drop a healthy link. The up-map is
+	// only consulted for real WAN interfaces, so a UNKNOWN lo appearing is
+	// harmless.
+	if !up["tun0"] {
+		t.Error("tun0 is UNKNOWN (working tunnel) and must count as up")
+	}
+}
+
+func TestRouteSignatureDetectsGatewayChange(t *testing.T) {
+	base := []Nexthop{{LinkID: "a", Gateway: "192.168.15.1", Interface: "enp5s0", Weight: 100}}
+	gwChanged := []Nexthop{{LinkID: "a", Gateway: "192.168.15.254", Interface: "enp5s0", Weight: 100}}
+	ifChanged := []Nexthop{{LinkID: "a", Gateway: "192.168.15.1", Interface: "enp6s0", Weight: 100}}
+
+	if routeSignature(base) == routeSignature(gwChanged) {
+		t.Error("a gateway change (e.g. DHCP renewal) must change the signature so the route is re-applied")
+	}
+	if routeSignature(base) == routeSignature(ifChanged) {
+		t.Error("an interface change must change the signature")
+	}
+	if routeSignature(base) != routeSignature(base) {
+		t.Error("signature must be stable for the same nexthops")
+	}
+	if routeSignature(nil) == emptySig {
+		t.Error("routeSignature([]) must differ from the empty-state sentinel")
 	}
 }
 
