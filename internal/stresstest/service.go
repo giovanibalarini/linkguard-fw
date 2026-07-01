@@ -118,7 +118,10 @@ func snapshot(t *Test) *Test {
 		return nil
 	}
 	cp := *t
-	cp.Samples = append([]Sample(nil), t.Samples...)
+	// Use make (not append to a nil slice) so an empty Samples stays a non-nil
+	// empty slice: it must marshal to "samples":[] and never null, or the
+	// frontend crashes dereferencing test.samples (black screen).
+	cp.Samples = append(make([]Sample, 0, len(t.Samples)), t.Samples...)
 	return &cp
 }
 
