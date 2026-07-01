@@ -27,8 +27,8 @@ SyslogIdentifier=linkguard-fw
 NoNewPrivileges=yes
 ProtectSystem=strict
 # Writable paths so the app can persist generated configs: nftables (firewall),
-# Kea (DHCP) and unbound (DNS).
-ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/kea /etc/unbound
+# Kea (DHCP), unbound (DNS) and the conntrack-accounting sysctl drop-in.
+ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/kea /etc/unbound /etc/sysctl.d
 ProtectHome=yes
 PrivateTmp=yes
 
