@@ -24,6 +24,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -324,6 +326,41 @@ type SteerConfig struct {
 	Priority  int    `json:"priority"`  // ip rule priority (default 32765)
 }
 
+var (
+	reSteerTable = regexp.MustCompile(`^[a-zA-Z0-9_]{1,32}$`)
+	reSteerMark  = regexp.MustCompile(`^(0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$`)
+	reSteerIface = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
+)
+
+// steerValid guards the wan_steer setting: it is applied to `ip route`/`ip rule`
+// and can arrive via backup restore, so every field is charset-constrained.
+func steerValid(c SteerConfig) bool {
+	if !reSteerTable.MatchString(c.Table) {
+		return false
+	}
+	if c.Mark != "" && !reSteerMark.MatchString(c.Mark) {
+		return false
+	}
+	if c.Interface != "" && !reSteerIface.MatchString(c.Interface) {
+		return false
+	}
+	if c.LanDev != "" && !reSteerIface.MatchString(c.LanDev) {
+		return false
+	}
+	if c.Gateway != "" && net.ParseIP(c.Gateway) == nil {
+		return false
+	}
+	if c.LanVia != "" && net.ParseIP(c.LanVia) == nil {
+		return false
+	}
+	if c.LanCIDR != "" {
+		if _, _, err := net.ParseCIDR(c.LanCIDR); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // EnsureSteerRouting applies the host-steering policy routing idempotently. Safe
 // to call repeatedly (startup + reconcile). No-op unless a wan_steer setting is
 // present and enabled.
@@ -334,6 +371,10 @@ func (s *Service) EnsureSteerRouting(ctx context.Context) {
 	}
 	var c SteerConfig
 	if json.Unmarshal([]byte(raw), &c) != nil || !c.Enabled || c.Table == "" {
+		return
+	}
+	if !steerValid(c) {
+		slog.Warn("balancer: wan_steer inválido (campos fora do padrão) — ignorado")
 		return
 	}
 	if c.Gateway != "" && c.Interface != "" {

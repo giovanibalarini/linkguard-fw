@@ -13,6 +13,7 @@ package stresstest
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,9 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 )
+
+// reIface constrains interface names (embedded in the watchdog shell command).
+var reIface = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
 
 const (
 	pingTarget     = "8.8.8.8"
@@ -161,6 +165,12 @@ func (s *Service) Start(p StartParams) (*Test, error) {
 	}
 	if tgt == nil || !tgt.enabled || tgt.iface == "" {
 		return nil, fmt.Errorf("link inválido ou desabilitado")
+	}
+	// Defense-in-depth: the interface is embedded in a shell command (watchdog),
+	// so reject anything outside a strict interface charset even though links
+	// are validated on creation.
+	if !reIface.MatchString(tgt.iface) {
+		return nil, fmt.Errorf("nome de interface inválido")
 	}
 	if healthyOthers == 0 {
 		return nil, fmt.Errorf("não há outro link WAN saudável — testar este derrubaria a internet")

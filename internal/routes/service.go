@@ -4,6 +4,8 @@ package routes
 import (
 	"context"
 	"fmt"
+	"net"
+	"regexp"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -67,8 +69,39 @@ func (s *Service) ListRules(ctx context.Context) ([]Rule, error) {
 	return parseRules(out), nil
 }
 
+// Validators for values that become `ip route`/`ip rule` arguments. Defense in
+// depth: reject anything outside a strict charset.
+var (
+	reRTable = regexp.MustCompile(`^[a-zA-Z0-9_]{1,32}$`)
+	reRIface = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
+	reRMark  = regexp.MustCompile(`^(0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$`)
+)
+
+func validDest(d string) bool {
+	d = strings.TrimSpace(d)
+	if d == "" || d == "default" {
+		return true
+	}
+	if net.ParseIP(d) != nil {
+		return true
+	}
+	_, _, err := net.ParseCIDR(d)
+	return err == nil
+}
+func optOK(s string, re *regexp.Regexp) bool {
+	s = strings.TrimSpace(s)
+	return s == "" || re.MatchString(s)
+}
+func optIP(s string) bool {
+	s = strings.TrimSpace(s)
+	return s == "" || net.ParseIP(s) != nil
+}
+
 // AddRoute adds a route (dry-run safe).
 func (s *Service) AddRoute(ctx context.Context, dest, gw, iface, table string) (string, error) {
+	if !validDest(dest) || !optIP(gw) || !optOK(iface, reRIface) || !optOK(table, reRTable) {
+		return "", fmt.Errorf("parâmetros de rota inválidos")
+	}
 	args := []string{"route", "add", dest}
 	if gw != "" {
 		args = append(args, "via", gw)
@@ -84,6 +117,9 @@ func (s *Service) AddRoute(ctx context.Context, dest, gw, iface, table string) (
 
 // DelRoute removes a route (dry-run safe).
 func (s *Service) DelRoute(ctx context.Context, dest, table string) (string, error) {
+	if !validDest(dest) || !optOK(table, reRTable) {
+		return "", fmt.Errorf("parâmetros de rota inválidos")
+	}
 	args := []string{"route", "del", dest}
 	if table != "" {
 		args = append(args, "table", table)
@@ -91,8 +127,23 @@ func (s *Service) DelRoute(ctx context.Context, dest, table string) (string, err
 	return s.exec.Execute(ctx, "ip", args...)
 }
 
+func optIPOrCIDR(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	_, _, err := net.ParseCIDR(s)
+	return err == nil
+}
+
 // AddRule adds an ip rule (dry-run safe).
 func (s *Service) AddRule(ctx context.Context, from, fwmark, table string, priority int) (string, error) {
+	if !optIPOrCIDR(from) || !optOK(fwmark, reRMark) || !optOK(table, reRTable) {
+		return "", fmt.Errorf("parâmetros de regra inválidos")
+	}
 	args := []string{"rule", "add"}
 	if from != "" {
 		args = append(args, "from", from)
@@ -109,6 +160,9 @@ func (s *Service) AddRule(ctx context.Context, from, fwmark, table string, prior
 
 // DelRule removes an ip rule (dry-run safe).
 func (s *Service) DelRule(ctx context.Context, from, fwmark, table string, priority int) (string, error) {
+	if !optIPOrCIDR(from) || !optOK(fwmark, reRMark) || !optOK(table, reRTable) {
+		return "", fmt.Errorf("parâmetros de regra inválidos")
+	}
 	args := []string{"rule", "del"}
 	if from != "" {
 		args = append(args, "from", from)

@@ -80,8 +80,9 @@ func (s *Service) BlockHost(ctx context.Context, ip string) (string, error) {
 
 // UnblockHost removes a host's IP from the blocked set.
 func (s *Service) UnblockHost(ctx context.Context, ip string) (string, error) {
-	if strings.TrimSpace(ip) == "" {
-		return "", fmt.Errorf("ip is required")
+	ip = strings.TrimSpace(ip)
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("ip inválido")
 	}
 	out, err := s.exec.Execute(ctx, "nft", "delete", "element", Family, Table, BlockedSet, "{", ip, "}")
 	if err != nil {
@@ -155,6 +156,10 @@ func (s *Service) AddWanHost(ctx context.Context, ip, mark string) (string, erro
 
 // DelWanHost removes a host from the host_wan map (reverts it to the primary WAN).
 func (s *Service) DelWanHost(ctx context.Context, ip string) (string, error) {
+	ip = strings.TrimSpace(ip)
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("ip inválido")
+	}
 	out, err := s.exec.Execute(ctx, "nft", "delete", "element", Family, Table, HostWanMap, "{", ip, "}")
 	if err != nil {
 		return out, err
@@ -177,6 +182,10 @@ func (s *Service) AddBlocklist(ctx context.Context, cidr string) (string, error)
 
 // DelBlocklist removes a destination CIDR from the blocklist set.
 func (s *Service) DelBlocklist(ctx context.Context, cidr string) (string, error) {
+	cidr = strings.TrimSpace(cidr)
+	if !validIPOrCIDR(cidr) {
+		return "", fmt.Errorf("CIDR/IP inválido")
+	}
 	out, err := s.exec.Execute(ctx, "nft", "delete", "element", Family, Table, "blocklist", "{", cidr, "}")
 	if err != nil {
 		return out, err
