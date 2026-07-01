@@ -157,6 +157,10 @@ func run() int {
 		failoverSvc.HandleStatusChange(link, oldStatus, newStatus)
 	})
 
+	// Enable IPv4 forwarding so the box can route between LAN and WAN; it
+	// defaults to 0 on a fresh system and a firewall/router needs it on.
+	routeSvc.EnsureForwarding()
+
 	// Apply the WAN host-steering policy routing at startup (LinkGuard now owns
 	// this; it previously came from /etc/network/linkguard-routing.sh via rc.local).
 	balancerSvc.EnsureSteerRouting(ctx)
