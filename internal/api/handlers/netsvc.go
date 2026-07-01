@@ -4,11 +4,24 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
+
+// Strict validators for values rendered into unbound/Kea configs.
+var (
+	reDNSDomain = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$`)
+	reNetIface  = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
+)
+
+func validDomain(d string) bool {
+	return len(d) <= 253 && reDNSDomain.MatchString(d)
+}
+
+func validIface(s string) bool { return reNetIface.MatchString(s) }
 
 // NetsvcHandler manages DHCP + DNS through the configured backend provider
 // (Kea + unbound). Config and lists live in the DB; the provider renders the
@@ -86,11 +99,52 @@ func (h *NetsvcHandler) UpdateDHCPConfig(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// Validate every field: some (gateway, subnet, domain suffix) are rendered
+	// into unbound.conf by string concatenation, so an unvalidated value could
+	// inject config directives.
+	iface := strings.TrimSpace(b.Interface)
+	subnet := strings.TrimSpace(b.SubnetCIDR)
+	rStart := strings.TrimSpace(b.RangeStart)
+	rEnd := strings.TrimSpace(b.RangeEnd)
+	gw := strings.TrimSpace(b.Gateway)
+	suffix := strings.TrimSpace(b.DomainSuffix)
+	if iface != "" && !validIface(iface) {
+		writeError(w, http.StatusBadRequest, "interface inválida")
+		return
+	}
+	if subnet != "" {
+		if _, _, err := net.ParseCIDR(subnet); err != nil {
+			writeError(w, http.StatusBadRequest, "sub-rede inválida")
+			return
+		}
+	}
+	for _, v := range []string{rStart, rEnd, gw} {
+		if v != "" && net.ParseIP(v) == nil {
+			writeError(w, http.StatusBadRequest, "endereço IP inválido: "+v)
+			return
+		}
+	}
+	if suffix != "" && !validDomain(suffix) {
+		writeError(w, http.StatusBadRequest, "domínio (domain_suffix) inválido")
+		return
+	}
+	dns := []string{}
+	for _, d := range b.DNSToClients {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if net.ParseIP(d) == nil {
+			writeError(w, http.StatusBadRequest, "DNS inválido: "+d)
+			return
+		}
+		dns = append(dns, d)
+	}
 	cfg := h.getConfig()
-	cfg.Interface, cfg.SubnetCIDR = strings.TrimSpace(b.Interface), strings.TrimSpace(b.SubnetCIDR)
-	cfg.RangeStart, cfg.RangeEnd = strings.TrimSpace(b.RangeStart), strings.TrimSpace(b.RangeEnd)
-	cfg.Gateway, cfg.LeaseHours = strings.TrimSpace(b.Gateway), b.LeaseHours
-	cfg.DNSToClients, cfg.DomainSuffix = b.DNSToClients, strings.TrimSpace(b.DomainSuffix)
+	cfg.Interface, cfg.SubnetCIDR = iface, subnet
+	cfg.RangeStart, cfg.RangeEnd = rStart, rEnd
+	cfg.Gateway, cfg.LeaseHours = gw, b.LeaseHours
+	cfg.DNSToClients, cfg.DomainSuffix = dns, suffix
 	if err := h.saveConfig(cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -205,7 +259,7 @@ func (h *NetsvcHandler) blocklist(w http.ResponseWriter, r *http.Request, add bo
 		return
 	}
 	d := strings.ToLower(strings.TrimSpace(b.Domain))
-	if d == "" || strings.ContainsAny(d, " /") {
+	if !validDomain(d) {
 		writeError(w, http.StatusBadRequest, "domínio inválido")
 		return
 	}

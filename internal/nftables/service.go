@@ -67,8 +67,9 @@ func (s *Service) Restore(ctx context.Context, ruleset string) (string, error) {
 
 // BlockHost drops a host's forwarded traffic by adding its IP to the blocked set.
 func (s *Service) BlockHost(ctx context.Context, ip string) (string, error) {
-	if strings.TrimSpace(ip) == "" {
-		return "", fmt.Errorf("ip is required")
+	ip = strings.TrimSpace(ip)
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("ip inválido")
 	}
 	out, err := s.exec.Execute(ctx, "nft", "add", "element", Family, Table, BlockedSet, "{", ip, "}")
 	if err != nil {
@@ -138,6 +139,13 @@ func (s *Service) AddWanHost(ctx context.Context, ip, mark string) (string, erro
 	if mark == "" {
 		mark = DefaultWanMark
 	}
+	ip = strings.TrimSpace(ip)
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("ip inválido")
+	}
+	if !ValidMark(mark) {
+		return "", fmt.Errorf("marca inválida")
+	}
 	out, err := s.exec.Execute(ctx, "nft", "add", "element", Family, Table, HostWanMap, "{", ip, ":", mark, "}")
 	if err != nil {
 		return out, err
@@ -156,6 +164,10 @@ func (s *Service) DelWanHost(ctx context.Context, ip string) (string, error) {
 
 // AddBlocklist blocks a destination CIDR by adding it to the blocklist set.
 func (s *Service) AddBlocklist(ctx context.Context, cidr string) (string, error) {
+	cidr = strings.TrimSpace(cidr)
+	if !validIPOrCIDR(cidr) {
+		return "", fmt.Errorf("CIDR/IP inválido")
+	}
 	out, err := s.exec.Execute(ctx, "nft", "add", "element", Family, Table, "blocklist", "{", cidr, "}")
 	if err != nil {
 		return out, err
@@ -437,6 +449,26 @@ func (s *Service) delRule(ctx context.Context, handle int) (string, error) {
 }
 
 // buildRuleTokens turns structured fields into nft rule tokens (validated).
+// Input validators. nft parses its argv joined by spaces, so an unvalidated
+// token containing spaces/";" could inject extra nft commands (e.g. flush
+// ruleset). Every user-supplied token below is constrained to a safe charset.
+var (
+	reIface = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
+	reMark  = regexp.MustCompile(`^(0x[0-9a-fA-F]{1,8}|[0-9]{1,10})$`)
+	rePort  = regexp.MustCompile(`^[0-9]{1,5}(-[0-9]{1,5})?$`)
+)
+
+// ValidMark reports whether a fwmark string is a plain hex/decimal number.
+func ValidMark(s string) bool { return reMark.MatchString(strings.TrimSpace(s)) }
+
+func validIPOrCIDR(s string) bool {
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	_, _, err := net.ParseCIDR(s)
+	return err == nil
+}
+
 func buildRuleTokens(f RuleFields) ([]string, error) {
 	action := strings.ToLower(strings.TrimSpace(f.Action))
 	if action != "accept" && action != "drop" && action != "reject" {
@@ -444,21 +476,36 @@ func buildRuleTokens(f RuleFields) ([]string, error) {
 	}
 	var t []string
 	if f.Iif != "" {
+		if !reIface.MatchString(f.Iif) {
+			return nil, fmt.Errorf("interface de entrada inválida")
+		}
 		t = append(t, "iifname", f.Iif)
 	}
 	if f.Oif != "" {
+		if !reIface.MatchString(f.Oif) {
+			return nil, fmt.Errorf("interface de saída inválida")
+		}
 		t = append(t, "oifname", f.Oif)
 	}
 	if f.Saddr != "" {
+		if !validIPOrCIDR(f.Saddr) {
+			return nil, fmt.Errorf("origem inválida")
+		}
 		t = append(t, "ip", "saddr", f.Saddr)
 	}
 	if f.Daddr != "" {
+		if !validIPOrCIDR(f.Daddr) {
+			return nil, fmt.Errorf("destino inválido")
+		}
 		t = append(t, "ip", "daddr", f.Daddr)
 	}
 	proto := strings.ToLower(strings.TrimSpace(f.Proto))
 	switch proto {
 	case "tcp", "udp":
 		if f.Dport != "" {
+			if !rePort.MatchString(f.Dport) {
+				return nil, fmt.Errorf("porta inválida")
+			}
 			t = append(t, proto, "dport", f.Dport)
 		} else {
 			t = append(t, "ip", "protocol", proto)
