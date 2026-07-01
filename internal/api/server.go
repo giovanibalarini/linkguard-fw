@@ -31,6 +31,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/stresstest"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
 	"github.com/giovanibalarini/linkguard-fw/internal/updater"
@@ -231,6 +232,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermRoutesWrite)).Post("/api/routing/balance/apply", routingH.Apply)
 		r.With(require(auth.PermRoutesWrite)).Post("/api/routing/balance/confirm", routingH.Confirm)
 		r.With(require(auth.PermRoutesWrite)).Post("/api/routing/balance/rollback", routingH.Rollback)
+
+		// Link stress-test (on-demand fault injection: outage / degradation)
+		stressH := handlers.NewStressTestHandler(stresstest.NewService(s.exec, s.linkSvc), s.db)
+		r.With(require(auth.PermRoutesRead)).Get("/api/stresstest/status", stressH.Status)
+		r.With(require(auth.PermRoutesWrite)).Post("/api/stresstest/start", stressH.Start)
+		r.With(require(auth.PermRoutesWrite)).Post("/api/stresstest/stop", stressH.Stop)
 
 		// Alerts
 		alertsH := handlers.NewAlertsHandler(s.alertSvc)

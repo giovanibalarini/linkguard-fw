@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import WanBalancing from '../components/WanBalancing';
+import LinkStressTest from '../components/LinkStressTest';
+import { useAuth } from '../context/AuthContext';
 import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
 import client from '../api/client';
@@ -17,6 +19,7 @@ const emptyLink: Partial<WanLink> = {
 };
 
 export default function Links() {
+  const { can } = useAuth();
   const [links, setLinks] = useState<WanLink[]>([]);
   const [interfaces, setInterfaces] = useState<InterfaceMetrics[]>([]);
   const [loading, setLoading] = useState(true);
@@ -330,6 +333,8 @@ export default function Links() {
       )}
 
       {!loading && links.length >= 2 && <WanBalancing links={links} onChanged={fetchLinks} />}
+
+      {!loading && links.length >= 2 && <LinkStressTest links={links} canRun={can('routes.write')} />}
 
       <div className="card">
         {loading ? (

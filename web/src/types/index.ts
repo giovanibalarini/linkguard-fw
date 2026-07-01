@@ -275,6 +275,28 @@ export interface DNSData { config: NetsvcConfig; blocklist: string[]; backend: s
 
 export interface HostTraffic { ip: string; rx_bytes: number; tx_bytes: number; }
 
+// ─── Link stress-test ────────────────────────────────────────────────────────
+
+export interface StressSample { t: string; route: string; ping: boolean; dns: boolean; phase: string }
+export interface StressTest {
+  id: string;
+  link_id: string;
+  link_name: string;
+  interface: string;
+  mode: 'outage' | 'degrade';
+  delay_ms: number;
+  loss_pct: number;
+  duration_sec: number;
+  state: string; // idle | running | done | aborted | error
+  message: string;
+  started_at: string;
+  ended_at: string;
+  samples: StressSample[];
+  ping_loss_pct: number;
+  dns_loss_pct: number;
+  restored: boolean;
+}
+
 // ─── Multi-WAN balancing ─────────────────────────────────────────────────────
 
 export interface BalanceNexthop {
