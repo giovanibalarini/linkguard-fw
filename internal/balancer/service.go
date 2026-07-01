@@ -461,23 +461,32 @@ func toNexthop(l storage.Link) Nexthop {
 	}
 }
 
-// selectNexthops applies the degradation-aware policy, over links whose
-// interface is physically UP (a down interface can never be a valid nexthop —
-// `ip route replace` rejects the whole command otherwise):
-//   - any healthy (online) link → use ONLY those (degraded links sit out);
-//   - else any degraded link → the single LEAST-degraded (lowest loss, then
-//     latency), stay until one normalizes;
-//   - else any UP interface whose probe is failing (stale/soft) → use it anyway
-//     as a SAFETY NET rather than leave an empty default (which would black-hole
-//     all traffic incl. DNS). The kernel still routes around truly-dead paths.
+// demotedWeight is the tiny weight given to a non-primary link so it stays in
+// the route (its health probe keeps working and it can self-heal) while carrying
+// almost no traffic.
+const demotedWeight = 1
+
+// selectNexthops builds the multipath default with a degradation-aware policy.
 //
-// ifaceUp maps interface name → physically up; a nil map means "unknown", in
-// which case no interface filtering is applied.
+// KEY invariant: every interface-UP link stays in the route as a nexthop, so its
+// health probe (which routes via the main table) always has a path and the link
+// can recover on its own. Instead of removing a bad link (which strands its
+// probe and it can never rejoin), we DEMOTE it to weight 1 — ~0.4% of traffic —
+// which is effectively "switched away from" while remaining self-healing.
+//
+// Primary carriers (full configured weight) are chosen as:
+//   - any healthy (online) link → all healthy links;
+//   - else the single LEAST-degraded link (lowest loss, then latency);
+//   - else every up link (all probing bad but physically up — safety net).
+//
+// Interface-DOWN links are excluded entirely (a down device makes `ip route
+// replace` fail); they rejoin as demoted nexthops the moment their link is up.
+// ifaceUp maps interface → physically up; nil means "unknown" (no filtering).
 func selectNexthops(all []storage.Link, ifaceUp map[string]bool) (chosen, excluded []Nexthop) {
 	isUp := func(iface string) bool { return ifaceUp == nil || ifaceUp[iface] }
 
-	healthy, degraded, upOthers := []Nexthop{}, []Nexthop{}, []Nexthop{}
 	excluded = []Nexthop{}
+	var up []storage.Link
 	for _, l := range all {
 		if !l.Enabled || l.Gateway == "" || l.Interface == "" {
 			if l.Gateway != "" || l.Interface != "" {
@@ -485,26 +494,33 @@ func selectNexthops(all []storage.Link, ifaceUp map[string]bool) (chosen, exclud
 			}
 			continue
 		}
-		nh := toNexthop(l)
-		if !isUp(l.Interface) { // interface down → never a nexthop
-			excluded = append(excluded, nh)
+		if !isUp(l.Interface) {
+			excluded = append(excluded, toNexthop(l)) // rejoins when its interface is up
 			continue
 		}
-		switch l.Status {
-		case links.StatusOnline:
-			healthy = append(healthy, nh)
-		case links.StatusDegraded:
-			degraded = append(degraded, nh)
-		default:
-			upOthers = append(upOthers, nh)
-		}
+		up = append(up, l)
+	}
+	if len(up) == 0 {
+		return []Nexthop{}, excluded
 	}
 
+	var healthy, degraded, others []storage.Link
+	for _, l := range up {
+		switch l.Status {
+		case links.StatusOnline:
+			healthy = append(healthy, l)
+		case links.StatusDegraded:
+			degraded = append(degraded, l)
+		default:
+			others = append(others, l)
+		}
+	}
+	primary := map[string]bool{}
 	switch {
 	case len(healthy) > 0:
-		chosen = healthy
-		excluded = append(excluded, degraded...)
-		excluded = append(excluded, upOthers...)
+		for _, l := range healthy {
+			primary[l.ID] = true
+		}
 	case len(degraded) > 0:
 		sort.Slice(degraded, func(i, j int) bool {
 			if degraded[i].PacketLoss != degraded[j].PacketLoss {
@@ -512,16 +528,36 @@ func selectNexthops(all []storage.Link, ifaceUp map[string]bool) (chosen, exclud
 			}
 			return degraded[i].LatencyMs < degraded[j].LatencyMs
 		})
-		chosen = degraded[:1:1]
-		excluded = append(excluded, degraded[1:]...)
-		excluded = append(excluded, upOthers...)
-	case len(upOthers) > 0:
-		chosen = upOthers // safety net: never leave an empty default
+		primary[degraded[0].ID] = true
 	default:
-		chosen = []Nexthop{}
+		for _, l := range others {
+			primary[l.ID] = true
+		}
 	}
 
-	normalizeWeights(chosen)
+	// Normalize weights among the primary carriers only.
+	var primaryNH []Nexthop
+	for _, l := range up {
+		if primary[l.ID] {
+			primaryNH = append(primaryNH, toNexthop(l))
+		}
+	}
+	normalizeWeights(primaryNH)
+	weightByID := map[string]int{}
+	for _, nh := range primaryNH {
+		weightByID[nh.LinkID] = nh.Weight
+	}
+
+	chosen = []Nexthop{}
+	for _, l := range up {
+		nh := toNexthop(l)
+		if w, ok := weightByID[l.ID]; ok {
+			nh.Weight = w
+		} else {
+			nh.Weight = demotedWeight
+		}
+		chosen = append(chosen, nh)
+	}
 	return chosen, excluded
 }
 

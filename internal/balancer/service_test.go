@@ -105,7 +105,7 @@ func TestRestoreArgsFromShow_Empty(t *testing.T) {
 
 func TestSelectNexthops(t *testing.T) {
 	link := func(name, iface, gw, status string, loss, lat float64) storage.Link {
-		return storage.Link{Name: name, Interface: iface, Gateway: gw, Weight: 100,
+		return storage.Link{ID: name, Name: name, Interface: iface, Gateway: gw, Weight: 100,
 			Enabled: true, Status: status, PacketLoss: loss, LatencyMs: lat}
 	}
 	names := func(nhs []Nexthop) []string {
@@ -127,75 +127,92 @@ func TestSelectNexthops(t *testing.T) {
 		return true
 	}
 
+	weightOf := func(nhs []Nexthop, name string) int {
+		for _, n := range nhs {
+			if n.Name == name {
+				return n.Weight
+			}
+		}
+		return -1
+	}
 	allUp := map[string]bool{"eth0": true, "eth1": true}
 
-	t.Run("both online -> balance both", func(t *testing.T) {
+	t.Run("both online -> balance both, full weight", func(t *testing.T) {
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "online", 0, 10),
 			link("B", "eth1", "10.0.1.1", "online", 0, 12),
 		}, allUp)
 		if !eq(names(c), []string{"A", "B"}) {
-			t.Errorf("chosen=%v, want [A B]", names(c))
+			t.Fatalf("chosen=%v, want [A B]", names(c))
+		}
+		if weightOf(c, "A") <= demotedWeight || weightOf(c, "B") <= demotedWeight {
+			t.Errorf("both healthy should carry full weight, got A=%d B=%d", weightOf(c, "A"), weightOf(c, "B"))
 		}
 	})
 
-	t.Run("one degraded -> use only healthy", func(t *testing.T) {
-		c, ex := selectNexthops([]storage.Link{
+	t.Run("one degraded -> healthy primary, degraded demoted (stays for self-heal)", func(t *testing.T) {
+		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "online", 0, 10),
 			link("B", "eth1", "10.0.1.1", "degraded", 40, 500),
 		}, allUp)
-		if !eq(names(c), []string{"A"}) {
-			t.Errorf("chosen=%v, want [A] (degraded B must sit out)", names(c))
+		if !eq(names(c), []string{"A", "B"}) {
+			t.Fatalf("chosen=%v, want [A B] (B kept, demoted)", names(c))
 		}
-		if !eq(names(ex), []string{"B"}) {
-			t.Errorf("excluded=%v, want [B]", names(ex))
+		if weightOf(c, "B") != demotedWeight {
+			t.Errorf("degraded B weight=%d, want %d (demoted)", weightOf(c, "B"), demotedWeight)
+		}
+		if weightOf(c, "A") <= demotedWeight {
+			t.Errorf("healthy A should carry traffic, weight=%d", weightOf(c, "A"))
 		}
 	})
 
-	t.Run("both degraded -> least degraded by loss", func(t *testing.T) {
+	t.Run("both degraded -> least-loss primary, other demoted", func(t *testing.T) {
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "degraded", 60, 200),
 			link("B", "eth1", "10.0.1.1", "degraded", 30, 400),
 		}, allUp)
-		if !eq(names(c), []string{"B"}) { // B has less loss
-			t.Errorf("chosen=%v, want [B] (lowest loss)", names(c))
+		if weightOf(c, "B") <= demotedWeight || weightOf(c, "A") != demotedWeight {
+			t.Errorf("B (less loss) should be primary, A demoted; got A=%d B=%d", weightOf(c, "A"), weightOf(c, "B"))
 		}
 	})
 
-	t.Run("both degraded equal loss -> least latency", func(t *testing.T) {
+	t.Run("both degraded equal loss -> least-latency primary", func(t *testing.T) {
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "degraded", 30, 600),
 			link("B", "eth1", "10.0.1.1", "degraded", 30, 250),
 		}, allUp)
-		if !eq(names(c), []string{"B"}) { // equal loss, B lower latency
-			t.Errorf("chosen=%v, want [B] (lowest latency)", names(c))
+		if weightOf(c, "B") <= demotedWeight || weightOf(c, "A") != demotedWeight {
+			t.Errorf("B (lower latency) should be primary; got A=%d B=%d", weightOf(c, "A"), weightOf(c, "B"))
 		}
 	})
 
-	t.Run("offline excluded when a healthy link exists", func(t *testing.T) {
+	t.Run("offline-but-up demoted when a healthy link exists", func(t *testing.T) {
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "online", 0, 10),
 			link("B", "eth1", "10.0.1.1", "offline", 100, 0),
 		}, allUp)
-		if !eq(names(c), []string{"A"}) {
-			t.Errorf("chosen=%v, want [A]", names(c))
+		if !eq(names(c), []string{"A", "B"}) {
+			t.Fatalf("chosen=%v, want [A B] (B demoted, kept for self-heal)", names(c))
+		}
+		if weightOf(c, "B") != demotedWeight {
+			t.Errorf("offline B weight=%d, want %d", weightOf(c, "B"), demotedWeight)
 		}
 	})
 
-	t.Run("interface down is never a nexthop", func(t *testing.T) {
-		// B is 'online' per the probe but its interface is physically down.
-		c, _ := selectNexthops([]storage.Link{
+	t.Run("interface down is never a nexthop (rejoins when up)", func(t *testing.T) {
+		c, ex := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "online", 0, 10),
 			link("B", "eth1", "10.0.1.1", "online", 0, 10),
 		}, map[string]bool{"eth0": true}) // eth1 down
 		if !eq(names(c), []string{"A"}) {
 			t.Errorf("chosen=%v, want [A] (eth1 down)", names(c))
 		}
+		if !eq(names(ex), []string{"B"}) {
+			t.Errorf("excluded=%v, want [B]", names(ex))
+		}
 	})
 
 	t.Run("safety net: up interface, failing probe -> still used, never empty", func(t *testing.T) {
-		// Probe says offline, but the interface is up: use it rather than leave
-		// an empty default route (the bug that black-holed traffic + DNS).
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "offline", 100, 0),
 		}, map[string]bool{"eth0": true})
