@@ -6,11 +6,14 @@ package updater
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -86,9 +89,71 @@ func (s *Service) Apply(ctx context.Context) error {
 		return err
 	}
 	defer os.Remove(path)
+
+	// Integrity: never dpkg-install a package we can't verify against the
+	// release's sha256sums.txt (guards against a corrupt/tampered download).
+	if err := s.verifyChecksum(ctx, rel, deb, path); err != nil {
+		return err
+	}
+
 	out, err := s.exec.Execute(ctx, "dpkg", "-i", path)
 	if err != nil {
 		return fmt.Errorf("dpkg: %v (%s)", err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// verifyChecksum computes the downloaded file's SHA-256 and compares it to the
+// expected hash from the release's sha256sums.txt asset. Any mismatch or missing
+// checksum aborts the install.
+func (s *Service) verifyChecksum(ctx context.Context, rel Release, debURL, path string) error {
+	var sumsURL string
+	for _, a := range rel.Assets {
+		if strings.HasSuffix(a.Name, "sha256sums.txt") {
+			sumsURL = a.BrowserDownloadURL
+			break
+		}
+	}
+	if sumsURL == "" {
+		return fmt.Errorf("release sem sha256sums.txt — instalação abortada por segurança")
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, sumsURL, nil)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("baixar checksums: %w", err)
+	}
+	defer resp.Body.Close()
+	sums, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+
+	debName := debURL[strings.LastIndex(debURL, "/")+1:]
+	var expected string
+	for _, line := range strings.Split(string(sums), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && filepath.Base(f[1]) == debName {
+			expected = strings.ToLower(f[0])
+			break
+		}
+	}
+	if expected == "" {
+		return fmt.Errorf("hash de %s não está no sha256sums.txt — instalação abortada", debName)
+	}
+
+	fh, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, fh); err != nil {
+		return err
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(got, expected) {
+		return fmt.Errorf("checksum do pacote não confere — instalação abortada (integridade)")
 	}
 	return nil
 }
