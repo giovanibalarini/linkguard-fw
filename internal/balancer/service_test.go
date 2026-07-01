@@ -127,11 +127,13 @@ func TestSelectNexthops(t *testing.T) {
 		return true
 	}
 
+	allUp := map[string]bool{"eth0": true, "eth1": true}
+
 	t.Run("both online -> balance both", func(t *testing.T) {
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "online", 0, 10),
 			link("B", "eth1", "10.0.1.1", "online", 0, 12),
-		})
+		}, allUp)
 		if !eq(names(c), []string{"A", "B"}) {
 			t.Errorf("chosen=%v, want [A B]", names(c))
 		}
@@ -141,7 +143,7 @@ func TestSelectNexthops(t *testing.T) {
 		c, ex := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "online", 0, 10),
 			link("B", "eth1", "10.0.1.1", "degraded", 40, 500),
-		})
+		}, allUp)
 		if !eq(names(c), []string{"A"}) {
 			t.Errorf("chosen=%v, want [A] (degraded B must sit out)", names(c))
 		}
@@ -154,7 +156,7 @@ func TestSelectNexthops(t *testing.T) {
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "degraded", 60, 200),
 			link("B", "eth1", "10.0.1.1", "degraded", 30, 400),
-		})
+		}, allUp)
 		if !eq(names(c), []string{"B"}) { // B has less loss
 			t.Errorf("chosen=%v, want [B] (lowest loss)", names(c))
 		}
@@ -164,21 +166,59 @@ func TestSelectNexthops(t *testing.T) {
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "degraded", 30, 600),
 			link("B", "eth1", "10.0.1.1", "degraded", 30, 250),
-		})
+		}, allUp)
 		if !eq(names(c), []string{"B"}) { // equal loss, B lower latency
 			t.Errorf("chosen=%v, want [B] (lowest latency)", names(c))
 		}
 	})
 
-	t.Run("offline excluded", func(t *testing.T) {
+	t.Run("offline excluded when a healthy link exists", func(t *testing.T) {
 		c, _ := selectNexthops([]storage.Link{
 			link("A", "eth0", "10.0.0.1", "online", 0, 10),
 			link("B", "eth1", "10.0.1.1", "offline", 100, 0),
-		})
+		}, allUp)
 		if !eq(names(c), []string{"A"}) {
 			t.Errorf("chosen=%v, want [A]", names(c))
 		}
 	})
+
+	t.Run("interface down is never a nexthop", func(t *testing.T) {
+		// B is 'online' per the probe but its interface is physically down.
+		c, _ := selectNexthops([]storage.Link{
+			link("A", "eth0", "10.0.0.1", "online", 0, 10),
+			link("B", "eth1", "10.0.1.1", "online", 0, 10),
+		}, map[string]bool{"eth0": true}) // eth1 down
+		if !eq(names(c), []string{"A"}) {
+			t.Errorf("chosen=%v, want [A] (eth1 down)", names(c))
+		}
+	})
+
+	t.Run("safety net: up interface, failing probe -> still used, never empty", func(t *testing.T) {
+		// Probe says offline, but the interface is up: use it rather than leave
+		// an empty default route (the bug that black-holed traffic + DNS).
+		c, _ := selectNexthops([]storage.Link{
+			link("A", "eth0", "10.0.0.1", "offline", 100, 0),
+		}, map[string]bool{"eth0": true})
+		if !eq(names(c), []string{"A"}) {
+			t.Errorf("chosen=%v, want [A] (safety net, must not be empty)", names(c))
+		}
+	})
+}
+
+func TestParseUpInterfaces(t *testing.T) {
+	out := "lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>\n" +
+		"enp5s0           UP             b8:ca:3a:fc:d6:03 <BROADCAST,MULTICAST,UP,LOWER_UP>\n" +
+		"enp3s0           DOWN           f4:f2:6d:05:e2:f0 <BROADCAST,MULTICAST>"
+	up := parseUpInterfaces(out)
+	if !up["enp5s0"] {
+		t.Error("enp5s0 should be up")
+	}
+	if up["enp3s0"] {
+		t.Error("enp3s0 is DOWN, must not be up")
+	}
+	if up["lo"] {
+		t.Error("lo state is UNKNOWN, must not count as up")
+	}
 }
 
 func TestConfigNormalize(t *testing.T) {

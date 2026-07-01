@@ -174,7 +174,7 @@ func (s *Service) planWith(ctx context.Context, cfg Config) (Plan, error) {
 		return Plan{}, err
 	}
 
-	chosen, excluded := selectNexthops(all)
+	chosen, excluded := selectNexthops(all, s.upInterfaces(ctx))
 
 	p := Plan{
 		Mode:       cfg.Mode,
@@ -461,15 +461,22 @@ func toNexthop(l storage.Link) Nexthop {
 	}
 }
 
-// selectNexthops applies the degradation-aware policy:
-//   - if any links are healthy (online), use ONLY those (degraded links sit out);
-//   - else if any are degraded, use the single LEAST-degraded one (lowest loss,
-//     then latency) and stay there until a link normalizes;
-//   - else nothing is eligible.
+// selectNexthops applies the degradation-aware policy, over links whose
+// interface is physically UP (a down interface can never be a valid nexthop —
+// `ip route replace` rejects the whole command otherwise):
+//   - any healthy (online) link → use ONLY those (degraded links sit out);
+//   - else any degraded link → the single LEAST-degraded (lowest loss, then
+//     latency), stay until one normalizes;
+//   - else any UP interface whose probe is failing (stale/soft) → use it anyway
+//     as a SAFETY NET rather than leave an empty default (which would black-hole
+//     all traffic incl. DNS). The kernel still routes around truly-dead paths.
 //
-// It returns the chosen nexthops (weights normalized) and the ones left out.
-func selectNexthops(all []storage.Link) (chosen, excluded []Nexthop) {
-	healthy, degraded := []Nexthop{}, []Nexthop{}
+// ifaceUp maps interface name → physically up; a nil map means "unknown", in
+// which case no interface filtering is applied.
+func selectNexthops(all []storage.Link, ifaceUp map[string]bool) (chosen, excluded []Nexthop) {
+	isUp := func(iface string) bool { return ifaceUp == nil || ifaceUp[iface] }
+
+	healthy, degraded, upOthers := []Nexthop{}, []Nexthop{}, []Nexthop{}
 	excluded = []Nexthop{}
 	for _, l := range all {
 		if !l.Enabled || l.Gateway == "" || l.Interface == "" {
@@ -479,13 +486,17 @@ func selectNexthops(all []storage.Link) (chosen, excluded []Nexthop) {
 			continue
 		}
 		nh := toNexthop(l)
+		if !isUp(l.Interface) { // interface down → never a nexthop
+			excluded = append(excluded, nh)
+			continue
+		}
 		switch l.Status {
 		case links.StatusOnline:
 			healthy = append(healthy, nh)
 		case links.StatusDegraded:
 			degraded = append(degraded, nh)
 		default:
-			excluded = append(excluded, nh)
+			upOthers = append(upOthers, nh)
 		}
 	}
 
@@ -493,6 +504,7 @@ func selectNexthops(all []storage.Link) (chosen, excluded []Nexthop) {
 	case len(healthy) > 0:
 		chosen = healthy
 		excluded = append(excluded, degraded...)
+		excluded = append(excluded, upOthers...)
 	case len(degraded) > 0:
 		sort.Slice(degraded, func(i, j int) bool {
 			if degraded[i].PacketLoss != degraded[j].PacketLoss {
@@ -502,12 +514,36 @@ func selectNexthops(all []storage.Link) (chosen, excluded []Nexthop) {
 		})
 		chosen = degraded[:1:1]
 		excluded = append(excluded, degraded[1:]...)
+		excluded = append(excluded, upOthers...)
+	case len(upOthers) > 0:
+		chosen = upOthers // safety net: never leave an empty default
 	default:
 		chosen = []Nexthop{}
 	}
 
 	normalizeWeights(chosen)
 	return chosen, excluded
+}
+
+// upInterfaces returns the set of physically-up interfaces (operstate UP).
+// Returns nil on error, which selectNexthops treats as "don't filter".
+func (s *Service) upInterfaces(ctx context.Context) map[string]bool {
+	out, err := s.exec.ExecuteRead(ctx, "ip", "-br", "link", "show")
+	if err != nil {
+		return nil
+	}
+	return parseUpInterfaces(out)
+}
+
+func parseUpInterfaces(out string) map[string]bool {
+	up := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[1] == "UP" {
+			up[strings.TrimSuffix(f[0], ":")] = true
+		}
+	}
+	return up
 }
 
 // normalizeWeights scales raw link weights into the kernel range 1..256 while
