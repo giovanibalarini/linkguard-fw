@@ -304,6 +304,59 @@ func routeSignature(nhs []Nexthop) string {
 	return strings.Join(parts, ",")
 }
 
+// ─── WAN policy-routing bootstrap (replaces /etc/network/linkguard-routing.sh) ─
+
+const steerKey = "wan_steer"
+
+// SteerConfig is the per-secondary-WAN policy routing LinkGuard now owns on
+// startup (previously bootstrapped by an external script via rc.local): a
+// routing table with the WAN's default + the LAN route, plus an `ip rule` that
+// sends fwmark-tagged (host-steered) traffic to that table.
+type SteerConfig struct {
+	Enabled   bool   `json:"enabled"`
+	Mark      string `json:"mark"`      // e.g. "0x12c"
+	Table     string `json:"table"`     // rt_tables name or number, e.g. "sumicity"
+	Gateway   string `json:"gateway"`   // secondary WAN gateway
+	Interface string `json:"interface"` // secondary WAN interface
+	LanCIDR   string `json:"lan_cidr"`  // e.g. "192.168.3.0/24"
+	LanVia    string `json:"lan_via"`   // e.g. "192.168.3.3"
+	LanDev    string `json:"lan_dev"`   // e.g. "br10"
+	Priority  int    `json:"priority"`  // ip rule priority (default 32765)
+}
+
+// EnsureSteerRouting applies the host-steering policy routing idempotently. Safe
+// to call repeatedly (startup + reconcile). No-op unless a wan_steer setting is
+// present and enabled.
+func (s *Service) EnsureSteerRouting(ctx context.Context) {
+	raw, _ := s.db.GetSetting(steerKey)
+	if raw == "" {
+		return
+	}
+	var c SteerConfig
+	if json.Unmarshal([]byte(raw), &c) != nil || !c.Enabled || c.Table == "" {
+		return
+	}
+	if c.Gateway != "" && c.Interface != "" {
+		_, _ = s.exec.Execute(ctx, "ip", "route", "replace", "default",
+			"via", c.Gateway, "dev", c.Interface, "onlink", "table", c.Table)
+	}
+	if c.LanCIDR != "" && c.LanVia != "" && c.LanDev != "" {
+		_, _ = s.exec.Execute(ctx, "ip", "route", "replace", c.LanCIDR,
+			"via", c.LanVia, "dev", c.LanDev, "table", c.Table)
+	}
+	if c.Mark != "" {
+		out, _ := s.exec.ExecuteRead(ctx, "ip", "rule", "show")
+		// Rule lines look like: "32765:\tfrom all fwmark 0x12c lookup sumicity".
+		if !(strings.Contains(out, "fwmark "+c.Mark) && strings.Contains(out, "lookup "+c.Table)) {
+			args := []string{"rule", "add", "fwmark", c.Mark, "lookup", c.Table}
+			if c.Priority > 0 {
+				args = append(args, "priority", fmt.Sprintf("%d", c.Priority))
+			}
+			_, _ = s.exec.Execute(ctx, "ip", args...)
+		}
+	}
+}
+
 // OnLinkChange is the monitor callback used while in balance mode. Besides
 // rebuilding the route, it raises alerts on up/down/degraded transitions so the
 // notification channels (WhatsApp, e-mail, …) fire — otherwise a single link
@@ -341,9 +394,9 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.tick(ctx, time.Now())
-			// Reconcile the route to current link/interface state. This is what
-			// re-adds a link whose interface just came back up (a recovery that
-			// fires no probe-status event). No-op when nothing changed.
+			// Reconcile the host-steering policy routing (tables + ip rule) and
+			// the balanced default. Both are idempotent/no-op when unchanged.
+			s.EnsureSteerRouting(ctx)
 			_ = s.Rebuild(ctx)
 		}
 	}

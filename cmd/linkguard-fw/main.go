@@ -157,6 +157,10 @@ func run() int {
 		failoverSvc.HandleStatusChange(link, oldStatus, newStatus)
 	})
 
+	// Apply the WAN host-steering policy routing at startup (LinkGuard now owns
+	// this; it previously came from /etc/network/linkguard-routing.sh via rc.local).
+	balancerSvc.EnsureSteerRouting(ctx)
+
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)
