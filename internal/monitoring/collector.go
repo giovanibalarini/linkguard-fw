@@ -4,6 +4,7 @@ package monitoring
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
@@ -19,16 +20,20 @@ type Collector struct {
 	m         *metrics.Metrics
 	alertSvc  *alerts.Service
 	startTime time.Time
+
+	healthMu sync.Mutex
+	health   map[string]*itemState
 }
 
 // NewCollector creates a monitoring Collector.
 func NewCollector(db *storage.DB, m *metrics.Metrics, alertSvc *alerts.Service) *Collector {
 	return &Collector{
-		db:       db,
-		sysCol:   system.NewCollector(),
-		m:        m,
-		alertSvc: alertSvc,
+		db:        db,
+		sysCol:    system.NewCollector(),
+		m:         m,
+		alertSvc:  alertSvc,
 		startTime: time.Now(),
+		health:    map[string]*itemState{},
 	}
 }
 
