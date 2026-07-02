@@ -3,6 +3,7 @@ Description=LinkGuard FW - Linux Firewall Management Tool
 Documentation=https://github.com/giovanibalarini/linkguard-fw
 After=network.target
 Wants=network.target
+OnFailure=linkguard-notify-down.service
 
 [Service]
 Type=simple
