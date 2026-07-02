@@ -44,6 +44,19 @@ func TestObserveFlapDoesNotAlert(t *testing.T) {
 	}
 }
 
+func TestObserveDownAtStartupAlertsOnConfirm(t *testing.T) {
+	c := newTestCollector()
+	if tr := c.observe("svc:x", false, 1); tr != transNone {
+		t.Fatalf("first down (startup) should be transNone, got %v", tr)
+	}
+	if tr := c.observe("svc:x", false, 2); tr != transDown {
+		t.Fatalf("second consecutive down should fire transDown, got %v", tr)
+	}
+	if tr := c.observe("svc:x", true, 3); tr != transUp {
+		t.Fatalf("recovery should fire transUp, got %v", tr)
+	}
+}
+
 type fakeExec struct{ active map[string]bool }
 
 func (f *fakeExec) Execute(_ context.Context, _ string, _ ...string) (string, error) { return "", nil }
