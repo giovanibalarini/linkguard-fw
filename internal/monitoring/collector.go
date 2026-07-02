@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
+	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
@@ -19,21 +20,25 @@ type Collector struct {
 	sysCol    *system.Collector
 	m         *metrics.Metrics
 	alertSvc  *alerts.Service
+	exec      firewall.Executor
 	startTime time.Time
 
 	healthMu sync.Mutex
 	health   map[string]*itemState
+	nowFn    func() int64
 }
 
 // NewCollector creates a monitoring Collector.
-func NewCollector(db *storage.DB, m *metrics.Metrics, alertSvc *alerts.Service) *Collector {
+func NewCollector(db *storage.DB, m *metrics.Metrics, alertSvc *alerts.Service, exec firewall.Executor) *Collector {
 	return &Collector{
 		db:        db,
 		sysCol:    system.NewCollector(),
 		m:         m,
 		alertSvc:  alertSvc,
+		exec:      exec,
 		startTime: time.Now(),
 		health:    map[string]*itemState{},
+		nowFn:     func() int64 { return time.Now().Unix() },
 	}
 }
 
@@ -56,6 +61,8 @@ func (c *Collector) Run(ctx context.Context, interval time.Duration) {
 }
 
 func (c *Collector) collect() {
+	cfg := LoadConfig(c.db)
+
 	// Service uptime
 	c.m.ServiceUptime.Set(time.Since(c.startTime).Seconds())
 
@@ -83,6 +90,14 @@ func (c *Collector) collect() {
 		if sys.MemPercent > 90 {
 			_ = c.alertSvc.HighMemory(sys.MemPercent)
 		}
+
+		if cfg.Enabled {
+			c.checkDisk(cfg, sys.DiskPercent)
+		}
+	}
+
+	if cfg.Enabled {
+		c.checkServices(cfg)
 	}
 
 	// Link metrics
@@ -102,4 +117,8 @@ func (c *Collector) collect() {
 	// Unresolved alerts
 	n, _ := c.db.CountAlerts()
 	c.m.AlertsTotal.Set(float64(n))
+
+	if cfg.Enabled {
+		c.trackLinks()
+	}
 }

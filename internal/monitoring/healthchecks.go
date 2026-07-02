@@ -1,6 +1,7 @@
 package monitoring
 
 import (
+	"context"
 	"regexp"
 )
 
@@ -80,4 +81,77 @@ type HealthItem struct {
 	Kind  string `json:"kind"`
 	Up    bool   `json:"up"`
 	Since int64  `json:"since"`
+}
+
+// checkServices polls each configured service via systemctl and raises/clears
+// alerts on confirmed transitions.
+func (c *Collector) checkServices(cfg Config) {
+	now := c.nowFn()
+	for _, svc := range cfg.Services {
+		up := c.isActive(svc)
+		key := "service:" + svc
+		tr := c.observe(key, up, now)
+		c.ensureMeta(key, svc, "service")
+		switch tr {
+		case transDown:
+			_ = c.alertSvc.ServiceOffline(svc)
+		case transUp:
+			_ = c.alertSvc.ServiceOnline(svc)
+		}
+	}
+}
+
+// checkDisk observes disk usage against the configured threshold and
+// raises/clears alerts on confirmed transitions.
+func (c *Collector) checkDisk(cfg Config, pct float64) {
+	now := c.nowFn()
+	key := "resource:disk"
+	up := pct < float64(cfg.DiskThresholdPct) // "up" == healthy
+	tr := c.observe(key, up, now)
+	c.ensureMeta(key, "Disco", "resource")
+	switch tr {
+	case transDown:
+		_ = c.alertSvc.DiskFull(pct)
+	case transUp:
+		_ = c.alertSvc.DiskCleared(pct)
+	}
+}
+
+// trackLinks reflects link status into the health map for the dashboard. Link
+// UP/DOWN alerts stay owned by the monitor's OnStatusChange path (Task 9).
+func (c *Collector) trackLinks() {
+	links, err := c.db.GetLinks()
+	if err != nil {
+		return
+	}
+	now := c.nowFn()
+	for _, l := range links {
+		key := "link:" + l.ID
+		c.observe(key, l.Status == "online", now)
+		c.ensureMeta(key, l.Name, "link")
+	}
+}
+
+// ensureMeta sets the display name/kind on an item the first time we see it.
+func (c *Collector) ensureMeta(key, name, kind string) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	if st := c.health[key]; st != nil {
+		if st.name == "" {
+			st.name = name
+		}
+		if st.kind == "" {
+			st.kind = kind
+		}
+	}
+}
+
+// isActive reports whether a systemd unit is active. The service name is
+// validated against serviceNameRe before reaching the shell (defense-in-depth).
+func (c *Collector) isActive(svc string) bool {
+	if !serviceNameRe.MatchString(svc) {
+		return false
+	}
+	_, err := c.exec.ExecuteRead(context.Background(), "systemctl", "is-active", svc)
+	return err == nil
 }

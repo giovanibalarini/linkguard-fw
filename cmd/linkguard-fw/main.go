@@ -132,7 +132,7 @@ func run() int {
 
 	promReg := prometheus.NewRegistry()
 	appMetrics := metrics.New(promReg)
-	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc)
+	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec)
 
 	server := api.New(api.Config{
 		Addr:    cfg.Addr(),
