@@ -113,6 +113,24 @@ func (s *Service) Notify(severity, title, message string) {
 	go s.dispatch(cfg, severity, title, message)
 }
 
+// NotifyRecovery delivers a "recovered" notice asynchronously, bypassing the
+// min-severity gate: a recovery only fires after a matching outage already
+// notified, so the user must always get the "voltou" even at min_severity=warning.
+func (s *Service) NotifyRecovery(title, message string) {
+	cfg := s.LoadConfig()
+	go s.dispatch(cfg, "info", title, message)
+}
+
+// SendNow delivers synchronously and returns per-channel errors. Use it from
+// short-lived contexts (CLI / systemd OnFailure) where the process exits before
+// an async goroutine could run.
+func (s *Service) SendNow(severity, title, message string) []error {
+	cfg := s.LoadConfig()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return s.send(ctx, cfg, severity, title, message)
+}
+
 func (s *Service) dispatch(cfg Config, severity, title, message string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
