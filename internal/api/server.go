@@ -26,6 +26,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
+	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
@@ -59,6 +60,7 @@ type Server struct {
 	sysCol      *system.Collector
 	rrdSvc      *trafficrrd.Service
 	promReg     *prometheus.Registry
+	mon         *monitoring.Collector
 	webFS       embed.FS
 }
 
@@ -77,7 +79,8 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
 	vpnSvc *wireguard.Service, notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
-	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry) *Server {
+	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry,
+	mon *monitoring.Collector) *Server {
 
 	s := &Server{
 		db:          db,
@@ -98,6 +101,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
+		mon:         mon,
 		webFS:       cfg.WebFS,
 	}
 
@@ -243,6 +247,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		alertsH := handlers.NewAlertsHandler(s.alertSvc)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/alerts", alertsH.List)
 		r.With(require(auth.PermMonitoringRead)).Put("/api/alerts/{id}/resolve", alertsH.Resolve)
+
+		// Monitoring (Vigia health snapshot + config)
+		monH := handlers.NewMonitoringHandler(s.mon, s.db)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/health", monH.Health)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/config", monH.GetConfig)
+		r.With(require(auth.PermSystemWrite)).Put("/api/monitoring/config", monH.SetConfig)
 
 		// Notification channels (webhook/Telegram/e-mail)
 		notifyH := handlers.NewNotifyHandler(s.db, s.notifySvc)
