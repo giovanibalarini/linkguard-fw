@@ -373,3 +373,8 @@ export interface TrafficHistoryResponse {
 export interface TrafficRetentionResponse {
   profile: '30d' | '1y' | '5y';
 }
+
+// ─── Monitoring (Vigia) ──────────────────────────────────────────────────────
+
+export interface HealthItem { name: string; kind: 'service' | 'link' | 'resource'; up: boolean; since: number; }
+export interface MonitoringConfig { enabled: boolean; services: string[]; disk_threshold_pct: number; }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Settings as SettingsIcon, Info, Database, Bell, ShieldCheck, Download, RefreshCw } from 'lucide-react';
 import client from '../api/client';
 import NotificationSettings from '../components/NotificationSettings';
+import MonitoringSettings from '../components/MonitoringSettings';
 import TwoFactorSettings from '../components/TwoFactorSettings';
 import HttpsInfo from '../components/HttpsInfo';
 import BackupRestore from '../components/BackupRestore';
@@ -227,7 +228,12 @@ export default function Settings() {
             </div>
           )}
 
-          {activeSection === 'notifications' && <NotificationSettings />}
+          {activeSection === 'notifications' && (
+            <div className="space-y-6">
+              <NotificationSettings />
+              <MonitoringSettings />
+            </div>
+          )}
 
           {activeSection === 'backup' && <BackupRestore />}
 

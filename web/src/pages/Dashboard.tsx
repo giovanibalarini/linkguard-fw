@@ -3,6 +3,7 @@ import { Cpu, MemoryStick, HardDrive, Clock, Wifi, AlertTriangle, Activity, Serv
 import MetricCard, { ProgressCard } from '../components/MetricCard';
 import GettingStarted from '../components/GettingStarted';
 import Recipes from '../components/Recipes';
+import SystemHealth from '../components/SystemHealth';
 import StatusBadge from '../components/StatusBadge';
 import { AlertBadge } from '../components/StatusBadge';
 import client from '../api/client';
@@ -71,6 +72,9 @@ export default function Dashboard() {
 
       {/* Task recipes — "what do you want to do?" entry point for everyday tasks */}
       <Recipes />
+
+      {/* Vigia — glanceable health of core services/links/resources */}
+      <SystemHealth />
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
