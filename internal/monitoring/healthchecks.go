@@ -37,8 +37,14 @@ func (c *Collector) observe(key string, up bool, now int64) transition {
 	defer c.healthMu.Unlock()
 	st := c.health[key]
 	if st == nil {
-		st = &itemState{up: up, since: now, known: true}
-		c.health[key] = st
+		if !up {
+			// Born down (e.g. service dead at startup): seed as up with one failure
+			// so the next confirming tick fires the outage, instead of silently
+			// treating "already down" as steady state and never alerting.
+			c.health[key] = &itemState{up: true, since: now, failCount: 1, known: true}
+			return transNone
+		}
+		c.health[key] = &itemState{up: up, since: now, known: true}
 		return transNone
 	}
 	if up {
