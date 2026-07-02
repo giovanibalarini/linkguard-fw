@@ -2,8 +2,13 @@ package stresstest
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
+	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 func TestFinalizeSummary(t *testing.T) {
@@ -54,5 +59,66 @@ func TestSnapshotEmptySamplesNotNil(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"samples":[]`) {
 		t.Errorf(`expected "samples":[] in JSON, got: %s`, b)
+	}
+}
+
+func newTestServiceWithAlerts(t *testing.T) (*Service, *storage.DB) {
+	t.Helper()
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	s := &Service{exec: firewall.NewDryRunExecutor(), alertSvc: alerts.NewService(db)}
+	return s, db
+}
+
+func countAlertsOfType(alerts []storage.Alert, typ string) int {
+	n := 0
+	for _, a := range alerts {
+		if a.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+func TestApplyFaultRaisesOutageAlert(t *testing.T) {
+	s, db := newTestServiceWithAlerts(t)
+	t2 := &Test{Mode: ModeOutage, LinkName: "WAN VIVO", LinkID: "id1", Interface: "eth0"}
+
+	s.applyFault(t2)
+
+	got, err := db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	if n := countAlertsOfType(got, alerts.TypeLinkOffline); n != 1 {
+		t.Errorf("link_offline alerts = %d, want 1 (all: %+v)", n, got)
+	}
+
+	s.restore(t2, "")
+
+	got, err = db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	if n := countAlertsOfType(got, alerts.TypeLinkOnline); n != 1 {
+		t.Errorf("link_online alerts = %d, want 1 (all: %+v)", n, got)
+	}
+}
+
+func TestApplyFaultDegradeRaisesDegradedAlert(t *testing.T) {
+	s, db := newTestServiceWithAlerts(t)
+	t2 := &Test{Mode: ModeDegrade, LinkName: "WAN Claro", LinkID: "id2", Interface: "eth1"}
+
+	s.applyFault(t2)
+
+	got, err := db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	if n := countAlertsOfType(got, alerts.TypeLinkDegraded); n != 1 {
+		t.Errorf("link_degraded alerts = %d, want 1 (all: %+v)", n, got)
 	}
 }

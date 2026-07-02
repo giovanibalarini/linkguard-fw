@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 )
@@ -73,8 +74,9 @@ type Test struct {
 
 // Service runs one stress test at a time.
 type Service struct {
-	exec    firewall.Executor
-	linkSvc *links.Service
+	exec     firewall.Executor
+	linkSvc  *links.Service
+	alertSvc *alerts.Service
 
 	mu     sync.Mutex
 	active *Test
@@ -84,12 +86,13 @@ type Service struct {
 }
 
 // NewService creates a stress-test Service.
-func NewService(exec firewall.Executor, linkSvc *links.Service) *Service {
+func NewService(exec firewall.Executor, linkSvc *links.Service, alertSvc *alerts.Service) *Service {
 	return &Service{
-		exec:    exec,
-		linkSvc: linkSvc,
-		nowFn:   func() string { return time.Now().Format("15:04:05") },
-		nextID:  func() string { return time.Now().UTC().Format("20060102T150405") },
+		exec:     exec,
+		linkSvc:  linkSvc,
+		alertSvc: alertSvc,
+		nowFn:    func() string { return time.Now().Format("15:04:05") },
+		nextID:   func() string { return time.Now().UTC().Format("20060102T150405") },
 	}
 }
 
@@ -278,6 +281,13 @@ func bg() (context.Context, context.CancelFunc) {
 func (s *Service) applyFault(t *Test) {
 	ctx, cancel := bg()
 	defer cancel()
+	if s.alertSvc != nil {
+		if t.Mode == ModeOutage {
+			_ = s.alertSvc.LinkOffline(t.LinkName, t.LinkID)
+		} else {
+			_ = s.alertSvc.LinkDegraded(t.LinkName, t.LinkID)
+		}
+	}
 	if t.Mode == ModeOutage {
 		_, _ = s.exec.Execute(ctx, "ip", "link", "set", t.Interface, "down")
 		return
@@ -306,6 +316,9 @@ func (s *Service) restore(t *Test, origFlat string) {
 	if origFlat != "" {
 		args := append([]string{"route", "replace"}, strings.Fields(origFlat)...)
 		_, _ = s.exec.Execute(ctx, "ip", args...)
+	}
+	if s.alertSvc != nil {
+		_ = s.alertSvc.LinkOnline(t.LinkName, t.LinkID)
 	}
 }
 
