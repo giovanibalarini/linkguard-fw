@@ -1,0 +1,6 @@
+[Unit]
+Description=LinkGuard FW - send outage notification when the main service fails
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/linkguard-fw --notify-down --config /etc/linkguard-fw/config.json

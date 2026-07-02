@@ -53,6 +53,7 @@ func run() int {
 	dryRun := flag.Bool("dry-run", false, "Run in dry-run mode")
 	debug := flag.Bool("debug", false, "Enable debug logs")
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	notifyDown := flag.Bool("notify-down", false, "Send a 'service down' notification and exit (systemd OnFailure)")
 	flag.Parse()
 
 	if *showVersion {
@@ -89,6 +90,20 @@ func run() int {
 		level = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+
+	if *notifyDown {
+		db, err := storage.Open(cfg.DBPath)
+		if err == nil {
+			defer db.Close()
+			for _, e := range notify.NewService(db).SendNow("critical",
+				"LinkGuard caiu", "O serviço linkguard-fw parou inesperadamente no firewall.") {
+				if e != nil {
+					slog.Warn("notify-down send failed", "err", e)
+				}
+			}
+		}
+		return 0
+	}
 
 	db, err := storage.Open(cfg.DBPath)
 	if err != nil {

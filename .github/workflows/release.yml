@@ -93,6 +93,7 @@ jobs:
             chmod 0755 "${PKG_DIR}/usr/local/bin/linkguard-fw"
 
             cp deploy/linkguard-fw.service "${PKG_DIR}/lib/systemd/system/linkguard-fw.service"
+            cp deploy/linkguard-notify-down.service "${PKG_DIR}/lib/systemd/system/linkguard-notify-down.service"
 
             cat > "${PKG_DIR}/DEBIAN/control" <<EOF
             Package: linkguard-fw
