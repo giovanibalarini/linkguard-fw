@@ -107,19 +107,20 @@ func (c *Collector) checkServices(cfg Config) {
 	}
 }
 
-// checkDisk observes disk usage against the configured threshold and
-// raises/clears alerts on confirmed transitions.
-func (c *Collector) checkDisk(cfg Config, pct float64) {
+// checkResource applies transition + anti-flap alerting to a host resource
+// (cpu / memory / disk). "up" means healthy (below the threshold); crossing the
+// threshold fires `high` once, and dropping back below fires `normal`. Because
+// observe() requires two consecutive over-threshold readings, a one-tick spike
+// (e.g. the CPU burst during boot) is suppressed instead of spamming.
+func (c *Collector) checkResource(key, name string, pct float64, thresholdPct int, high, normal func(float64) error) {
 	now := c.nowFn()
-	key := "resource:disk"
-	up := pct < float64(cfg.DiskThresholdPct) // "up" == healthy
-	tr := c.observe(key, up, now)
-	c.ensureMeta(key, "Disco", "resource")
+	tr := c.observe(key, pct < float64(thresholdPct), now)
+	c.ensureMeta(key, name, "resource")
 	switch tr {
 	case transDown:
-		_ = c.alertSvc.DiskFull(pct)
+		_ = high(pct)
 	case transUp:
-		_ = c.alertSvc.DiskCleared(pct)
+		_ = normal(pct)
 	}
 }
 

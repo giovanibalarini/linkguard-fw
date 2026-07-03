@@ -169,6 +169,20 @@ func (s *Service) HighMemory(percent float64) error {
 		fmt.Sprintf("Memory usage is at %.1f%%.", percent), "")
 }
 
+// CPUNormal clears the high-CPU alert and notifies recovery.
+func (s *Service) CPUNormal(percent float64) error {
+	s.AutoResolve(TypeHighCPU, "")
+	return s.createRecovery(TypeHighCPU, "CPU normalizada",
+		fmt.Sprintf("Uso de CPU voltou a %.1f%%.", percent), "")
+}
+
+// MemoryNormal clears the high-memory alert and notifies recovery.
+func (s *Service) MemoryNormal(percent float64) error {
+	s.AutoResolve(TypeHighMemory, "")
+	return s.createRecovery(TypeHighMemory, "Memória normalizada",
+		fmt.Sprintf("Uso de memória voltou a %.1f%%.", percent), "")
+}
+
 // List returns recent alerts.
 func (s *Service) List(unresolvedOnly bool, limit int) ([]storage.Alert, error) {
 	return s.db.GetAlerts(unresolvedOnly, limit)
