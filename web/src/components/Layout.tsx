@@ -56,6 +56,7 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/settings', label: 'nav.settings', icon: Settings, perm: ['system.read'] },
       { to: '/admin', label: 'nav.admin', icon: Users, perm: ['users.manage', 'roles.manage'] },
+      { to: '/changelog', label: 'nav.changelog', icon: Sparkles, perm: ['dashboard.read'] },
     ],
   },
 ];
