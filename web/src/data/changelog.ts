@@ -13,6 +13,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.58',
+    date: '2026-07-03',
+    title: 'Alertas mais silenciosos',
+    changes: [
+      { type: 'fix', text: 'CPU, memória e disco agora avisam uma vez ao passar do limite (e quando normaliza), em vez de repetir a cada minuto — sem encher o WhatsApp.' },
+    ],
+  },
+  {
     version: '1.0.57',
     date: '2026-07-03',
     title: 'Página de novidades',
