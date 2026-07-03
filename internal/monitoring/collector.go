@@ -83,16 +83,18 @@ func (c *Collector) collect() {
 			c.m.InterfaceTxPkts.WithLabelValues(iface.Name).Set(float64(iface.TxPackets))
 		}
 
-		// Threshold alerts
-		if sys.CPUPercent > 90 {
-			_ = c.alertSvc.HighCPU(sys.CPUPercent)
-		}
-		if sys.MemPercent > 90 {
-			_ = c.alertSvc.HighMemory(sys.MemPercent)
-		}
-
+		// Resource threshold alerts — transition-based with anti-flap (fire once
+		// on crossing, recover once, transient spikes suppressed) instead of
+		// re-firing every tick while over the threshold.
+		//
+		// Gated by cfg.Enabled — the "Me avise de qualquer queda" master toggle.
+		// By product decision it is a single switch: turning it off silences ALL
+		// alerts (services, links AND the box's own cpu/mem/disk), for the
+		// simplest mental model. Default is on.
 		if cfg.Enabled {
-			c.checkDisk(cfg, sys.DiskPercent)
+			c.checkResource("resource:cpu", "CPU", sys.CPUPercent, 90, c.alertSvc.HighCPU, c.alertSvc.CPUNormal)
+			c.checkResource("resource:mem", "Memória", sys.MemPercent, 90, c.alertSvc.HighMemory, c.alertSvc.MemoryNormal)
+			c.checkResource("resource:disk", "Disco", sys.DiskPercent, cfg.DiskThresholdPct, c.alertSvc.DiskFull, c.alertSvc.DiskCleared)
 		}
 	}
 

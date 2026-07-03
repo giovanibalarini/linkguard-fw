@@ -104,3 +104,61 @@ func seqClock() func() int64 {
 	var n int64
 	return func() int64 { n++; return n }
 }
+
+func TestCheckResourceTransitionAlertsOnce(t *testing.T) {
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+
+	c.checkResource("resource:cpu", "CPU", 10, 90, as.HighCPU, as.CPUNormal) // healthy (first sighting)
+	c.checkResource("resource:cpu", "CPU", 95, 90, as.HighCPU, as.CPUNormal) // 1st over -> suppressed
+	c.checkResource("resource:cpu", "CPU", 95, 90, as.HighCPU, as.CPUNormal) // 2nd over -> alert
+	c.checkResource("resource:cpu", "CPU", 95, 90, as.HighCPU, as.CPUNormal) // still over -> no repeat
+
+	al, _ := db.GetAlerts(false, 0)
+	n := 0
+	for _, a := range al {
+		if a.Type == alerts.TypeHighCPU && a.Severity == alerts.SeverityWarning {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 high_cpu warning alert, got %d", n)
+	}
+}
+
+func TestCheckResourceBootSpikeSuppressed(t *testing.T) {
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+
+	c.checkResource("resource:cpu", "CPU", 10, 90, as.HighCPU, as.CPUNormal) // healthy
+	c.checkResource("resource:cpu", "CPU", 99, 90, as.HighCPU, as.CPUNormal) // one-tick spike
+	c.checkResource("resource:cpu", "CPU", 10, 90, as.HighCPU, as.CPUNormal) // back to healthy
+
+	al, _ := db.GetAlerts(false, 0)
+	if len(al) != 0 {
+		t.Fatalf("a one-tick boot spike must not alert, got %d alerts", len(al))
+	}
+}
+
+func TestCheckResourceDiskPolarity(t *testing.T) {
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+
+	c.checkResource("resource:disk", "Disco", 50, 90, as.DiskFull, as.DiskCleared) // healthy
+	c.checkResource("resource:disk", "Disco", 95, 90, as.DiskFull, as.DiskCleared) // 1st over -> suppressed
+	c.checkResource("resource:disk", "Disco", 95, 90, as.DiskFull, as.DiskCleared) // 2nd over -> disk_full
+
+	al, _ := db.GetAlerts(false, 0)
+	full := 0
+	for _, a := range al {
+		if a.Type == alerts.TypeDiskFull && a.Severity == alerts.SeverityCritical {
+			full++
+		}
+	}
+	if full != 1 {
+		t.Fatalf("expected 1 disk_full critical alert, got %d", full)
+	}
+}
