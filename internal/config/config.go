@@ -32,11 +32,16 @@ type Config struct {
 	// Monitoring
 	MonitorInterval int `json:"monitor_interval_seconds"`
 
+	// Link health probing (drives the link Monitor, decoupled from the metrics
+	// collector which stays on MonitorInterval).
+	ProbeIntervalSeconds int `json:"probe_interval_seconds"` // link health probe cadence
+	ProbeCount           int `json:"probe_count"`            // probes per host per tick
+
 	// Failover
-	FailoverEnabled       bool `json:"failover_enabled"`
-	FailThreshold         int  `json:"fail_threshold"`
-	RecoverThreshold      int  `json:"recover_threshold"`
-	FailoverCooldownSecs  int  `json:"failover_cooldown_seconds"`
+	FailoverEnabled      bool `json:"failover_enabled"`
+	FailThreshold        int  `json:"fail_threshold"`
+	RecoverThreshold     int  `json:"recover_threshold"`
+	FailoverCooldownSecs int  `json:"failover_cooldown_seconds"`
 
 	// Log file
 	LogFile string `json:"log_file"`
@@ -55,6 +60,8 @@ func Default() *Config {
 		DryRun:               true,
 		Debug:                false,
 		MonitorInterval:      30,
+		ProbeIntervalSeconds: 10,
+		ProbeCount:           3,
 		FailoverEnabled:      true,
 		FailThreshold:        3,
 		RecoverThreshold:     2,

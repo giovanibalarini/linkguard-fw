@@ -42,6 +42,9 @@ const (
 	defaultTable    = "main"
 	defaultArmSecs  = 90
 	maxKernelWeight = 256 // Linux multipath nexthop weight range is 1..256.
+
+	defaultSustainSamples    = 3   // consecutive degraded checks before eviction
+	defaultEvictCooldownSecs = 120 // min gap between evictions per link
 )
 
 // ModeFailover keeps the balancer inactive (legacy behaviour).
@@ -67,6 +70,15 @@ type Config struct {
 	Table      string     `json:"table"`
 	ArmSeconds int        `json:"arm_seconds"`
 	Schedules  []Schedule `json:"schedules"`
+
+	// Active flow eviction: when a link stays degraded for
+	// DegradedSustainSamples consecutive health checks, drop its in-flight
+	// conntrack flows so established connections (a video call) re-hash onto a
+	// healthy WAN instead of staying pinned to the bad one. OFF by default —
+	// eviction resets those connections (they reconnect on the good link).
+	EvictOnDegrade         bool `json:"evict_on_degrade"`
+	DegradedSustainSamples int  `json:"degraded_sustain_samples"` // checks before acting
+	EvictCooldownSecs      int  `json:"evict_cooldown_seconds"`   // min gap between evictions/link
 }
 
 func (c *Config) normalize() {
@@ -78,6 +90,12 @@ func (c *Config) normalize() {
 	}
 	if c.ArmSeconds <= 0 {
 		c.ArmSeconds = defaultArmSecs
+	}
+	if c.DegradedSustainSamples <= 0 {
+		c.DegradedSustainSamples = defaultSustainSamples
+	}
+	if c.EvictCooldownSecs <= 0 {
+		c.EvictCooldownSecs = defaultEvictCooldownSecs
 	}
 	// Never expose a nil slice: it marshals to JSON null and crashes clients
 	// that read schedules.length / .map directly.
@@ -134,11 +152,18 @@ type Service struct {
 
 	rebuildMu sync.Mutex
 	lastSig   string // signature of the last-applied nexthop set (skip no-op rebuilds)
+
+	evictMu       sync.Mutex
+	evictCooldown map[string]time.Time // link ID -> next allowed eviction time
 }
 
 // NewService creates a balancer Service.
 func NewService(db *storage.DB, exec firewall.Executor, linkSvc *links.Service, alertSvc *alerts.Service) *Service {
-	return &Service{db: db, exec: exec, linkSvc: linkSvc, alertSvc: alertSvc, lastFired: map[string]string{}}
+	return &Service{
+		db: db, exec: exec, linkSvc: linkSvc, alertSvc: alertSvc,
+		lastFired:     map[string]string{},
+		evictCooldown: map[string]time.Time{},
+	}
 }
 
 // LoadConfig reads the persisted configuration (with defaults applied).
@@ -446,6 +471,114 @@ func (s *Service) OnLinkChange(link *storage.Link, oldStatus, newStatus string) 
 	if err := s.Rebuild(ctx); err != nil {
 		slog.Warn("balancer: rebuild on link change failed", "link", link.Name, "err", err)
 	}
+}
+
+// ─── active flow eviction ────────────────────────────────────────────────────
+
+// evictDecision reports whether an eviction should proceed for a degraded link,
+// applying the three guards: the EvictOnDegrade toggle, the per-link cooldown,
+// and the presence of a healthy (online) alternative to move flows onto.
+func evictDecision(cfg Config, degraded storage.Link, all []storage.Link, cooldownUntil, now time.Time) (bool, string) {
+	if !cfg.EvictOnDegrade {
+		return false, "eviction disabled"
+	}
+	if now.Before(cooldownUntil) {
+		return false, "cooldown active"
+	}
+	for _, l := range all {
+		if l.ID == degraded.ID {
+			continue
+		}
+		if l.Enabled && l.Status == links.StatusOnline {
+			return true, ""
+		}
+	}
+	return false, "no healthy alternative"
+}
+
+// EvictDegraded drops the in-flight conntrack flows of a link that has been
+// degraded for the sustained threshold, so established connections (a video
+// call) re-hash onto a healthy WAN instead of staying pinned to the bad one.
+// It is edge-triggered by the monitor and no-ops unless balance mode is active
+// and all guards in evictDecision pass. Eviction resets the affected NAT'd
+// connections; they reconnect on the healthy link.
+func (s *Service) EvictDegraded(ctx context.Context, link *storage.Link) {
+	if link == nil {
+		return
+	}
+	cfg := s.LoadConfig()
+	if cfg.Mode != ModeBalance {
+		return
+	}
+	all, err := s.db.GetLinks()
+	if err != nil {
+		slog.Warn("evict: get links", "err", err)
+		return
+	}
+
+	s.evictMu.Lock()
+	until := s.evictCooldown[link.ID]
+	s.evictMu.Unlock()
+
+	if proceed, reason := evictDecision(cfg, *link, all, until, time.Now()); !proceed {
+		slog.Info("evict: skipped", "link", link.Name, "reason", reason)
+		return
+	}
+
+	// Demote the degraded link first (idempotent) so flows re-hashed by the flush
+	// don't land back on it.
+	if err := s.Rebuild(ctx); err != nil {
+		slog.Warn("evict: rebuild before flush failed", "link", link.Name, "err", err)
+	}
+
+	ip := s.interfaceIPv4(ctx, link.Interface)
+	if ip == "" {
+		slog.Warn("evict: no IPv4 for interface, aborting flush", "link", link.Name, "iface", link.Interface)
+		return
+	}
+
+	// Flows egressing this WAN are masqueraded to its IP, so their conntrack reply
+	// destination is that IP: -q targets exactly those flows, not a global flush.
+	// conntrack -D exits non-zero when nothing matched — not a real error here.
+	if _, err := s.exec.Execute(ctx, "conntrack", "-D", "-q", ip); err != nil {
+		slog.Info("evict: conntrack flush returned non-zero (often 'nothing to delete')",
+			"link", link.Name, "ip", ip, "err", err)
+	}
+
+	s.evictMu.Lock()
+	s.evictCooldown[link.ID] = time.Now().Add(time.Duration(cfg.EvictCooldownSecs) * time.Second)
+	s.evictMu.Unlock()
+
+	_ = s.alertSvc.Failover(link.Name, "conexões migradas de link degradado")
+	slog.Info("evict: flushed flows from degraded link", "link", link.Name, "ip", ip)
+}
+
+// interfaceIPv4 returns the first global IPv4 address configured on iface, or ""
+// if none (or the lookup fails).
+func (s *Service) interfaceIPv4(ctx context.Context, iface string) string {
+	out, err := s.exec.ExecuteRead(ctx, "ip", "-o", "-4", "addr", "show", "dev", iface, "scope", "global")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return ""
+	}
+	return parseInterfaceIPv4(out)
+}
+
+// parseInterfaceIPv4 extracts the first "inet <addr>/<prefix>" address from the
+// output of `ip -o -4 addr show`, returning the bare address (no prefix).
+func parseInterfaceIPv4(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		for i := 0; i+1 < len(f); i++ {
+			if f[i] == "inet" {
+				addr := f[i+1]
+				if slash := strings.IndexByte(addr, '/'); slash >= 0 {
+					addr = addr[:slash]
+				}
+				return addr
+			}
+		}
+	}
+	return ""
 }
 
 // ─── scheduled rebalancing ───────────────────────────────────────────────────

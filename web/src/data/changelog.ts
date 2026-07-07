@@ -13,6 +13,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.59',
+    date: '2026-07-07',
+    title: 'Reação mais rápida a link ruim (balanceamento)',
+    changes: [
+      { type: 'fix', text: 'A vigilância das internets ficou mais rápida e precisa: testa a cada 10 segundos com várias medições, pegando oscilações curtas (ping alto por poucos segundos) que antes passavam batido.' },
+      { type: 'feat', text: 'Novo: quando um link fica ruim (ping alto/oscilando) por alguns segundos seguidos, o LinkGuard pode migrar na hora as conexões ativas dele para uma internet saudável — ideal para chamadas de vídeo que estavam travando. Ative em Rotas → Balanceamento (vem desligado por padrão).' },
+    ],
+  },
+  {
     version: '1.0.58',
     date: '2026-07-03',
     title: 'Alertas mais silenciosos',

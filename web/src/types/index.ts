@@ -323,6 +323,9 @@ export interface BalanceConfig {
   table: string;
   arm_seconds: number;
   schedules: BalanceSchedule[];
+  evict_on_degrade: boolean;
+  degraded_sustain_samples: number;
+  evict_cooldown_seconds: number;
 }
 
 export interface BalancePlan {

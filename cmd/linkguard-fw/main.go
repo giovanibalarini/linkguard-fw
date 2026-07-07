@@ -161,7 +161,11 @@ func run() int {
 	defer stop()
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
-	monitor := links.NewMonitor(db, linkSvc, interval)
+	// The link health probe runs on its own (faster) cadence, decoupled from the
+	// metrics collector, and sends several probes per host so packet loss/latency
+	// are real averages instead of a single pass/fail.
+	probeInterval := time.Duration(cfg.ProbeIntervalSeconds) * time.Second
+	monitor := links.NewMonitor(db, linkSvc, probeInterval, cfg.ProbeCount)
 	// On a link state change, balance mode rebuilds the weighted multipath
 	// default route; otherwise the legacy per-table failover handles it.
 	monitor.OnStatusChange(func(link *storage.Link, oldStatus, newStatus string) {
@@ -170,6 +174,15 @@ func run() int {
 			return
 		}
 		failoverSvc.HandleStatusChange(link, oldStatus, newStatus)
+	})
+	// A link that stays degraded past the admin-configured threshold triggers
+	// active flow eviction (balance mode only; itself gated by a toggle). The
+	// threshold is read live so UI changes take effect without a restart.
+	monitor.SustainThreshold(func() int { return balancerSvc.LoadConfig().DegradedSustainSamples })
+	monitor.OnDegradedSustained(func(link *storage.Link) {
+		if balancerSvc.Active() {
+			balancerSvc.EvictDegraded(ctx, link)
+		}
 	})
 
 	// Enable IPv4 forwarding so the box can route between LAN and WAN; it

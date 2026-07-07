@@ -31,10 +31,13 @@ type CheckResult struct {
 
 // Monitor periodically checks link connectivity and updates link status.
 type Monitor struct {
-	db             *storage.DB
-	svc            *Service
-	interval       time.Duration
-	onStatusChange func(link *storage.Link, oldStatus, newStatus string)
+	db                  *storage.DB
+	svc                 *Service
+	interval            time.Duration
+	probeCount          int
+	onStatusChange      func(link *storage.Link, oldStatus, newStatus string)
+	onDegradedSustained func(link *storage.Link)
+	sustainThreshold    func() int
 
 	mu     sync.Mutex
 	states map[string]*linkState // key = link ID
@@ -43,23 +46,122 @@ type Monitor struct {
 type linkState struct {
 	consecutiveFails     int
 	consecutiveSuccesses int
+	consecutiveDegraded  int
+	degradedEpisodeFired bool // true once a sustained episode has fired
 	lastStatus           string
 	cooldownUntil        time.Time
 }
 
-// NewMonitor creates a new Monitor.
-func NewMonitor(db *storage.DB, svc *Service, interval time.Duration) *Monitor {
+// NewMonitor creates a new Monitor. probeCount is how many connectivity probes
+// are sent per host per tick (≥1); more probes yield finer packet-loss/latency.
+func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount int) *Monitor {
+	if probeCount < 1 {
+		probeCount = 1
+	}
 	return &Monitor{
-		db:       db,
-		svc:      svc,
-		interval: interval,
-		states:   make(map[string]*linkState),
+		db:         db,
+		svc:        svc,
+		interval:   interval,
+		probeCount: probeCount,
+		states:     make(map[string]*linkState),
 	}
 }
 
 // OnStatusChange registers a callback invoked when a link changes status.
 func (m *Monitor) OnStatusChange(fn func(link *storage.Link, oldStatus, newStatus string)) {
 	m.onStatusChange = fn
+}
+
+// OnDegradedSustained registers an edge-triggered callback invoked once per
+// degradation episode, when a link has been continuously degraded for
+// SustainThreshold() consecutive checks. Used to trigger active flow eviction.
+func (m *Monitor) OnDegradedSustained(fn func(link *storage.Link)) {
+	m.onDegradedSustained = fn
+}
+
+// SustainThreshold sets the provider for the number of consecutive degraded
+// checks required before OnDegradedSustained fires. Read at evaluation time so
+// the value always reflects the admin's current setting. A nil provider (or a
+// value ≤ 0) is treated as 1.
+func (m *Monitor) SustainThreshold(fn func() int) {
+	m.sustainThreshold = fn
+}
+
+func (m *Monitor) sustainN() int {
+	if m.sustainThreshold == nil {
+		return 1
+	}
+	return m.sustainThreshold()
+}
+
+// summarize computes average latency (ms, over successful probes only) and
+// packet loss (%) across all probe samples. Zero samples or all-failures yield
+// 0 latency and 100% loss.
+func summarize(results []CheckResult) (avgLatencyMs, packetLossPct float64) {
+	if len(results) == 0 {
+		return 0, 100.0
+	}
+	var total time.Duration
+	success := 0
+	for _, r := range results {
+		if r.Success {
+			success++
+			total += r.Latency
+		}
+	}
+	if success == 0 {
+		return 0, 100.0
+	}
+	avg := float64(total/time.Duration(success)) / float64(time.Millisecond)
+	loss := float64(len(results)-success) / float64(len(results)) * 100
+	return avg, loss
+}
+
+// advance feeds one sample's classification into the link's state machine and
+// returns the resulting status plus whether a sustained-degradation episode was
+// just triggered (edge-triggered: once per episode, when consecutiveDegraded
+// first reaches sustainThreshold). A sustainThreshold ≤ 0 is treated as 1.
+func (st *linkState) advance(reachable, degradedNow bool, prevStatus string, sustainThreshold int) (newStatus string, fireSustained bool) {
+	if sustainThreshold < 1 {
+		sustainThreshold = 1
+	}
+
+	switch {
+	case !reachable:
+		st.consecutiveFails++
+		st.consecutiveSuccesses = 0
+		st.consecutiveDegraded = 0
+		st.degradedEpisodeFired = false
+	case degradedNow:
+		st.consecutiveFails = 0
+		st.consecutiveSuccesses = 0
+		st.consecutiveDegraded++
+	default:
+		st.consecutiveFails = 0
+		st.consecutiveSuccesses++
+		st.consecutiveDegraded = 0
+		st.degradedEpisodeFired = false
+	}
+
+	if degradedNow && st.consecutiveDegraded >= sustainThreshold && !st.degradedEpisodeFired {
+		st.degradedEpisodeFired = true
+		fireSustained = true
+	}
+
+	switch {
+	case st.consecutiveFails >= probeFailThreshold:
+		newStatus = StatusOffline
+	case degradedNow:
+		newStatus = StatusDegraded
+	case st.consecutiveSuccesses >= probeRecoverThreshold:
+		newStatus = StatusOnline
+	default:
+		newStatus = prevStatus
+		if newStatus == "" {
+			newStatus = StatusUnknown
+		}
+	}
+	return newStatus, fireSustained
 }
 
 // Run starts the monitoring loop and blocks until ctx is cancelled.
@@ -109,22 +211,17 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 		hosts = []string{l.DNSTest}
 	}
 
-	var totalLatency time.Duration
-	successCount := 0
+	// Send probeCount probes per host per tick, so packet loss and latency are
+	// real averages over len(hosts)×probeCount samples instead of a single
+	// pass/fail per host. Finer sampling catches short jitter/loss bursts that a
+	// lone probe would miss (a flukey success masking a bad link).
+	results := make([]CheckResult, 0, len(hosts)*m.probeCount)
 	for _, host := range hosts {
-		r := tcpCheck(ctx, host, l.Interface, 5*time.Second)
-		if r.Success {
-			successCount++
-			totalLatency += r.Latency
+		for i := 0; i < m.probeCount; i++ {
+			results = append(results, tcpCheck(ctx, host, l.Interface, 5*time.Second))
 		}
 	}
-
-	var avgLatency float64
-	packetLoss := 100.0
-	if successCount > 0 {
-		avgLatency = float64(totalLatency/time.Duration(successCount)) / float64(time.Millisecond)
-		packetLoss = float64(len(hosts)-successCount) / float64(len(hosts)) * 100
-	}
+	avgLatency, packetLoss := summarize(results)
 
 	m.mu.Lock()
 	state, ok := m.states[l.ID]
@@ -138,35 +235,10 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	// state: a consistently degraded link must NOT escalate to offline, so the
 	// balancer can keep it as a last resort and switch back when it recovers.
 	// "Offline" = no host answered for several consecutive checks.
-	reachable := successCount > 0
+	reachable := packetLoss < 100.0
 	degradedNow := reachable && (packetLoss > degradedLossPct || avgLatency > degradedLatencyMs)
 
-	if !reachable {
-		state.consecutiveFails++
-		state.consecutiveSuccesses = 0
-	} else {
-		state.consecutiveFails = 0
-		if degradedNow {
-			state.consecutiveSuccesses = 0
-		} else {
-			state.consecutiveSuccesses++
-		}
-	}
-
-	var newStatus string
-	switch {
-	case state.consecutiveFails >= probeFailThreshold:
-		newStatus = StatusOffline
-	case degradedNow:
-		newStatus = StatusDegraded
-	case state.consecutiveSuccesses >= probeRecoverThreshold:
-		newStatus = StatusOnline
-	default:
-		newStatus = l.Status
-		if newStatus == "" {
-			newStatus = StatusUnknown
-		}
-	}
+	newStatus, fireSustained := state.advance(reachable, degradedNow, l.Status, m.sustainN())
 
 	// Update the link in DB
 	if err := m.svc.UpdateStatus(l.ID, newStatus, avgLatency, packetLoss); err != nil {
@@ -180,6 +252,14 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 		updated.Status = newStatus
 		m.onStatusChange(&updated, state.lastStatus, newStatus)
 		state.lastStatus = newStatus
+	}
+
+	// Edge-triggered: a link that has been degraded for the sustained threshold
+	// fires once so the balancer can actively evict its in-flight flows.
+	if fireSustained && m.onDegradedSustained != nil {
+		updated := l
+		updated.Status = newStatus
+		m.onDegradedSustained(&updated)
 	}
 
 	slog.Debug("link check", "link", l.Name, "status", newStatus,

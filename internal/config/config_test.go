@@ -23,6 +23,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.JWTSecret == "" {
 		t.Error("expected non-empty JWTSecret")
 	}
+	if cfg.ProbeIntervalSeconds != 10 {
+		t.Errorf("expected ProbeIntervalSeconds=10, got %d", cfg.ProbeIntervalSeconds)
+	}
+	if cfg.ProbeCount != 3 {
+		t.Errorf("expected ProbeCount=3, got %d", cfg.ProbeCount)
+	}
 }
 
 func TestLoadSaveConfig(t *testing.T) {

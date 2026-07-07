@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Scale, Shield, AlertTriangle, Check, RotateCcw, Plus, Trash2, Clock,
-  Loader2, ChevronDown, Info,
+  Loader2, ChevronDown, Info, Zap,
 } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
@@ -118,6 +118,15 @@ export default function WanBalancing({ links, onChanged }: Props) {
     setBusy(true); setError('');
     try {
       await client.put('/api/routing/balance', { ...status.config, schedules });
+      await fetchStatus();
+    } catch (e) { setError(errMsg(e)); }
+    finally { setBusy(false); }
+  };
+
+  const saveDegradeReaction = async (patch: Partial<typeof status.config>) => {
+    setBusy(true); setError('');
+    try {
+      await client.put('/api/routing/balance', { ...status.config, ...patch });
       await fetchStatus();
     } catch (e) { setError(errMsg(e)); }
     finally { setBusy(false); }
@@ -252,6 +261,58 @@ export default function WanBalancing({ links, onChanged }: Props) {
               )}
             </div>
           )}
+
+          {/* Reação a link degradado (expulsão ativa de conexões) */}
+          <div className="mt-5 border-t border-gray-800 pt-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Zap className="w-4 h-4 text-amber-400" />
+              <span className="text-sm font-medium text-white">Reação a link degradado</span>
+              <HelpTip title="Expulsar conexões de link degradado">
+                <>Quando um link fica <b>degradado</b> (ping alto / oscilando, mas ainda vivo) por várias
+                verificações seguidas, o LinkGuard pode <b>migrar as conexões ativas</b> dele para um link
+                saudável. As conexões no link ruim são <b>reiniciadas</b> (reconectam na hora no link bom) —
+                ideal para chamadas/VoIP que estavam travando. Só age se houver outro link saudável.</>
+              </HelpTip>
+            </div>
+
+            <label className="flex items-center gap-2 mt-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={status.config.evict_on_degrade}
+                disabled={busy}
+                onChange={(e) => saveDegradeReaction({ evict_on_degrade: e.target.checked })}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-600"
+              />
+              <span className="text-sm text-gray-300">Expulsar conexões de link degradado</span>
+            </label>
+
+            {status.config.evict_on_degrade && (
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg">
+                <label className="block">
+                  <span className="text-xs text-gray-400">Amostras ruins seguidas antes de agir</span>
+                  <input
+                    type="number" min={1} max={20}
+                    value={status.config.degraded_sustain_samples}
+                    disabled={busy}
+                    onChange={(e) => saveDegradeReaction({ degraded_sustain_samples: Math.max(1, Number(e.target.value)) })}
+                    className="mt-1 w-full rounded-md bg-gray-800 border border-gray-700 px-2 py-1 text-sm text-white"
+                  />
+                  <span className="text-gray-600 text-xs">~10s por amostra (ex.: 3 ≈ 30s de link ruim).</span>
+                </label>
+                <label className="block">
+                  <span className="text-xs text-gray-400">Intervalo mínimo entre migrações (s)</span>
+                  <input
+                    type="number" min={10} max={3600}
+                    value={status.config.evict_cooldown_seconds}
+                    disabled={busy}
+                    onChange={(e) => saveDegradeReaction({ evict_cooldown_seconds: Math.max(10, Number(e.target.value)) })}
+                    className="mt-1 w-full rounded-md bg-gray-800 border border-gray-700 px-2 py-1 text-sm text-white"
+                  />
+                  <span className="text-gray-600 text-xs">Evita migrar repetidamente num link que oscila.</span>
+                </label>
+              </div>
+            )}
+          </div>
         </>
       )}
 
