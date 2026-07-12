@@ -13,7 +13,7 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: '1.0.60',
+    version: '1.0.61',
     date: '2026-07-12',
     title: 'DHCP/DNS aplicam sozinhos + atualização pela tela volta a funcionar',
     changes: [

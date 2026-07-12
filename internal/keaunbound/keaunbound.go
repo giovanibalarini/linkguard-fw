@@ -58,11 +58,13 @@ func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blo
 	}
 }
 
-// ReloadConfigs writes the configs and reloads the services *gracefully*: it
-// validates the Kea config first (kea-dhcp4 -t), and only then writes the files
-// and sends SIGHUP to Kea and unbound (which reconfigure in place without
-// dropping leases). A stopped service is restarted instead. If validation
-// fails, nothing is written or reloaded — the running config is left intact.
+// ReloadConfigs writes the configs and reloads the services via systemd's
+// canonical reload-or-restart, which keeps them systemd-tracked: unbound (which
+// ships an ExecReload) reloads in place with no downtime; Kea (no ExecReload) is
+// cleanly restarted, its memfile leases surviving. The Kea config is validated
+// first (kea-dhcp4 -t) — critical, since a restart with a broken config would
+// take DHCP down. If validation fails, nothing is written or reloaded and the
+// running config is left intact.
 func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string) (string, error) {
 	files := s.GenerateConfigs(c, res, blocked)
 
@@ -87,7 +89,7 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 
 	var out []string
 	for _, svc := range []string{keaService, unboundService} {
-		o, err := s.reloadOne(ctx, svc)
+		o, err := s.exec.Execute(ctx, "systemctl", "reload-or-restart", svc)
 		out = append(out, svc+": "+o)
 		if err != nil {
 			return strings.Join(out, "; "), fmt.Errorf("reload %s: %w", svc, err)
@@ -111,16 +113,6 @@ func (s *Service) validateKea(ctx context.Context, content string) error {
 	f.Close()
 	_, err = s.exec.ExecuteRead(ctx, s.keaBin, "-t", f.Name())
 	return err
-}
-
-// reloadOne SIGHUPs a running service (in-place reconfigure) or restarts it if
-// it is not currently active (SIGHUP can't bring up a stopped service).
-func (s *Service) reloadOne(ctx context.Context, svc string) (string, error) {
-	active, _ := s.exec.ExecuteRead(ctx, "systemctl", "is-active", svc)
-	if strings.TrimSpace(active) == "active" {
-		return s.exec.Execute(ctx, "systemctl", "kill", "-s", "HUP", svc)
-	}
-	return s.exec.Execute(ctx, "systemctl", "restart", svc)
 }
 
 // ─── Kea (DHCP) ──────────────────────────────────────────────────────────────
