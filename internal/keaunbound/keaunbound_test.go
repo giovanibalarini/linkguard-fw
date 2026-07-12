@@ -1,12 +1,110 @@
 package keaunbound
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 )
+
+// recExec records write commands and lets tests control the kea config-test and
+// systemctl is-active outcomes.
+type recExec struct {
+	writes     []string
+	keaTestErr error // returned by `kea-dhcp4 -t` if set
+	inactive   map[string]bool
+}
+
+func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	e.writes = append(e.writes, cmd+" "+strings.Join(args, " "))
+	return "", nil
+}
+func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if len(args) >= 1 && args[0] == "-t" { // kea-dhcp4 -t <file>
+		if e.keaTestErr != nil {
+			return "config error", e.keaTestErr
+		}
+		return "ok", nil
+	}
+	if cmd == "systemctl" && len(args) == 2 && args[0] == "is-active" {
+		if e.inactive[args[1]] {
+			return "inactive", nil
+		}
+		return "active", nil
+	}
+	return "", nil
+}
+func (e *recExec) IsDryRun() bool { return false }
+
+func newTestSvc(t *testing.T, e *recExec) *Service {
+	t.Helper()
+	dir := t.TempDir()
+	s := NewService(e)
+	s.keaConf = filepath.Join(dir, "kea-dhcp4.conf")
+	s.unboundConf = filepath.Join(dir, "unbound.conf")
+	return s
+}
+
+func TestReloadConfigsValidatesWritesAndSighups(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	// Config files written.
+	if _, err := os.Stat(s.keaConf); err != nil {
+		t.Error("kea config not written")
+	}
+	if _, err := os.Stat(s.unboundConf); err != nil {
+		t.Error("unbound config not written")
+	}
+	// Active services reloaded via SIGHUP (not restart).
+	joined := strings.Join(e.writes, "\n")
+	if !strings.Contains(joined, "systemctl kill -s HUP kea-dhcp4-server") {
+		t.Errorf("missing kea SIGHUP; writes:\n%s", joined)
+	}
+	if !strings.Contains(joined, "systemctl kill -s HUP unbound") {
+		t.Errorf("missing unbound SIGHUP; writes:\n%s", joined)
+	}
+}
+
+func TestReloadConfigsAbortsOnInvalidKeaConfig(t *testing.T) {
+	e := &recExec{keaTestErr: assertErr2{}}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil); err == nil {
+		t.Fatal("expected error when kea config test fails")
+	}
+	// No reload, and the production config file must NOT be written.
+	if strings.Contains(strings.Join(e.writes, "\n"), "kill -s HUP") {
+		t.Error("must not SIGHUP when config validation fails")
+	}
+	if _, err := os.Stat(s.keaConf); err == nil {
+		t.Error("must not write kea config when validation fails")
+	}
+}
+
+func TestReloadConfigsRestartsInactiveService(t *testing.T) {
+	e := &recExec{inactive: map[string]bool{"unbound": true}}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	joined := strings.Join(e.writes, "\n")
+	if !strings.Contains(joined, "systemctl restart unbound") {
+		t.Errorf("inactive service should be restarted; writes:\n%s", joined)
+	}
+}
+
+type assertErr2 struct{}
+
+func (assertErr2) Error() string { return "kea config invalid" }
 
 func TestGenerateKeaConfigValidJSON(t *testing.T) {
 	cfg := netsvc.DefaultConfig()

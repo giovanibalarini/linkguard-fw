@@ -13,6 +13,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.60',
+    date: '2026-07-12',
+    title: 'DHCP/DNS aplicam sozinhos + atualização pela tela volta a funcionar',
+    changes: [
+      { type: 'feat', text: 'Ao salvar uma reserva ou config de DHCP/DNS, agora aplica automaticamente — sem precisar clicar em "Aplicar". A recarga é suave (sem reiniciar o serviço, sem piscar). O botão vira "Aplicar agora" para forçar na hora.' },
+      { type: 'fix', text: 'A verificação de atualização pela tela dava erro 404. Agora dá para informar um token de acesso do GitHub (em Configurações → Atualizações) e atualizar pelo painel novamente.' },
+    ],
+  },
+  {
     version: '1.0.59',
     date: '2026-07-07',
     title: 'Reação mais rápida a link ruim (balanceamento)',

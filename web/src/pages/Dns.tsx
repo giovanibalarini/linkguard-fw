@@ -32,10 +32,10 @@ export default function Dns() {
     finally { setBusy(false); }
   };
 
-  const saveConfig = () => cfg && run(() => client.put('/api/dns/config', { upstreams: cfg.upstreams, log_queries: cfg.log_queries }), 'Config DNS salva. Clique em Aplicar para ativar.');
-  const addDomain = () => newDomain.trim() && run(() => client.post('/api/dns/blocklist', { domain: newDomain.trim() }), 'Domínio bloqueado.').then(() => setNewDomain(''));
-  const delDomain = (d: string) => run(() => client.delete('/api/dns/blocklist', { data: { domain: d } }), 'Domínio desbloqueado.');
-  const apply = () => confirm('Aplicar a config e reiniciar o serviço DNS (unbound)? Pode haver uma breve interrupção na resolução.') && run(() => client.post('/api/netsvc/apply'), 'Aplicado com sucesso.');
+  const saveConfig = () => cfg && run(() => client.put('/api/dns/config', { upstreams: cfg.upstreams, log_queries: cfg.log_queries }), 'Config DNS salva — aplicando automaticamente.');
+  const addDomain = () => newDomain.trim() && run(() => client.post('/api/dns/blocklist', { domain: newDomain.trim() }), 'Domínio bloqueado — aplicando automaticamente.').then(() => setNewDomain(''));
+  const delDomain = (d: string) => run(() => client.delete('/api/dns/blocklist', { data: { domain: d } }), 'Domínio desbloqueado — aplicando automaticamente.');
+  const apply = () => run(() => client.post('/api/netsvc/apply'), 'Aplicado com sucesso.');
 
   return (
     <div className="p-6 space-y-6">
@@ -45,10 +45,17 @@ export default function Dns() {
           <p className="text-gray-500 text-sm">Resolver {data?.backend === 'kea-unbound' ? '(unbound)' : ''} — upstreams, log e filtro</p>
         </div>
         <div className="flex gap-2">
-          {canWrite && <button onClick={apply} disabled={busy} className="btn-primary flex items-center gap-2 disabled:opacity-50"><Play className="w-4 h-4" /> Aplicar</button>}
+          {canWrite && <button onClick={apply} disabled={busy} title="Salvar já aplica sozinho; use para forçar agora" className="btn-secondary flex items-center gap-2 disabled:opacity-50"><Play className="w-4 h-4" /> Aplicar agora</button>}
           <button onClick={fetchData} className="btn-secondary flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar</button>
         </div>
       </div>
+
+      {data?.last_apply && !data.last_apply.ok && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          Última aplicação automática falhou: {data.last_apply.error || 'erro desconhecido'}. Corrija e use "Aplicar agora".
+        </div>
+      )}
+      <p className="text-gray-500 text-xs">Salvar config ou filtro já aplica automaticamente (sem reiniciar o serviço).</p>
 
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchData} className="underline">Tentar novamente</button></div>}
       {msg && <div className={`px-4 py-3 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'}`}>{msg}</div>}

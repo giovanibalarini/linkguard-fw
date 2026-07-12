@@ -39,13 +39,13 @@ export default function Dhcp() {
     finally { setBusy(false); }
   };
 
-  const saveConfig = () => cfg && run(() => client.put('/api/dhcp/config', cfg), 'Config DHCP salva. Clique em Aplicar para ativar.');
+  const saveConfig = () => cfg && run(() => client.put('/api/dhcp/config', cfg), 'Config DHCP salva — aplicando automaticamente.');
   const saveRes = () => {
     if (!resModal) return;
-    run(() => client.post('/api/dhcp/reservations', { mac: resModal.mac, ip: resModal.ip, hostname: resModal.hostname }), 'Reserva salva.').then(() => setResModal(null));
+    run(() => client.post('/api/dhcp/reservations', { mac: resModal.mac, ip: resModal.ip, hostname: resModal.hostname }), 'Reserva salva — aplicando automaticamente.').then(() => setResModal(null));
   };
-  const delRes = (r: DHCPReservation) => confirm(`Remover a reserva de ${r.ip} (${r.mac})?`) && run(() => client.delete('/api/dhcp/reservations', { data: { mac: r.mac } }), 'Reserva removida.');
-  const apply = () => confirm('Aplicar a config e reiniciar o serviço DHCP (Kea)? Pode haver uma breve interrupção nas renovações de lease.') && run(() => client.post('/api/netsvc/apply'), 'Aplicado com sucesso.');
+  const delRes = (r: DHCPReservation) => confirm(`Remover a reserva de ${r.ip} (${r.mac})?`) && run(() => client.delete('/api/dhcp/reservations', { data: { mac: r.mac } }), 'Reserva removida — aplicando automaticamente.');
+  const apply = () => run(() => client.post('/api/netsvc/apply'), 'Aplicado com sucesso.');
 
   const expiresIn = (epoch: number) => {
     const s = epoch - Math.floor(Date.now() / 1000);
@@ -62,10 +62,17 @@ export default function Dhcp() {
           <p className="text-gray-500 text-sm">Servidor DHCP {data?.backend === 'kea-unbound' ? '(Kea)' : ''} — config, reservas e leases</p>
         </div>
         <div className="flex gap-2">
-          {canWrite && <button onClick={apply} disabled={busy} className="btn-primary flex items-center gap-2 disabled:opacity-50"><Play className="w-4 h-4" /> Aplicar</button>}
+          {canWrite && <button onClick={apply} disabled={busy} title="Salvar já aplica sozinho; use para forçar agora" className="btn-secondary flex items-center gap-2 disabled:opacity-50"><Play className="w-4 h-4" /> Aplicar agora</button>}
           <button onClick={fetchData} className="btn-secondary flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar</button>
         </div>
       </div>
+
+      {data?.last_apply && !data.last_apply.ok && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          Última aplicação automática falhou: {data.last_apply.error || 'erro desconhecido'}. Corrija e use "Aplicar agora".
+        </div>
+      )}
+      <p className="text-gray-500 text-xs">Salvar reservas ou config já aplica automaticamente (sem reiniciar o serviço).</p>
 
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchData} className="underline">Tentar novamente</button></div>}
       {msg && <div className={`px-4 py-3 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'}`}>{msg}</div>}

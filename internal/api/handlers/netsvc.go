@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -34,14 +37,69 @@ func validIface(s string) bool { return reNetIface.MatchString(s) }
 type NetsvcHandler struct {
 	db       *storage.DB
 	provider netsvc.Provider
+	alertSvc *alerts.Service
+	applier  *autoApplier
 }
 
-// NewNetsvcHandler creates a NetsvcHandler.
-func NewNetsvcHandler(db *storage.DB, provider netsvc.Provider) *NetsvcHandler {
-	return &NetsvcHandler{db: db, provider: provider}
+// autoApplyDelay is how long the handler waits for edits to settle before
+// applying — long enough to coalesce a burst of saves, short enough to feel
+// instant.
+const autoApplyDelay = 1500 * time.Millisecond
+
+// NewNetsvcHandler creates a NetsvcHandler. Saving any DHCP/DNS change now
+// auto-applies (debounced), so the admin no longer needs a separate "Aplicar".
+func NewNetsvcHandler(db *storage.DB, provider netsvc.Provider, alertSvc *alerts.Service) *NetsvcHandler {
+	h := &NetsvcHandler{db: db, provider: provider, alertSvc: alertSvc}
+	h.applier = newAutoApplier(autoApplyDelay, func() { _ = h.doReload(context.Background()) })
+	return h
 }
 
 const netsvcCfgKey = "netsvc_config"
+const netsvcApplyStatusKey = "netsvc_last_apply"
+
+// applyStatus is the persisted result of the most recent (auto or manual) apply,
+// surfaced in the UI so an async failure isn't silent.
+type applyStatus struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+	At    int64  `json:"at"` // unix seconds
+}
+
+// doReload regenerates and gracefully reloads the backend, records the result,
+// and alerts on failure. Shared by the debounced auto-apply and the manual
+// "Aplicar agora" button.
+func (h *NetsvcHandler) doReload(ctx context.Context) error {
+	bl, _ := h.db.ListDNSBlocklist()
+	out, err := h.provider.ReloadConfigs(ctx, h.getConfig(), h.reservationsForProvider(), bl)
+	st := applyStatus{OK: err == nil, At: time.Now().Unix()}
+	if err != nil {
+		st.Error = err.Error()
+		if h.alertSvc != nil {
+			_ = h.alertSvc.RuleError("Falha ao aplicar DHCP/DNS: " + err.Error())
+		}
+	}
+	if b, mErr := json.Marshal(st); mErr == nil {
+		_ = h.db.SetSetting(netsvcApplyStatusKey, string(b))
+	}
+	_ = out
+	return err
+}
+
+// scheduleApply arms the debounced auto-apply after a mutation.
+func (h *NetsvcHandler) scheduleApply() {
+	if h.applier != nil {
+		h.applier.schedule()
+	}
+}
+
+// lastApplyStatus returns the persisted result of the most recent apply.
+func (h *NetsvcHandler) lastApplyStatus() applyStatus {
+	var st applyStatus
+	if raw, _ := h.db.GetSetting(netsvcApplyStatusKey); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st)
+	}
+	return st
+}
 
 func (h *NetsvcHandler) getConfig() netsvc.Config {
 	cfg := netsvc.DefaultConfig()
@@ -85,6 +143,7 @@ func (h *NetsvcHandler) GetDHCP(w http.ResponseWriter, r *http.Request) {
 		"reservations": rs,
 		"leases":       leases,
 		"backend":      h.provider.Backend(),
+		"last_apply":   h.lastApplyStatus(),
 	})
 }
 
@@ -155,6 +214,7 @@ func (h *NetsvcHandler) UpdateDHCPConfig(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	auditAction(h.db, r, "dhcp.config", "netsvc", "")
+	h.scheduleApply()
 	writeJSON(w, http.StatusOK, cfg)
 }
 
@@ -179,6 +239,7 @@ func (h *NetsvcHandler) UpsertReservation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	auditAction(h.db, r, "dhcp.reservation.set", "mac:"+mac, b.IP)
+	h.scheduleApply()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -199,6 +260,7 @@ func (h *NetsvcHandler) DeleteReservation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	auditAction(h.db, r, "dhcp.reservation.del", "mac:"+mac, "")
+	h.scheduleApply()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -211,9 +273,10 @@ func (h *NetsvcHandler) GetDNS(w http.ResponseWriter, r *http.Request) {
 		bl = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"config":    h.getConfig(),
-		"blocklist": bl,
-		"backend":   h.provider.Backend(),
+		"config":     h.getConfig(),
+		"blocklist":  bl,
+		"backend":    h.provider.Backend(),
+		"last_apply": h.lastApplyStatus(),
 	})
 }
 
@@ -247,6 +310,7 @@ func (h *NetsvcHandler) UpdateDNSConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	auditAction(h.db, r, "dns.config", "netsvc", "")
+	h.scheduleApply()
 	writeJSON(w, http.StatusOK, cfg)
 }
 
@@ -286,6 +350,7 @@ func (h *NetsvcHandler) blocklist(w http.ResponseWriter, r *http.Request, add bo
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.scheduleApply()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -298,16 +363,15 @@ func (h *NetsvcHandler) Preview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, files)
 }
 
-// Apply writes the configs and restarts the backend services.
+// Apply is the "Aplicar agora" button: it gracefully reloads the backend
+// immediately (bypassing the debounce), validating the config first.
 func (h *NetsvcHandler) Apply(w http.ResponseWriter, r *http.Request) {
-	bl, _ := h.db.ListDNSBlocklist()
-	out, err := h.provider.Apply(r.Context(), h.getConfig(), h.reservationsForProvider(), bl)
-	if err != nil {
+	if err := h.doReload(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "falha ao aplicar: "+err.Error())
 		return
 	}
 	auditAction(h.db, r, "netsvc.apply", string(h.provider.Backend()), "")
-	writeJSON(w, http.StatusOK, map[string]string{"status": "aplicado", "output": out})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "aplicado"})
 }
 
 func normalizeMAC(s string) string {

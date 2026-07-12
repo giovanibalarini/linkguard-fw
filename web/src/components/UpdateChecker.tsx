@@ -20,6 +20,10 @@ export default function UpdateChecker() {
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
   const [msg, setMsg] = useState('');
+  const [tokenConfigured, setTokenConfigured] = useState<boolean | null>(null);
+  const [tokenInput, setTokenInput] = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const [savingToken, setSavingToken] = useState(false);
 
   const check = useCallback(async () => {
     setChecking(true); setMsg('');
@@ -28,7 +32,24 @@ export default function UpdateChecker() {
     finally { setChecking(false); }
   }, []);
 
-  useEffect(() => { check(); }, [check]);
+  const loadTokenStatus = useCallback(async () => {
+    try { const { data } = await client.get<{ configured: boolean }>('/api/system/update/token'); setTokenConfigured(data.configured); }
+    catch { /* ignore */ }
+  }, []);
+
+  const saveToken = async () => {
+    setSavingToken(true); setMsg('');
+    try {
+      const { data } = await client.put<{ configured: boolean }>('/api/system/update/token', { token: tokenInput.trim() });
+      setTokenConfigured(data.configured);
+      setTokenInput(''); setShowToken(false);
+      setMsg('Token salvo.');
+      check();
+    } catch (e) { setMsg('Erro: ' + errMsg(e)); }
+    finally { setSavingToken(false); }
+  };
+
+  useEffect(() => { check(); loadTokenStatus(); }, [check, loadTokenStatus]);
 
   const waitForRestart = async () => {
     // Poll until the service answers again, then reload onto the new version.
@@ -68,6 +89,35 @@ export default function UpdateChecker() {
           <span>{msg}</span>
         </div>
       )}
+
+      <div className="rounded-lg border border-gray-700 bg-gray-800/40 p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm text-gray-300">
+            Token do GitHub (repo privado):{' '}
+            {tokenConfigured == null ? <span className="text-gray-500">—</span>
+              : tokenConfigured ? <span className="text-green-400">configurado</span>
+              : <span className="text-amber-400">não configurado</span>}
+          </div>
+          <button onClick={() => setShowToken((v) => !v)} className="btn-secondary text-xs">
+            {showToken ? 'Fechar' : (tokenConfigured ? 'Alterar' : 'Configurar')}
+          </button>
+        </div>
+        {!tokenConfigured && (
+          <p className="text-gray-500 text-xs">O repositório é privado; sem um token de acesso (PAT read-only), a verificação retorna 404.</p>
+        )}
+        {showToken && (
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="password" value={tokenInput} onChange={(e) => setTokenInput(e.target.value)}
+              placeholder="ghp_… (vazio remove)"
+              className="flex-1 min-w-[200px] rounded-md bg-gray-800 border border-gray-700 px-2 py-1 text-sm text-white"
+            />
+            <button onClick={saveToken} disabled={savingToken} className="btn-primary text-xs flex items-center gap-1.5 disabled:opacity-50">
+              {savingToken ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null} Salvar token
+            </button>
+          </div>
+        )}
+      </div>
 
       {res && (
         <div className="space-y-3">

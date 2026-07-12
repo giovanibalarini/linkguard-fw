@@ -22,15 +22,30 @@ const (
 	KeaConfPath     = "/etc/kea/kea-dhcp4.conf"
 	UnboundConfPath = "/etc/unbound/unbound.conf.d/linkguard.conf"
 	KeaLeasesPath   = "/var/lib/kea/kea-leases4.csv"
+
+	keaService     = "kea-dhcp4-server"
+	unboundService = "unbound"
+	keaBinDefault  = "/usr/sbin/kea-dhcp4"
 )
 
-// Service is the Kea+unbound Provider.
+// Service is the Kea+unbound Provider. Config paths and the Kea binary are
+// fields (defaulted to the system paths) so tests can point them at a temp dir.
 type Service struct {
-	exec firewall.Executor
+	exec        firewall.Executor
+	keaConf     string
+	unboundConf string
+	keaBin      string
 }
 
 // NewService creates the provider.
-func NewService(exec firewall.Executor) *Service { return &Service{exec: exec} }
+func NewService(exec firewall.Executor) *Service {
+	return &Service{
+		exec:        exec,
+		keaConf:     KeaConfPath,
+		unboundConf: UnboundConfPath,
+		keaBin:      keaBinDefault,
+	}
+}
 
 // Backend implements netsvc.Provider.
 func (s *Service) Backend() netsvc.Backend { return netsvc.BackendKeaUnbound }
@@ -38,9 +53,74 @@ func (s *Service) Backend() netsvc.Backend { return netsvc.BackendKeaUnbound }
 // GenerateConfigs renders the Kea (DHCP) and unbound (DNS) config files.
 func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string) []netsvc.ConfigFile {
 	return []netsvc.ConfigFile{
-		{Path: KeaConfPath, Content: GenerateKeaConfig(c, res)},
-		{Path: UnboundConfPath, Content: GenerateUnboundConfig(c, blocked)},
+		{Path: s.keaConf, Content: GenerateKeaConfig(c, res)},
+		{Path: s.unboundConf, Content: GenerateUnboundConfig(c, blocked)},
 	}
+}
+
+// ReloadConfigs writes the configs and reloads the services *gracefully*: it
+// validates the Kea config first (kea-dhcp4 -t), and only then writes the files
+// and sends SIGHUP to Kea and unbound (which reconfigure in place without
+// dropping leases). A stopped service is restarted instead. If validation
+// fails, nothing is written or reloaded — the running config is left intact.
+func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string) (string, error) {
+	files := s.GenerateConfigs(c, res, blocked)
+
+	// Validate the Kea config before touching anything in production.
+	var keaContent string
+	for _, f := range files {
+		if f.Path == s.keaConf {
+			keaContent = f.Content
+		}
+	}
+	if err := s.validateKea(ctx, keaContent); err != nil {
+		return "", fmt.Errorf("config do Kea inválida (nada aplicado): %w", err)
+	}
+
+	if !s.exec.IsDryRun() {
+		for _, f := range files {
+			if err := os.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
+				return "", fmt.Errorf("write %s: %w", f.Path, err)
+			}
+		}
+	}
+
+	var out []string
+	for _, svc := range []string{keaService, unboundService} {
+		o, err := s.reloadOne(ctx, svc)
+		out = append(out, svc+": "+o)
+		if err != nil {
+			return strings.Join(out, "; "), fmt.Errorf("reload %s: %w", svc, err)
+		}
+	}
+	return strings.Join(out, "; "), nil
+}
+
+// validateKea writes the candidate config to a temp file and runs the Kea
+// config-test mode against it. Read-only, so it runs even in dry-run.
+func (s *Service) validateKea(ctx context.Context, content string) error {
+	f, err := os.CreateTemp("", "kea-validate-*.conf")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+	_, err = s.exec.ExecuteRead(ctx, s.keaBin, "-t", f.Name())
+	return err
+}
+
+// reloadOne SIGHUPs a running service (in-place reconfigure) or restarts it if
+// it is not currently active (SIGHUP can't bring up a stopped service).
+func (s *Service) reloadOne(ctx context.Context, svc string) (string, error) {
+	active, _ := s.exec.ExecuteRead(ctx, "systemctl", "is-active", svc)
+	if strings.TrimSpace(active) == "active" {
+		return s.exec.Execute(ctx, "systemctl", "kill", "-s", "HUP", svc)
+	}
+	return s.exec.Execute(ctx, "systemctl", "restart", svc)
 }
 
 // ─── Kea (DHCP) ──────────────────────────────────────────────────────────────

@@ -270,12 +270,15 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermSystemWrite)).Post("/api/backup/restore", backupH.Restore)
 
 		// In-app update (admin: system.write)
-		updateH := handlers.NewUpdateHandler(s.db, updater.NewService(s.exec, cfg.Version))
+		updateH := handlers.NewUpdateHandler(s.db, updater.NewService(s.exec, cfg.Version,
+			func() string { tok, _ := s.db.GetSetting("github_update_token"); return tok }))
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/check", updateH.Check)
 		r.With(require(auth.PermSystemWrite)).Post("/api/system/update/apply", updateH.Apply)
+		r.With(require(auth.PermSystemRead)).Get("/api/system/update/token", updateH.TokenStatus)
+		r.With(require(auth.PermSystemWrite)).Put("/api/system/update/token", updateH.SetToken)
 
 		// DHCP / DNS (Kea + unbound)
-		netH := handlers.NewNetsvcHandler(s.db, s.netSvc)
+		netH := handlers.NewNetsvcHandler(s.db, s.netSvc, s.alertSvc)
 		r.With(require(auth.PermDHCPRead)).Get("/api/dhcp", netH.GetDHCP)
 		r.With(require(auth.PermDHCPWrite)).Put("/api/dhcp/config", netH.UpdateDHCPConfig)
 		r.With(require(auth.PermDHCPWrite)).Post("/api/dhcp/reservations", netH.UpsertReservation)

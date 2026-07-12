@@ -4,11 +4,14 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/updater"
 )
+
+const githubTokenKey = "github_update_token"
 
 // UpdateHandler checks for and installs new releases.
 type UpdateHandler struct {
@@ -19,6 +22,32 @@ type UpdateHandler struct {
 // NewUpdateHandler creates an UpdateHandler.
 func NewUpdateHandler(db *storage.DB, svc *updater.Service) *UpdateHandler {
 	return &UpdateHandler{db: db, svc: svc}
+}
+
+// TokenStatus reports whether a GitHub token is configured (never returns it).
+func (h *UpdateHandler) TokenStatus(w http.ResponseWriter, r *http.Request) {
+	tok, _ := h.db.GetSetting(githubTokenKey)
+	writeJSON(w, http.StatusOK, map[string]bool{"configured": strings.TrimSpace(tok) != ""})
+}
+
+// SetToken stores (or clears, if empty) the GitHub token used to reach the
+// private repo's releases. Required because the repo is private — without it the
+// GitHub API answers 404.
+func (h *UpdateHandler) SetToken(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	tok := strings.TrimSpace(b.Token)
+	if err := h.db.SetSetting(githubTokenKey, tok); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	auditAction(h.db, r, "update.token.set", "system", "")
+	writeJSON(w, http.StatusOK, map[string]bool{"configured": tok != ""})
 }
 
 // Check reports whether a newer release is available.

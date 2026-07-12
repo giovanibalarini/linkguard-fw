@@ -23,15 +23,21 @@ import (
 )
 
 const repo = "giovanibalarini/linkguard-fw"
+const defaultAPIBase = "https://api.github.com"
+
+// Asset is one release asset. ID is used to download via the API asset endpoint
+// (which works for PRIVATE repos with auth; browser_download_url does not).
+type Asset struct {
+	ID                 int    `json:"id"`
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
 
 // Release is the subset of the GitHub release we use.
 type Release struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
-	Assets  []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	} `json:"assets"`
+	TagName string  `json:"tag_name"`
+	HTMLURL string  `json:"html_url"`
+	Assets  []Asset `json:"assets"`
 }
 
 // CheckResult is returned to the UI.
@@ -48,11 +54,58 @@ type Service struct {
 	exec    firewall.Executor
 	client  *http.Client
 	current string
+	apiBase string
+	tokenFn func() string // returns the configured GitHub token (may be empty)
 }
 
-// NewService creates an updater Service.
-func NewService(exec firewall.Executor, currentVersion string) *Service {
-	return &Service{exec: exec, client: &http.Client{Timeout: 20 * time.Second}, current: currentVersion}
+// NewService creates an updater Service. tokenFn supplies a GitHub token (for
+// private repos); it may be nil or return "".
+func NewService(exec firewall.Executor, currentVersion string, tokenFn func() string) *Service {
+	return &Service{
+		exec:    exec,
+		client:  &http.Client{Timeout: 20 * time.Second},
+		current: currentVersion,
+		apiBase: defaultAPIBase,
+		tokenFn: tokenFn,
+	}
+}
+
+// authReq builds a GET request with the given Accept header and, when a token is
+// configured, an Authorization header — required so a PRIVATE repo's API doesn't
+// answer 404. On a cross-host redirect (GitHub → S3) Go strips the auth header.
+func (s *Service) authReq(ctx context.Context, url, accept string) *http.Request {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set("Accept", accept)
+	if s.tokenFn != nil {
+		if tok := strings.TrimSpace(s.tokenFn()); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+	}
+	return req
+}
+
+// assetBody opens a release asset via the API asset endpoint (auth + octet-
+// stream), which works for private repos. Caller closes the body.
+func (s *Service) assetBody(ctx context.Context, id int) (io.ReadCloser, error) {
+	url := fmt.Sprintf("%s/repos/%s/releases/assets/%d", s.apiBase, repo, id)
+	resp, err := s.client.Do(s.authReq(ctx, url, "application/octet-stream"))
+	if err != nil {
+		return nil, fmt.Errorf("baixar asset: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("download respondeu %d", resp.StatusCode)
+	}
+	return resp.Body, nil
+}
+
+func findAsset(rel Release, suffix string) (Asset, bool) {
+	for _, a := range rel.Assets {
+		if strings.HasSuffix(a.Name, suffix) {
+			return a, true
+		}
+	}
+	return Asset{}, false
 }
 
 // Check queries GitHub for the latest release and compares versions.
@@ -80,11 +133,11 @@ func (s *Service) Apply(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	deb := s.debURL(rel)
-	if deb == "" {
+	debAsset, ok := findAsset(rel, debArch()+".deb")
+	if !ok {
 		return fmt.Errorf("nenhum pacote .deb para a arquitetura %s na última release", debArch())
 	}
-	path, err := s.download(ctx, deb)
+	path, err := s.downloadAsset(ctx, debAsset.ID)
 	if err != nil {
 		return err
 	}
@@ -92,7 +145,7 @@ func (s *Service) Apply(ctx context.Context) error {
 
 	// Integrity: never dpkg-install a package we can't verify against the
 	// release's sha256sums.txt (guards against a corrupt/tampered download).
-	if err := s.verifyChecksum(ctx, rel, deb, path); err != nil {
+	if err := s.verifyChecksum(ctx, rel, debAsset.Name, path); err != nil {
 		return err
 	}
 
@@ -106,30 +159,22 @@ func (s *Service) Apply(ctx context.Context) error {
 // verifyChecksum computes the downloaded file's SHA-256 and compares it to the
 // expected hash from the release's sha256sums.txt asset. Any mismatch or missing
 // checksum aborts the install.
-func (s *Service) verifyChecksum(ctx context.Context, rel Release, debURL, path string) error {
-	var sumsURL string
-	for _, a := range rel.Assets {
-		if strings.HasSuffix(a.Name, "sha256sums.txt") {
-			sumsURL = a.BrowserDownloadURL
-			break
-		}
-	}
-	if sumsURL == "" {
+func (s *Service) verifyChecksum(ctx context.Context, rel Release, debName, path string) error {
+	sumsAsset, ok := findAsset(rel, "sha256sums.txt")
+	if !ok {
 		return fmt.Errorf("release sem sha256sums.txt — instalação abortada por segurança")
 	}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, sumsURL, nil)
-	resp, err := s.client.Do(req)
+	body, err := s.assetBody(ctx, sumsAsset.ID)
 	if err != nil {
 		return fmt.Errorf("baixar checksums: %w", err)
 	}
-	defer resp.Body.Close()
-	sums, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	defer body.Close()
+	sums, err := io.ReadAll(io.LimitReader(body, 1<<20))
 	if err != nil {
 		return err
 	}
 
-	debName := debURL[strings.LastIndex(debURL, "/")+1:]
 	var expected string
 	for _, line := range strings.Split(string(sums), "\n") {
 		f := strings.Fields(line)
@@ -161,10 +206,8 @@ func (s *Service) verifyChecksum(ctx context.Context, rel Release, debURL, path 
 }
 
 func (s *Service) latest(ctx context.Context) (Release, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := s.client.Do(req)
+	url := fmt.Sprintf("%s/repos/%s/releases/latest", s.apiBase, repo)
+	resp, err := s.client.Do(s.authReq(ctx, url, "application/vnd.github+json"))
 	if err != nil {
 		return Release{}, fmt.Errorf("consultar GitHub: %w", err)
 	}
@@ -179,21 +222,17 @@ func (s *Service) latest(ctx context.Context) (Release, error) {
 	return rel, nil
 }
 
-func (s *Service) download(ctx context.Context, url string) (string, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	resp, err := s.client.Do(req)
+func (s *Service) downloadAsset(ctx context.Context, id int) (string, error) {
+	body, err := s.assetBody(ctx, id)
 	if err != nil {
-		return "", fmt.Errorf("baixar pacote: %w", err)
+		return "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download respondeu %d", resp.StatusCode)
-	}
+	defer body.Close()
 	f, err := os.CreateTemp("", "linkguard-update-*.deb")
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	if _, err := io.Copy(f, body); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return "", err

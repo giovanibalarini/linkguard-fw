@@ -270,8 +270,9 @@ export interface NetsvcConfig {
 }
 export interface DHCPReservation { mac: string; ip: string; hostname: string; created_at?: string; updated_at?: string; }
 export interface DHCPLease { expiry: number; mac: string; ip: string; hostname: string; }
-export interface DHCPData { config: NetsvcConfig; reservations: DHCPReservation[]; leases: DHCPLease[]; backend: string; }
-export interface DNSData { config: NetsvcConfig; blocklist: string[]; backend: string; }
+export interface LastApply { ok: boolean; error?: string; at: number; }
+export interface DHCPData { config: NetsvcConfig; reservations: DHCPReservation[]; leases: DHCPLease[]; backend: string; last_apply?: LastApply; }
+export interface DNSData { config: NetsvcConfig; blocklist: string[]; backend: string; last_apply?: LastApply; }
 
 export interface HostTraffic { ip: string; rx_bytes: number; tx_bytes: number; }
 

@@ -21,15 +21,15 @@ const (
 type Config struct {
 	Backend      Backend  `json:"backend"`
 	Interface    string   `json:"interface"`      // LAN interface to serve (e.g. br10)
-	SubnetCIDR   string   `json:"subnet_cidr"`     // e.g. 192.168.3.0/24
-	RangeStart   string   `json:"range_start"`     // first DHCP address
-	RangeEnd     string   `json:"range_end"`       // last DHCP address
-	Gateway      string   `json:"gateway"`         // routers option given to clients
-	LeaseHours   int      `json:"lease_hours"`     // lease time in hours
-	DNSToClients []string `json:"dns_to_clients"`  // DNS servers advertised to clients
-	Upstreams    []string `json:"upstreams"`       // DNS forwarders ([] = recurse from root)
-	LogQueries   bool     `json:"log_queries"`     // log DNS queries (visibility; I/O heavy)
-	DomainSuffix string   `json:"domain_suffix"`   // optional local domain (e.g. lan)
+	SubnetCIDR   string   `json:"subnet_cidr"`    // e.g. 192.168.3.0/24
+	RangeStart   string   `json:"range_start"`    // first DHCP address
+	RangeEnd     string   `json:"range_end"`      // last DHCP address
+	Gateway      string   `json:"gateway"`        // routers option given to clients
+	LeaseHours   int      `json:"lease_hours"`    // lease time in hours
+	DNSToClients []string `json:"dns_to_clients"` // DNS servers advertised to clients
+	Upstreams    []string `json:"upstreams"`      // DNS forwarders ([] = recurse from root)
+	LogQueries   bool     `json:"log_queries"`    // log DNS queries (visibility; I/O heavy)
+	DomainSuffix string   `json:"domain_suffix"`  // optional local domain (e.g. lan)
 }
 
 // DefaultConfig mirrors the previous isc-dhcp/bind9 behaviour for the strong stack.
@@ -80,8 +80,11 @@ type Provider interface {
 	// GenerateConfigs renders the backend config files (pure, for UI preview
 	// before applying).
 	GenerateConfigs(c Config, reservations []Reservation, blockedDomains []string) []ConfigFile
-	// Apply writes the configs and reloads the services.
+	// Apply writes the configs and restarts the services.
 	Apply(ctx context.Context, c Config, reservations []Reservation, blockedDomains []string) (string, error)
+	// ReloadConfigs writes the configs and reloads the services gracefully
+	// (validate + SIGHUP, no restart), used by the auto-apply flow.
+	ReloadConfigs(ctx context.Context, c Config, reservations []Reservation, blockedDomains []string) (string, error)
 	// Leases returns the active DHCP leases.
 	Leases(ctx context.Context) ([]Lease, error)
 }
