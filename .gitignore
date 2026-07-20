@@ -43,3 +43,6 @@ dist/
 
 # Site-specific / scratch artifacts (e.g. generated production firewall rules)
 downloads/
+
+# Superpowers brainstorm (mockups locais)
+.superpowers/
