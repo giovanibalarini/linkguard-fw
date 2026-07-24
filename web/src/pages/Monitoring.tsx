@@ -67,7 +67,7 @@ export default function Monitoring() {
       const halfWindow = (periodHours * 3600) / 2;
       const from = centerSec - halfWindow;
       const to = centerSec + halfWindow;
-      const series = links.map(l => `link.latency_ms:${l.name},link.loss_pct:${l.name}`).join(',');
+      const series = links.map(l => `link.latency_ms:${l.name}`).join(',');
       const states = links.map(l => `link:${l.name}`).join(',');
       const res = await client.get<TimelineResponse>('/api/monitoring/timeline', {
         params: { from, to, series, states },
@@ -270,12 +270,12 @@ export default function Monitoring() {
                 </div>
               );
             })}
-            {timeline.states.filter(s => s.state !== 'online' && s.state !== 'up').length > 0 && (
+            {timeline.states.filter(s => s.state !== 'online').length > 0 && (
               <div>
                 <p className="text-gray-400 text-xs mb-1">Episódios no período</p>
                 <ul className="text-xs text-gray-300 space-y-1">
                   {timeline.states
-                    .filter(s => s.state !== 'online' && s.state !== 'up')
+                    .filter(s => s.state !== 'online')
                     .map((s, idx) => (
                       <li key={idx} className="flex justify-between">
                         <span>{s.label} → {s.state}</span>
