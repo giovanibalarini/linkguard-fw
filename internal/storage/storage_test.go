@@ -592,3 +592,46 @@ func TestGetStateIntervalsIncludesOpenIntervalStartedBeforeWindow(t *testing.T) 
 		t.Errorf("expected interval state=degraded, got %s", got[0].State)
 	}
 }
+
+// ─── Migration: traffic_samples → metric_samples ────────────────────────────
+
+func TestMigrateTrafficSamplesToMetricSamples(t *testing.T) {
+	db := newTestDB(t)
+
+	// Simulate a pre-migration row the way the old trafficrrd wrote it.
+	_, err := db.Conn().Exec(`INSERT INTO traffic_samples
+		(interface, step_seconds, ts_unix, rx_bps, tx_bps) VALUES (?, ?, ?, ?, ?)`,
+		"eth0", 60, 5000, 1234.5, 6789.0)
+	if err != nil {
+		t.Fatalf("seed traffic_samples: %v", err)
+	}
+
+	if err := db.MigrateTrafficSamplesToMetricSamplesForTest(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	rx, err := db.GetMetricSamples("if.rx_bps", "eth0", 60, 0, 100000)
+	if err != nil {
+		t.Fatalf("GetMetricSamples rx: %v", err)
+	}
+	if len(rx) != 1 || rx[0].VAvg != 1234.5 || rx[0].VMin != 1234.5 || rx[0].VMax != 1234.5 {
+		t.Fatalf("expected 1 rx sample with min=avg=max=1234.5, got %v", rx)
+	}
+
+	tx, err := db.GetMetricSamples("if.tx_bps", "eth0", 60, 0, 100000)
+	if err != nil {
+		t.Fatalf("GetMetricSamples tx: %v", err)
+	}
+	if len(tx) != 1 || tx[0].VAvg != 6789.0 {
+		t.Fatalf("expected 1 tx sample avg=6789.0, got %v", tx)
+	}
+
+	// Idempotent: running twice must not duplicate or error.
+	if err := db.MigrateTrafficSamplesToMetricSamplesForTest(); err != nil {
+		t.Fatalf("second migrate call: %v", err)
+	}
+	rx2, _ := db.GetMetricSamples("if.rx_bps", "eth0", 60, 0, 100000)
+	if len(rx2) != 1 {
+		t.Fatalf("expected migration to stay idempotent, got %d rx samples", len(rx2))
+	}
+}
