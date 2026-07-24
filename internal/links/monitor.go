@@ -159,7 +159,7 @@ func (st *linkState) advance(reachable, degradedNow bool, prevStatus string, sus
 	switch {
 	case st.consecutiveFails >= probeFailThreshold:
 		newStatus = StatusOffline
-	case degradedNow:
+	case degradedNow && st.consecutiveDegraded >= sustainThreshold:
 		newStatus = StatusDegraded
 	case st.consecutiveSuccesses >= probeRecoverThreshold:
 		newStatus = StatusOnline

@@ -133,3 +133,56 @@ func TestAdvanceOfflineAndOnline(t *testing.T) {
 		t.Errorf("after %d good samples, status = %q, want online", probeRecoverThreshold, status)
 	}
 }
+
+// TestAdvanceStatusRequiresSustainedThreshold verifies that a single degraded
+// sample does NOT flip status to degraded — status must stay at whatever it
+// was until sustainThreshold consecutive degraded samples accumulate, the
+// same shape probeFailThreshold already uses for offline. Before this fix,
+// "case degradedNow:" alone was enough to flip status on the very first
+// sample, which is what turned an 8-second upstream blip into a route
+// rewrite in production (2026-07-23 incident).
+func TestAdvanceStatusRequiresSustainedThreshold(t *testing.T) {
+	st := &linkState{}
+	prev := StatusOnline
+
+	// Two degraded samples below threshold(3): status must NOT flip yet.
+	for i := 0; i < 2; i++ {
+		status, _ := st.advance(true, true, prev, 3)
+		if status != StatusOnline {
+			t.Fatalf("sample %d: status = %q, want online (below threshold, must not flip)", i+1, status)
+		}
+	}
+
+	// Third sample crosses the threshold: NOW it flips.
+	status, _ := st.advance(true, true, prev, 3)
+	if status != StatusDegraded {
+		t.Fatalf("sample 3: status = %q, want degraded (threshold reached)", status)
+	}
+}
+
+// TestAdvanceStatusRecoversAfterDegradedEpisode verifies that once degraded
+// status has flipped, a single good sample does not immediately flip back to
+// online — the existing probeRecoverThreshold gate (2 consecutive good
+// samples) still applies, unaffected by this change.
+func TestAdvanceStatusRecoversAfterDegradedEpisode(t *testing.T) {
+	st := &linkState{}
+	status := StatusOnline
+	for i := 0; i < 3; i++ {
+		status, _ = st.advance(true, true, status, 3)
+	}
+	if status != StatusDegraded {
+		t.Fatalf("setup: expected degraded after 3 samples, got %q", status)
+	}
+
+	// One good sample: probeRecoverThreshold is 2, so status must stay degraded.
+	status, _ = st.advance(true, false, status, 3)
+	if status != StatusDegraded {
+		t.Fatalf("after 1 good sample: status = %q, want degraded (recover threshold not yet met)", status)
+	}
+
+	// Second consecutive good sample: now it recovers.
+	status, _ = st.advance(true, false, status, 3)
+	if status != StatusOnline {
+		t.Fatalf("after 2 good samples: status = %q, want online", status)
+	}
+}
