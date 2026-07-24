@@ -149,23 +149,45 @@ func (db *DB) migrateTrafficSamplesToMetricSamples() error {
 		return nil
 	}
 
+	// A production box can carry months of retained history here (one real
+	// deploy hit 105k+ legacy rows -> up to ~211k upserts). Each db.conn.Exec
+	// call is its own implicit auto-commit transaction, and under WAL mode
+	// that means one fsync per row -- on real disks that turned a first-boot
+	// migration that should take seconds into something still not finished
+	// after 50+ minutes, blocking storage.Open() (and therefore the entire
+	// rest of run(): the secrets vault, the HTTP server, the link monitor)
+	// for the whole time. Wrapping every upsert plus the rename in ONE
+	// transaction reduces this to a single commit/fsync at the end.
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO metric_samples (series, label, step_seconds, ts_unix, v_min, v_avg, v_max)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(series, label, step_seconds, ts_unix)
+		DO UPDATE SET v_min=excluded.v_min, v_avg=excluded.v_avg, v_max=excluded.v_max`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
 	for _, r := range legacy {
-		if err := db.UpsertMetricSample(MetricSample{
-			Series: "if.rx_bps", Label: r.iface, StepSeconds: r.step, TsUnix: r.ts,
-			VMin: r.rx, VAvg: r.rx, VMax: r.rx,
-		}); err != nil {
+		if _, err := stmt.Exec("if.rx_bps", r.iface, r.step, r.ts, r.rx, r.rx, r.rx); err != nil {
 			return err
 		}
-		if err := db.UpsertMetricSample(MetricSample{
-			Series: "if.tx_bps", Label: r.iface, StepSeconds: r.step, TsUnix: r.ts,
-			VMin: r.tx, VAvg: r.tx, VMax: r.tx,
-		}); err != nil {
+		if _, err := stmt.Exec("if.tx_bps", r.iface, r.step, r.ts, r.tx, r.tx, r.tx); err != nil {
 			return err
 		}
 	}
 
-	_, err = db.conn.Exec(`ALTER TABLE traffic_samples RENAME TO traffic_samples_pre_tsdb_migration`)
-	return err
+	if _, err := tx.Exec(`ALTER TABLE traffic_samples RENAME TO traffic_samples_pre_tsdb_migration`); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // MigrateTrafficSamplesToMetricSamplesForTest exposes the migration for tests

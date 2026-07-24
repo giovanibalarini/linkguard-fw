@@ -680,6 +680,74 @@ func TestMigrateTrafficSamplesToMetricSamples(t *testing.T) {
 	}
 }
 
+// TestMigrateTrafficSamplesToMetricSamplesAtProductionScale is a regression
+// test for a real incident (2026-07-24): a production box with months of
+// retained history had 105,755 legacy rows. The migration upserted each one
+// via its own db.conn.Exec call -- an implicit auto-commit transaction per
+// row -- which under WAL mode meant one fsync per row. That turned a
+// first-boot migration expected to take seconds into one still not finished
+// after 50+ minutes, blocking storage.Open() (and therefore the secrets
+// vault, the HTTP server, and the link monitor -- WAN failover detection was
+// never running) for the whole time, forcing an emergency rollback. The fix
+// wraps every upsert plus the rename in a single transaction. This test
+// seeds a comparable row count and asserts the migration completes well
+// within a healthy boot budget, not just that it eventually finishes.
+func TestMigrateTrafficSamplesToMetricSamplesAtProductionScale(t *testing.T) {
+	db := newTestDB(t)
+
+	const rowCount = 110_000
+	tx, err := db.Conn().Begin()
+	if err != nil {
+		t.Fatalf("begin seed tx: %v", err)
+	}
+	stmt, err := tx.Prepare(`INSERT INTO traffic_samples
+		(interface, step_seconds, ts_unix, rx_bps, tx_bps) VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		t.Fatalf("prepare seed stmt: %v", err)
+	}
+	for i := 0; i < rowCount; i++ {
+		if _, err := stmt.Exec("eth0", 60, int64(i), float64(i), float64(i)*2); err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed tx: %v", err)
+	}
+
+	start := time.Now()
+	if err := db.MigrateTrafficSamplesToMetricSamplesForTest(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Generous ceiling (a healthy single-transaction migration of this size
+	// should take well under a second on any real hardware) -- this is here
+	// to catch a regression back to per-row commits, not to be a tight
+	// performance benchmark. The race detector's instrumentation overhead
+	// alone can approach a minute for 220k statement executions, unrelated
+	// to whether the migration is actually batched, so it gets a wider
+	// budget -- still far below what an unbatched, one-fsync-per-row version
+	// would take even under that same instrumentation.
+	budget := 10 * time.Second
+	if raceDetectorEnabled {
+		budget = 90 * time.Second
+	}
+	if elapsed > budget {
+		t.Fatalf("migration of %d legacy rows took %v, want under %v -- likely regressed back to one commit per row",
+			rowCount, elapsed, budget)
+	}
+	t.Logf("migrated %d legacy rows in %v", rowCount, elapsed)
+
+	rx, err := db.GetMetricSamples("if.rx_bps", "eth0", 60, 0, int64(rowCount))
+	if err != nil {
+		t.Fatalf("GetMetricSamples rx: %v", err)
+	}
+	if len(rx) != rowCount {
+		t.Fatalf("expected %d rx samples migrated, got %d", rowCount, len(rx))
+	}
+}
+
 // ─── Secrets ──────────────────────────────────────────────────────────────
 
 func TestSecretsTableExists(t *testing.T) {
