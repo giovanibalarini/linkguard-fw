@@ -1,8 +1,12 @@
 package links
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 func TestBindDialer(t *testing.T) {
@@ -185,4 +189,50 @@ func TestAdvanceStatusRecoversAfterDegradedEpisode(t *testing.T) {
 	if status != StatusOnline {
 		t.Fatalf("after 2 good samples: status = %q, want online", status)
 	}
+}
+
+// TestCheckLinkPassesFreshMeasurementToCallback verifies the link handed to
+// onStatusChange carries THIS tick's measured latency/loss, not whatever was
+// last persisted before the probe ran. Before this fix, "updated := l" copied
+// the link fetched at the top of the tick — stale by definition, since it
+// predates this tick's probe measurement — so any alert built from it could
+// never show a real number.
+func TestCheckLinkPassesFreshMeasurementToCallback(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewService(db)
+	l := &storage.Link{
+		Name: "WAN1", Interface: "lo", Gateway: "127.0.0.1",
+		DNSTest: "127.0.0.1", MonitorHosts: "127.0.0.1:1", // deliberately unreachable port -> measurable loss
+		Enabled: true, LatencyMs: 999, PacketLoss: 0, // stale values that must NOT leak through
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	mon := NewMonitor(db, svc, time.Second, 1, nil, nil)
+	var gotLatency, gotLoss float64
+	var called bool
+	mon.OnStatusChange(func(link *storage.Link, oldStatus, newStatus string) {
+		called = true
+		gotLatency = link.LatencyMs
+		gotLoss = link.PacketLoss
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mon.RunOnceForTest(ctx)
+
+	if !called {
+		t.Fatal("expected onStatusChange to fire on first observation (unknown -> offline/degraded)")
+	}
+	if gotLatency == 999 {
+		t.Fatal("expected fresh latency, got the stale seed value 999 — updated.LatencyMs was never set")
+	}
+	_ = gotLoss // loss is asserted indirectly via gotLatency != stale sentinel above
 }

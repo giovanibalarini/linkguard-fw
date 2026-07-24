@@ -274,6 +274,8 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	if newStatus != state.lastStatus && m.onStatusChange != nil {
 		updated := l
 		updated.Status = newStatus
+		updated.LatencyMs = avgLatency
+		updated.PacketLoss = packetLoss
 		m.onStatusChange(&updated, state.lastStatus, newStatus)
 		state.lastStatus = newStatus
 	}
@@ -283,6 +285,8 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	if fireSustained && m.onDegradedSustained != nil {
 		updated := l
 		updated.Status = newStatus
+		updated.LatencyMs = avgLatency
+		updated.PacketLoss = packetLoss
 		m.onDegradedSustained(&updated)
 	}
 
