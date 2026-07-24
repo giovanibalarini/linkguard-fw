@@ -738,3 +738,71 @@ func TestSecretsTableExists(t *testing.T) {
 		t.Fatalf("insert secrets: %v", err)
 	}
 }
+
+type fakeSecretsSetter struct {
+	stored map[string]string
+}
+
+func (f *fakeSecretsSetter) Set(name, plaintext string) error {
+	if f.stored == nil {
+		f.stored = map[string]string{}
+	}
+	f.stored[name] = plaintext
+	return nil
+}
+
+func TestMigrateSettingsToSecretsMovesKnownKeys(t *testing.T) {
+	db := newTestDB(t)
+
+	_ = db.SetSetting("github_update_token", "ghp_abc")
+	_ = db.SetSetting("notifications", `{"webhook":{"url":"https://x"}}`)
+	_ = db.SetSetting("totp_user-1", `{"secret":"AAA","enabled":true}`)
+	_ = db.SetSetting("totp_user-2", `{"secret":"BBB","enabled":true}`)
+	_ = db.SetSetting("monitoring", `{"enabled":true}`) // must NOT be migrated
+
+	fake := &fakeSecretsSetter{}
+	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
+		t.Fatalf("MigrateSettingsToSecrets: %v", err)
+	}
+
+	want := map[string]string{
+		"github_update_token": "ghp_abc",
+		"notifications":       `{"webhook":{"url":"https://x"}}`,
+		"totp_user-1":         `{"secret":"AAA","enabled":true}`,
+		"totp_user-2":         `{"secret":"BBB","enabled":true}`,
+	}
+	for k, v := range want {
+		if fake.stored[k] != v {
+			t.Fatalf("expected %q migrated with value %q, got %q", k, v, fake.stored[k])
+		}
+	}
+
+	settings, err := db.ExportSettings()
+	if err != nil {
+		t.Fatalf("ExportSettings: %v", err)
+	}
+	for k := range want {
+		if _, present := settings[k]; present {
+			t.Fatalf("expected %q removed from settings after migration, still present", k)
+		}
+	}
+	if settings["monitoring"] != `{"enabled":true}` {
+		t.Fatalf("expected non-secret key 'monitoring' untouched, got %q", settings["monitoring"])
+	}
+}
+
+func TestMigrateSettingsToSecretsIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	_ = db.SetSetting("github_update_token", "ghp_abc")
+
+	fake := &fakeSecretsSetter{}
+	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
+		t.Fatalf("first migrate: %v", err)
+	}
+	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	if fake.stored["github_update_token"] != "ghp_abc" {
+		t.Fatalf("expected value to survive two migrate calls unchanged, got %q", fake.stored["github_update_token"])
+	}
+}
