@@ -250,9 +250,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// Monitoring (Vigia health snapshot + config)
 		monH := handlers.NewMonitoringHandler(s.mon, s.db)
+		timelineH := handlers.NewTimelineHandler(s.rrdSvc, s.alertSvc)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/health", monH.Health)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/config", monH.GetConfig)
 		r.With(require(auth.PermSystemWrite)).Put("/api/monitoring/config", monH.SetConfig)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/timeline", timelineH.Timeline)
 
 		// Notification channels (webhook/Telegram/e-mail)
 		notifyH := handlers.NewNotifyHandler(s.db, s.notifySvc)

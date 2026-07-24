@@ -190,3 +190,91 @@ func rangeToStepDuration(rangeID string) (int, time.Duration) {
 		return 60, 12 * time.Hour
 	}
 }
+
+// TimelinePoint is one bucket of one series in a timeline response.
+type TimelinePoint struct {
+	Ts  int64   `json:"ts"`
+	Min float64 `json:"min"`
+	Avg float64 `json:"avg"`
+	Max float64 `json:"max"`
+}
+
+// TimelineSeries is one series+label's points for a timeline response.
+type TimelineSeries struct {
+	Name   string          `json:"name"`
+	Label  string          `json:"label"`
+	Points []TimelinePoint `json:"points"`
+}
+
+// TimelineState is one interval for the states section of a timeline response.
+type TimelineState struct {
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	State     string `json:"state"`
+	StartedAt int64  `json:"started_at"`
+	EndedAt   *int64 `json:"ended_at,omitempty"`
+}
+
+// TimelineRequest names which series+label pairs and which state kind+label
+// pairs to include.
+type TimelineRequest struct {
+	FromUnix, ToUnix int64
+	Series           []SeriesLabel // exported alias of the internal seriesLabel key
+	States           []StateKindLabel
+}
+
+// SeriesLabel and StateKindLabel are exported so callers outside the package
+// (the API handler) can name what they want without reaching into internals.
+type SeriesLabel struct{ Series, Label string }
+type StateKindLabel struct{ Kind, Label string }
+
+// Timeline answers a correlated multi-series, multi-state query for the
+// diagnostic timeline. It picks the bucket step from the window width, the
+// same rule GetHistory uses for a single series.
+func (s *Service) Timeline(req TimelineRequest) (step int, series []TimelineSeries, states []TimelineState, err error) {
+	dur := time.Duration(req.ToUnix-req.FromUnix) * time.Second
+	step, _ = stepForDuration(dur)
+
+	for _, sl := range req.Series {
+		samples, err := s.db.GetMetricSamples(sl.Series, sl.Label, step, req.FromUnix, req.ToUnix)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		points := make([]TimelinePoint, len(samples))
+		for i, sm := range samples {
+			points[i] = TimelinePoint{Ts: sm.TsUnix, Min: sm.VMin, Avg: sm.VAvg, Max: sm.VMax}
+		}
+		series = append(series, TimelineSeries{Name: sl.Series, Label: sl.Label, Points: points})
+	}
+
+	for _, kl := range req.States {
+		intervals, err := s.db.GetStateIntervals(kl.Kind, kl.Label, req.FromUnix, req.ToUnix)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		for _, iv := range intervals {
+			states = append(states, TimelineState{
+				Kind: iv.Kind, Label: iv.Label, State: iv.State,
+				StartedAt: iv.StartedAt, EndedAt: iv.EndedAt,
+			})
+		}
+	}
+
+	return step, series, states, nil
+}
+
+// stepForDuration picks a bucket step by window width, same thresholds as
+// rangeToStepDuration but keyed by an actual duration instead of a named range
+// (the timeline endpoint takes from/to timestamps, not a preset range name).
+func stepForDuration(d time.Duration) (int, error) {
+	switch {
+	case d <= 30*time.Minute:
+		return 1, nil
+	case d <= 12*time.Hour:
+		return 60, nil
+	case d <= 30*24*time.Hour:
+		return 900, nil
+	default:
+		return 3600, nil
+	}
+}
