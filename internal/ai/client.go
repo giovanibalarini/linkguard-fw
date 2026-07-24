@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -101,8 +102,10 @@ func (c *Client) Analyze(ctx context.Context, ev Evidence) (Report, error) {
 	if err := c.budget.RecordSpend(cost); err != nil {
 		// The call already succeeded and cost real money — a bookkeeping
 		// failure here must not discard the report the caller is about to
-		// use, so this is logged by the caller's context, not fatal here.
-		_ = err
+		// use, so this is logged (not returned/fatal): losing this warning
+		// would mean spend silently drifts from the real total charged by
+		// the API, undermining the budget guard's whole purpose.
+		slog.Warn("ai: record spend failed — budget tracking may drift from actual spend", "cost_usd", cost, "err", err)
 	}
 
 	// resp.Content may interleave ThinkingBlock and TextBlock entries (adaptive

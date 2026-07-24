@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	linkguardfw "github.com/giovanibalarini/linkguard-fw"
+	"github.com/giovanibalarini/linkguard-fw/internal/ai"
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
@@ -171,6 +172,13 @@ func run() int {
 	sysCollector := system.NewCollector()
 	rrdSvc := tsdb.NewService(db)
 
+	// Optional AI advisory layer (BYOK): disabled by default (ai.LoadConfig's
+	// Enabled defaults to false), and swallows its own failures — wiring it in
+	// unconditionally here does not change failover/balance behavior.
+	aiBudget := ai.NewBudgetGuard(db)
+	aiClient := ai.NewClient(secretsSvc, aiBudget, func() ai.Config { return ai.LoadConfig(db) })
+	balancerSvc.SetAI(aiClient, rrdSvc)
+
 	promReg := prometheus.NewRegistry()
 	appMetrics := metrics.New(promReg)
 	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec, rrdSvc)
@@ -227,6 +235,16 @@ func run() int {
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)
 	go balancerSvc.Run(ctx)
+	go ai.RunDigest(ctx, aiClient, rrdSvc, alertSvc, db, func() []string {
+		all, _ := db.GetLinks()
+		names := make([]string, 0, len(all))
+		for _, l := range all {
+			if l.Enabled {
+				names = append(names, l.Name)
+			}
+		}
+		return names
+	})
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr(),

@@ -31,10 +31,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/ai"
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 )
 
 const (
@@ -144,6 +146,9 @@ type Service struct {
 	linkSvc  *links.Service
 	alertSvc *alerts.Service
 
+	aiClient *ai.Client
+	tsdbSvc  *tsdb.Service
+
 	mu      sync.Mutex
 	pending *pendingRollback
 
@@ -164,6 +169,14 @@ func NewService(db *storage.DB, exec firewall.Executor, linkSvc *links.Service, 
 		lastFired:     map[string]string{},
 		evictCooldown: map[string]time.Time{},
 	}
+}
+
+// SetAI wires the optional AI advisory layer. If never called, OnLinkChange
+// skips the immediate-analysis trigger entirely — the AI layer is opt-in and
+// its absence changes nothing about failover/balance behavior.
+func (s *Service) SetAI(client *ai.Client, tsdbSvc *tsdb.Service) {
+	s.aiClient = client
+	s.tsdbSvc = tsdbSvc
 }
 
 // LoadConfig reads the persisted configuration (with defaults applied).
@@ -466,6 +479,15 @@ func (s *Service) OnLinkChange(link *storage.Link, oldStatus, newStatus string) 
 		_ = s.alertSvc.LinkOnline(link.Name, link.ID)
 	case links.StatusDegraded:
 		_ = s.alertSvc.LinkDegraded(link.Name, link.ID, link.LatencyMs, link.PacketLoss)
+	}
+
+	// Optional AI advisory layer: fires only on a severe, already-confirmed
+	// transition (offline, or degraded past the hysteresis threshold this
+	// callback only receives once Project 2's fix is in place). Runs in its
+	// own goroutine with its own timeout — never blocks the route rebuild
+	// below, and any failure is swallowed inside TriggerImmediate itself.
+	if s.aiClient != nil && (newStatus == links.StatusOffline || newStatus == links.StatusDegraded) {
+		go ai.TriggerImmediate(context.Background(), s.aiClient, s.tsdbSvc, s.alertSvc, s.db, link)
 	}
 
 	if err := s.Rebuild(ctx); err != nil {
