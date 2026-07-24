@@ -304,3 +304,146 @@ func TestConcurrentGaugeAndStateWhileRunning(t *testing.T) {
 	cancel()
 	runWg.Wait()
 }
+
+// TestNewServiceReconcilesOpenStateAcrossRestart simulates a process restart:
+// an interval was left open by a prior Service instance (here, seeded
+// directly via db.OpenStateInterval, bypassing the tsdb service entirely —
+// exactly what's on disk after a crash/restart), and a brand-new Service is
+// constructed against that same db. Before the fix, NewService always
+// started with an empty in-memory states map, so the first State() call for
+// that (kind,label) — even reporting the SAME state that's already open —
+// would call OpenStateInterval without closing the still-open DB row,
+// leaking a duplicate open interval.
+func TestNewServiceReconcilesOpenStateAcrossRestart(t *testing.T) {
+	db := newTestDB(t)
+
+	// Simulate: a prior process instance opened this interval and never
+	// closed it (crash, kill -9, power loss — whatever caused the restart).
+	if err := db.OpenStateInterval("link", "WAN VIVO", "degraded", 1000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+
+	// A new Service is constructed — this must reconcile s.states from the DB.
+	svc := tsdb.NewService(db)
+
+	// Reporting the SAME state that's already open must be a no-op: no new
+	// interval opened, the existing one left untouched.
+	svc.StateForTest("link", "WAN VIVO", "degraded", 1500)
+
+	got, err := db.GetStateIntervals("link", "WAN VIVO", 0, 5000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 interval (no duplicate open), got %d: %+v", len(got), got)
+	}
+	if got[0].State != "degraded" || got[0].EndedAt != nil || got[0].StartedAt != 1000 {
+		t.Fatalf("expected the original open interval untouched (degraded, started 1000, still open), got %+v", got[0])
+	}
+
+	// Now report a genuinely DIFFERENT state — this must close the
+	// reconciled interval and open exactly one new one, not leave the old
+	// one dangling alongside a new open one.
+	svc.StateForTest("link", "WAN VIVO", "online", 2000)
+
+	got, err = db.GetStateIntervals("link", "WAN VIVO", 0, 5000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected exactly 2 intervals (old closed, new open), got %d: %+v", len(got), got)
+	}
+	if got[0].State != "degraded" || got[0].EndedAt == nil || *got[0].EndedAt != 2000 {
+		t.Fatalf("expected first interval degraded, closed at 2000; got %+v", got[0])
+	}
+	if got[1].State != "online" || got[1].EndedAt != nil || got[1].StartedAt != 2000 {
+		t.Fatalf("expected second interval online, started 2000, still open; got %+v", got[1])
+	}
+}
+
+// TestNewServiceLoadsLegacyJSONRetentionProfile simulates an upgrade from the
+// old internal/trafficrrd package, which stored the retention-profile
+// setting as a JSON object ({"profile":"1y"}) rather than the bare string the
+// new tsdb package writes. Before the fix, profileRetention() would be
+// called with the raw JSON blob, match no known profile, and NewService
+// would silently behave as if the default (30d) profile were active —
+// pruning real production history on the very next tick.
+func TestNewServiceLoadsLegacyJSONRetentionProfile(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.SetSetting("traffic_retention_profile", `{"profile":"1y"}`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	svc := tsdb.NewService(db)
+
+	if got := svc.GetProfile(); got != tsdb.Profile1y {
+		t.Fatalf("expected legacy JSON profile setting to be read as %q, got %q", tsdb.Profile1y, got)
+	}
+}
+
+// TestNewServiceLoadsBareStringRetentionProfile is the companion to the
+// legacy-JSON test above: the new format (bare string, as written by
+// SetProfile) must keep working after the fix that added JSON tolerance.
+func TestNewServiceLoadsBareStringRetentionProfile(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.SetSetting("traffic_retention_profile", tsdb.Profile5y); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	svc := tsdb.NewService(db)
+
+	if got := svc.GetProfile(); got != tsdb.Profile5y {
+		t.Fatalf("expected bare-string profile setting %q, got %q", tsdb.Profile5y, got)
+	}
+}
+
+// TestPruneRemovesOldClosedStateIntervalsButKeepsOpenOnes exercises prune()
+// (via SetProfile, which prunes immediately) end-to-end through the Service:
+// an old CLOSED interval must be deleted, but an old still-OPEN interval must
+// survive — even though both are older than the retention cutoff — so a
+// later restart can still reconcile against it (see
+// TestNewServiceReconcilesOpenStateAcrossRestart).
+func TestPruneRemovesOldClosedStateIntervalsButKeepsOpenOnes(t *testing.T) {
+	db := newTestDB(t)
+	svc := tsdb.NewService(db)
+
+	longAgo := time.Now().Add(-200 * 24 * time.Hour).Unix() // older than every profile's state-interval window
+	longAgoEnd := longAgo + 10
+
+	if err := db.OpenStateInterval("link", "WAN VIVO", "degraded", longAgo); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.CloseOpenStateInterval("link", "WAN VIVO", longAgoEnd); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+	if err := db.OpenStateInterval("service", "unbound", "up", longAgo); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+
+	// SetProfile prunes immediately using time.Now(), so the seeded
+	// timestamps above (200 days ago) fall outside even the 5y profile's
+	// state-interval window derived from its longest (3600s) step... except
+	// 5y keeps 3600s for 5 years, so use the default 30d profile instead,
+	// whose 3600s step is kept for 90 days — well short of 200 days.
+	if err := svc.SetProfile(tsdb.Profile30d); err != nil {
+		t.Fatalf("SetProfile: %v", err)
+	}
+
+	closed, err := db.GetStateIntervals("link", "WAN VIVO", 0, time.Now().Unix()+1000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(closed) != 0 {
+		t.Fatalf("expected the old closed interval to be pruned, got %+v", closed)
+	}
+
+	open, err := db.GetAllOpenStateIntervals()
+	if err != nil {
+		t.Fatalf("GetAllOpenStateIntervals: %v", err)
+	}
+	if len(open) != 1 || open[0].Label != "unbound" {
+		t.Fatalf("expected the old open interval to survive pruning, got %+v", open)
+	}
+}

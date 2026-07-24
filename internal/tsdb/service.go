@@ -6,6 +6,7 @@ package tsdb
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -99,9 +100,42 @@ func NewService(db *storage.DB) *Service {
 	if p, err := db.GetSetting(retentionProfileSettingKey); err != nil {
 		slog.Warn("tsdb: load retention profile failed, using default", "err", err)
 	} else if p != "" {
-		s.profileCache = p
+		s.profileCache = parseProfileSetting(p)
+	}
+
+	// Reconcile in-memory state with whatever is actually open in the DB.
+	// Without this, the map starts empty on every restart and the first
+	// State() call for any (kind,label) never closes the interval left open
+	// by the previous process instance — leaking a permanently-open row, and
+	// (if two+ restarts happen before a real transition) letting
+	// CloseOpenStateInterval later close multiple accumulated "open" rows for
+	// the same key at once, producing overlapping history.
+	if open, err := db.GetAllOpenStateIntervals(); err != nil {
+		slog.Warn("tsdb: load open state intervals failed", "err", err)
+	} else {
+		for _, si := range open {
+			s.states[stateKey{si.Kind, si.Label}] = &openState{state: si.State, startedAt: si.StartedAt}
+		}
 	}
 	return s
+}
+
+// parseProfileSetting extracts the retention profile string from a stored
+// setting value, tolerating two formats: the legacy JSON object written by
+// the old internal/trafficrrd package ({"profile":"1y"}) and the new bare
+// string written by SetProfile ("1y"). This only affects the READ path —
+// SetProfile always writes the bare-string form. Without this, an upgrading
+// device that previously chose a non-default profile would have its stored
+// JSON blob match no known profile string, silently fall back to the 30-day
+// default, and lose real history on the very next prune tick.
+func parseProfileSetting(raw string) string {
+	var legacy struct {
+		Profile string `json:"profile"`
+	}
+	if err := json.Unmarshal([]byte(raw), &legacy); err == nil && legacy.Profile != "" {
+		return legacy.Profile
+	}
+	return raw
 }
 
 // Gauge accumulates one reading into the in-memory bucket for series+label at
@@ -306,11 +340,40 @@ func (s *Service) tick(now int64) {
 }
 
 func (s *Service) prune(now int64) {
-	for _, keep := range profileRetention(s.profile()) {
+	keeps := profileRetention(s.profile())
+	for _, keep := range keeps {
 		if err := s.db.PruneMetricSamples(keep.StepSeconds, now-int64(keep.KeepFor.Seconds())); err != nil {
 			slog.Warn("tsdb: prune metric samples failed", "step", keep.StepSeconds, "err", err)
 		}
 	}
+	// state_intervals has no "step" of its own — states aren't sampled at a
+	// cadence the way gauges are — so it's retained for as long as the
+	// longest configured degree (3600s) keeps its metric samples, giving
+	// diagnostic state history the same horizon as the hourly rollups it's
+	// typically correlated against.
+	if cutoff, ok := longestStepCutoff(keeps, now); ok {
+		if err := s.db.PruneStateIntervals(cutoff); err != nil {
+			slog.Warn("tsdb: prune state intervals failed", "err", err)
+		}
+	}
+}
+
+// longestStepCutoff returns the prune cutoff (now - KeepFor) associated with
+// the longest step in keeps, i.e. the retention window state_intervals
+// borrows since it has no step of its own. ok is false only if keeps is
+// empty (profileRetention never returns an empty slice today, but this keeps
+// prune() from computing a bogus cutoff if that ever changes).
+func longestStepCutoff(keeps []stepRetention, now int64) (cutoff int64, ok bool) {
+	if len(keeps) == 0 {
+		return 0, false
+	}
+	longest := keeps[0]
+	for _, k := range keeps[1:] {
+		if k.StepSeconds > longest.StepSeconds {
+			longest = k
+		}
+	}
+	return now - int64(longest.KeepFor.Seconds()), true
 }
 
 // FlushForTest forces every pending bucket whose window would have closed by

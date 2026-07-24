@@ -1145,6 +1145,43 @@ func (db *DB) CloseOpenStateInterval(kind, label string, endedAt int64) error {
 	return err
 }
 
+// GetAllOpenStateIntervals returns every currently-open interval (ended_at IS
+// NULL) across all (kind, label) pairs — used at startup to reconcile
+// in-memory state with what's actually open in the database, so a restart
+// doesn't leak a permanently-open row or later corrupt history by closing
+// multiple accumulated "open" rows for the same key at once.
+func (db *DB) GetAllOpenStateIntervals() ([]StateInterval, error) {
+	rows, err := db.conn.Query(`
+		SELECT kind, label, state, started_at
+		FROM state_intervals
+		WHERE ended_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []StateInterval
+	for rows.Next() {
+		var s StateInterval
+		if err := rows.Scan(&s.Kind, &s.Label, &s.State, &s.StartedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// PruneStateIntervals deletes CLOSED intervals (ended_at IS NOT NULL) whose
+// started_at is older than the cutoff. A still-open interval is never
+// deleted, no matter how old — it must survive so a later restart can still
+// reconcile in-memory state against it (see GetAllOpenStateIntervals).
+func (db *DB) PruneStateIntervals(olderThanUnix int64) error {
+	_, err := db.conn.Exec(`
+		DELETE FROM state_intervals
+		WHERE started_at < ? AND ended_at IS NOT NULL`, olderThanUnix)
+	return err
+}
+
 // GetStateIntervals returns intervals for (kind, label) that overlap
 // [fromUnix, toUnix] — including an interval that started before fromUnix and
 // is still open, or ended after toUnix.

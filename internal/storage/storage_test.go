@@ -593,6 +593,97 @@ func TestGetStateIntervalsIncludesOpenIntervalStartedBeforeWindow(t *testing.T) 
 	}
 }
 
+func TestGetAllOpenStateIntervals(t *testing.T) {
+	db := newTestDB(t)
+
+	// Two open intervals for different (kind,label) keys, plus one closed
+	// interval that must NOT be returned.
+	if err := db.OpenStateInterval("link", "WAN VIVO", "degraded", 1000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.OpenStateInterval("service", "unbound", "up", 2000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.OpenStateInterval("link", "WAN SUMICITY", "online", 3000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.CloseOpenStateInterval("link", "WAN SUMICITY", 3100); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+
+	got, err := db.GetAllOpenStateIntervals()
+	if err != nil {
+		t.Fatalf("GetAllOpenStateIntervals: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 open intervals (closed one excluded), got %d: %+v", len(got), got)
+	}
+	byLabel := map[string]storage.StateInterval{}
+	for _, si := range got {
+		if si.EndedAt != nil {
+			t.Fatalf("expected EndedAt nil for an open interval, got %+v", si)
+		}
+		byLabel[si.Label] = si
+	}
+	if si, ok := byLabel["WAN VIVO"]; !ok || si.Kind != "link" || si.State != "degraded" || si.StartedAt != 1000 {
+		t.Fatalf("expected open link/WAN VIVO/degraded@1000, got %+v (present=%v)", si, ok)
+	}
+	if si, ok := byLabel["unbound"]; !ok || si.Kind != "service" || si.State != "up" || si.StartedAt != 2000 {
+		t.Fatalf("expected open service/unbound/up@2000, got %+v (present=%v)", si, ok)
+	}
+}
+
+func TestPruneStateIntervals(t *testing.T) {
+	db := newTestDB(t)
+
+	// Old, closed interval — must be pruned.
+	if err := db.OpenStateInterval("link", "WAN VIVO", "degraded", 100); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.CloseOpenStateInterval("link", "WAN VIVO", 200); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+	// Old, still-open interval — must survive pruning no matter how old.
+	if err := db.OpenStateInterval("service", "unbound", "up", 50); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	// Recent, closed interval — must survive (not old enough to prune).
+	if err := db.OpenStateInterval("link", "WAN SUMICITY", "online", 9000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.CloseOpenStateInterval("link", "WAN SUMICITY", 9100); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+
+	if err := db.PruneStateIntervals(5000); err != nil {
+		t.Fatalf("PruneStateIntervals: %v", err)
+	}
+
+	got, err := db.GetAllOpenStateIntervals()
+	if err != nil {
+		t.Fatalf("GetAllOpenStateIntervals: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "unbound" {
+		t.Fatalf("expected the old open interval to survive pruning, got %+v", got)
+	}
+
+	closedRecent, err := db.GetStateIntervals("link", "WAN SUMICITY", 0, 100000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(closedRecent) != 1 {
+		t.Fatalf("expected the recent closed interval to survive, got %+v", closedRecent)
+	}
+
+	closedOld, err := db.GetStateIntervals("link", "WAN VIVO", 0, 100000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(closedOld) != 0 {
+		t.Fatalf("expected the old closed interval to be pruned, got %+v", closedOld)
+	}
+}
+
 // ─── Migration: traffic_samples → metric_samples ────────────────────────────
 
 func TestMigrateTrafficSamplesToMetricSamples(t *testing.T) {
