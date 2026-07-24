@@ -1535,7 +1535,7 @@ git commit -m "refactor: rewire main.go and api server from trafficrrd to tsdb"
 - Modify: `internal/monitoring/collector.go`
 - Modify: `internal/monitoring/healthchecks.go`
 - Modify: `cmd/linkguard-fw/main.go` (pass the `tsdb.Recorder` into `links.NewMonitor` and `monitoring.NewCollector`)
-- Test: `internal/links/monitor_test.go` (create if it does not exist), `internal/monitoring/collector_test.go` (extend if present)
+- Test: `internal/links/monitor_recorder_test.go` (new file), `internal/monitoring/collector_test.go` (extend if present)
 
 **Interfaces:**
 - Consumes: `tsdb.Recorder` interface (Task 3) — `Gauge(series, label string, v float64)`, `State(kind, label, state string)`.
@@ -1621,7 +1621,9 @@ Concretely: cut the `rrdSvc := tsdb.NewService(db)` line from its current positi
 
 - [ ] **Step 4: Write the failing test**
 
-Create `internal/links/monitor_test.go` if it does not already exist (check first with `ls internal/links/*_test.go`); add:
+`internal/links/monitor_test.go` already exists, as `package links` (internal test package, testing `linkState.advance` directly — see `TestAdvanceDebounce` etc.). The test below needs external package `links_test` instead, because it exercises `tsdb.Recorder` compile-time satisfaction from outside the package. Go allows both `package links` and `package links_test` files in the same directory, so create a **new, separate file** rather than touching the existing one:
+
+Create `internal/links/monitor_recorder_test.go`:
 
 ```go
 package links_test
@@ -1826,7 +1828,7 @@ Expected: clean build, all tests pass, including any existing `internal/monitori
 
 ```bash
 export PATH="$HOME/sdk/go1.25.0/bin:$PATH"
-gofmt -w internal/links/monitor.go internal/links/monitor_test.go internal/monitoring/collector.go internal/monitoring/healthchecks.go cmd/linkguard-fw/main.go
+gofmt -w internal/links/monitor.go internal/links/monitor_recorder_test.go internal/monitoring/collector.go internal/monitoring/healthchecks.go cmd/linkguard-fw/main.go
 git add internal/links/ internal/monitoring/ cmd/linkguard-fw/main.go
 git commit -m "feat(tsdb): wire link monitor and health collector as producers"
 ```
