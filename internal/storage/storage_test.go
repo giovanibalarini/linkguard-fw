@@ -435,3 +435,24 @@ func TestExportSettingsExcludesSecrets(t *testing.T) {
 		t.Fatalf("expected %d exported keys, got %d: %v", len(plain), len(out), out)
 	}
 }
+
+// ─── Metric samples and state intervals ──────────────────────────────────────
+
+func TestMetricSamplesAndStateIntervalsTablesExist(t *testing.T) {
+	db := newTestDB(t)
+
+	_, err := db.Conn().Exec(`INSERT INTO metric_samples
+		(series, label, step_seconds, ts_unix, v_min, v_avg, v_max)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"link.latency_ms", "WAN VIVO", 10, 1000, 10.0, 15.0, 20.0)
+	if err != nil {
+		t.Fatalf("insert metric_samples: %v", err)
+	}
+
+	_, err = db.Conn().Exec(`INSERT INTO state_intervals
+		(kind, label, state, started_at, ended_at) VALUES (?, ?, ?, ?, ?)`,
+		"link", "WAN SUMICITY", "degraded", 1000, nil)
+	if err != nil {
+		t.Fatalf("insert state_intervals: %v", err)
+	}
+}

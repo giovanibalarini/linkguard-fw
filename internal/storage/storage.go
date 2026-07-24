@@ -64,7 +64,10 @@ func (db *DB) migrate() error {
 		createRoutingPoliciesTable,
 		createIptablesBackupsTable,
 		createSettingsTable,
-        createTrafficSamplesTable,
+		createTrafficSamplesTable,
+		createMetricSamplesTable,
+		createStateIntervalsTable,
+		createStateIntervalsOpenIndex,
 		createHostMetadataTable,
 		createDHCPReservationsTable,
 		createDNSBlocklistTable,
@@ -253,3 +256,29 @@ CREATE TABLE IF NOT EXISTS traffic_samples (
     tx_bps        REAL NOT NULL,
     PRIMARY KEY (interface, step_seconds, ts_unix)
 );`
+
+const createMetricSamplesTable = `
+CREATE TABLE IF NOT EXISTS metric_samples (
+    series        TEXT NOT NULL,
+    label         TEXT NOT NULL DEFAULT '',
+    step_seconds  INTEGER NOT NULL,
+    ts_unix       INTEGER NOT NULL,
+    v_min         REAL NOT NULL,
+    v_avg         REAL NOT NULL,
+    v_max         REAL NOT NULL,
+    PRIMARY KEY (series, label, step_seconds, ts_unix)
+);`
+
+const createStateIntervalsTable = `
+CREATE TABLE IF NOT EXISTS state_intervals (
+    kind       TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    ended_at   INTEGER,
+    PRIMARY KEY (kind, label, started_at)
+);`
+
+const createStateIntervalsOpenIndex = `
+CREATE INDEX IF NOT EXISTS idx_state_intervals_open
+ON state_intervals(kind, label) WHERE ended_at IS NULL;`
