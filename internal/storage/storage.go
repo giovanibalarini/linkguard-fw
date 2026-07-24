@@ -72,6 +72,7 @@ func (db *DB) migrate() error {
 		createHostMetadataTable,
 		createDHCPReservationsTable,
 		createDNSBlocklistTable,
+		createAIReportsTable,
 		insertDefaultAdmin,
 	}
 
@@ -381,3 +382,14 @@ CREATE TABLE IF NOT EXISTS state_intervals (
 const createStateIntervalsOpenIndex = `
 CREATE INDEX IF NOT EXISTS idx_state_intervals_open
 ON state_intervals(kind, label) WHERE ended_at IS NULL;`
+
+const createAIReportsTable = `
+CREATE TABLE IF NOT EXISTS ai_reports (
+    id             TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL,
+    summary        TEXT NOT NULL,
+    findings       TEXT NOT NULL,
+    recommendation TEXT NOT NULL,
+    confidence     TEXT NOT NULL,
+    created_at     DATETIME NOT NULL
+);`

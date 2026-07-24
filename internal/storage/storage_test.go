@@ -761,3 +761,47 @@ func TestMigrateSettingsToSecretsIsIdempotent(t *testing.T) {
 		t.Fatalf("expected value to survive two migrate calls unchanged, got %q", fake.stored["github_update_token"])
 	}
 }
+
+func TestCreateAndListAIReports(t *testing.T) {
+	db := newTestDB(t)
+
+	r := &storage.AIReport{
+		Kind: "digest", Summary: "19 episódios na SUMICITY, nenhum com perda de carrier",
+		Findings:       `["SUMICITY: 19 episódios, 8-18s cada"]`,
+		Recommendation: "Considere abrir chamado com a operadora anexando este relatório.",
+		Confidence:     "alta",
+	}
+	if err := db.CreateAIReport(r); err != nil {
+		t.Fatalf("CreateAIReport: %v", err)
+	}
+	if r.ID == "" {
+		t.Error("expected ID to be set")
+	}
+
+	got, err := db.ListAIReports(10)
+	if err != nil {
+		t.Fatalf("ListAIReports: %v", err)
+	}
+	if len(got) != 1 || got[0].Summary != r.Summary {
+		t.Fatalf("expected 1 report matching what was created, got %v", got)
+	}
+
+	one, err := db.GetAIReport(r.ID)
+	if err != nil {
+		t.Fatalf("GetAIReport: %v", err)
+	}
+	if one == nil || one.ID != r.ID {
+		t.Fatalf("expected GetAIReport to find the created report, got %v", one)
+	}
+}
+
+func TestGetAIReportMissingReturnsNil(t *testing.T) {
+	db := newTestDB(t)
+	got, err := db.GetAIReport("does-not-exist")
+	if err != nil {
+		t.Fatalf("GetAIReport: %v", err)
+	}
+	if got != nil {
+		t.Fatal("expected nil for a missing report")
+	}
+}

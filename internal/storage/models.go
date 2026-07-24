@@ -199,6 +199,20 @@ type StateInterval struct {
 	EndedAt   *int64 `json:"ended_at,omitempty"`
 }
 
+// ─── AIReport ────────────────────────────────────────────────────────────────
+
+// AIReport is one AI-generated analysis — either a scheduled digest or an
+// immediate analysis of a severe event.
+type AIReport struct {
+	ID             string    `json:"id"`
+	Kind           string    `json:"kind"` // "digest" | "immediate"
+	Summary        string    `json:"summary"`
+	Findings       string    `json:"findings"`       // JSON-encoded []string
+	Recommendation string    `json:"recommendation"` // always human-readable text, never a command
+	Confidence     string    `json:"confidence"`     // "alta" | "média" | "baixa"
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func nullableTime(t *time.Time) sql.NullTime {
