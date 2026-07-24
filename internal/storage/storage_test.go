@@ -562,3 +562,33 @@ func TestStateIntervalsDoNotOverlap(t *testing.T) {
 		t.Fatalf("expected the last interval to still be open, got ended_at=%v", *got[2].EndedAt)
 	}
 }
+
+func TestGetStateIntervalsIncludesOpenIntervalStartedBeforeWindow(t *testing.T) {
+	db := newTestDB(t)
+
+	// Open an interval at timestamp 1000
+	if err := db.OpenStateInterval("link", "WAN SUMMER", "degraded", 1000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+
+	// Query with fromUnix=1500 and toUnix=2000, which is AFTER the interval started
+	// The interval started at 1000 but is still open, so it should be included
+	got, err := db.GetStateIntervals("link", "WAN SUMMER", 1500, 2000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+
+	// Assert the open interval that started before the query window is included
+	if len(got) != 1 {
+		t.Fatalf("expected 1 interval, got %d", len(got))
+	}
+	if got[0].StartedAt != 1000 {
+		t.Errorf("expected interval to have started_at=1000, got %d", got[0].StartedAt)
+	}
+	if got[0].EndedAt != nil {
+		t.Errorf("expected interval to still be open, got ended_at=%v", got[0].EndedAt)
+	}
+	if got[0].State != "degraded" {
+		t.Errorf("expected interval state=degraded, got %s", got[0].State)
+	}
+}
