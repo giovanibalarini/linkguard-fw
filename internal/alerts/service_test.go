@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -58,5 +59,29 @@ func TestServiceOnlineDeliversViaRecovery(t *testing.T) {
 	}
 	if len(fn.recovery) != 1 {
 		t.Errorf("recovery notifies = %v, want 1", fn.recovery)
+	}
+}
+
+func TestLinkDegradedMessageIncludesMeasuredValues(t *testing.T) {
+	db := openTestDB(t)
+	svc := NewService(db)
+
+	if err := svc.LinkDegraded("WAN SUMICITY", "link-1", 842.5, 33.3); err != nil {
+		t.Fatalf("LinkDegraded: %v", err)
+	}
+
+	alerts, err := svc.List(false, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(alerts))
+	}
+	msg := alerts[0].Message
+	if !strings.Contains(msg, "842.5") {
+		t.Errorf("expected message to include the measured latency, got: %q", msg)
+	}
+	if !strings.Contains(msg, "33.3") {
+		t.Errorf("expected message to include the measured packet loss, got: %q", msg)
 	}
 }

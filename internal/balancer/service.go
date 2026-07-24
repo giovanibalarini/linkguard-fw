@@ -465,7 +465,7 @@ func (s *Service) OnLinkChange(link *storage.Link, oldStatus, newStatus string) 
 	case links.StatusOnline:
 		_ = s.alertSvc.LinkOnline(link.Name, link.ID)
 	case links.StatusDegraded:
-		_ = s.alertSvc.LinkDegraded(link.Name, link.ID)
+		_ = s.alertSvc.LinkDegraded(link.Name, link.ID, link.LatencyMs, link.PacketLoss)
 	}
 
 	if err := s.Rebuild(ctx); err != nil {
