@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 )
 
 // Health classification thresholds.
@@ -35,6 +36,7 @@ type Monitor struct {
 	svc                 *Service
 	interval            time.Duration
 	probeCount          int
+	rec                 tsdb.Recorder
 	onStatusChange      func(link *storage.Link, oldStatus, newStatus string)
 	onDegradedSustained func(link *storage.Link)
 	sustainThreshold    func() int
@@ -54,7 +56,9 @@ type linkState struct {
 
 // NewMonitor creates a new Monitor. probeCount is how many connectivity probes
 // are sent per host per tick (≥1); more probes yield finer packet-loss/latency.
-func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount int) *Monitor {
+// rec receives every measurement for the diagnostic timeline — pass nil to
+// disable (used in tests that don't care about history).
+func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount int, rec tsdb.Recorder) *Monitor {
 	if probeCount < 1 {
 		probeCount = 1
 	}
@@ -63,6 +67,7 @@ func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount
 		svc:        svc,
 		interval:   interval,
 		probeCount: probeCount,
+		rec:        rec,
 		states:     make(map[string]*linkState),
 	}
 }
@@ -184,6 +189,11 @@ func (m *Monitor) Run(ctx context.Context) {
 	}
 }
 
+// RunOnceForTest runs a single checkAll pass synchronously. Test-only.
+func (m *Monitor) RunOnceForTest(ctx context.Context) {
+	m.checkAll(ctx)
+}
+
 func (m *Monitor) checkAll(ctx context.Context) {
 	links, err := m.db.GetLinks()
 	if err != nil {
@@ -239,6 +249,12 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	degradedNow := reachable && (packetLoss > degradedLossPct || avgLatency > degradedLatencyMs)
 
 	newStatus, fireSustained := state.advance(reachable, degradedNow, l.Status, m.sustainN())
+
+	if m.rec != nil {
+		m.rec.Gauge("link.latency_ms", l.Name, avgLatency)
+		m.rec.Gauge("link.loss_pct", l.Name, packetLoss)
+		m.rec.State("link", l.Name, newStatus)
+	}
 
 	// Update the link in DB
 	if err := m.svc.UpdateStatus(l.ID, newStatus, avgLatency, packetLoss); err != nil {
