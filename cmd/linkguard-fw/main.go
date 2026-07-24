@@ -96,6 +96,10 @@ func run() int {
 		db, err := storage.Open(cfg.DBPath)
 		if err == nil {
 			defer db.Close()
+			if orphanErr := secrets.CheckNotOrphaned("/etc/linkguard-fw/secret.key", db); orphanErr != nil {
+				slog.Warn("notify-down: refusing to start", "err", orphanErr)
+				return 1
+			}
 			key, keyErr := secrets.LoadOrGenerateKey("/etc/linkguard-fw/secret.key")
 			if keyErr != nil {
 				slog.Warn("notify-down: failed to load secret key", "err", keyErr)
@@ -124,6 +128,10 @@ func run() int {
 		return 1
 	}
 
+	if err := secrets.CheckNotOrphaned("/etc/linkguard-fw/secret.key", db); err != nil {
+		slog.Error("refusing to start", "err", err)
+		return 1
+	}
 	secretKey, err := secrets.LoadOrGenerateKey("/etc/linkguard-fw/secret.key")
 	if err != nil {
 		slog.Error("failed to load or generate secret key", "err", err)

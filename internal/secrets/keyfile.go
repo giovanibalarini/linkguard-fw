@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 const keySize = 32 // AES-256
@@ -47,4 +49,48 @@ func LoadOrGenerateKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("write secret key file %s: %w", path, err)
 	}
 	return key, nil
+}
+
+// CheckNotOrphaned returns an error if path does not exist but db already has
+// rows in the secrets table — meaning a key was lost after secrets were
+// encrypted under it, not that this is a genuine first boot. Call this
+// before LoadOrGenerateKey so a missing key with no prior secrets still takes
+// the normal first-boot generate path, while a missing key with existing
+// secrets fails loudly instead of silently orphaning them (which would
+// otherwise, e.g., make every user's 2FA silently stop being checked, since
+// getTwoFA swallows a decrypt error and treats it as "2FA not enabled").
+//
+// A stat error other than "not exist" is left for LoadOrGenerateKey's own
+// os.ReadFile call to report — that call already turns it into a clear,
+// specific error (e.g. permission denied), so this function does not
+// duplicate that path; it treats "can't tell if it exists" as "not our
+// problem to report" and returns nil, deferring to the caller's next step.
+func CheckNotOrphaned(path string, db *storage.DB) error {
+	_, err := os.Stat(path)
+	if err == nil {
+		// Key file exists: nothing to check here, LoadOrGenerateKey will
+		// validate its size/readability itself.
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		// Some other stat failure (e.g. permission denied on a parent
+		// directory). Not our call to make — LoadOrGenerateKey's own
+		// os.ReadFile will hit the same condition and report it.
+		return nil
+	}
+
+	var count int
+	if qErr := db.Conn().QueryRow(`SELECT COUNT(*) FROM secrets`).Scan(&count); qErr != nil {
+		return fmt.Errorf("check for orphaned secrets: %w", qErr)
+	}
+	if count > 0 {
+		return fmt.Errorf(
+			"secret key file %s is missing but the secrets table already has %d row(s): "+
+				"this looks like the encryption key was lost, NOT a first boot — starting now "+
+				"would generate a new key and silently make every existing secret (including "+
+				"2FA) undecryptable; restore the original %s or, if the loss is confirmed and "+
+				"accepted, clear the secrets table before restarting",
+			path, count, path)
+	}
+	return nil
 }

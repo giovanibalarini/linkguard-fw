@@ -276,7 +276,13 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// In-app update (admin: system.write)
 		updateH := handlers.NewUpdateHandler(s.db, s.sec, updater.NewService(s.exec, cfg.Version,
-			func() string { tok, _ := s.sec.Get("github_update_token"); return tok }))
+			func() string {
+				tok, err := s.sec.Get("github_update_token")
+				if err != nil {
+					slog.Warn("update: failed to read GitHub token from secrets vault", "err", err)
+				}
+				return tok
+			}))
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/check", updateH.Check)
 		r.With(require(auth.PermSystemWrite)).Post("/api/system/update/apply", updateH.Apply)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/token", updateH.TokenStatus)

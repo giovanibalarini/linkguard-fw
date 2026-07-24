@@ -83,7 +83,11 @@ func NewService(db *storage.DB, sec secrets.Secrets) *Service {
 // LoadConfig reads the persisted configuration (with defaults).
 func (s *Service) LoadConfig() Config {
 	c := Config{MinSeverity: "warning"}
-	if raw, _ := s.sec.Get(settingKey); raw != "" {
+	raw, err := s.sec.Get(settingKey)
+	if err != nil {
+		slog.Warn("notify: failed to read config from secrets vault", "err", err)
+	}
+	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &c)
 	}
 	if c.MinSeverity == "" {

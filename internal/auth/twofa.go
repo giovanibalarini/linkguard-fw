@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 )
 
 // Two-factor (TOTP) state is stored per user in the secrets vault: key
@@ -18,7 +19,16 @@ func twoFAKey(userID string) string { return "totp_" + userID }
 
 func (s *Service) getTwoFA(userID string) twoFAState {
 	var st twoFAState
-	if raw, _ := s.sec.Get(twoFAKey(userID)); raw != "" {
+	raw, err := s.sec.Get(twoFAKey(userID))
+	if err != nil {
+		// Treated as "not configured" below (same as before) — the boot-time
+		// CheckNotOrphaned guard rules out the "wrong key, silently orphaned"
+		// scenario, so a decrypt error here is most likely isolated ciphertext
+		// corruption (e.g. a flipped disk bit). Not fatal, but an operator
+		// needs a log trail instead of a fully silent "2FA looks disabled".
+		slog.Warn("auth: failed to read 2FA state from secrets vault", "user_id", userID, "err", err)
+	}
+	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &st)
 	}
 	return st
