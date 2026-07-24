@@ -165,7 +165,7 @@ func run() int {
 	// metrics collector, and sends several probes per host so packet loss/latency
 	// are real averages instead of a single pass/fail.
 	probeInterval := time.Duration(cfg.ProbeIntervalSeconds) * time.Second
-	monitor := links.NewMonitor(db, linkSvc, probeInterval, cfg.ProbeCount, rrdSvc)
+	monitor := links.NewMonitor(db, linkSvc, probeInterval, cfg.ProbeCount, rrdSvc, appMetrics)
 	// On a link state change, balance mode rebuilds the weighted multipath
 	// default route; otherwise the legacy per-table failover handles it.
 	monitor.OnStatusChange(func(link *storage.Link, oldStatus, newStatus string) {

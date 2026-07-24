@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 )
@@ -37,6 +38,7 @@ type Monitor struct {
 	interval            time.Duration
 	probeCount          int
 	rec                 tsdb.Recorder
+	m                   *metrics.Metrics
 	onStatusChange      func(link *storage.Link, oldStatus, newStatus string)
 	onDegradedSustained func(link *storage.Link)
 	sustainThreshold    func() int
@@ -58,7 +60,7 @@ type linkState struct {
 // are sent per host per tick (≥1); more probes yield finer packet-loss/latency.
 // rec receives every measurement for the diagnostic timeline — pass nil to
 // disable (used in tests that don't care about history).
-func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount int, rec tsdb.Recorder) *Monitor {
+func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount int, rec tsdb.Recorder, m *metrics.Metrics) *Monitor {
 	if probeCount < 1 {
 		probeCount = 1
 	}
@@ -68,6 +70,7 @@ func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount
 		interval:   interval,
 		probeCount: probeCount,
 		rec:        rec,
+		m:          m,
 		states:     make(map[string]*linkState),
 	}
 }
@@ -254,6 +257,11 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 		m.rec.Gauge("link.latency_ms", l.Name, avgLatency)
 		m.rec.Gauge("link.loss_pct", l.Name, packetLoss)
 		m.rec.State("link", l.Name, newStatus)
+	}
+	if m.m != nil {
+		m.m.LinkStatus.WithLabelValues(l.Name, l.Interface).Set(metrics.LinkStatusValue(newStatus))
+		m.m.LinkLatency.WithLabelValues(l.Name, l.Interface).Set(avgLatency)
+		m.m.LinkLoss.WithLabelValues(l.Name, l.Interface).Set(packetLoss)
 	}
 
 	// Update the link in DB

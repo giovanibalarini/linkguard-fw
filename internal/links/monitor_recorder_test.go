@@ -47,7 +47,7 @@ func TestMonitorRecordsGaugesAndState(t *testing.T) {
 	}
 
 	rec := &recorderSpy{}
-	mon := links.NewMonitor(db, linkSvc, time.Second, 1, rec)
+	mon := links.NewMonitor(db, linkSvc, time.Second, 1, rec, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

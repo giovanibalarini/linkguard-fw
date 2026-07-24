@@ -113,20 +113,6 @@ func (c *Collector) collect() {
 		c.checkServices(cfg)
 	}
 
-	// Link metrics
-	links, err := c.db.GetLinks()
-	if err != nil {
-		slog.Warn("fetch links for metrics", "err", err)
-		return
-	}
-
-	for _, l := range links {
-		statusVal := metrics.LinkStatusValue(l.Status)
-		c.m.LinkStatus.WithLabelValues(l.Name, l.Interface).Set(statusVal)
-		c.m.LinkLatency.WithLabelValues(l.Name, l.Interface).Set(l.LatencyMs)
-		c.m.LinkLoss.WithLabelValues(l.Name, l.Interface).Set(l.PacketLoss)
-	}
-
 	// Unresolved alerts
 	n, _ := c.db.CountAlerts()
 	c.m.AlertsTotal.Set(float64(n))
