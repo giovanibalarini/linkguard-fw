@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Network, ArrowDownToLine, ArrowUpToLine, Pencil, Pause, Play } from 'lucide-react';
+import { Network, ArrowDownToLine, ArrowUpToLine, Pencil, Pause, Play, ChevronDown, ChevronUp } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Brush } from 'recharts';
 import client from '../api/client';
 import type { SystemMetrics, TrafficHistoryResponse } from '../types';
@@ -72,8 +72,13 @@ export default function Interfaces() {
   const [rrdLoading, setRrdLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [paused, setPaused] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const firstLoadRef = useRef(true);
   const pausedRef = useRef(false);
+
+  const toggleExpanded = (name: string) => {
+    setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
+  };
 
   const prevCountersRef = useState<Record<string, { ts: number; rx: number; tx: number }>>({})[0];
   const secondHistoryRef = useState<Record<string, RatePoint[]>>({})[0];
@@ -319,8 +324,9 @@ export default function Interfaces() {
           <p className="text-gray-400">Nenhuma interface detectada</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
           {interfaces.map((iface) => {
+            const isOpen = !!expanded[iface.name];
             const rates = currentRates[iface.name] ?? { rx: 0, tx: 0 };
             const chartData = chartDataFor(iface.name);
             const plotData = chartData.map((p) => ({ ...p, tx_neg: -p.tx }));
@@ -330,127 +336,168 @@ export default function Interfaces() {
             const rxTrouble = iface.rx_errors > 0 || iface.rx_dropped > 0;
             const txTrouble = iface.tx_errors > 0 || iface.tx_dropped > 0;
             return (
-              <div key={iface.name} className="relative overflow-hidden rounded-2xl border border-gray-800 bg-gradient-to-br from-gray-900 via-gray-900 to-gray-950 p-4 shadow-xl">
+              <div
+                key={iface.name}
+                className={`relative overflow-hidden rounded-2xl border border-gray-800 bg-gradient-to-br from-gray-900 via-gray-900 to-gray-950 shadow-xl ${isOpen ? 'col-span-full' : ''}`}
+              >
                 <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-500 via-cyan-400 to-green-400 opacity-70" />
 
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/20">
-                      <Network className="w-3.5 h-3.5" />
+                {/* Always-visible summary — click anywhere to expand/collapse.
+                    Stacked (name on its own row), not crammed alongside the
+                    rate numbers/sparkline/chevron: a narrow tile squeezing
+                    all of that into one flex row collapsed the name's box to
+                    zero width (reproduced and confirmed locally — looked like
+                    a font bug, a flex-1/min-w-0 sizing issue). The name now
+                    always gets the tile's full width. */}
+                <button
+                  onClick={() => toggleExpanded(iface.name)}
+                  className="w-full text-left p-3"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/20">
+                      <Network className="w-3 h-3" />
                     </span>
-                    <div className="min-w-0">
-                      <h2 className="text-white font-semibold text-sm truncate">{iface.alias || iface.name}</h2>
-                      {iface.alias && <p className="text-gray-500 text-[11px] font-mono truncate">{iface.name}</p>}
-                    </div>
+                    <h2 title={iface.alias || iface.name} className="min-w-0 flex-1 text-white font-semibold text-sm truncate">
+                      {iface.alias || iface.name}
+                    </h2>
+                    {isOpen ? <ChevronUp className="w-4 h-4 text-gray-500 shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-500 shrink-0" />}
                   </div>
-                  <button
-                    onClick={() => openAlias(iface.name, iface.alias)}
-                    disabled={aliasSaving === iface.name}
-                    title={iface.alias ? 'Editar apelido' : 'Adicionar apelido'}
-                    className="shrink-0 rounded-lg border border-gray-700 bg-gray-900/80 p-1.5 text-gray-400 hover:border-blue-500/50 hover:text-blue-300 disabled:opacity-50"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2">
-                    <div className="flex items-center gap-1.5 text-gray-500 text-[11px] uppercase tracking-wide">
-                      <ArrowDownToLine className="w-3 h-3 text-cyan-400" />
-                      RX <span className="ml-auto text-cyan-300 font-mono normal-case">{formatRate(rates.rx)}</span>
-                    </div>
-                    <div className="text-white font-mono text-sm mt-0.5">{formatBytes(iface.rx_bytes)}</div>
-                    <div className="text-gray-500 text-[11px] mt-0.5">
-                      {iface.rx_packets.toLocaleString()} pacotes
-                      {rxTrouble && (
-                        <span className="text-amber-400"> · {iface.rx_errors} erros, {iface.rx_dropped} descartes</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2">
-                    <div className="flex items-center gap-1.5 text-gray-500 text-[11px] uppercase tracking-wide">
-                      <ArrowUpToLine className="w-3 h-3 text-green-400" />
-                      TX <span className="ml-auto text-emerald-300 font-mono normal-case">{formatRate(rates.tx)}</span>
-                    </div>
-                    <div className="text-white font-mono text-sm mt-0.5">{formatBytes(iface.tx_bytes)}</div>
-                    <div className="text-gray-500 text-[11px] mt-0.5">
-                      {iface.tx_packets.toLocaleString()} pacotes
-                      {txTrouble && (
-                        <span className="text-amber-400"> · {iface.tx_errors} erros, {iface.tx_dropped} descartes</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-2 rounded-lg border border-gray-800 bg-gray-900/70 p-2.5">
-                  <div className="mb-1 flex items-center justify-between">
-                    <p className="text-gray-500 text-[11px] uppercase tracking-wide">Consumo ({range})</p>
-                    {chartData.length >= 2 && <p className="text-[11px] text-gray-600">arraste pra dar zoom</p>}
-                  </div>
-                  {chartData.length < 2 ? (
-                    <p className="text-gray-500 text-sm py-6 text-center">
-                      {range !== '5m' && rrdLoading
-                        ? 'Carregando histórico...'
-                        : 'Aguardando amostras...'}
-                    </p>
-                  ) : (
-                    <ResponsiveContainer width="100%" height={120}>
-                      <LineChart data={plotData} margin={{ left: 0, right: 4, top: 4, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                        <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 9 }} minTickGap={range === '5m' ? 36 : 20} />
-                        <YAxis
-                          domain={[-chartMax, chartMax]}
-                          tick={{ fill: '#6b7280', fontSize: 9 }}
-                          tickFormatter={(v) => formatBytes(Math.abs(Number(v)))}
-                          width={54}
-                        />
-                        <ReferenceLine y={0} stroke="#4b5563" strokeDasharray="6 6" />
-                        <Tooltip
-                          contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
-                          formatter={(value: number, name: string) => [formatRate(Math.abs(Number(value))), name === 'rx' ? 'RX' : 'TX']}
-                        />
-                        <Line type="linear" dataKey="rx" stroke="#22d3ee" strokeWidth={2} dot={false} isAnimationActive={false} />
-                        <Line type="linear" dataKey="tx_neg" name="tx" stroke="#34d399" strokeWidth={2} dot={false} isAnimationActive={false} />
-                        <Brush dataKey="label" height={16} travellerWidth={6} stroke="#374151" fill="#111827" />
-                      </LineChart>
-                    </ResponsiveContainer>
+                  {iface.alias && (
+                    <p title={iface.name} className="ml-8 text-gray-500 text-[11px] font-mono truncate">{iface.name}</p>
                   )}
-
-                  {chartData.length >= 2 && (
-                    <div className="mt-2 rounded-md border border-gray-800 bg-gray-950/70 px-2 py-1.5 font-mono text-[11px]">
-                      <div className="grid grid-cols-5 gap-1 text-gray-600">
-                        <span></span><span>LAST</span><span>AVG</span><span>MAX</span><span>MIN</span>
+                  <div className="mt-1.5 flex items-center gap-3">
+                    {!isOpen && chartData.length >= 2 && (
+                      <div className="hidden sm:block flex-1 h-6 min-w-0">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartData} margin={{ top: 2, bottom: 2, left: 0, right: 0 }}>
+                            <Line type="linear" dataKey="rx" stroke="#22d3ee" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                            <Line type="linear" dataKey="tx" stroke="#34d399" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
                       </div>
-                      <div className="grid grid-cols-5 gap-1 text-cyan-300">
-                        <span className="text-gray-500">RX</span>
-                        <span>{formatRate(rxStats.last)}</span>
-                        <span>{formatRate(rxStats.avg)}</span>
-                        <span>{formatRate(rxStats.max)}</span>
-                        <span>{formatRate(rxStats.min)}</span>
-                      </div>
-                      <div className="grid grid-cols-5 gap-1 text-emerald-300">
-                        <span className="text-gray-500">TX</span>
-                        <span>{formatRate(txStats.last)}</span>
-                        <span>{formatRate(txStats.avg)}</span>
-                        <span>{formatRate(txStats.max)}</span>
-                        <span>{formatRate(txStats.min)}</span>
-                      </div>
+                    )}
+                    <div className="ml-auto shrink-0 font-mono text-[11px] whitespace-nowrap">
+                      <span className="text-cyan-300">↓{formatRate(rates.rx)}</span>
+                      <span className="text-emerald-300 ml-2">↑{formatRate(rates.tx)}</span>
                     </div>
-                  )}
-                </div>
+                  </div>
+                </button>
 
-                {iface.addresses && iface.addresses.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {iface.addresses.map((addr) => (
-                      <span
-                        key={`${iface.name}-${addr.cidr}`}
-                        title={addr.family}
-                        className="rounded-md border border-gray-800 bg-gray-900/70 px-2 py-1 text-[11px] font-mono text-gray-300"
+                {isOpen && (
+                  <div className="px-4 pb-4">
+                    <div className="mb-3 flex justify-end">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openAlias(iface.name, iface.alias); }}
+                        disabled={aliasSaving === iface.name}
+                        className="rounded-lg border border-gray-700 bg-gray-900/80 px-3 py-1.5 text-xs text-gray-300 hover:border-blue-500/50 hover:text-blue-300 disabled:opacity-50"
                       >
-                        {addr.ip}<span className="text-gray-600">/{addr.subnet.split('/')[1] ?? addr.subnet}</span>
-                      </span>
-                    ))}
+                        <span className="inline-flex items-center gap-2">
+                          <Pencil className="w-3.5 h-3.5" />
+                          {aliasSaving === iface.name ? 'Salvando...' : iface.alias ? 'Editar apelido' : 'Adicionar apelido'}
+                        </span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2">
+                        <div className="flex items-center gap-1.5 text-gray-500 text-[11px] uppercase tracking-wide">
+                          <ArrowDownToLine className="w-3 h-3 text-cyan-400" />
+                          RX <span className="ml-auto text-cyan-300 font-mono normal-case">{formatRate(rates.rx)}</span>
+                        </div>
+                        <div className="text-white font-mono text-sm mt-0.5">{formatBytes(iface.rx_bytes)}</div>
+                        <div className="text-gray-500 text-[11px] mt-0.5">
+                          {iface.rx_packets.toLocaleString()} pacotes
+                          {rxTrouble && (
+                            <span className="text-amber-400"> · {iface.rx_errors} erros, {iface.rx_dropped} descartes</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2">
+                        <div className="flex items-center gap-1.5 text-gray-500 text-[11px] uppercase tracking-wide">
+                          <ArrowUpToLine className="w-3 h-3 text-green-400" />
+                          TX <span className="ml-auto text-emerald-300 font-mono normal-case">{formatRate(rates.tx)}</span>
+                        </div>
+                        <div className="text-white font-mono text-sm mt-0.5">{formatBytes(iface.tx_bytes)}</div>
+                        <div className="text-gray-500 text-[11px] mt-0.5">
+                          {iface.tx_packets.toLocaleString()} pacotes
+                          {txTrouble && (
+                            <span className="text-amber-400"> · {iface.tx_errors} erros, {iface.tx_dropped} descartes</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 rounded-lg border border-gray-800 bg-gray-900/70 p-2.5">
+                      <div className="mb-1 flex items-center justify-between">
+                        <p className="text-gray-500 text-[11px] uppercase tracking-wide">Consumo ({range})</p>
+                        {chartData.length >= 2 && <p className="text-[11px] text-gray-600">arraste pra dar zoom</p>}
+                      </div>
+                      {chartData.length < 2 ? (
+                        <p className="text-gray-500 text-sm py-6 text-center">
+                          {range !== '5m' && rrdLoading
+                            ? 'Carregando histórico...'
+                            : 'Aguardando amostras...'}
+                        </p>
+                      ) : (
+                        <ResponsiveContainer width="100%" height={160}>
+                          <LineChart data={plotData} margin={{ left: 0, right: 4, top: 4, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                            <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 10 }} minTickGap={range === '5m' ? 36 : 20} />
+                            <YAxis
+                              domain={[-chartMax, chartMax]}
+                              tick={{ fill: '#6b7280', fontSize: 10 }}
+                              tickFormatter={(v) => formatBytes(Math.abs(Number(v)))}
+                              width={60}
+                            />
+                            <ReferenceLine y={0} stroke="#4b5563" strokeDasharray="6 6" />
+                            <Tooltip
+                              contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
+                              formatter={(value: number, name: string) => [formatRate(Math.abs(Number(value))), name === 'rx' ? 'RX' : 'TX']}
+                            />
+                            <Line type="linear" dataKey="rx" stroke="#22d3ee" strokeWidth={2} dot={false} isAnimationActive={false} />
+                            <Line type="linear" dataKey="tx_neg" name="tx" stroke="#34d399" strokeWidth={2} dot={false} isAnimationActive={false} />
+                            <Brush dataKey="label" height={18} travellerWidth={6} stroke="#374151" fill="#111827" />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      )}
+
+                      {chartData.length >= 2 && (
+                        <div className="mt-2 rounded-md border border-gray-800 bg-gray-950/70 px-2 py-1.5 font-mono text-[11px]">
+                          <div className="grid grid-cols-5 gap-1 text-gray-600">
+                            <span></span><span>LAST</span><span>AVG</span><span>MAX</span><span>MIN</span>
+                          </div>
+                          <div className="grid grid-cols-5 gap-1 text-cyan-300">
+                            <span className="text-gray-500">RX</span>
+                            <span>{formatRate(rxStats.last)}</span>
+                            <span>{formatRate(rxStats.avg)}</span>
+                            <span>{formatRate(rxStats.max)}</span>
+                            <span>{formatRate(rxStats.min)}</span>
+                          </div>
+                          <div className="grid grid-cols-5 gap-1 text-emerald-300">
+                            <span className="text-gray-500">TX</span>
+                            <span>{formatRate(txStats.last)}</span>
+                            <span>{formatRate(txStats.avg)}</span>
+                            <span>{formatRate(txStats.max)}</span>
+                            <span>{formatRate(txStats.min)}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {iface.addresses && iface.addresses.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {iface.addresses.map((addr) => (
+                          <span
+                            key={`${iface.name}-${addr.cidr}`}
+                            title={addr.family}
+                            className="rounded-md border border-gray-800 bg-gray-900/70 px-2 py-1 text-[11px] font-mono text-gray-300"
+                          >
+                            {addr.ip}<span className="text-gray-600">/{addr.subnet.split('/')[1] ?? addr.subnet}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
