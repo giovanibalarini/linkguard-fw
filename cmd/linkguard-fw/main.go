@@ -33,6 +33,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/tlscert"
@@ -95,7 +96,13 @@ func run() int {
 		db, err := storage.Open(cfg.DBPath)
 		if err == nil {
 			defer db.Close()
-			for _, e := range notify.NewService(db).SendNow("critical",
+			key, keyErr := secrets.LoadOrGenerateKey("/etc/linkguard-fw/secret.key")
+			if keyErr != nil {
+				slog.Warn("notify-down: failed to load secret key", "err", keyErr)
+				return 1
+			}
+			sec := secrets.NewService(db, key)
+			for _, e := range notify.NewService(db, sec).SendNow("critical",
 				"LinkGuard caiu", "O serviço linkguard-fw parou inesperadamente no firewall.") {
 				if e != nil {
 					slog.Warn("notify-down send failed", "err", e)
@@ -117,15 +124,26 @@ func run() int {
 		return 1
 	}
 
+	secretKey, err := secrets.LoadOrGenerateKey("/etc/linkguard-fw/secret.key")
+	if err != nil {
+		slog.Error("failed to load or generate secret key", "err", err)
+		return 1
+	}
+	secretsSvc := secrets.NewService(db, secretKey)
+	if err := storage.MigrateSettingsToSecrets(db, secretsSvc); err != nil {
+		slog.Error("failed to migrate legacy secrets", "err", err)
+		return 1
+	}
+
 	var exec firewall.Executor = firewall.NewRealExecutor(30 * time.Second)
 	if cfg.DryRun {
 		exec = firewall.NewDryRunExecutor()
 	}
 
 	alertSvc := alerts.NewService(db)
-	notifySvc := notify.NewService(db)
+	notifySvc := notify.NewService(db, secretsSvc)
 	alertSvc.SetNotifier(notifySvc)
-	authSvc := auth.NewService(db, cfg.JWTSecret)
+	authSvc := auth.NewService(db, cfg.JWTSecret, secretsSvc)
 	linkSvc := links.NewService(db)
 	iptSvc := iptables.NewService(exec)
 	routeSvc := routes.NewService(exec)
@@ -155,7 +173,7 @@ func run() int {
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
 		Version: version,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, vpnSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, vpnSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

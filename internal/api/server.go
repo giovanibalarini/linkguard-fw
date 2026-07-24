@@ -31,6 +31,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/stresstest"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
@@ -61,6 +62,7 @@ type Server struct {
 	rrdSvc      *tsdb.Service
 	promReg     *prometheus.Registry
 	mon         *monitoring.Collector
+	sec         secrets.Secrets
 	webFS       embed.FS
 }
 
@@ -80,7 +82,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
 	vpnSvc *wireguard.Service, notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
 	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
-	mon *monitoring.Collector) *Server {
+	mon *monitoring.Collector, sec secrets.Secrets) *Server {
 
 	s := &Server{
 		db:          db,
@@ -102,6 +104,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
 		mon:         mon,
+		sec:         sec,
 		webFS:       cfg.WebFS,
 	}
 
@@ -272,8 +275,8 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermSystemWrite)).Post("/api/backup/restore", backupH.Restore)
 
 		// In-app update (admin: system.write)
-		updateH := handlers.NewUpdateHandler(s.db, updater.NewService(s.exec, cfg.Version,
-			func() string { tok, _ := s.db.GetSetting("github_update_token"); return tok }))
+		updateH := handlers.NewUpdateHandler(s.db, s.sec, updater.NewService(s.exec, cfg.Version,
+			func() string { tok, _ := s.sec.Get("github_update_token"); return tok }))
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/check", updateH.Check)
 		r.With(require(auth.PermSystemWrite)).Post("/api/system/update/apply", updateH.Apply)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/token", updateH.TokenStatus)

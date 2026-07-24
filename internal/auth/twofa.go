@@ -5,9 +5,9 @@ import (
 	"errors"
 )
 
-// Two-factor (TOTP) state is stored per user in the settings table to avoid a
-// schema migration: key "totp_<userID>" → {secret, enabled}. A pending setup is
-// stored with enabled=false until the user proves possession with a valid code.
+// Two-factor (TOTP) state is stored per user in the secrets vault: key
+// "totp_<userID>" → {secret, enabled}. A pending setup is stored with
+// enabled=false until the user proves possession with a valid code.
 
 type twoFAState struct {
 	Secret  string `json:"secret"`
@@ -18,7 +18,7 @@ func twoFAKey(userID string) string { return "totp_" + userID }
 
 func (s *Service) getTwoFA(userID string) twoFAState {
 	var st twoFAState
-	if raw, _ := s.db.GetSetting(twoFAKey(userID)); raw != "" {
+	if raw, _ := s.sec.Get(twoFAKey(userID)); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &st)
 	}
 	return st
@@ -29,7 +29,7 @@ func (s *Service) saveTwoFA(userID string, st twoFAState) error {
 	if err != nil {
 		return err
 	}
-	return s.db.SetSetting(twoFAKey(userID), string(out))
+	return s.sec.Set(twoFAKey(userID), string(out))
 }
 
 // TwoFAEnabled reports whether the user has activated 2FA.

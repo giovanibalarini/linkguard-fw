@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -19,6 +20,16 @@ func openTestDB(t *testing.T) *storage.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
+}
+
+func newTestSecrets(t *testing.T, db *storage.DB) *secrets.Service {
+	t.Helper()
+	dir := t.TempDir()
+	key, err := secrets.LoadOrGenerateKey(filepath.Join(dir, "secret.key"))
+	if err != nil {
+		t.Fatalf("LoadOrGenerateKey: %v", err)
+	}
+	return secrets.NewService(db, key)
 }
 
 func TestNotifyRecoveryBypassesMinSeverity(t *testing.T) {
@@ -36,7 +47,7 @@ func TestNotifyRecoveryBypassesMinSeverity(t *testing.T) {
 	defer srv.Close()
 
 	db := openTestDB(t)
-	s := NewService(db)
+	s := NewService(db, newTestSecrets(t, db))
 	_ = s.SaveConfig(Config{
 		MinSeverity: "warning",
 		Webhook:     WebhookCfg{Enabled: true, URL: srv.URL},
@@ -63,7 +74,7 @@ func TestSendNowIsSynchronous(t *testing.T) {
 	defer srv.Close()
 
 	db := openTestDB(t)
-	s := NewService(db)
+	s := NewService(db, newTestSecrets(t, db))
 	_ = s.SaveConfig(Config{
 		MinSeverity: "warning",
 		Webhook:     WebhookCfg{Enabled: true, URL: srv.URL},
