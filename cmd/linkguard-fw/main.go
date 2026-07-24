@@ -36,7 +36,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/tlscert"
-	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
 
@@ -143,7 +143,7 @@ func run() int {
 	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
 	sysCollector := system.NewCollector()
-	rrdSvc := trafficrrd.NewService(db)
+	rrdSvc := tsdb.NewService(db)
 
 	promReg := prometheus.NewRegistry()
 	appMetrics := metrics.New(promReg)

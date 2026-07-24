@@ -34,7 +34,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/stresstest"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
-	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 	"github.com/giovanibalarini/linkguard-fw/internal/updater"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
@@ -58,7 +58,7 @@ type Server struct {
 	notifySvc   *notify.Service
 	trafficSvc  *hosttraffic.Service
 	sysCol      *system.Collector
-	rrdSvc      *trafficrrd.Service
+	rrdSvc      *tsdb.Service
 	promReg     *prometheus.Registry
 	mon         *monitoring.Collector
 	webFS       embed.FS
@@ -79,7 +79,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
 	vpnSvc *wireguard.Service, notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
-	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry,
+	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
 	mon *monitoring.Collector) *Server {
 
 	s := &Server{
