@@ -187,6 +187,40 @@ calibrado pela distribuição real, detectar desvio contra a baseline do própri
 link, gerar laudo com evidência para cobrar a operadora. Onde não entra: decidir
 failover, peso ou expulsão de fluxo (I3).
 
+#### Acionamento — dois gatilhos
+
+A frequência de disparo domina o custo, **não** a escolha de modelo. Numa análise
+com evidência pré-computada (~800 tok in / ~400 out), a diferença entre Opus 4.8 e
+Haiku 4.5 no volume real é ~$0,67/mês — otimizar isso é otimizar a variável errada.
+O que corta custo de verdade é disparar pouco e mandar fato apurado, não série crua.
+
+- **Imediato, raro** — só evento grave: link efetivamente offline, ou degradação
+  **sustentada** acima de N minutos. É quando a análise na hora vale e quando o
+  admin quer ser acordado.
+- **Digest diário** — 1 chamada/dia sobre o padrão acumulado. É onde a IA ganha de
+  verdade (o caso de 2026-07-23 só se resolveu vendo o *conjunto*: 19 episódios,
+  todos fora de pico, mesma operadora, sem perda de carrier) e é o que vira laudo
+  para a operadora. ~$0,72/mês no Opus 4.8.
+
+> ⚠️ O gatilho imediato consome o sinal **pós-histerese** (Projeto 2), nunca o
+> detector atual — senão a IA seria chamada ~19×/dia para explicar blips de 8 s que
+> não significam nada. Mais uma razão para o Projeto 2 preceder o 5.
+
+**Modelo padrão de fábrica: Opus 4.8** (o admin troca na tela). A diferença de
+custo é irrelevante nesse volume; a feature existe pela qualidade do diagnóstico,
+que é raciocínio de correlação multi-fator — exatamente o que os modelos menores
+fazem pior.
+
+**Não construir sobre cache de prompt.** A 1–2 chamadas/dia o TTL (5 min / 1 h)
+sempre expira entre elas — nunca há hit. A economia real vem de pré-computar a
+evidência (duração do episódio, min/avg/max na janela, condição que disparou,
+estado do carrier, nível de tráfego) em vez de despejar a timeline crua: ~800 tok
+contra ~7k, e melhor análise porque o modelo raciocina sobre fatos, não faz parse
+de CSV.
+
+**Detecção de anomalia contra baseline é estatística, não LLM.** Sai melhor e de
+graça determinística; não gastar chamada de IA nisso.
+
 ## 7. Não-faça
 
 - ❌ Prometheus como dependência do produto (I1).
@@ -195,6 +229,12 @@ failover, peso ou expulsão de fluxo (I3).
 - ❌ Escolher o limiar da histerese antes de ter a série (é o erro que se está
   corrigindo, cometido de novo).
 - ❌ Rollup que guarda só média — apaga justamente o pico que se foi investigar.
+- ❌ Escolher modelo de IA para economizar antes de corrigir a taxa de disparo — a
+  frequência domina o custo em ~10×, o modelo em ~4×, e pós-histerese o gasto é
+  irrelevante em qualquer modelo (< $1/mês).
+- ❌ Gastar chamada de LLM em detecção de anomalia — é estatística, sai melhor
+  determinística.
+- ❌ Acionar a IA no detector atual (pré-histerese) — pagaria para explicar ruído.
 
 ## 8. Pendência operacional
 
