@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Migration is idempotent (`CREATE TABLE IF NOT EXISTS`, run on every boot), matching the existing `db.migrate()` pattern in `internal/storage/storage.go`.
-- `Recorder.Gauge()` and `Recorder.State()` must never perform disk I/O on the calling goroutine — the caller (e.g. `links.Monitor.checkLink`, which measures the value the whole diagnostic exists to preserve) must not have its timing affected by database writes.
+- `Recorder.Gauge()` must never perform disk I/O on the calling goroutine — the caller (e.g. `links.Monitor.checkLink`, which measures the value the whole diagnostic exists to preserve) must not have its timing affected by database writes. `Recorder.State()` is exempt from this: it only writes when the state actually changes (a rare transition, not a per-tick call like `Gauge`), and by the time either method is called the measurement that triggered it has already completed, so a synchronous write in `State()` cannot corrupt the current reading — at worst it delays the next tick slightly, which is acceptable for a rare event.
 - Rollup must propagate `min`→`min`, `max`→`max`, and a count-weighted average for `avg` — never re-derive min/max from an already-averaged bucket.
 - `traffic_samples` is renamed, not dropped, during migration — data loss is not acceptable for a table with ~1 month of production history.
 - `GET /api/system/traffic-history` keeps its existing request/response contract (used by the current frontend); it is reimplemented on top of `tsdb`, not removed.
