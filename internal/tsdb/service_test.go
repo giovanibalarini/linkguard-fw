@@ -59,8 +59,34 @@ func TestGaugeDoesNotBlockOnDiskAcrossBucketRollover(t *testing.T) {
 	// stay memory-only; no s.db call may happen on this goroutine.
 	start := time.Now()
 	svc.GaugeForTest("link.latency_ms", "WAN VIVO", 2.0, 1010)
-	if elapsed := time.Since(start); elapsed > 5*time.Millisecond {
-		t.Fatalf("Gauge() call that closes a bucket (rollover) took %v — must stay memory-only, never write to disk on the caller's goroutine", elapsed)
+	elapsed := time.Since(start)
+
+	// DETERMINISTIC CHECK: The just-closed bucket must be queued in memory,
+	// not written to the database yet. If the bug (synchronous s.db.UpsertMetricSample
+	// inline in accumulate's rollover branch) is reintroduced, this bucket
+	// would already be visible in the database at this exact point.
+	beforeFlush, err := db.GetMetricSamples("link.latency_ms", "WAN VIVO", 10, 1000, 1010)
+	if err != nil {
+		t.Fatalf("GetMetricSamples before flush: %v", err)
+	}
+	// The closed bucket [1000,1010) must NOT be in the database yet — only
+	// the queued state matters at this point. This is the primary regression
+	// guard: it genuinely distinguishes synchronous-write from queued-write,
+	// regardless of machine speed.
+	var foundBeforeFlush *storage.MetricSample
+	for i := range beforeFlush {
+		if beforeFlush[i].TsUnix == 1000 {
+			foundBeforeFlush = &beforeFlush[i]
+		}
+	}
+	if foundBeforeFlush != nil {
+		t.Fatalf("BUG DETECTED: closed bucket [1000,1010) was already in database before FlushForTest — this indicates synchronous I/O on the rollover (the bug we fixed). Data: %+v", foundBeforeFlush)
+	}
+
+	// Secondary check: timing should still be reasonable (though not as
+	// strict as the original 5ms threshold, which proved unreliable).
+	if elapsed > 5*time.Millisecond {
+		t.Logf("Warning: Gauge() call that closes a bucket took %v (not failing, timing check is not the primary guard anymore)", elapsed)
 	}
 
 	// The closed bucket must not be lost: force a flush and confirm it made
