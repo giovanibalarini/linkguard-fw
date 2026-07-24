@@ -11,13 +11,6 @@ interface RatePoint {
   tx: number;
 }
 
-interface PendingMinute {
-  bucketStart: number;
-  sumRx: number;
-  sumTx: number;
-  count: number;
-}
-
 interface RateStats {
   last: number;
   avg: number;
@@ -84,11 +77,10 @@ export default function Interfaces() {
 
   const prevCountersRef = useState<Record<string, { ts: number; rx: number; tx: number }>>({})[0];
   const secondHistoryRef = useState<Record<string, RatePoint[]>>({})[0];
-  const fiveSecHistoryRef = useState<Record<string, RatePoint[]>>({})[0];
-  const minuteHistoryRef = useState<Record<string, RatePoint[]>>({})[0];
-  const pendingFiveSecRef = useState<Record<string, PendingMinute>>({})[0];
-  const pendingMinuteRef = useState<Record<string, PendingMinute>>({})[0];
 
+  // Feeds the '5m' live tail only -- every other range reads real persisted
+  // history from the backend (see chartDataFor), so there's no need to keep
+  // building 5s/1min client-side rollups for them.
   const pushRateSample = (iface: string, ts: number, rxRate: number, txRate: number) => {
     const label = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const point: RatePoint = { ts, label, rx: rxRate, tx: txRate };
@@ -97,76 +89,6 @@ export default function Interfaces() {
     secondSeries.push(point);
     if (secondSeries.length > 300) secondSeries.splice(0, secondSeries.length - 300);
     secondHistoryRef[iface] = secondSeries;
-
-    const fiveSecBucketStart = Math.floor(ts / 5000) * 5000;
-    const pending5s = pendingFiveSecRef[iface];
-    if (!pending5s) {
-      pendingFiveSecRef[iface] = {
-        bucketStart: fiveSecBucketStart,
-        sumRx: rxRate,
-        sumTx: txRate,
-        count: 1,
-      };
-    } else if (pending5s.bucketStart === fiveSecBucketStart) {
-      pending5s.sumRx += rxRate;
-      pending5s.sumTx += txRate;
-      pending5s.count += 1;
-    } else {
-      const fiveSecPoint: RatePoint = {
-        ts: pending5s.bucketStart,
-        label: new Date(pending5s.bucketStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        rx: pending5s.sumRx / Math.max(pending5s.count, 1),
-        tx: pending5s.sumTx / Math.max(pending5s.count, 1),
-      };
-      const fiveSecSeries = fiveSecHistoryRef[iface] ?? [];
-      fiveSecSeries.push(fiveSecPoint);
-      if (fiveSecSeries.length > 360) fiveSecSeries.splice(0, fiveSecSeries.length - 360);
-      fiveSecHistoryRef[iface] = fiveSecSeries;
-
-      pendingFiveSecRef[iface] = {
-        bucketStart: fiveSecBucketStart,
-        sumRx: rxRate,
-        sumTx: txRate,
-        count: 1,
-      };
-    }
-
-    const bucketStart = Math.floor(ts / 60000) * 60000;
-    const pending = pendingMinuteRef[iface];
-    if (!pending) {
-      pendingMinuteRef[iface] = {
-        bucketStart,
-        sumRx: rxRate,
-        sumTx: txRate,
-        count: 1,
-      };
-      return;
-    }
-
-    if (pending.bucketStart === bucketStart) {
-      pending.sumRx += rxRate;
-      pending.sumTx += txRate;
-      pending.count += 1;
-      return;
-    }
-
-    const minutePoint: RatePoint = {
-      ts: pending.bucketStart,
-      label: new Date(pending.bucketStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      rx: pending.sumRx / Math.max(pending.count, 1),
-      tx: pending.sumTx / Math.max(pending.count, 1),
-    };
-    const minSeries = minuteHistoryRef[iface] ?? [];
-    minSeries.push(minutePoint);
-    if (minSeries.length > 720) minSeries.splice(0, minSeries.length - 720);
-    minuteHistoryRef[iface] = minSeries;
-
-    pendingMinuteRef[iface] = {
-      bucketStart,
-      sumRx: rxRate,
-      sumTx: txRate,
-      count: 1,
-    };
   };
 
   const fetchData = async () => {
@@ -211,7 +133,7 @@ export default function Interfaces() {
   };
 
   const loadRrdHistory = async (showLoading = false) => {
-    if (!sys || (range !== '30d' && range !== '1y' && range !== '5y')) {
+    if (!sys || range === '5m') {
       return;
     }
     if (showLoading) setRrdLoading(true);
@@ -256,7 +178,7 @@ export default function Interfaces() {
   }, []);
 
   useEffect(() => {
-    if (range === '30d' || range === '1y' || range === '5y') {
+    if (range !== '5m') {
       loadRrdHistory(true);
       const interval = setInterval(() => {
         if (!pausedRef.current) loadRrdHistory();
@@ -303,15 +225,14 @@ export default function Interfaces() {
     return (sys?.interfaces ?? []).filter((iface) => iface.name !== 'lo');
   }, [sys]);
 
+  // '5m' is a genuinely live tail — fed directly from the 1s poll below, no
+  // round trip needed. Every other range (including 30m/12h, which used to
+  // read from a client-side buffer that started empty on every page load —
+  // "só reflete o tempo real" was the exact bug report) now reads real
+  // persisted history from the backend, same as 30d/1y/5y always did.
   const chartDataFor = (ifaceName: string): RatePoint[] => {
     if (range === '5m') {
       return secondHistoryRef[ifaceName] ?? [];
-    }
-    if (range === '30m') {
-      return fiveSecHistoryRef[ifaceName] ?? [];
-    }
-    if (range === '12h') {
-      return minuteHistoryRef[ifaceName] ?? [];
     }
     return rrdHistory[ifaceName] ?? [];
   };
@@ -494,7 +415,7 @@ export default function Interfaces() {
                     </div>
                     {chartData.length < 2 ? (
                       <p className="text-gray-500 text-sm">
-                        {(range === '30d' || range === '1y' || range === '5y') && rrdLoading
+                        {range !== '5m' && rrdLoading
                           ? 'Carregando histórico...'
                           : 'Aguardando amostras para desenhar o gráfico...'}
                       </p>
