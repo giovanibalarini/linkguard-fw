@@ -905,11 +905,11 @@ type SecretsSetter interface {
 }
 
 // MigrateSettingsToSecrets moves the legacy secret-shaped settings rows
-// (github_update_token, notifications, and every totp_<userID>) into sec,
-// then deletes them from settings. Idempotent: a key already absent from
-// settings (already migrated on a prior boot) is silently skipped.
+// (github_update_token, notifications, wireguard, and every totp_<userID>)
+// into sec, then deletes them from settings. Idempotent: a key already absent
+// from settings (already migrated on a prior boot) is silently skipped.
 func MigrateSettingsToSecrets(db *DB, sec SecretsSetter) error {
-	exact := []string{"github_update_token", "notifications"}
+	exact := []string{"github_update_token", "notifications", "wireguard"}
 	for _, key := range exact {
 		if err := migrateOneSetting(db, sec, key); err != nil {
 			return err

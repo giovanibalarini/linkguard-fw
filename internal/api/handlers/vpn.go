@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
@@ -18,17 +20,25 @@ const vpnKey = "wireguard"
 // VPNHandler manages the WireGuard road-warrior VPN (server config + clients).
 type VPNHandler struct {
 	db  *storage.DB
+	sec secrets.Secrets
 	svc *wireguard.Service
 }
 
-// NewVPNHandler creates a VPNHandler.
-func NewVPNHandler(db *storage.DB, svc *wireguard.Service) *VPNHandler {
-	return &VPNHandler{db: db, svc: svc}
+// NewVPNHandler creates a VPNHandler. sec is where the server and peer private
+// keys are stored — the config JSON (including private keys) lives in the
+// secrets vault, never in the plaintext settings table, so it can never leak
+// through ExportSettings()/backups.
+func NewVPNHandler(db *storage.DB, svc *wireguard.Service, sec secrets.Secrets) *VPNHandler {
+	return &VPNHandler{db: db, sec: sec, svc: svc}
 }
 
 func (h *VPNHandler) load() wireguard.Config {
 	c := wireguard.Defaults()
-	if raw, _ := h.db.GetSetting(vpnKey); raw != "" {
+	raw, err := h.sec.Get(vpnKey)
+	if err != nil {
+		slog.Warn("vpn: failed to read config from secrets vault", "err", err)
+	}
+	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &c)
 	}
 	if c.Peers == nil {
@@ -42,7 +52,7 @@ func (h *VPNHandler) save(c wireguard.Config) error {
 	if err != nil {
 		return err
 	}
-	return h.db.SetSetting(vpnKey, string(out))
+	return h.sec.Set(vpnKey, string(out))
 }
 
 // vpnView is the API response: config with peer private keys redacted, plus the

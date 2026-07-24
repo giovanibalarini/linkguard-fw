@@ -300,7 +300,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermDNSRead)).Get("/api/dns/queries", dnsLogH.Recent)
 
 		// VPN (WireGuard road-warrior)
-		vpnH := handlers.NewVPNHandler(s.db, s.vpnSvc)
+		vpnH := handlers.NewVPNHandler(s.db, s.vpnSvc, s.sec)
 		r.With(require(auth.PermVPNRead)).Get("/api/vpn", vpnH.Get)
 		r.With(require(auth.PermVPNWrite)).Put("/api/vpn/config", vpnH.UpdateConfig)
 		r.With(require(auth.PermVPNWrite)).Post("/api/vpn/peers", vpnH.AddPeer)

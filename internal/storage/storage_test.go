@@ -709,6 +709,7 @@ func TestMigrateSettingsToSecretsMovesKnownKeys(t *testing.T) {
 
 	_ = db.SetSetting("github_update_token", "ghp_abc")
 	_ = db.SetSetting("notifications", `{"webhook":{"url":"https://x"}}`)
+	_ = db.SetSetting("wireguard", `{"private_key":"wgpriv123","peers":[]}`)
 	_ = db.SetSetting("totp_user-1", `{"secret":"AAA","enabled":true}`)
 	_ = db.SetSetting("totp_user-2", `{"secret":"BBB","enabled":true}`)
 	_ = db.SetSetting("monitoring", `{"enabled":true}`) // must NOT be migrated
@@ -721,6 +722,7 @@ func TestMigrateSettingsToSecretsMovesKnownKeys(t *testing.T) {
 	want := map[string]string{
 		"github_update_token": "ghp_abc",
 		"notifications":       `{"webhook":{"url":"https://x"}}`,
+		"wireguard":           `{"private_key":"wgpriv123","peers":[]}`,
 		"totp_user-1":         `{"secret":"AAA","enabled":true}`,
 		"totp_user-2":         `{"secret":"BBB","enabled":true}`,
 	}
