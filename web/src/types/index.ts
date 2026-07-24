@@ -22,6 +22,41 @@ export interface WanLink {
   updated_at: string;
 }
 
+export interface TimelinePoint {
+  ts: number;
+  min: number;
+  avg: number;
+  max: number;
+}
+
+export interface TimelineSeries {
+  name: string;
+  label: string;
+  points: TimelinePoint[];
+}
+
+export interface TimelineState {
+  kind: string;
+  label: string;
+  state: string;
+  started_at: number;
+  ended_at?: number;
+}
+
+export interface TimelineAlert {
+  ts: number;
+  type: string;
+  severity: string;
+  title: string;
+}
+
+export interface TimelineResponse {
+  step_seconds: number;
+  series: TimelineSeries[];
+  states: TimelineState[];
+  alerts: TimelineAlert[];
+}
+
 export interface SystemMetrics {
   uptime_seconds: number;
   uptime_str: string;

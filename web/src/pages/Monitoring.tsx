@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Activity, RefreshCw } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import client from '../api/client';
-import type { WanLink, SystemMetrics } from '../types';
+import type { WanLink, SystemMetrics, TimelineResponse } from '../types';
 
 interface HistoryPoint {
   time: string;
@@ -19,6 +20,10 @@ export default function Monitoring() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const tickRef = useRef(0);
+  const [searchParams] = useSearchParams();
+  const [periodHours, setPeriodHours] = useState(1);
+  const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
@@ -54,11 +59,39 @@ export default function Monitoring() {
     }
   };
 
+  const fetchTimeline = async () => {
+    setTimelineLoading(true);
+    try {
+      const at = searchParams.get('at');
+      const centerSec = at ? Math.floor(new Date(at).getTime() / 1000) : Math.floor(Date.now() / 1000);
+      const halfWindow = (periodHours * 3600) / 2;
+      const from = centerSec - halfWindow;
+      const to = centerSec + halfWindow;
+      const series = links.map(l => `link.latency_ms:${l.name},link.loss_pct:${l.name}`).join(',');
+      const states = links.map(l => `link:${l.name}`).join(',');
+      const res = await client.get<TimelineResponse>('/api/monitoring/timeline', {
+        params: { from, to, series, states },
+      });
+      setTimeline(res.data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (links.length > 0) {
+      fetchTimeline();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [links.length, periodHours, searchParams]);
 
   // Tick once per second to refresh the "atualizado há Xs" caption
   useEffect(() => {
@@ -183,6 +216,79 @@ export default function Monitoring() {
           </ResponsiveContainer>
         ) : (
           <p className="text-gray-500 text-sm text-center py-12">Coletando dados…</p>
+        )}
+      </div>
+
+      {/* Correlated diagnostic timeline */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Activity className="w-4 h-4 text-emerald-400" />
+            <h2 className="text-white font-semibold">Linha do tempo</h2>
+          </div>
+          <div className="flex gap-2">
+            {[1, 6, 24].map(h => (
+              <button
+                key={h}
+                onClick={() => setPeriodHours(h)}
+                className={`px-3 py-1 rounded text-xs ${periodHours === h ? 'bg-blue-600 text-white' : 'btn-secondary'}`}
+              >
+                {h === 1 ? '1h' : h === 6 ? '6h' : '24h'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {timelineLoading && !timeline && (
+          <p className="text-gray-500 text-sm text-center py-12">Carregando linha do tempo…</p>
+        )}
+        {timeline && timeline.series.every(s => s.points.length === 0) && (
+          <p className="text-gray-500 text-sm text-center py-12">Sem dados no período selecionado.</p>
+        )}
+        {timeline && timeline.series.some(s => s.points.length > 0) && (
+          <div className="space-y-4">
+            {links.map((link, i) => {
+              const latSeries = timeline.series.find(s => s.name === 'link.latency_ms' && s.label === link.name);
+              if (!latSeries || latSeries.points.length === 0) return null;
+              const data = latSeries.points.map(p => ({
+                time: new Date(p.ts * 1000).toLocaleTimeString(),
+                min: p.min, avg: p.avg, max: p.max,
+              }));
+              return (
+                <div key={link.id}>
+                  <p className="text-gray-400 text-xs mb-1">{link.name} — latência (ms), faixa min–max</p>
+                  <ResponsiveContainer width="100%" height={120}>
+                    <LineChart data={data}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                      <XAxis dataKey="time" tick={{ fill: '#6b7280', fontSize: 10 }} />
+                      <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} />
+                      <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }} />
+                      <Line type="monotone" dataKey="max" stroke={COLORS[i % COLORS.length]} strokeOpacity={0.3} dot={false} strokeWidth={1} />
+                      <Line type="monotone" dataKey="avg" stroke={COLORS[i % COLORS.length]} dot={false} strokeWidth={2} />
+                      <Line type="monotone" dataKey="min" stroke={COLORS[i % COLORS.length]} strokeOpacity={0.3} dot={false} strokeWidth={1} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              );
+            })}
+            {timeline.states.filter(s => s.state !== 'online' && s.state !== 'up').length > 0 && (
+              <div>
+                <p className="text-gray-400 text-xs mb-1">Episódios no período</p>
+                <ul className="text-xs text-gray-300 space-y-1">
+                  {timeline.states
+                    .filter(s => s.state !== 'online' && s.state !== 'up')
+                    .map((s, idx) => (
+                      <li key={idx} className="flex justify-between">
+                        <span>{s.label} → {s.state}</span>
+                        <span className="text-gray-500">
+                          {new Date(s.started_at * 1000).toLocaleTimeString()}
+                          {s.ended_at ? ` – ${new Date(s.ended_at * 1000).toLocaleTimeString()}` : ' (em curso)'}
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
