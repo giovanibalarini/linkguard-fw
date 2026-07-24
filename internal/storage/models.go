@@ -9,22 +9,22 @@ import (
 
 // Link represents a WAN link configuration.
 type Link struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Interface    string    `json:"interface"`
-	IPAddress    string    `json:"ip_address"`
-	Gateway      string    `json:"gateway"`
-	Weight       int       `json:"weight"`
-	DNSTest      string    `json:"dns_test"`
-	MonitorHosts string    `json:"monitor_hosts"`
-	Status       string    `json:"status"` // online, offline, degraded, unknown
-	LatencyMs    float64   `json:"latency_ms"`
-	PacketLoss   float64   `json:"packet_loss"`
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	Interface    string     `json:"interface"`
+	IPAddress    string     `json:"ip_address"`
+	Gateway      string     `json:"gateway"`
+	Weight       int        `json:"weight"`
+	DNSTest      string     `json:"dns_test"`
+	MonitorHosts string     `json:"monitor_hosts"`
+	Status       string     `json:"status"` // online, offline, degraded, unknown
+	LatencyMs    float64    `json:"latency_ms"`
+	PacketLoss   float64    `json:"packet_loss"`
 	LastCheck    *time.Time `json:"last_check"`
-	Enabled      bool      `json:"enabled"`
-	TableID      int       `json:"table_id"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	Enabled      bool       `json:"enabled"`
+	TableID      int        `json:"table_id"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // ─── Alert ───────────────────────────────────────────────────────────────────
@@ -102,8 +102,8 @@ type IptablesBackup struct {
 type User struct {
 	ID        string    `json:"id"`
 	Username  string    `json:"username"`
-	Password  string    `json:"-"` // bcrypt hash, never serialised
-	Role      string    `json:"role"` // legacy single-role column (kept for compat)
+	Password  string    `json:"-"`        // bcrypt hash, never serialised
+	Role      string    `json:"role"`     // legacy single-role column (kept for compat)
 	RoleIDs   []string  `json:"role_ids"` // assigned roles (RBAC); populated on demand
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -169,6 +169,34 @@ type TrafficSample struct {
 	Timestamp   int64   `json:"timestamp"`
 	RxBps       float64 `json:"rx_bps"`
 	TxBps       float64 `json:"tx_bps"`
+}
+
+// ─── MetricSample ────────────────────────────────────────────────────────────
+
+// MetricSample stores min/avg/max for a named series+label at one bucket. The
+// min/max are what let a rollup survive a short spike — averaging alone would
+// dilute an 8-second degradation into invisibility inside a 60s bucket.
+type MetricSample struct {
+	Series      string  `json:"series"`
+	Label       string  `json:"label"`
+	StepSeconds int     `json:"step_seconds"`
+	TsUnix      int64   `json:"ts_unix"`
+	VMin        float64 `json:"v_min"`
+	VAvg        float64 `json:"v_avg"`
+	VMax        float64 `json:"v_max"`
+}
+
+// ─── StateInterval ───────────────────────────────────────────────────────────
+
+// StateInterval is a span of time a (kind, label) spent in one state — a link
+// being "degraded", a service being "down". EndedAt is nil while the interval
+// is still open (the current state).
+type StateInterval struct {
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	State     string `json:"state"`
+	StartedAt int64  `json:"started_at"`
+	EndedAt   *int64 `json:"ended_at,omitempty"`
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

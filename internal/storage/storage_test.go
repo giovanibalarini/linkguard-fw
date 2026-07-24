@@ -456,3 +456,109 @@ func TestMetricSamplesAndStateIntervalsTablesExist(t *testing.T) {
 		t.Fatalf("insert state_intervals: %v", err)
 	}
 }
+
+func TestUpsertAndGetMetricSamples(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.UpsertMetricSample(storage.MetricSample{
+		Series: "link.latency_ms", Label: "WAN VIVO", StepSeconds: 10,
+		TsUnix: 1000, VMin: 10, VAvg: 15, VMax: 20,
+	}); err != nil {
+		t.Fatalf("UpsertMetricSample: %v", err)
+	}
+	// Overwrite same bucket — should update, not duplicate.
+	if err := db.UpsertMetricSample(storage.MetricSample{
+		Series: "link.latency_ms", Label: "WAN VIVO", StepSeconds: 10,
+		TsUnix: 1000, VMin: 5, VAvg: 12, VMax: 25,
+	}); err != nil {
+		t.Fatalf("UpsertMetricSample overwrite: %v", err)
+	}
+
+	got, err := db.GetMetricSamples("link.latency_ms", "WAN VIVO", 10, 0, 2000)
+	if err != nil {
+		t.Fatalf("GetMetricSamples: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 sample after overwrite, got %d", len(got))
+	}
+	if got[0].VMin != 5 || got[0].VMax != 25 {
+		t.Fatalf("expected overwritten min=5 max=25, got min=%v max=%v", got[0].VMin, got[0].VMax)
+	}
+}
+
+func TestPruneMetricSamples(t *testing.T) {
+	db := newTestDB(t)
+
+	_ = db.UpsertMetricSample(storage.MetricSample{Series: "s", Label: "l", StepSeconds: 60, TsUnix: 100, VMin: 1, VAvg: 1, VMax: 1})
+	_ = db.UpsertMetricSample(storage.MetricSample{Series: "s", Label: "l", StepSeconds: 60, TsUnix: 9000, VMin: 1, VAvg: 1, VMax: 1})
+
+	if err := db.PruneMetricSamples(60, 5000); err != nil {
+		t.Fatalf("PruneMetricSamples: %v", err)
+	}
+
+	got, err := db.GetMetricSamples("s", "l", 60, 0, 100000)
+	if err != nil {
+		t.Fatalf("GetMetricSamples: %v", err)
+	}
+	if len(got) != 1 || got[0].TsUnix != 9000 {
+		t.Fatalf("expected only the newer sample to remain, got %v", got)
+	}
+}
+
+func TestStateIntervalOpenAndClose(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.OpenStateInterval("link", "WAN SUMICITY", "degraded", 1000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+
+	got, err := db.GetStateIntervals("link", "WAN SUMICITY", 0, 5000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(got) != 1 || got[0].EndedAt != nil {
+		t.Fatalf("expected 1 open interval, got %v", got)
+	}
+
+	if err := db.CloseOpenStateInterval("link", "WAN SUMICITY", 1008); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+
+	got, err = db.GetStateIntervals("link", "WAN SUMICITY", 0, 5000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(got) != 1 || got[0].EndedAt == nil || *got[0].EndedAt != 1008 {
+		t.Fatalf("expected interval closed at 1008, got %v", got)
+	}
+}
+
+func TestStateIntervalsDoNotOverlap(t *testing.T) {
+	db := newTestDB(t)
+
+	_ = db.OpenStateInterval("link", "WAN VIVO", "online", 1000)
+	_ = db.CloseOpenStateInterval("link", "WAN VIVO", 1010)
+	_ = db.OpenStateInterval("link", "WAN VIVO", "degraded", 1010)
+	_ = db.CloseOpenStateInterval("link", "WAN VIVO", 1020)
+	_ = db.OpenStateInterval("link", "WAN VIVO", "online", 1020)
+
+	got, err := db.GetStateIntervals("link", "WAN VIVO", 0, 5000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 intervals, got %d", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		prevEnd := got[i-1].EndedAt
+		if prevEnd == nil {
+			t.Fatalf("interval %d has no end but is followed by another interval", i-1)
+		}
+		if *prevEnd != got[i].StartedAt {
+			t.Fatalf("gap or overlap between interval %d (ends %d) and %d (starts %d)", i-1, *prevEnd, i, got[i].StartedAt)
+		}
+	}
+	if got[2].EndedAt != nil {
+		t.Fatalf("expected the last interval to still be open, got ended_at=%v", *got[2].EndedAt)
+	}
+}
