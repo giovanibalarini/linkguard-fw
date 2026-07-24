@@ -228,10 +228,12 @@ func (s *Service) transitionState(kind, label, state string, now int64) {
 	s.states[key] = &openState{state: state, startedAt: now}
 }
 
-// Run starts the 1s writer tick. It flushes any bucket whose window has
-// closed and prunes old data periodically. Blocks until ctx is done.
+// Run starts the 1s writer tick. It samples interface traffic and flushes
+// any bucket whose window has closed and prunes old data periodically.
+// Blocks until ctx is done.
 func (s *Service) Run(ctx context.Context) {
 	slog.Info("tsdb service started")
+	sampler := NewTrafficSampler(s)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -240,7 +242,9 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.tick(time.Now().Unix())
+			now := time.Now().Unix()
+			sampler.SampleOnce(now)
+			s.tick(now)
 		}
 	}
 }
