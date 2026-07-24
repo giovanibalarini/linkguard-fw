@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/updater"
 )
@@ -16,18 +17,19 @@ const githubTokenKey = "github_update_token"
 // UpdateHandler checks for and installs new releases.
 type UpdateHandler struct {
 	db  *storage.DB
+	sec secrets.Secrets
 	svc *updater.Service
 }
 
 // NewUpdateHandler creates an UpdateHandler.
-func NewUpdateHandler(db *storage.DB, svc *updater.Service) *UpdateHandler {
-	return &UpdateHandler{db: db, svc: svc}
+func NewUpdateHandler(db *storage.DB, sec secrets.Secrets, svc *updater.Service) *UpdateHandler {
+	return &UpdateHandler{db: db, sec: sec, svc: svc}
 }
 
 // TokenStatus reports whether a GitHub token is configured (never returns it).
 func (h *UpdateHandler) TokenStatus(w http.ResponseWriter, r *http.Request) {
-	tok, _ := h.db.GetSetting(githubTokenKey)
-	writeJSON(w, http.StatusOK, map[string]bool{"configured": strings.TrimSpace(tok) != ""})
+	configured, _ := h.sec.Status(githubTokenKey)
+	writeJSON(w, http.StatusOK, map[string]bool{"configured": configured})
 }
 
 // SetToken stores (or clears, if empty) the GitHub token used to reach the
@@ -42,7 +44,7 @@ func (h *UpdateHandler) SetToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok := strings.TrimSpace(b.Token)
-	if err := h.db.SetSetting(githubTokenKey, tok); err != nil {
+	if err := h.sec.Set(githubTokenKey, tok); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

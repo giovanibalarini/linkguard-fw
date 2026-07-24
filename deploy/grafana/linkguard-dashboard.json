@@ -1,0 +1,40 @@
+{
+  "title": "LinkGuard FW",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "title": "Link status",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "targets": [{ "expr": "linkguard_link_status", "legendFormat": "{{link}}" }]
+    },
+    {
+      "title": "Link latency (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [{ "expr": "linkguard_link_latency_ms", "legendFormat": "{{link}}" }]
+    },
+    {
+      "title": "Link packet loss (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [{ "expr": "linkguard_link_packet_loss_percent", "legendFormat": "{{link}}" }]
+    },
+    {
+      "title": "System resources",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "linkguard_system_cpu_percent", "legendFormat": "CPU %" },
+        { "expr": "linkguard_system_memory_percent", "legendFormat": "Mem %" },
+        { "expr": "linkguard_system_disk_percent", "legendFormat": "Disk %" }
+      ]
+    },
+    {
+      "title": "Unresolved alerts",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 20 },
+      "targets": [{ "expr": "linkguard_alerts_unresolved_total" }]
+    }
+  ]
+}

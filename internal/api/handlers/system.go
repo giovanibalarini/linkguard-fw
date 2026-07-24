@@ -8,7 +8,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
-	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 )
 
 const interfaceAliasSettingKey = "interface_aliases"
@@ -17,11 +17,11 @@ const interfaceAliasSettingKey = "interface_aliases"
 type SystemHandler struct {
 	sysCol *system.Collector
 	db     *storage.DB
-	rrdSvc *trafficrrd.Service
+	rrdSvc *tsdb.Service
 }
 
 // NewSystemHandler creates a SystemHandler.
-func NewSystemHandler(sysCol *system.Collector, db *storage.DB, rrdSvc *trafficrrd.Service) *SystemHandler {
+func NewSystemHandler(sysCol *system.Collector, db *storage.DB, rrdSvc *tsdb.Service) *SystemHandler {
 	return &SystemHandler{sysCol: sysCol, db: db, rrdSvc: rrdSvc}
 }
 

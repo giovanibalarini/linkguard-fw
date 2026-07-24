@@ -1,9 +1,11 @@
 package balancer
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -284,5 +286,33 @@ func TestConfigNormalize(t *testing.T) {
 	c2.normalize()
 	if c2.Mode != ModeFailover {
 		t.Errorf("bogus mode should fall back to failover, got %q", c2.Mode)
+	}
+}
+
+func TestRebuildSkipsRedundantRouteReplace(t *testing.T) {
+	exec := &recExec{
+		linkOut: "enp5s0 UP\nenp3s0 UP",
+		ipv4:    map[string]string{"enp5s0": "3: enp5s0 inet 192.168.15.20/24 scope global enp5s0"},
+	}
+	linkA := storage.Link{ID: "a", Name: "WAN1", Interface: "enp5s0", Gateway: "192.168.15.1", Weight: 100, Enabled: true, Status: links.StatusOnline}
+	linkB := storage.Link{ID: "b", Name: "WAN2", Interface: "enp3s0", Gateway: "192.168.18.1", Weight: 100, Enabled: true, Status: links.StatusOnline}
+	svc := newEvictService(t, exec, false, []storage.Link{linkA, linkB})
+
+	ctx := context.Background()
+	if err := svc.Rebuild(ctx); err != nil {
+		t.Fatalf("first Rebuild: %v", err)
+	}
+	firstCount := len(exec.writes)
+	if firstCount == 0 {
+		t.Fatal("expected the first Rebuild to issue at least one write (ip route replace)")
+	}
+
+	// Nothing about the links or config changed — a second Rebuild with an
+	// identical nexthop set must be a no-op, not a second "ip route replace".
+	if err := svc.Rebuild(ctx); err != nil {
+		t.Fatalf("second Rebuild: %v", err)
+	}
+	if got := len(exec.writes); got != firstCount {
+		t.Fatalf("second Rebuild issued %d more write(s) — expected 0 (no-op), the nexthop set did not change", got-firstCount)
 	}
 }

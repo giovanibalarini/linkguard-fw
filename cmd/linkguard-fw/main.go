@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	linkguardfw "github.com/giovanibalarini/linkguard-fw"
+	"github.com/giovanibalarini/linkguard-fw/internal/ai"
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
@@ -33,10 +34,11 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/tlscert"
-	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
 
@@ -95,7 +97,17 @@ func run() int {
 		db, err := storage.Open(cfg.DBPath)
 		if err == nil {
 			defer db.Close()
-			for _, e := range notify.NewService(db).SendNow("critical",
+			if orphanErr := secrets.CheckNotOrphaned("/etc/linkguard-fw/secret.key", db); orphanErr != nil {
+				slog.Warn("notify-down: refusing to start", "err", orphanErr)
+				return 1
+			}
+			key, keyErr := secrets.LoadOrGenerateKey("/etc/linkguard-fw/secret.key")
+			if keyErr != nil {
+				slog.Warn("notify-down: failed to load secret key", "err", keyErr)
+				return 1
+			}
+			sec := secrets.NewService(db, key)
+			for _, e := range notify.NewService(db, sec).SendNow("critical",
 				"LinkGuard caiu", "O serviço linkguard-fw parou inesperadamente no firewall.") {
 				if e != nil {
 					slog.Warn("notify-down send failed", "err", e)
@@ -117,15 +129,30 @@ func run() int {
 		return 1
 	}
 
+	if err := secrets.CheckNotOrphaned("/etc/linkguard-fw/secret.key", db); err != nil {
+		slog.Error("refusing to start", "err", err)
+		return 1
+	}
+	secretKey, err := secrets.LoadOrGenerateKey("/etc/linkguard-fw/secret.key")
+	if err != nil {
+		slog.Error("failed to load or generate secret key", "err", err)
+		return 1
+	}
+	secretsSvc := secrets.NewService(db, secretKey)
+	if err := storage.MigrateSettingsToSecrets(db, secretsSvc); err != nil {
+		slog.Error("failed to migrate legacy secrets", "err", err)
+		return 1
+	}
+
 	var exec firewall.Executor = firewall.NewRealExecutor(30 * time.Second)
 	if cfg.DryRun {
 		exec = firewall.NewDryRunExecutor()
 	}
 
 	alertSvc := alerts.NewService(db)
-	notifySvc := notify.NewService(db)
+	notifySvc := notify.NewService(db, secretsSvc)
 	alertSvc.SetNotifier(notifySvc)
-	authSvc := auth.NewService(db, cfg.JWTSecret)
+	authSvc := auth.NewService(db, cfg.JWTSecret, secretsSvc)
 	linkSvc := links.NewService(db)
 	iptSvc := iptables.NewService(exec)
 	routeSvc := routes.NewService(exec)
@@ -143,11 +170,18 @@ func run() int {
 	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
 	sysCollector := system.NewCollector()
-	rrdSvc := trafficrrd.NewService(db)
+	rrdSvc := tsdb.NewService(db)
+
+	// Optional AI advisory layer (BYOK): disabled by default (ai.LoadConfig's
+	// Enabled defaults to false), and swallows its own failures — wiring it in
+	// unconditionally here does not change failover/balance behavior.
+	aiBudget := ai.NewBudgetGuard(db)
+	aiClient := ai.NewClient(secretsSvc, aiBudget, func() ai.Config { return ai.LoadConfig(db) })
+	balancerSvc.SetAI(aiClient, rrdSvc)
 
 	promReg := prometheus.NewRegistry()
 	appMetrics := metrics.New(promReg)
-	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec)
+	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec, rrdSvc)
 
 	server := api.New(api.Config{
 		Addr:    cfg.Addr(),
@@ -155,7 +189,7 @@ func run() int {
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
 		Version: version,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, vpnSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, nftSvc, netSvc, vpnSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -165,7 +199,7 @@ func run() int {
 	// metrics collector, and sends several probes per host so packet loss/latency
 	// are real averages instead of a single pass/fail.
 	probeInterval := time.Duration(cfg.ProbeIntervalSeconds) * time.Second
-	monitor := links.NewMonitor(db, linkSvc, probeInterval, cfg.ProbeCount)
+	monitor := links.NewMonitor(db, linkSvc, probeInterval, cfg.ProbeCount, rrdSvc, appMetrics)
 	// On a link state change, balance mode rebuilds the weighted multipath
 	// default route; otherwise the legacy per-table failover handles it.
 	monitor.OnStatusChange(func(link *storage.Link, oldStatus, newStatus string) {
@@ -201,6 +235,16 @@ func run() int {
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)
 	go balancerSvc.Run(ctx)
+	go ai.RunDigest(ctx, aiClient, rrdSvc, alertSvc, db, func() []string {
+		all, _ := db.GetLinks()
+		names := make([]string, 0, len(all))
+		for _, l := range all {
+			if l.Enabled {
+				names = append(names, l.Name)
+			}
+		}
+		return names
+	})
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr(),

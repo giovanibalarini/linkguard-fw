@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 )
 
 // Health classification thresholds.
@@ -35,6 +37,8 @@ type Monitor struct {
 	svc                 *Service
 	interval            time.Duration
 	probeCount          int
+	rec                 tsdb.Recorder
+	m                   *metrics.Metrics
 	onStatusChange      func(link *storage.Link, oldStatus, newStatus string)
 	onDegradedSustained func(link *storage.Link)
 	sustainThreshold    func() int
@@ -54,7 +58,9 @@ type linkState struct {
 
 // NewMonitor creates a new Monitor. probeCount is how many connectivity probes
 // are sent per host per tick (≥1); more probes yield finer packet-loss/latency.
-func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount int) *Monitor {
+// rec receives every measurement for the diagnostic timeline — pass nil to
+// disable (used in tests that don't care about history).
+func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount int, rec tsdb.Recorder, m *metrics.Metrics) *Monitor {
 	if probeCount < 1 {
 		probeCount = 1
 	}
@@ -63,6 +69,8 @@ func NewMonitor(db *storage.DB, svc *Service, interval time.Duration, probeCount
 		svc:        svc,
 		interval:   interval,
 		probeCount: probeCount,
+		rec:        rec,
+		m:          m,
 		states:     make(map[string]*linkState),
 	}
 }
@@ -151,7 +159,7 @@ func (st *linkState) advance(reachable, degradedNow bool, prevStatus string, sus
 	switch {
 	case st.consecutiveFails >= probeFailThreshold:
 		newStatus = StatusOffline
-	case degradedNow:
+	case degradedNow && st.consecutiveDegraded >= sustainThreshold:
 		newStatus = StatusDegraded
 	case st.consecutiveSuccesses >= probeRecoverThreshold:
 		newStatus = StatusOnline
@@ -182,6 +190,11 @@ func (m *Monitor) Run(ctx context.Context) {
 			m.checkAll(ctx)
 		}
 	}
+}
+
+// RunOnceForTest runs a single checkAll pass synchronously. Test-only.
+func (m *Monitor) RunOnceForTest(ctx context.Context) {
+	m.checkAll(ctx)
 }
 
 func (m *Monitor) checkAll(ctx context.Context) {
@@ -240,6 +253,17 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 
 	newStatus, fireSustained := state.advance(reachable, degradedNow, l.Status, m.sustainN())
 
+	if m.rec != nil {
+		m.rec.Gauge("link.latency_ms", l.Name, avgLatency)
+		m.rec.Gauge("link.loss_pct", l.Name, packetLoss)
+		m.rec.State("link", l.Name, newStatus)
+	}
+	if m.m != nil {
+		m.m.LinkStatus.WithLabelValues(l.Name, l.Interface).Set(metrics.LinkStatusValue(newStatus))
+		m.m.LinkLatency.WithLabelValues(l.Name, l.Interface).Set(avgLatency)
+		m.m.LinkLoss.WithLabelValues(l.Name, l.Interface).Set(packetLoss)
+	}
+
 	// Update the link in DB
 	if err := m.svc.UpdateStatus(l.ID, newStatus, avgLatency, packetLoss); err != nil {
 		slog.Error("monitor: update status", "link", l.Name, "err", err)
@@ -250,6 +274,8 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	if newStatus != state.lastStatus && m.onStatusChange != nil {
 		updated := l
 		updated.Status = newStatus
+		updated.LatencyMs = avgLatency
+		updated.PacketLoss = packetLoss
 		m.onStatusChange(&updated, state.lastStatus, newStatus)
 		state.lastStatus = newStatus
 	}
@@ -259,6 +285,8 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	if fireSustained && m.onDegradedSustained != nil {
 		updated := l
 		updated.Status = newStatus
+		updated.LatencyMs = avgLatency
+		updated.PacketLoss = packetLoss
 		m.onDegradedSustained(&updated)
 	}
 

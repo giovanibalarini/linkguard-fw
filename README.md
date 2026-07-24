@@ -192,6 +192,21 @@ Exposed at `/metrics`:
 | `linkguard_memory_usage_percent` | System memory usage |
 | `linkguard_disk_usage_percent` | System disk usage |
 
+### Grafana / external Prometheus
+
+If you already run Prometheus on the box (or reachable from it), point it at
+LinkGuard with the job in `deploy/prometheus/linkguard.yml` — copy its
+contents into your `scrape_configs`. A starter Grafana dashboard is at
+`deploy/grafana/linkguard-dashboard.json` (Dashboards → Import → paste the
+file contents).
+
+This is entirely optional — LinkGuard keeps its own history (see the
+Monitoring page's timeline) and does not require Prometheus to function.
+
+**Known pitfall:** if you migrated from bind9 to unbound (see the DHCP/DNS
+docs), remove any leftover `job_name: bind` entry in your `prometheus.yml` —
+it will show as a permanently-down target for a service that no longer runs.
+
 ## Security
 
 - The web UI is bound to `127.0.0.1` by default — not exposed to the internet

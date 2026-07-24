@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Download, Upload, Loader2, AlertTriangle, Check } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
+import { RestoreResult } from '../types';
 
 /**
  * BackupRestore downloads the full panel configuration as a JSON file and
@@ -12,6 +13,7 @@ export default function BackupRestore() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [pending, setPending] = useState<object | null>(null);
+  const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 6000); };
@@ -49,9 +51,10 @@ export default function BackupRestore() {
     if (!pending) return;
     setBusy(true);
     try {
-      const { data } = await client.post<{ settings: number; reservations: number; blocklist: number }>('/api/backup/restore', pending);
+      const { data } = await client.post<RestoreResult>('/api/backup/restore', pending);
       setPending(null);
-      flash(`Restaurado: ${data.settings} configs, ${data.reservations} reservas, ${data.blocklist} domínios. Reaplique DHCP/DNS e Firewall onde necessário.`);
+      setRestoreResult(data);
+      flash('Restaurado com sucesso.');
     } catch (e) { flash('Erro: ' + errMsg(e)); }
     finally { setBusy(false); }
   };
@@ -68,6 +71,34 @@ export default function BackupRestore() {
       </div>
 
       {msg && <div className={`px-3 py-2 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>{msg}</div>}
+
+      {restoreResult && (
+        <div className="rounded-lg border border-green-500/40 bg-green-500/10 p-4 space-y-3">
+          <div className="text-green-300 text-sm">
+            <p className="font-medium">Restaurado: {restoreResult.settings} configs, {restoreResult.reservations} reservas, {restoreResult.blocklist} domínios.</p>
+            <p className="text-green-400/70 text-xs mt-1">Reaplique DHCP/DNS e Firewall onde necessário.</p>
+          </div>
+          {restoreResult.secrets_to_reconfigure && restoreResult.secrets_to_reconfigure.length > 0 && (
+            <div className="mt-3 p-3 rounded bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 text-sm">
+              <p className="font-medium mb-1">Reconfigure estas credenciais:</p>
+              <ul className="list-disc list-inside space-y-0.5">
+                {restoreResult.secrets_to_reconfigure.map(name => (
+                  <li key={name}>
+                    {name === 'github_update_token' ? 'Token do GitHub (Configurações → Atualizações)' :
+                     name === 'notifications' ? 'Notificações (Configurações → Notificações)' :
+                     name === 'wireguard' ? 'VPN WireGuard (chaves do servidor e dos clientes)' :
+                     name}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-yellow-400/70 text-xs mt-1">
+                Segredos nunca fazem parte do arquivo de backup — precisam ser reinformados manualmente.
+              </p>
+            </div>
+          )}
+          <button onClick={() => setRestoreResult(null)} className="btn-secondary text-sm">Fechar</button>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         <button onClick={download} disabled={busy} className="btn-primary flex items-center gap-2">

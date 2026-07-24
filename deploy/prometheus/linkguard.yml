@@ -1,0 +1,10 @@
+# LinkGuard FW Prometheus scrape job.
+#
+# Add this as a job under scrape_configs in /etc/prometheus/prometheus.yml.
+# LinkGuard exposes /metrics with no auth, on the same address/port as the
+# web panel (default 127.0.0.1:9997 — adjust the target if the panel listens
+# elsewhere, e.g. cfg.ListenAddr/cfg.Port in /etc/linkguard-fw/config.json).
+- job_name: linkguard
+  scrape_interval: 10s
+  static_configs:
+    - targets: ['localhost:9997']

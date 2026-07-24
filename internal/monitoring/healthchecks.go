@@ -98,6 +98,13 @@ func (c *Collector) checkServices(cfg Config) {
 		key := "service:" + svc
 		tr := c.observe(key, up, now)
 		c.ensureMeta(key, svc, "service")
+		if c.rec != nil {
+			state := "down"
+			if up {
+				state = "up"
+			}
+			c.rec.State("service", svc, state)
+		}
 		switch tr {
 		case transDown:
 			_ = c.alertSvc.ServiceOffline(svc)

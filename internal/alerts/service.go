@@ -138,11 +138,16 @@ func (s *Service) AppDown() error {
 		"O serviço linkguard-fw parou inesperadamente.", "")
 }
 
-// LinkDegraded raises a warning when a link is degraded.
-func (s *Service) LinkDegraded(linkName, linkID string) error {
+// LinkDegraded raises a warning when a link is degraded. latencyMs and
+// packetLossPct are the measurement that triggered the transition — embedding
+// them in the message is what turns "is experiencing high packet loss or
+// latency" (which forced every past investigation to go read the journal by
+// hand) into something a human can act on without opening the timeline.
+func (s *Service) LinkDegraded(linkName, linkID string, latencyMs, packetLossPct float64) error {
 	return s.Create(TypeLinkDegraded, SeverityWarning,
 		"Link Degraded: "+linkName,
-		"WAN link "+linkName+" is experiencing high packet loss or latency.", linkID)
+		fmt.Sprintf("WAN link %s is experiencing high packet loss or latency (latency=%.1fms, loss=%.1f%%).",
+			linkName, latencyMs, packetLossPct), linkID)
 }
 
 // Failover raises a warning when failover is triggered.

@@ -388,3 +388,420 @@ func TestTrafficSamplesPrune(t *testing.T) {
 		t.Fatalf("expected 1 remaining sample, got %d", len(got))
 	}
 }
+
+// ─── Metric samples and state intervals ──────────────────────────────────────
+
+func TestMetricSamplesAndStateIntervalsTablesExist(t *testing.T) {
+	db := newTestDB(t)
+
+	_, err := db.Conn().Exec(`INSERT INTO metric_samples
+		(series, label, step_seconds, ts_unix, v_min, v_avg, v_max)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"link.latency_ms", "WAN VIVO", 10, 1000, 10.0, 15.0, 20.0)
+	if err != nil {
+		t.Fatalf("insert metric_samples: %v", err)
+	}
+
+	_, err = db.Conn().Exec(`INSERT INTO state_intervals
+		(kind, label, state, started_at, ended_at) VALUES (?, ?, ?, ?, ?)`,
+		"link", "WAN SUMICITY", "degraded", 1000, nil)
+	if err != nil {
+		t.Fatalf("insert state_intervals: %v", err)
+	}
+}
+
+func TestUpsertAndGetMetricSamples(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.UpsertMetricSample(storage.MetricSample{
+		Series: "link.latency_ms", Label: "WAN VIVO", StepSeconds: 10,
+		TsUnix: 1000, VMin: 10, VAvg: 15, VMax: 20,
+	}); err != nil {
+		t.Fatalf("UpsertMetricSample: %v", err)
+	}
+	// Overwrite same bucket — should update, not duplicate.
+	if err := db.UpsertMetricSample(storage.MetricSample{
+		Series: "link.latency_ms", Label: "WAN VIVO", StepSeconds: 10,
+		TsUnix: 1000, VMin: 5, VAvg: 12, VMax: 25,
+	}); err != nil {
+		t.Fatalf("UpsertMetricSample overwrite: %v", err)
+	}
+
+	got, err := db.GetMetricSamples("link.latency_ms", "WAN VIVO", 10, 0, 2000)
+	if err != nil {
+		t.Fatalf("GetMetricSamples: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 sample after overwrite, got %d", len(got))
+	}
+	if got[0].VMin != 5 || got[0].VMax != 25 {
+		t.Fatalf("expected overwritten min=5 max=25, got min=%v max=%v", got[0].VMin, got[0].VMax)
+	}
+}
+
+func TestPruneMetricSamples(t *testing.T) {
+	db := newTestDB(t)
+
+	_ = db.UpsertMetricSample(storage.MetricSample{Series: "s", Label: "l", StepSeconds: 60, TsUnix: 100, VMin: 1, VAvg: 1, VMax: 1})
+	_ = db.UpsertMetricSample(storage.MetricSample{Series: "s", Label: "l", StepSeconds: 60, TsUnix: 9000, VMin: 1, VAvg: 1, VMax: 1})
+
+	if err := db.PruneMetricSamples(60, 5000); err != nil {
+		t.Fatalf("PruneMetricSamples: %v", err)
+	}
+
+	got, err := db.GetMetricSamples("s", "l", 60, 0, 100000)
+	if err != nil {
+		t.Fatalf("GetMetricSamples: %v", err)
+	}
+	if len(got) != 1 || got[0].TsUnix != 9000 {
+		t.Fatalf("expected only the newer sample to remain, got %v", got)
+	}
+}
+
+func TestStateIntervalOpenAndClose(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.OpenStateInterval("link", "WAN SUMICITY", "degraded", 1000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+
+	got, err := db.GetStateIntervals("link", "WAN SUMICITY", 0, 5000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(got) != 1 || got[0].EndedAt != nil {
+		t.Fatalf("expected 1 open interval, got %v", got)
+	}
+
+	if err := db.CloseOpenStateInterval("link", "WAN SUMICITY", 1008); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+
+	got, err = db.GetStateIntervals("link", "WAN SUMICITY", 0, 5000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(got) != 1 || got[0].EndedAt == nil || *got[0].EndedAt != 1008 {
+		t.Fatalf("expected interval closed at 1008, got %v", got)
+	}
+}
+
+func TestStateIntervalsDoNotOverlap(t *testing.T) {
+	db := newTestDB(t)
+
+	_ = db.OpenStateInterval("link", "WAN VIVO", "online", 1000)
+	_ = db.CloseOpenStateInterval("link", "WAN VIVO", 1010)
+	_ = db.OpenStateInterval("link", "WAN VIVO", "degraded", 1010)
+	_ = db.CloseOpenStateInterval("link", "WAN VIVO", 1020)
+	_ = db.OpenStateInterval("link", "WAN VIVO", "online", 1020)
+
+	got, err := db.GetStateIntervals("link", "WAN VIVO", 0, 5000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 intervals, got %d", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		prevEnd := got[i-1].EndedAt
+		if prevEnd == nil {
+			t.Fatalf("interval %d has no end but is followed by another interval", i-1)
+		}
+		if *prevEnd != got[i].StartedAt {
+			t.Fatalf("gap or overlap between interval %d (ends %d) and %d (starts %d)", i-1, *prevEnd, i, got[i].StartedAt)
+		}
+	}
+	if got[2].EndedAt != nil {
+		t.Fatalf("expected the last interval to still be open, got ended_at=%v", *got[2].EndedAt)
+	}
+}
+
+func TestGetStateIntervalsIncludesOpenIntervalStartedBeforeWindow(t *testing.T) {
+	db := newTestDB(t)
+
+	// Open an interval at timestamp 1000
+	if err := db.OpenStateInterval("link", "WAN SUMMER", "degraded", 1000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+
+	// Query with fromUnix=1500 and toUnix=2000, which is AFTER the interval started
+	// The interval started at 1000 but is still open, so it should be included
+	got, err := db.GetStateIntervals("link", "WAN SUMMER", 1500, 2000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+
+	// Assert the open interval that started before the query window is included
+	if len(got) != 1 {
+		t.Fatalf("expected 1 interval, got %d", len(got))
+	}
+	if got[0].StartedAt != 1000 {
+		t.Errorf("expected interval to have started_at=1000, got %d", got[0].StartedAt)
+	}
+	if got[0].EndedAt != nil {
+		t.Errorf("expected interval to still be open, got ended_at=%v", got[0].EndedAt)
+	}
+	if got[0].State != "degraded" {
+		t.Errorf("expected interval state=degraded, got %s", got[0].State)
+	}
+}
+
+func TestGetAllOpenStateIntervals(t *testing.T) {
+	db := newTestDB(t)
+
+	// Two open intervals for different (kind,label) keys, plus one closed
+	// interval that must NOT be returned.
+	if err := db.OpenStateInterval("link", "WAN VIVO", "degraded", 1000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.OpenStateInterval("service", "unbound", "up", 2000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.OpenStateInterval("link", "WAN SUMICITY", "online", 3000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.CloseOpenStateInterval("link", "WAN SUMICITY", 3100); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+
+	got, err := db.GetAllOpenStateIntervals()
+	if err != nil {
+		t.Fatalf("GetAllOpenStateIntervals: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 open intervals (closed one excluded), got %d: %+v", len(got), got)
+	}
+	byLabel := map[string]storage.StateInterval{}
+	for _, si := range got {
+		if si.EndedAt != nil {
+			t.Fatalf("expected EndedAt nil for an open interval, got %+v", si)
+		}
+		byLabel[si.Label] = si
+	}
+	if si, ok := byLabel["WAN VIVO"]; !ok || si.Kind != "link" || si.State != "degraded" || si.StartedAt != 1000 {
+		t.Fatalf("expected open link/WAN VIVO/degraded@1000, got %+v (present=%v)", si, ok)
+	}
+	if si, ok := byLabel["unbound"]; !ok || si.Kind != "service" || si.State != "up" || si.StartedAt != 2000 {
+		t.Fatalf("expected open service/unbound/up@2000, got %+v (present=%v)", si, ok)
+	}
+}
+
+func TestPruneStateIntervals(t *testing.T) {
+	db := newTestDB(t)
+
+	// Old, closed interval — must be pruned.
+	if err := db.OpenStateInterval("link", "WAN VIVO", "degraded", 100); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.CloseOpenStateInterval("link", "WAN VIVO", 200); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+	// Old, still-open interval — must survive pruning no matter how old.
+	if err := db.OpenStateInterval("service", "unbound", "up", 50); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	// Recent, closed interval — must survive (not old enough to prune).
+	if err := db.OpenStateInterval("link", "WAN SUMICITY", "online", 9000); err != nil {
+		t.Fatalf("OpenStateInterval: %v", err)
+	}
+	if err := db.CloseOpenStateInterval("link", "WAN SUMICITY", 9100); err != nil {
+		t.Fatalf("CloseOpenStateInterval: %v", err)
+	}
+
+	if err := db.PruneStateIntervals(5000); err != nil {
+		t.Fatalf("PruneStateIntervals: %v", err)
+	}
+
+	got, err := db.GetAllOpenStateIntervals()
+	if err != nil {
+		t.Fatalf("GetAllOpenStateIntervals: %v", err)
+	}
+	if len(got) != 1 || got[0].Label != "unbound" {
+		t.Fatalf("expected the old open interval to survive pruning, got %+v", got)
+	}
+
+	closedRecent, err := db.GetStateIntervals("link", "WAN SUMICITY", 0, 100000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(closedRecent) != 1 {
+		t.Fatalf("expected the recent closed interval to survive, got %+v", closedRecent)
+	}
+
+	closedOld, err := db.GetStateIntervals("link", "WAN VIVO", 0, 100000)
+	if err != nil {
+		t.Fatalf("GetStateIntervals: %v", err)
+	}
+	if len(closedOld) != 0 {
+		t.Fatalf("expected the old closed interval to be pruned, got %+v", closedOld)
+	}
+}
+
+// ─── Migration: traffic_samples → metric_samples ────────────────────────────
+
+func TestMigrateTrafficSamplesToMetricSamples(t *testing.T) {
+	db := newTestDB(t)
+
+	// Simulate a pre-migration row the way the old trafficrrd wrote it.
+	_, err := db.Conn().Exec(`INSERT INTO traffic_samples
+		(interface, step_seconds, ts_unix, rx_bps, tx_bps) VALUES (?, ?, ?, ?, ?)`,
+		"eth0", 60, 5000, 1234.5, 6789.0)
+	if err != nil {
+		t.Fatalf("seed traffic_samples: %v", err)
+	}
+
+	if err := db.MigrateTrafficSamplesToMetricSamplesForTest(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	rx, err := db.GetMetricSamples("if.rx_bps", "eth0", 60, 0, 100000)
+	if err != nil {
+		t.Fatalf("GetMetricSamples rx: %v", err)
+	}
+	if len(rx) != 1 || rx[0].VAvg != 1234.5 || rx[0].VMin != 1234.5 || rx[0].VMax != 1234.5 {
+		t.Fatalf("expected 1 rx sample with min=avg=max=1234.5, got %v", rx)
+	}
+
+	tx, err := db.GetMetricSamples("if.tx_bps", "eth0", 60, 0, 100000)
+	if err != nil {
+		t.Fatalf("GetMetricSamples tx: %v", err)
+	}
+	if len(tx) != 1 || tx[0].VAvg != 6789.0 {
+		t.Fatalf("expected 1 tx sample avg=6789.0, got %v", tx)
+	}
+
+	// Idempotent: running twice must not duplicate or error.
+	if err := db.MigrateTrafficSamplesToMetricSamplesForTest(); err != nil {
+		t.Fatalf("second migrate call: %v", err)
+	}
+	rx2, _ := db.GetMetricSamples("if.rx_bps", "eth0", 60, 0, 100000)
+	if len(rx2) != 1 {
+		t.Fatalf("expected migration to stay idempotent, got %d rx samples", len(rx2))
+	}
+}
+
+// ─── Secrets ──────────────────────────────────────────────────────────────
+
+func TestSecretsTableExists(t *testing.T) {
+	db := newTestDB(t)
+
+	_, err := db.Conn().Exec(`INSERT INTO secrets (name, nonce, ciphertext, updated_at)
+		VALUES (?, ?, ?, ?)`, "test_key", []byte("012345678901"), []byte("ciphertext"), time.Now())
+	if err != nil {
+		t.Fatalf("insert secrets: %v", err)
+	}
+}
+
+type fakeSecretsSetter struct {
+	stored map[string]string
+}
+
+func (f *fakeSecretsSetter) Set(name, plaintext string) error {
+	if f.stored == nil {
+		f.stored = map[string]string{}
+	}
+	f.stored[name] = plaintext
+	return nil
+}
+
+func TestMigrateSettingsToSecretsMovesKnownKeys(t *testing.T) {
+	db := newTestDB(t)
+
+	_ = db.SetSetting("github_update_token", "ghp_abc")
+	_ = db.SetSetting("notifications", `{"webhook":{"url":"https://x"}}`)
+	_ = db.SetSetting("wireguard", `{"private_key":"wgpriv123","peers":[]}`)
+	_ = db.SetSetting("totp_user-1", `{"secret":"AAA","enabled":true}`)
+	_ = db.SetSetting("totp_user-2", `{"secret":"BBB","enabled":true}`)
+	_ = db.SetSetting("monitoring", `{"enabled":true}`) // must NOT be migrated
+
+	fake := &fakeSecretsSetter{}
+	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
+		t.Fatalf("MigrateSettingsToSecrets: %v", err)
+	}
+
+	want := map[string]string{
+		"github_update_token": "ghp_abc",
+		"notifications":       `{"webhook":{"url":"https://x"}}`,
+		"wireguard":           `{"private_key":"wgpriv123","peers":[]}`,
+		"totp_user-1":         `{"secret":"AAA","enabled":true}`,
+		"totp_user-2":         `{"secret":"BBB","enabled":true}`,
+	}
+	for k, v := range want {
+		if fake.stored[k] != v {
+			t.Fatalf("expected %q migrated with value %q, got %q", k, v, fake.stored[k])
+		}
+	}
+
+	settings, err := db.ExportSettings()
+	if err != nil {
+		t.Fatalf("ExportSettings: %v", err)
+	}
+	for k := range want {
+		if _, present := settings[k]; present {
+			t.Fatalf("expected %q removed from settings after migration, still present", k)
+		}
+	}
+	if settings["monitoring"] != `{"enabled":true}` {
+		t.Fatalf("expected non-secret key 'monitoring' untouched, got %q", settings["monitoring"])
+	}
+}
+
+func TestMigrateSettingsToSecretsIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	_ = db.SetSetting("github_update_token", "ghp_abc")
+
+	fake := &fakeSecretsSetter{}
+	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
+		t.Fatalf("first migrate: %v", err)
+	}
+	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	if fake.stored["github_update_token"] != "ghp_abc" {
+		t.Fatalf("expected value to survive two migrate calls unchanged, got %q", fake.stored["github_update_token"])
+	}
+}
+
+func TestCreateAndListAIReports(t *testing.T) {
+	db := newTestDB(t)
+
+	r := &storage.AIReport{
+		Kind: "digest", Summary: "19 episódios na SUMICITY, nenhum com perda de carrier",
+		Findings:       `["SUMICITY: 19 episódios, 8-18s cada"]`,
+		Recommendation: "Considere abrir chamado com a operadora anexando este relatório.",
+		Confidence:     "alta",
+	}
+	if err := db.CreateAIReport(r); err != nil {
+		t.Fatalf("CreateAIReport: %v", err)
+	}
+	if r.ID == "" {
+		t.Error("expected ID to be set")
+	}
+
+	got, err := db.ListAIReports(10)
+	if err != nil {
+		t.Fatalf("ListAIReports: %v", err)
+	}
+	if len(got) != 1 || got[0].Summary != r.Summary {
+		t.Fatalf("expected 1 report matching what was created, got %v", got)
+	}
+
+	one, err := db.GetAIReport(r.ID)
+	if err != nil {
+		t.Fatalf("GetAIReport: %v", err)
+	}
+	if one == nil || one.ID != r.ID {
+		t.Fatalf("expected GetAIReport to find the created report, got %v", one)
+	}
+}
+
+func TestGetAIReportMissingReturnsNil(t *testing.T) {
+	db := newTestDB(t)
+	got, err := db.GetAIReport("does-not-exist")
+	if err != nil {
+		t.Fatalf("GetAIReport: %v", err)
+	}
+	if got != nil {
+		t.Fatal("expected nil for a missing report")
+	}
+}

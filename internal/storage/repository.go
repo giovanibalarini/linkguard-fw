@@ -877,6 +877,8 @@ func (db *DB) SetSetting(key, value string) error {
 }
 
 // ExportSettings returns every key/value in the settings table (for backups).
+// Secrets are never in this table — see internal/secrets — so no filtering is
+// needed here; the guarantee is structural, not a maintained exclusion list.
 func (db *DB) ExportSettings() (map[string]string, error) {
 	rows, err := db.conn.Query(`SELECT key, value FROM settings`)
 	if err != nil {
@@ -892,6 +894,77 @@ func (db *DB) ExportSettings() (map[string]string, error) {
 		out[k] = v
 	}
 	return out, rows.Err()
+}
+
+// SecretsSetter is the minimal write surface MigrateSettingsToSecrets needs.
+// Defined here (not imported from internal/secrets) so internal/storage never
+// depends on internal/secrets — the dependency runs the other way (secrets
+// depends on storage.DB), and this keeps it that way.
+type SecretsSetter interface {
+	Set(name, plaintext string) error
+}
+
+// MigrateSettingsToSecrets moves the legacy secret-shaped settings rows
+// (github_update_token, notifications, wireguard, and every totp_<userID>)
+// into sec, then deletes them from settings. Idempotent: a key already absent
+// from settings (already migrated on a prior boot) is silently skipped.
+func MigrateSettingsToSecrets(db *DB, sec SecretsSetter) error {
+	exact := []string{"github_update_token", "notifications", "wireguard"}
+	for _, key := range exact {
+		if err := migrateOneSetting(db, sec, key); err != nil {
+			return err
+		}
+	}
+
+	// GLOB (not LIKE) here: SQLite's LIKE treats "_" itself as a
+	// single-character wildcard, so `LIKE 'totp_%'` would also match keys
+	// like "totpXanything" that merely start with "totp" + any one
+	// character — not just the literal "totp_" prefix. GLOB uses shell-style
+	// wildcards where "_" has no special meaning, so `GLOB 'totp_*'` matches
+	// exactly the intended "totp_<userID>" keys.
+	rows, err := db.conn.Query(`SELECT key FROM settings WHERE key GLOB 'totp_*'`)
+	if err != nil {
+		return err
+	}
+	var totpKeys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			rows.Close()
+			return err
+		}
+		totpKeys = append(totpKeys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, key := range totpKeys {
+		if err := migrateOneSetting(db, sec, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateOneSetting moves a single settings row into sec, then deletes it
+// from settings. If sec.Set fails, the settings row is left untouched (no
+// delete happens), so a retry of MigrateSettingsToSecrets will re-attempt
+// this exact key from the plaintext still sitting in settings rather than
+// silently losing the value.
+func migrateOneSetting(db *DB, sec SecretsSetter, key string) error {
+	value, err := db.GetSetting(key)
+	if err != nil {
+		return err
+	}
+	if value == "" {
+		return nil // never set, or already migrated
+	}
+	if err := sec.Set(key, value); err != nil {
+		return fmt.Errorf("migrate secret %q: %w", key, err)
+	}
+	_, err = db.conn.Exec(`DELETE FROM settings WHERE key = ?`, key)
+	return err
 }
 
 // ─── Routing Policies ────────────────────────────────────────────────────────
@@ -1042,4 +1115,188 @@ func (db *DB) PruneTrafficSamples(stepSeconds int, olderThanUnix int64) error {
 		DELETE FROM traffic_samples
 		WHERE step_seconds = ? AND ts_unix < ?`, stepSeconds, olderThanUnix)
 	return err
+}
+
+// ─── Metric Samples ──────────────────────────────────────────────────────────
+
+// UpsertMetricSample writes or overwrites one bucket. Called only from the
+// tsdb service's own writer goroutine, never from a measurement call site.
+func (db *DB) UpsertMetricSample(s MetricSample) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO metric_samples (series, label, step_seconds, ts_unix, v_min, v_avg, v_max)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(series, label, step_seconds, ts_unix)
+		DO UPDATE SET v_min=excluded.v_min, v_avg=excluded.v_avg, v_max=excluded.v_max`,
+		s.Series, s.Label, s.StepSeconds, s.TsUnix, s.VMin, s.VAvg, s.VMax)
+	return err
+}
+
+// GetMetricSamples returns samples for one series+label+step between timestamps.
+func (db *DB) GetMetricSamples(series, label string, stepSeconds int, fromUnix, toUnix int64) ([]MetricSample, error) {
+	rows, err := db.conn.Query(`
+		SELECT series, label, step_seconds, ts_unix, v_min, v_avg, v_max
+		FROM metric_samples
+		WHERE series = ? AND label = ? AND step_seconds = ? AND ts_unix BETWEEN ? AND ?
+		ORDER BY ts_unix ASC`, series, label, stepSeconds, fromUnix, toUnix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []MetricSample
+	for rows.Next() {
+		var s MetricSample
+		if err := rows.Scan(&s.Series, &s.Label, &s.StepSeconds, &s.TsUnix, &s.VMin, &s.VAvg, &s.VMax); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// PruneMetricSamples deletes buckets of one step older than the cutoff.
+func (db *DB) PruneMetricSamples(stepSeconds int, olderThanUnix int64) error {
+	_, err := db.conn.Exec(`
+		DELETE FROM metric_samples
+		WHERE step_seconds = ? AND ts_unix < ?`, stepSeconds, olderThanUnix)
+	return err
+}
+
+// ─── State Intervals ─────────────────────────────────────────────────────────
+
+// OpenStateInterval starts a new interval. Callers must close any prior open
+// interval for the same (kind, label) first — CloseOpenStateInterval — or the
+// two will overlap.
+func (db *DB) OpenStateInterval(kind, label, state string, startedAt int64) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO state_intervals (kind, label, state, started_at, ended_at)
+		VALUES (?, ?, ?, ?, NULL)`, kind, label, state, startedAt)
+	return err
+}
+
+// CloseOpenStateInterval ends whatever interval is currently open for
+// (kind, label). No-op if none is open (first observation ever for that label).
+func (db *DB) CloseOpenStateInterval(kind, label string, endedAt int64) error {
+	_, err := db.conn.Exec(`
+		UPDATE state_intervals SET ended_at = ?
+		WHERE kind = ? AND label = ? AND ended_at IS NULL`, endedAt, kind, label)
+	return err
+}
+
+// GetAllOpenStateIntervals returns every currently-open interval (ended_at IS
+// NULL) across all (kind, label) pairs — used at startup to reconcile
+// in-memory state with what's actually open in the database, so a restart
+// doesn't leak a permanently-open row or later corrupt history by closing
+// multiple accumulated "open" rows for the same key at once.
+func (db *DB) GetAllOpenStateIntervals() ([]StateInterval, error) {
+	rows, err := db.conn.Query(`
+		SELECT kind, label, state, started_at
+		FROM state_intervals
+		WHERE ended_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []StateInterval
+	for rows.Next() {
+		var s StateInterval
+		if err := rows.Scan(&s.Kind, &s.Label, &s.State, &s.StartedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// PruneStateIntervals deletes CLOSED intervals (ended_at IS NOT NULL) whose
+// started_at is older than the cutoff. A still-open interval is never
+// deleted, no matter how old — it must survive so a later restart can still
+// reconcile in-memory state against it (see GetAllOpenStateIntervals).
+func (db *DB) PruneStateIntervals(olderThanUnix int64) error {
+	_, err := db.conn.Exec(`
+		DELETE FROM state_intervals
+		WHERE started_at < ? AND ended_at IS NOT NULL`, olderThanUnix)
+	return err
+}
+
+// GetStateIntervals returns intervals for (kind, label) that overlap
+// [fromUnix, toUnix] — including an interval that started before fromUnix and
+// is still open, or ended after toUnix.
+func (db *DB) GetStateIntervals(kind, label string, fromUnix, toUnix int64) ([]StateInterval, error) {
+	rows, err := db.conn.Query(`
+		SELECT kind, label, state, started_at, ended_at
+		FROM state_intervals
+		WHERE kind = ? AND label = ?
+		  AND started_at <= ?
+		  AND (ended_at IS NULL OR ended_at >= ?)
+		ORDER BY started_at ASC`, kind, label, toUnix, fromUnix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []StateInterval
+	for rows.Next() {
+		var s StateInterval
+		var ended sql.NullInt64
+		if err := rows.Scan(&s.Kind, &s.Label, &s.State, &s.StartedAt, &ended); err != nil {
+			return nil, err
+		}
+		if ended.Valid {
+			s.EndedAt = &ended.Int64
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ─── AI Reports ──────────────────────────────────────────────────────────────
+
+// CreateAIReport inserts a new report, generating its ID.
+func (db *DB) CreateAIReport(r *AIReport) error {
+	r.ID = uuid.NewString()
+	r.CreatedAt = time.Now()
+	_, err := db.conn.Exec(`
+		INSERT INTO ai_reports (id, kind, summary, findings, recommendation, confidence, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Kind, r.Summary, r.Findings, r.Recommendation, r.Confidence, r.CreatedAt)
+	return err
+}
+
+// ListAIReports returns the most recent reports, newest first.
+func (db *DB) ListAIReports(limit int) ([]AIReport, error) {
+	rows, err := db.conn.Query(`
+		SELECT id, kind, summary, findings, recommendation, confidence, created_at
+		FROM ai_reports ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []AIReport{}
+	for rows.Next() {
+		var r AIReport
+		if err := rows.Scan(&r.ID, &r.Kind, &r.Summary, &r.Findings, &r.Recommendation, &r.Confidence, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetAIReport returns one report by ID, or nil if not found.
+func (db *DB) GetAIReport(id string) (*AIReport, error) {
+	var r AIReport
+	err := db.conn.QueryRow(`
+		SELECT id, kind, summary, findings, recommendation, confidence, created_at
+		FROM ai_reports WHERE id = ?`, id).
+		Scan(&r.ID, &r.Kind, &r.Summary, &r.Findings, &r.Recommendation, &r.Confidence, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }

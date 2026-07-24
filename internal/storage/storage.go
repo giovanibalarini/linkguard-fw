@@ -64,10 +64,15 @@ func (db *DB) migrate() error {
 		createRoutingPoliciesTable,
 		createIptablesBackupsTable,
 		createSettingsTable,
-        createTrafficSamplesTable,
+		createSecretsTable,
+		createTrafficSamplesTable,
+		createMetricSamplesTable,
+		createStateIntervalsTable,
+		createStateIntervalsOpenIndex,
 		createHostMetadataTable,
 		createDHCPReservationsTable,
 		createDNSBlocklistTable,
+		createAIReportsTable,
 		insertDefaultAdmin,
 	}
 
@@ -77,7 +82,97 @@ func (db *DB) migrate() error {
 		}
 	}
 
+	if err := db.migrateTrafficSamplesToMetricSamples(); err != nil {
+		return fmt.Errorf("migrate traffic_samples to metric_samples: %w", err)
+	}
+
 	return nil
+}
+
+// migrateTrafficSamplesToMetricSamples copies every row from the legacy
+// traffic_samples table into metric_samples as if.rx_bps/if.tx_bps, then
+// renames (never drops) the populated old table so a second boot is a no-op.
+// min=avg=max=value for migrated rows — the old table never recorded a spike,
+// so there is nothing more honest to backfill. The rename only fires when
+// there is at least one legacy row to move: traffic_samples is still created
+// unconditionally (CREATE TABLE IF NOT EXISTS) by the plain migrations list
+// above on every boot, so an empty table here just means "nothing to do"
+// (fresh install, or a boot after the real migration already renamed the
+// populated table away) rather than "rename an empty shell" — which would
+// otherwise collide with traffic_samples_pre_tsdb_migration on every boot
+// after the real one.
+func (db *DB) migrateTrafficSamplesToMetricSamples() error {
+	var exists int
+	err := db.conn.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='traffic_samples'`).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil // already migrated on a prior boot, or fresh install
+	}
+
+	rows, err := db.conn.Query(`SELECT interface, step_seconds, ts_unix, rx_bps, tx_bps FROM traffic_samples`)
+	if err != nil {
+		return err
+	}
+	type legacyRow struct {
+		iface  string
+		step   int
+		ts     int64
+		rx, tx float64
+	}
+	var legacy []legacyRow
+	for rows.Next() {
+		var r legacyRow
+		if err := rows.Scan(&r.iface, &r.step, &r.ts, &r.rx, &r.tx); err != nil {
+			rows.Close()
+			return err
+		}
+		legacy = append(legacy, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(legacy) == 0 {
+		// Nothing to migrate: either a fresh install (createTrafficSamplesTable,
+		// still unconditionally in the migrations list above, just created an
+		// empty traffic_samples table on this very boot) or a boot after the
+		// real migration already ran and renamed the populated table away —
+		// CREATE TABLE IF NOT EXISTS keeps recreating an empty traffic_samples
+		// every time it's missing. Leave the empty table in place rather than
+		// renaming it: renaming here would collide with (or pointlessly
+		// shadow) traffic_samples_pre_tsdb_migration from the real migration.
+		return nil
+	}
+
+	for _, r := range legacy {
+		if err := db.UpsertMetricSample(MetricSample{
+			Series: "if.rx_bps", Label: r.iface, StepSeconds: r.step, TsUnix: r.ts,
+			VMin: r.rx, VAvg: r.rx, VMax: r.rx,
+		}); err != nil {
+			return err
+		}
+		if err := db.UpsertMetricSample(MetricSample{
+			Series: "if.tx_bps", Label: r.iface, StepSeconds: r.step, TsUnix: r.ts,
+			VMin: r.tx, VAvg: r.tx, VMax: r.tx,
+		}); err != nil {
+			return err
+		}
+	}
+
+	_, err = db.conn.Exec(`ALTER TABLE traffic_samples RENAME TO traffic_samples_pre_tsdb_migration`)
+	return err
+}
+
+// MigrateTrafficSamplesToMetricSamplesForTest exposes the migration for tests
+// in the storage_test package (which cannot call the unexported method
+// directly). Test-only.
+func (db *DB) MigrateTrafficSamplesToMetricSamplesForTest() error {
+	return db.migrateTrafficSamplesToMetricSamples()
 }
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
@@ -244,6 +339,14 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 
+const createSecretsTable = `
+CREATE TABLE IF NOT EXISTS secrets (
+    name       TEXT PRIMARY KEY,
+    nonce      BLOB NOT NULL,
+    ciphertext BLOB NOT NULL,
+    updated_at DATETIME NOT NULL
+);`
+
 const createTrafficSamplesTable = `
 CREATE TABLE IF NOT EXISTS traffic_samples (
     interface     TEXT NOT NULL,
@@ -252,4 +355,41 @@ CREATE TABLE IF NOT EXISTS traffic_samples (
     rx_bps        REAL NOT NULL,
     tx_bps        REAL NOT NULL,
     PRIMARY KEY (interface, step_seconds, ts_unix)
+);`
+
+const createMetricSamplesTable = `
+CREATE TABLE IF NOT EXISTS metric_samples (
+    series        TEXT NOT NULL,
+    label         TEXT NOT NULL DEFAULT '',
+    step_seconds  INTEGER NOT NULL,
+    ts_unix       INTEGER NOT NULL,
+    v_min         REAL NOT NULL,
+    v_avg         REAL NOT NULL,
+    v_max         REAL NOT NULL,
+    PRIMARY KEY (series, label, step_seconds, ts_unix)
+);`
+
+const createStateIntervalsTable = `
+CREATE TABLE IF NOT EXISTS state_intervals (
+    kind       TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    ended_at   INTEGER,
+    PRIMARY KEY (kind, label, started_at)
+);`
+
+const createStateIntervalsOpenIndex = `
+CREATE INDEX IF NOT EXISTS idx_state_intervals_open
+ON state_intervals(kind, label) WHERE ended_at IS NULL;`
+
+const createAIReportsTable = `
+CREATE TABLE IF NOT EXISTS ai_reports (
+    id             TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL,
+    summary        TEXT NOT NULL,
+    findings       TEXT NOT NULL,
+    recommendation TEXT NOT NULL,
+    confidence     TEXT NOT NULL,
+    created_at     DATETIME NOT NULL
 );`

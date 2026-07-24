@@ -285,7 +285,7 @@ func (s *Service) applyFault(t *Test) {
 		if t.Mode == ModeOutage {
 			_ = s.alertSvc.LinkOffline(t.LinkName, t.LinkID)
 		} else {
-			_ = s.alertSvc.LinkDegraded(t.LinkName, t.LinkID)
+			_ = s.alertSvc.LinkDegraded(t.LinkName, t.LinkID, float64(t.DelayMs), float64(t.LossPct))
 		}
 	}
 	if t.Mode == ModeOutage {

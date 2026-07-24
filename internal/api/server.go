@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/ai"
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
@@ -31,10 +32,11 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/stresstest"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
-	"github.com/giovanibalarini/linkguard-fw/internal/trafficrrd"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 	"github.com/giovanibalarini/linkguard-fw/internal/updater"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
@@ -58,9 +60,11 @@ type Server struct {
 	notifySvc   *notify.Service
 	trafficSvc  *hosttraffic.Service
 	sysCol      *system.Collector
-	rrdSvc      *trafficrrd.Service
+	rrdSvc      *tsdb.Service
 	promReg     *prometheus.Registry
 	mon         *monitoring.Collector
+	sec         secrets.Secrets
+	aiClient    *ai.Client
 	webFS       embed.FS
 }
 
@@ -79,8 +83,8 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
 	vpnSvc *wireguard.Service, notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
-	sysCol *system.Collector, rrdSvc *trafficrrd.Service, promReg *prometheus.Registry,
-	mon *monitoring.Collector) *Server {
+	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
+	mon *monitoring.Collector, sec secrets.Secrets, aiClient *ai.Client) *Server {
 
 	s := &Server{
 		db:          db,
@@ -102,6 +106,8 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
 		mon:         mon,
+		sec:         sec,
+		aiClient:    aiClient,
 		webFS:       cfg.WebFS,
 	}
 
@@ -250,9 +256,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// Monitoring (Vigia health snapshot + config)
 		monH := handlers.NewMonitoringHandler(s.mon, s.db)
+		timelineH := handlers.NewTimelineHandler(s.rrdSvc, s.alertSvc)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/health", monH.Health)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/config", monH.GetConfig)
 		r.With(require(auth.PermSystemWrite)).Put("/api/monitoring/config", monH.SetConfig)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/timeline", timelineH.Timeline)
 
 		// Notification channels (webhook/Telegram/e-mail)
 		notifyH := handlers.NewNotifyHandler(s.db, s.notifySvc)
@@ -265,17 +273,35 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermLogsRead)).Get("/api/logs", logsH.List)
 
 		// Backup / restore (admin: system.write)
-		backupH := handlers.NewBackupHandler(s.db, cfg.Version)
+		backupH := handlers.NewBackupHandler(s.db, s.sec, cfg.Version)
 		r.With(require(auth.PermSystemWrite)).Get("/api/backup", backupH.Export)
 		r.With(require(auth.PermSystemWrite)).Post("/api/backup/restore", backupH.Restore)
 
 		// In-app update (admin: system.write)
-		updateH := handlers.NewUpdateHandler(s.db, updater.NewService(s.exec, cfg.Version,
-			func() string { tok, _ := s.db.GetSetting("github_update_token"); return tok }))
+		updateH := handlers.NewUpdateHandler(s.db, s.sec, updater.NewService(s.exec, cfg.Version,
+			func() string {
+				tok, err := s.sec.Get("github_update_token")
+				if err != nil {
+					slog.Warn("update: failed to read GitHub token from secrets vault", "err", err)
+				}
+				return tok
+			}))
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/check", updateH.Check)
 		r.With(require(auth.PermSystemWrite)).Post("/api/system/update/apply", updateH.Apply)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/token", updateH.TokenStatus)
 		r.With(require(auth.PermSystemWrite)).Put("/api/system/update/token", updateH.SetToken)
+
+		// AI advisory layer (BYOK): token, config, report history (admin:
+		// system.write for mutations; reports gated on monitoring.read since
+		// they're diagnostic output, same tier as other monitoring views)
+		aiH := handlers.NewAIHandler(s.db, s.sec, s.aiClient)
+		r.With(require(auth.PermSystemRead)).Get("/api/ai/status", aiH.Status)
+		r.With(require(auth.PermSystemWrite)).Put("/api/ai/token", aiH.SetToken)
+		r.With(require(auth.PermSystemWrite)).Delete("/api/ai/token", aiH.DeleteToken)
+		r.With(require(auth.PermSystemWrite)).Post("/api/ai/token/test", aiH.TestToken)
+		r.With(require(auth.PermSystemWrite)).Put("/api/ai/config", aiH.SetConfig)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/ai/reports", aiH.ListReports)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/ai/reports/{id}", aiH.GetReport)
 
 		// DHCP / DNS (Kea + unbound)
 		netH := handlers.NewNetsvcHandler(s.db, s.netSvc, s.alertSvc)
@@ -295,7 +321,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermDNSRead)).Get("/api/dns/queries", dnsLogH.Recent)
 
 		// VPN (WireGuard road-warrior)
-		vpnH := handlers.NewVPNHandler(s.db, s.vpnSvc)
+		vpnH := handlers.NewVPNHandler(s.db, s.vpnSvc, s.sec)
 		r.With(require(auth.PermVPNRead)).Get("/api/vpn", vpnH.Get)
 		r.With(require(auth.PermVPNWrite)).Put("/api/vpn/config", vpnH.UpdateConfig)
 		r.With(require(auth.PermVPNWrite)).Post("/api/vpn/peers", vpnH.AddPeer)

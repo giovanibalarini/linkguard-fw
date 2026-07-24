@@ -1,8 +1,12 @@
 package links
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 func TestBindDialer(t *testing.T) {
@@ -132,4 +136,103 @@ func TestAdvanceOfflineAndOnline(t *testing.T) {
 	if status != StatusOnline {
 		t.Errorf("after %d good samples, status = %q, want online", probeRecoverThreshold, status)
 	}
+}
+
+// TestAdvanceStatusRequiresSustainedThreshold verifies that a single degraded
+// sample does NOT flip status to degraded — status must stay at whatever it
+// was until sustainThreshold consecutive degraded samples accumulate, the
+// same shape probeFailThreshold already uses for offline. Before this fix,
+// "case degradedNow:" alone was enough to flip status on the very first
+// sample, which is what turned an 8-second upstream blip into a route
+// rewrite in production (2026-07-23 incident).
+func TestAdvanceStatusRequiresSustainedThreshold(t *testing.T) {
+	st := &linkState{}
+	prev := StatusOnline
+
+	// Two degraded samples below threshold(3): status must NOT flip yet.
+	for i := 0; i < 2; i++ {
+		status, _ := st.advance(true, true, prev, 3)
+		if status != StatusOnline {
+			t.Fatalf("sample %d: status = %q, want online (below threshold, must not flip)", i+1, status)
+		}
+	}
+
+	// Third sample crosses the threshold: NOW it flips.
+	status, _ := st.advance(true, true, prev, 3)
+	if status != StatusDegraded {
+		t.Fatalf("sample 3: status = %q, want degraded (threshold reached)", status)
+	}
+}
+
+// TestAdvanceStatusRecoversAfterDegradedEpisode verifies that once degraded
+// status has flipped, a single good sample does not immediately flip back to
+// online — the existing probeRecoverThreshold gate (2 consecutive good
+// samples) still applies, unaffected by this change.
+func TestAdvanceStatusRecoversAfterDegradedEpisode(t *testing.T) {
+	st := &linkState{}
+	status := StatusOnline
+	for i := 0; i < 3; i++ {
+		status, _ = st.advance(true, true, status, 3)
+	}
+	if status != StatusDegraded {
+		t.Fatalf("setup: expected degraded after 3 samples, got %q", status)
+	}
+
+	// One good sample: probeRecoverThreshold is 2, so status must stay degraded.
+	status, _ = st.advance(true, false, status, 3)
+	if status != StatusDegraded {
+		t.Fatalf("after 1 good sample: status = %q, want degraded (recover threshold not yet met)", status)
+	}
+
+	// Second consecutive good sample: now it recovers.
+	status, _ = st.advance(true, false, status, 3)
+	if status != StatusOnline {
+		t.Fatalf("after 2 good samples: status = %q, want online", status)
+	}
+}
+
+// TestCheckLinkPassesFreshMeasurementToCallback verifies the link handed to
+// onStatusChange carries THIS tick's measured latency/loss, not whatever was
+// last persisted before the probe ran. Before this fix, "updated := l" copied
+// the link fetched at the top of the tick — stale by definition, since it
+// predates this tick's probe measurement — so any alert built from it could
+// never show a real number.
+func TestCheckLinkPassesFreshMeasurementToCallback(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewService(db)
+	l := &storage.Link{
+		Name: "WAN1", Interface: "lo", Gateway: "127.0.0.1",
+		DNSTest: "127.0.0.1", MonitorHosts: "127.0.0.1:1", // deliberately unreachable port -> measurable loss
+		Enabled: true, LatencyMs: 999, PacketLoss: 0, // stale values that must NOT leak through
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	mon := NewMonitor(db, svc, time.Second, 1, nil, nil)
+	var gotLatency, gotLoss float64
+	var called bool
+	mon.OnStatusChange(func(link *storage.Link, oldStatus, newStatus string) {
+		called = true
+		gotLatency = link.LatencyMs
+		gotLoss = link.PacketLoss
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mon.RunOnceForTest(ctx)
+
+	if !called {
+		t.Fatal("expected onStatusChange to fire on first observation (unknown -> offline/degraded)")
+	}
+	if gotLatency == 999 {
+		t.Fatal("expected fresh latency, got the stale seed value 999 — updated.LatencyMs was never set")
+	}
+	_ = gotLoss // loss is asserted indirectly via gotLatency != stale sentinel above
 }

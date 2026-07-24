@@ -12,6 +12,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 )
 
 // Collector gathers system and link metrics and updates Prometheus gauges.
@@ -21,6 +22,7 @@ type Collector struct {
 	m         *metrics.Metrics
 	alertSvc  *alerts.Service
 	exec      firewall.Executor
+	rec       tsdb.Recorder
 	startTime time.Time
 
 	healthMu sync.Mutex
@@ -28,14 +30,17 @@ type Collector struct {
 	nowFn    func() int64
 }
 
-// NewCollector creates a monitoring Collector.
-func NewCollector(db *storage.DB, m *metrics.Metrics, alertSvc *alerts.Service, exec firewall.Executor) *Collector {
+// NewCollector creates a monitoring Collector. rec receives every measurement
+// for the diagnostic timeline — pass nil to disable (used in tests that don't
+// care about history).
+func NewCollector(db *storage.DB, m *metrics.Metrics, alertSvc *alerts.Service, exec firewall.Executor, rec tsdb.Recorder) *Collector {
 	return &Collector{
 		db:        db,
 		sysCol:    system.NewCollector(),
 		m:         m,
 		alertSvc:  alertSvc,
 		exec:      exec,
+		rec:       rec,
 		startTime: time.Now(),
 		health:    map[string]*itemState{},
 		nowFn:     func() int64 { return time.Now().Unix() },
@@ -76,6 +81,12 @@ func (c *Collector) collect() {
 		c.m.DiskPercent.Set(sys.DiskPercent)
 		c.m.UptimeSeconds.Set(sys.UptimeSeconds)
 
+		if c.rec != nil {
+			c.rec.Gauge("sys.cpu_pct", "", sys.CPUPercent)
+			c.rec.Gauge("sys.mem_pct", "", sys.MemPercent)
+			c.rec.Gauge("sys.disk_pct", "", sys.DiskPercent)
+		}
+
 		for _, iface := range sys.Interfaces {
 			c.m.InterfaceRxBytes.WithLabelValues(iface.Name).Set(float64(iface.RxBytes))
 			c.m.InterfaceTxBytes.WithLabelValues(iface.Name).Set(float64(iface.TxBytes))
@@ -100,20 +111,6 @@ func (c *Collector) collect() {
 
 	if cfg.Enabled {
 		c.checkServices(cfg)
-	}
-
-	// Link metrics
-	links, err := c.db.GetLinks()
-	if err != nil {
-		slog.Warn("fetch links for metrics", "err", err)
-		return
-	}
-
-	for _, l := range links {
-		statusVal := metrics.LinkStatusValue(l.Status)
-		c.m.LinkStatus.WithLabelValues(l.Name, l.Interface).Set(statusVal)
-		c.m.LinkLatency.WithLabelValues(l.Name, l.Interface).Set(l.LatencyMs)
-		c.m.LinkLoss.WithLabelValues(l.Name, l.Interface).Set(l.PacketLoss)
 	}
 
 	// Unresolved alerts

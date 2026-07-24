@@ -22,6 +22,41 @@ export interface WanLink {
   updated_at: string;
 }
 
+export interface TimelinePoint {
+  ts: number;
+  min: number;
+  avg: number;
+  max: number;
+}
+
+export interface TimelineSeries {
+  name: string;
+  label: string;
+  points: TimelinePoint[];
+}
+
+export interface TimelineState {
+  kind: string;
+  label: string;
+  state: string;
+  started_at: number;
+  ended_at?: number;
+}
+
+export interface TimelineAlert {
+  ts: number;
+  type: string;
+  severity: string;
+  title: string;
+}
+
+export interface TimelineResponse {
+  step_seconds: number;
+  series: TimelineSeries[];
+  states: TimelineState[];
+  alerts: TimelineAlert[];
+}
+
 export interface SystemMetrics {
   uptime_seconds: number;
   uptime_str: string;
@@ -382,3 +417,33 @@ export interface TrafficRetentionResponse {
 
 export interface HealthItem { name: string; kind: 'service' | 'link' | 'resource'; up: boolean; since: number; }
 export interface MonitoringConfig { enabled: boolean; services: string[]; disk_threshold_pct: number; }
+
+// ─── Backup & Restore ──────────────────────────────────────────────────────
+
+export interface RestoreResult {
+  settings: number;
+  reservations: number;
+  blocklist: number;
+  secrets_to_reconfigure: string[];
+}
+
+// ─── Assistente de IA (BYOK) ────────────────────────────────────────────────
+
+export interface AIStatus {
+  configured: boolean;
+  hint: string;
+  enabled: boolean;
+  model: string;
+  effort: string;
+  monthly_budget_usd: number;
+  spent_this_month_usd: number;
+}
+
+export interface AIConfig {
+  enabled: boolean;
+  model: string;
+  effort: string;
+  monthly_budget_usd: number;
+  telemetry_consent: Record<string, boolean>;
+  digest_hour: number;
+}

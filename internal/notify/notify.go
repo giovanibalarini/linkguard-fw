@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -66,21 +67,27 @@ type Config struct {
 	Email       EmailCfg    `json:"email"`
 }
 
-// Service loads config from settings and dispatches notifications.
+// Service loads config from the secrets vault and dispatches notifications.
 type Service struct {
 	db     *storage.DB
+	sec    secrets.Secrets
 	client *http.Client
 }
 
-// NewService creates a notify Service.
-func NewService(db *storage.DB) *Service {
-	return &Service{db: db, client: &http.Client{Timeout: 10 * time.Second}}
+// NewService creates a notify Service. sec is where channel credentials
+// (SMTP password, Telegram/WhatsApp tokens) are stored.
+func NewService(db *storage.DB, sec secrets.Secrets) *Service {
+	return &Service{db: db, sec: sec, client: &http.Client{Timeout: 10 * time.Second}}
 }
 
 // LoadConfig reads the persisted configuration (with defaults).
 func (s *Service) LoadConfig() Config {
 	c := Config{MinSeverity: "warning"}
-	if raw, _ := s.db.GetSetting(settingKey); raw != "" {
+	raw, err := s.sec.Get(settingKey)
+	if err != nil {
+		slog.Warn("notify: failed to read config from secrets vault", "err", err)
+	}
+	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &c)
 	}
 	if c.MinSeverity == "" {
@@ -98,7 +105,7 @@ func (s *Service) SaveConfig(c Config) error {
 	if err != nil {
 		return err
 	}
-	return s.db.SetSetting(settingKey, string(out))
+	return s.sec.Set(settingKey, string(out))
 }
 
 var severityRank = map[string]int{"info": 0, "warning": 1, "critical": 2}
