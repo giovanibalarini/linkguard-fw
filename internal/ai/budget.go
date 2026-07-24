@@ -2,6 +2,7 @@ package ai
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -11,8 +12,25 @@ import (
 // hit, it refuses further calls until the reset date — automatically and
 // without exception, the same philosophy as the balancer never leaving the
 // default route empty: a hard limit that protects the product from itself.
+//
+// mu guards the whole load-mutate-save cycle in Check/RecordSpend/
+// resetIfDue: DEVIATION from the plan's literal code — the plan showed
+// Check and RecordSpend each doing an unsynchronized
+// LoadConfig -> mutate -> SaveConfig round-trip against the DB. main.go
+// constructs exactly one BudgetGuard and shares it across every
+// TriggerImmediate/RunDigest/TestToken call; balancer.OnLinkChange fires
+// TriggerImmediate as `go ai.TriggerImmediate(...)` per link, so two links
+// degrading close together call RecordSpend concurrently on the same
+// instance. Without a lock, both goroutines read the same starting
+// SpentThisMonthUSD and the slower writer's increment silently overwrites
+// the faster one's — a lost update that lets real spend drift above the
+// monthly cap the design calls a "hard limit, no exception". This is the
+// same class of bug fixed in immediate.go's lastImmediateTrigger map
+// (mutex-guards-shared-state), applied here to the shared BudgetGuard
+// instance instead of a package-level map.
 type BudgetGuard struct {
 	db *storage.DB
+	mu sync.Mutex
 }
 
 // NewBudgetGuard creates a BudgetGuard.
@@ -23,6 +41,8 @@ func NewBudgetGuard(db *storage.DB) *BudgetGuard {
 // Check returns an error if the monthly spend cap has been reached. Call this
 // BEFORE making a request — it never touches the network itself.
 func (g *BudgetGuard) Check() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	cfg := g.resetIfDue()
 	if cfg.SpentThisMonthUSD >= cfg.MonthlyBudgetUSD {
 		return fmt.Errorf("monthly AI budget of $%.2f reached (spent $%.2f) — resets %s",
@@ -33,6 +53,8 @@ func (g *BudgetGuard) Check() error {
 
 // RecordSpend adds usd to this month's running total.
 func (g *BudgetGuard) RecordSpend(usd float64) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	cfg := g.resetIfDue()
 	cfg.SpentThisMonthUSD += usd
 	return SaveConfig(g.db, cfg)
@@ -40,6 +62,10 @@ func (g *BudgetGuard) RecordSpend(usd float64) error {
 
 // resetIfDue zeroes the spend counter and advances BudgetResetAt if the reset
 // date has passed, persisting the reset before returning the fresh config.
+// It does NOT lock g.mu itself — both callers (Check, RecordSpend) already
+// hold the lock for their entire read-modify-write cycle before calling
+// this, so resetIfDue locking here too would deadlock (sync.Mutex is not
+// reentrant).
 //
 // Two edge cases were traced deliberately here (see task-2-report.md):
 //   - BudgetResetAt == time.Now() exactly: time.Time.After is a strict
