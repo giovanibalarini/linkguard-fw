@@ -270,7 +270,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermLogsRead)).Get("/api/logs", logsH.List)
 
 		// Backup / restore (admin: system.write)
-		backupH := handlers.NewBackupHandler(s.db, cfg.Version)
+		backupH := handlers.NewBackupHandler(s.db, s.sec, cfg.Version)
 		r.With(require(auth.PermSystemWrite)).Get("/api/backup", backupH.Export)
 		r.With(require(auth.PermSystemWrite)).Post("/api/backup/restore", backupH.Restore)
 

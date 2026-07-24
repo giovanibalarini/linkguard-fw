@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -23,12 +24,13 @@ type BackupData struct {
 // BackupHandler exports and restores the configuration.
 type BackupHandler struct {
 	db      *storage.DB
+	sec     secrets.Secrets
 	version string
 }
 
 // NewBackupHandler creates a BackupHandler.
-func NewBackupHandler(db *storage.DB, version string) *BackupHandler {
-	return &BackupHandler{db: db, version: version}
+func NewBackupHandler(db *storage.DB, sec secrets.Secrets, version string) *BackupHandler {
+	return &BackupHandler{db: db, sec: sec, version: version}
 }
 
 // Export downloads the full configuration as a JSON attachment.
@@ -76,9 +78,10 @@ func (h *BackupHandler) snapshot() (BackupData, error) {
 
 // restoreResult reports what the restore applied.
 type restoreResult struct {
-	Settings     int `json:"settings"`
-	Reservations int `json:"reservations"`
-	Blocklist    int `json:"blocklist"`
+	Settings             int      `json:"settings"`
+	Reservations         int      `json:"reservations"`
+	Blocklist            int      `json:"blocklist"`
+	SecretsToReconfigure []string `json:"secrets_to_reconfigure"`
 }
 
 // Restore applies settings, DHCP reservations and the DNS blocklist from an
@@ -112,6 +115,20 @@ func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 			res.Blocklist++
 		}
 	}
+
+	// Secrets are never in the backup file (they live in a separate table
+	// ExportSettings never touches), so a restored device must be told which
+	// ones it still needs configured by hand. totp_* is deliberately excluded:
+	// 2FA is per-user state, not a single "is it configured" toggle, so it
+	// can't be represented as one entry in this list.
+	knownSecrets := []string{"github_update_token", "notifications"}
+	missing := []string{}
+	for _, name := range knownSecrets {
+		if configured, _ := h.sec.Status(name); !configured {
+			missing = append(missing, name)
+		}
+	}
+	res.SecretsToReconfigure = missing
 
 	auditAction(h.db, r, "restore", "backup", "")
 	writeJSON(w, http.StatusOK, res)
