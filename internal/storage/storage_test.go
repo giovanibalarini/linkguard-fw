@@ -388,3 +388,50 @@ func TestTrafficSamplesPrune(t *testing.T) {
 		t.Fatalf("expected 1 remaining sample, got %d", len(got))
 	}
 }
+
+// ─── Settings export ──────────────────────────────────────────────────────
+
+func TestExportSettingsExcludesSecrets(t *testing.T) {
+	db := newTestDB(t)
+
+	plain := map[string]string{
+		"monitoring":                `{"enabled":true}`,
+		"routing_balance":           `{"mode":"failover"}`,
+		"traffic_retention_profile": `{"profile":"30d"}`,
+	}
+	secret := map[string]string{
+		"github_update_token": "ghp_supersecret",
+		"notifications":       `{"webhook":{"url":"https://x"},"email":{"password":"hunter2"}}`,
+		"totp_user-123":       `{"secret":"JBSWY3DPEHPK3PXP","enabled":true}`,
+		"totp_user-456":       `{"secret":"ANOTHERSECRET","enabled":true}`,
+	}
+	for k, v := range plain {
+		if err := db.SetSetting(k, v); err != nil {
+			t.Fatalf("SetSetting(%s): %v", k, err)
+		}
+	}
+	for k, v := range secret {
+		if err := db.SetSetting(k, v); err != nil {
+			t.Fatalf("SetSetting(%s): %v", k, err)
+		}
+	}
+
+	out, err := db.ExportSettings()
+	if err != nil {
+		t.Fatalf("ExportSettings: %v", err)
+	}
+
+	for k := range secret {
+		if _, present := out[k]; present {
+			t.Fatalf("ExportSettings leaked secret key %q", k)
+		}
+	}
+	for k, v := range plain {
+		if out[k] != v {
+			t.Fatalf("ExportSettings dropped or altered plain key %q: got %q, want %q", k, out[k], v)
+		}
+	}
+	if len(out) != len(plain) {
+		t.Fatalf("expected %d exported keys, got %d: %v", len(plain), len(out), out)
+	}
+}

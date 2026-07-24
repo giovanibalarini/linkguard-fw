@@ -876,7 +876,39 @@ func (db *DB) SetSetting(key, value string) error {
 	return err
 }
 
-// ExportSettings returns every key/value in the settings table (for backups).
+// secretSettingKeys are exact settings keys that hold credentials rather than
+// configuration (GitHub PAT, notification channel secrets — SMTP password,
+// Telegram/WhatsApp tokens). They must never leave the box via backup export.
+// This is a stopgap list; the settings/secrets split lands with the secrets
+// vault, which removes the need to enumerate keys here.
+var secretSettingKeys = map[string]bool{
+	"github_update_token": true,
+	"notifications":       true,
+}
+
+// secretSettingPrefixes are key prefixes that hold credentials, for keys with
+// a dynamic suffix (one row per user, per host, etc).
+var secretSettingPrefixes = []string{
+	"totp_", // per-user 2FA secret; see internal/auth/twofa.go
+}
+
+func isSecretSettingKey(key string) bool {
+	if secretSettingKeys[key] {
+		return true
+	}
+	for _, p := range secretSettingPrefixes {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExportSettings returns every non-secret key/value in the settings table (for
+// backups). Credentials (GitHub token, notification channel secrets, per-user
+// 2FA secrets) are deliberately excluded — a backup file is routinely emailed,
+// stored in cloud drives, or handed to a colleague, and must not double as a
+// dump of every secret the panel holds.
 func (db *DB) ExportSettings() (map[string]string, error) {
 	rows, err := db.conn.Query(`SELECT key, value FROM settings`)
 	if err != nil {
@@ -888,6 +920,9 @@ func (db *DB) ExportSettings() (map[string]string, error) {
 		var k, v string
 		if err := rows.Scan(&k, &v); err != nil {
 			return nil, err
+		}
+		if isSecretSettingKey(k) {
+			continue
 		}
 		out[k] = v
 	}
