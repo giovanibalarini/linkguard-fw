@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/ai"
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
@@ -63,6 +64,7 @@ type Server struct {
 	promReg     *prometheus.Registry
 	mon         *monitoring.Collector
 	sec         secrets.Secrets
+	aiClient    *ai.Client
 	webFS       embed.FS
 }
 
@@ -82,7 +84,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
 	vpnSvc *wireguard.Service, notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
 	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
-	mon *monitoring.Collector, sec secrets.Secrets) *Server {
+	mon *monitoring.Collector, sec secrets.Secrets, aiClient *ai.Client) *Server {
 
 	s := &Server{
 		db:          db,
@@ -105,6 +107,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		promReg:     promReg,
 		mon:         mon,
 		sec:         sec,
+		aiClient:    aiClient,
 		webFS:       cfg.WebFS,
 	}
 
@@ -287,6 +290,18 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermSystemWrite)).Post("/api/system/update/apply", updateH.Apply)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/token", updateH.TokenStatus)
 		r.With(require(auth.PermSystemWrite)).Put("/api/system/update/token", updateH.SetToken)
+
+		// AI advisory layer (BYOK): token, config, report history (admin:
+		// system.write for mutations; reports gated on monitoring.read since
+		// they're diagnostic output, same tier as other monitoring views)
+		aiH := handlers.NewAIHandler(s.db, s.sec, s.aiClient)
+		r.With(require(auth.PermSystemRead)).Get("/api/ai/status", aiH.Status)
+		r.With(require(auth.PermSystemWrite)).Put("/api/ai/token", aiH.SetToken)
+		r.With(require(auth.PermSystemWrite)).Delete("/api/ai/token", aiH.DeleteToken)
+		r.With(require(auth.PermSystemWrite)).Post("/api/ai/token/test", aiH.TestToken)
+		r.With(require(auth.PermSystemWrite)).Put("/api/ai/config", aiH.SetConfig)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/ai/reports", aiH.ListReports)
+		r.With(require(auth.PermMonitoringRead)).Get("/api/ai/reports/{id}", aiH.GetReport)
 
 		// DHCP / DNS (Kea + unbound)
 		netH := handlers.NewNetsvcHandler(s.db, s.netSvc, s.alertSvc)
