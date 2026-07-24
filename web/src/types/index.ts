@@ -417,3 +417,12 @@ export interface TrafficRetentionResponse {
 
 export interface HealthItem { name: string; kind: 'service' | 'link' | 'resource'; up: boolean; since: number; }
 export interface MonitoringConfig { enabled: boolean; services: string[]; disk_threshold_pct: number; }
+
+// ─── Backup & Restore ──────────────────────────────────────────────────────
+
+export interface RestoreResult {
+  settings: number;
+  reservations: number;
+  blocklist: number;
+  secrets_to_reconfigure: string[];
+}
