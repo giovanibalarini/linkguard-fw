@@ -29,6 +29,24 @@ func nativeStep(series string) int {
 	return 10
 }
 
+// nativeStepValues returns the distinct step values used across nativeSteps,
+// deduplicated. Service.NewService uses this (instead of a separately
+// maintained literal) to pre-create a pending-bucket map for every native
+// step, so nativeSteps and the pre-created maps can never drift out of sync
+// — adding a new prefix/step pair to nativeSteps is automatically picked up
+// here, rather than risking a nil-map panic on the first Gauge() call for it.
+func nativeStepValues() []int {
+	seen := make(map[int]bool, len(nativeSteps))
+	out := make([]int, 0, len(nativeSteps))
+	for _, step := range nativeSteps {
+		if !seen[step] {
+			seen[step] = true
+			out = append(out, step)
+		}
+	}
+	return out
+}
+
 // Supported profile IDs — unchanged from the old trafficrrd, same meaning.
 const (
 	Profile30d = "30d"
