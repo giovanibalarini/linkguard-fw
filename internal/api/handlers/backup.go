@@ -121,7 +121,7 @@ func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 	// ones it still needs configured by hand. totp_* is deliberately excluded:
 	// 2FA is per-user state, not a single "is it configured" toggle, so it
 	// can't be represented as one entry in this list.
-	knownSecrets := []string{"github_update_token", "notifications"}
+	knownSecrets := []string{"github_update_token", "notifications", "wireguard"}
 	missing := []string{}
 	for _, name := range knownSecrets {
 		if configured, _ := h.sec.Status(name); !configured {

@@ -86,6 +86,7 @@ export default function BackupRestore() {
                   <li key={name}>
                     {name === 'github_update_token' ? 'Token do GitHub (Configurações → Atualizações)' :
                      name === 'notifications' ? 'Notificações (Configurações → Notificações)' :
+                     name === 'wireguard' ? 'VPN WireGuard (chaves do servidor e dos clientes)' :
                      name}
                   </li>
                 ))}
