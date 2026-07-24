@@ -426,3 +426,24 @@ export interface RestoreResult {
   blocklist: number;
   secrets_to_reconfigure: string[];
 }
+
+// ─── Assistente de IA (BYOK) ────────────────────────────────────────────────
+
+export interface AIStatus {
+  configured: boolean;
+  hint: string;
+  enabled: boolean;
+  model: string;
+  effort: string;
+  monthly_budget_usd: number;
+  spent_this_month_usd: number;
+}
+
+export interface AIConfig {
+  enabled: boolean;
+  model: string;
+  effort: string;
+  monthly_budget_usd: number;
+  telemetry_consent: Record<string, boolean>;
+  digest_hour: number;
+}

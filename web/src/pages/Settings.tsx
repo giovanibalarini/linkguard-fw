@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Settings as SettingsIcon, Info, Database, Bell, ShieldCheck, Download, RefreshCw } from 'lucide-react';
+import { Settings as SettingsIcon, Info, Database, Bell, ShieldCheck, Download, RefreshCw, Sparkles } from 'lucide-react';
 import client from '../api/client';
 import NotificationSettings from '../components/NotificationSettings';
 import MonitoringSettings from '../components/MonitoringSettings';
@@ -7,6 +7,7 @@ import TwoFactorSettings from '../components/TwoFactorSettings';
 import HttpsInfo from '../components/HttpsInfo';
 import BackupRestore from '../components/BackupRestore';
 import UpdateChecker from '../components/UpdateChecker';
+import AISettings from '../components/AISettings';
 import type { TrafficRetentionResponse } from '../types';
 
 type RetentionProfile = '30d' | '1y' | '5y';
@@ -87,6 +88,7 @@ export default function Settings() {
             { id: 'general', label: 'Geral', icon: SettingsIcon },
             { id: 'security', label: 'Segurança', icon: ShieldCheck },
             { id: 'notifications', label: 'Notificações', icon: Bell },
+            { id: 'ai', label: 'Assistente de IA', icon: Sparkles },
             { id: 'backup', label: 'Backup', icon: Download },
             { id: 'updates', label: 'Atualizações', icon: RefreshCw },
             { id: 'traffic-retention', label: 'Retenção de tráfego', icon: Database },
@@ -234,6 +236,8 @@ export default function Settings() {
               <MonitoringSettings />
             </div>
           )}
+
+          {activeSection === 'ai' && <AISettings />}
 
           {activeSection === 'backup' && <BackupRestore />}
 
