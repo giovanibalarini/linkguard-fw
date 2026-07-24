@@ -1,7 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Activity, RefreshCw } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  ComposedChart, Area, Brush, ReferenceArea,
+} from 'recharts';
 import client from '../api/client';
 import type { WanLink, SystemMetrics, TimelineResponse } from '../types';
 
@@ -245,27 +248,50 @@ export default function Monitoring() {
           <p className="text-gray-500 text-sm text-center py-12">Sem dados no período selecionado.</p>
         )}
         {timeline && timeline.series.some(s => s.points.length > 0) && (
-          <div className="space-y-4">
+          <div className="space-y-6">
             {links.map((link, i) => {
               const latSeries = timeline.series.find(s => s.name === 'link.latency_ms' && s.label === link.name);
               if (!latSeries || latSeries.points.length === 0) return null;
               const data = latSeries.points.map(p => ({
-                time: new Date(p.ts * 1000).toLocaleTimeString(),
-                min: p.min, avg: p.avg, max: p.max,
+                ts: p.ts * 1000, min: p.min, avg: p.avg, max: p.max,
               }));
+              const episodes = timeline.states.filter(s => s.label === link.name && s.state !== 'online');
+              const color = COLORS[i % COLORS.length];
               return (
                 <div key={link.id}>
-                  <p className="text-gray-400 text-xs mb-1">{link.name} — latência (ms), faixa min–max</p>
-                  <ResponsiveContainer width="100%" height={120}>
-                    <LineChart data={data}>
+                  <p className="text-gray-400 text-xs mb-1">
+                    {link.name} — latência (ms), faixa min–max · arraste na régua abaixo do gráfico pra dar zoom
+                  </p>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <ComposedChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                      <XAxis dataKey="time" tick={{ fill: '#6b7280', fontSize: 10 }} />
-                      <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} />
-                      <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }} />
-                      <Line type="monotone" dataKey="max" stroke={COLORS[i % COLORS.length]} strokeOpacity={0.3} dot={false} strokeWidth={1} />
-                      <Line type="monotone" dataKey="avg" stroke={COLORS[i % COLORS.length]} dot={false} strokeWidth={2} />
-                      <Line type="monotone" dataKey="min" stroke={COLORS[i % COLORS.length]} strokeOpacity={0.3} dot={false} strokeWidth={1} />
-                    </LineChart>
+                      <XAxis
+                        dataKey="ts" type="number" scale="time"
+                        domain={['dataMin', 'dataMax']}
+                        tickFormatter={formatTickTime}
+                        tick={{ fill: '#6b7280', fontSize: 10 }}
+                      />
+                      <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} unit=" ms" width={56} />
+                      <Tooltip content={<LatencyTooltip />} />
+                      {episodes.map((s, idx) => (
+                        <ReferenceArea
+                          key={idx}
+                          x1={s.started_at * 1000}
+                          x2={s.ended_at ? s.ended_at * 1000 : Date.now()}
+                          fill={s.state === 'offline' ? '#ef4444' : '#f59e0b'}
+                          fillOpacity={0.12}
+                          strokeOpacity={0}
+                        />
+                      ))}
+                      <Area type="monotone" dataKey={(d: { min: number; max: number }) => [d.min, d.max]}
+                        stroke="none" fill={color} fillOpacity={0.15} isAnimationActive={false} />
+                      <Line type="monotone" dataKey="avg" stroke={color} dot={false} strokeWidth={2} isAnimationActive={false} />
+                      <Brush
+                        dataKey="ts" height={22} travellerWidth={8}
+                        stroke="#374151" fill="#111827"
+                        tickFormatter={formatTickTime}
+                      />
+                    </ComposedChart>
                   </ResponsiveContainer>
                 </div>
               );
@@ -334,4 +360,37 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+// Short tick label for chart axes/brush: just the time for today, date+time
+// otherwise, so browsing a longer period (or an alert deep-link into an
+// older day) doesn't lose date context.
+function formatTickTime(ms: number): string {
+  const d = new Date(ms);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+interface LatencyTooltipProps {
+  active?: boolean;
+  payload?: { payload: { ts: number; min: number; avg: number; max: number } }[];
+}
+
+function LatencyTooltip({ active, payload }: LatencyTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const p = payload[0].payload;
+  return (
+    <div className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs shadow-lg">
+      <p className="text-gray-400 mb-1">{new Date(p.ts).toLocaleString()}</p>
+      <p className="text-white font-mono">
+        {p.avg.toFixed(1)} ms <span className="text-gray-500">média</span>
+      </p>
+      <p className="text-gray-400 font-mono">
+        faixa {p.min.toFixed(1)}–{p.max.toFixed(1)} ms
+      </p>
+    </div>
+  );
 }

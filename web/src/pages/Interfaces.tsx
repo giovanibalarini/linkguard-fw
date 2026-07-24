@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Network, ArrowDownToLine, ArrowUpToLine, Pencil, Pause, Play } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Brush } from 'recharts';
 import client from '../api/client';
 import type { SystemMetrics, TrafficHistoryResponse } from '../types';
 
@@ -516,8 +516,12 @@ export default function Interfaces() {
                           />
                           <Line type="linear" dataKey="rx" stroke="#22d3ee" strokeWidth={2} dot={false} isAnimationActive={false} />
                           <Line type="linear" dataKey="tx_neg" name="tx" stroke="#34d399" strokeWidth={2} dot={false} isAnimationActive={false} />
+                          <Brush dataKey="label" height={22} travellerWidth={8} stroke="#374151" fill="#111827" />
                         </LineChart>
                       </ResponsiveContainer>
+                    )}
+                    {chartData.length >= 2 && (
+                      <p className="text-gray-600 text-xs mt-1">Arraste na régua abaixo do gráfico pra dar zoom num período.</p>
                     )}
 
                     {chartData.length >= 2 && (
