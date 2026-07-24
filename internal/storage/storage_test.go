@@ -726,3 +726,15 @@ func TestMigrateTrafficSamplesToMetricSamples(t *testing.T) {
 		t.Fatalf("expected migration to stay idempotent, got %d rx samples", len(rx2))
 	}
 }
+
+// ─── Secrets ──────────────────────────────────────────────────────────────
+
+func TestSecretsTableExists(t *testing.T) {
+	db := newTestDB(t)
+
+	_, err := db.Conn().Exec(`INSERT INTO secrets (name, nonce, ciphertext, updated_at)
+		VALUES (?, ?, ?, ?)`, "test_key", []byte("012345678901"), []byte("ciphertext"), time.Now())
+	if err != nil {
+		t.Fatalf("insert secrets: %v", err)
+	}
+}

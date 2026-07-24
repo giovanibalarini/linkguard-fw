@@ -64,6 +64,7 @@ func (db *DB) migrate() error {
 		createRoutingPoliciesTable,
 		createIptablesBackupsTable,
 		createSettingsTable,
+		createSecretsTable,
 		createTrafficSamplesTable,
 		createMetricSamplesTable,
 		createStateIntervalsTable,
@@ -335,6 +336,14 @@ CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+const createSecretsTable = `
+CREATE TABLE IF NOT EXISTS secrets (
+    name       TEXT PRIMARY KEY,
+    nonce      BLOB NOT NULL,
+    ciphertext BLOB NOT NULL,
+    updated_at DATETIME NOT NULL
 );`
 
 const createTrafficSamplesTable = `
