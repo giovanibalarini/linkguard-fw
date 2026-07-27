@@ -11,7 +11,7 @@ import Sparkline, { type SparklinePoint } from '../components/ui/Sparkline';
 import { deriveRate, type RateCounter } from '../lib/interfaceRates';
 import client from '../api/client';
 import { useI18n } from '../i18n';
-import type { SystemMetrics, WanLink, Alert, NetHost, TrafficHistoryResponse } from '../types';
+import type { SystemMetrics, WanLink, Alert, NetHost, TrafficHistoryResponse, HostTraffic } from '../types';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -45,6 +45,7 @@ export default function Dashboard() {
   const [wanLinks, setWanLinks] = useState<WanLink[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [hosts, setHosts] = useState<NetHost[]>([]);
+  const [talkers, setTalkers] = useState<HostTraffic[]>([]);
   const [rates, setRates] = useState<Record<string, { rx: number; tx: number }>>({});
   const [sparklines, setSparklines] = useState<Record<string, SparklinePoint[]>>({});
   const [loading, setLoading] = useState(true);
@@ -64,6 +65,11 @@ export default function Dashboard() {
       setWanLinks(linksRes.data ?? []);
       setAlerts(alertsRes.data ?? []);
       setHosts(hostsRes.data ?? []);
+
+      client.get<HostTraffic[]>('/api/hosts/traffic').then(
+        (res) => setTalkers(res.data ?? []),
+        () => setTalkers([]),
+      );
 
       const now = Date.now();
       const nextRates: Record<string, { rx: number; tx: number }> = {};
@@ -233,6 +239,30 @@ export default function Dashboard() {
             iconColor="text-orange-400"
           />
         </div>
+      )}
+
+      {talkers.length > 0 && (
+        <Panel title="Top consumidores agora">
+          <p className="text-gray-500 text-xs -mt-2 mb-3">Fluxos ativos no momento — não é total acumulado.</p>
+          <div className="space-y-2">
+            {talkers.slice(0, 8).map((tlk) => {
+              const host = hosts.find((h) => h.ip === tlk.ip);
+              const name = host?.alias || host?.hostname || tlk.ip;
+              const total = tlk.rx_bytes + tlk.tx_bytes;
+              const max = (talkers[0].rx_bytes + talkers[0].tx_bytes) || 1;
+              const pct = Math.max(4, Math.round((total / max) * 100));
+              return (
+                <div key={tlk.ip} className="flex items-center gap-3">
+                  <span className="text-gray-300 text-sm w-32 truncate flex-shrink-0">{name}</span>
+                  <div className="flex-1 bg-gray-800 rounded-full h-2">
+                    <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${pct}%` }} />
+                  </div>
+                  <span className="text-gray-500 text-xs font-mono w-20 text-right flex-shrink-0">{formatBytes(total)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
       )}
 
       {criticalAlerts > 0 && (
