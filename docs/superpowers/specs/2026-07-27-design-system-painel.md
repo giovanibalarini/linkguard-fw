@@ -56,7 +56,6 @@ Duas regras não negociáveis, vindas direto da conversa que originou este spec:
 |---|---|
 | Tema claro | Produto é só escuro hoje (adequado a NOC/sala de rack); vira sub-projeto futuro se necessário |
 | Re-skin das outras 12+ páginas | Sub-projeto(s) seguintes, reusando os componentes daqui |
-| "Consumo por host" no Painel | Sem accounting de tráfego por host hoje (`internal/hosts/parser.go` documenta isso como adição futura via conntrack) |
 | Stat "Deriva" (config mudou fora do painel) | Depende do sub-projeto de gerenciamento de interfaces (spec `2026-07-19`), zero código hoje |
 | Stat "Portas lentas" (negociação ethtool) | Mesma dependência — diagnóstico físico é parte da spec de interfaces, não implementado ainda |
 | Linha de "atualização disponível" na tabela de atenção | Endpoint existe (`/api/system/update/check`) mas é sob demanda, não status já calculado; YAGNI por ora |
@@ -80,11 +79,21 @@ web/src/components/ui/
   Tag.tsx         badge de severidade/estado (ok/warn/crit/idle/neutral)
   Tabs.tsx        navegação em abas dentro de uma página
   Sparkline.tsx   SVG de série temporal curta, sem eixo, para uso inline em cards
+
+web/src/hooks/useInterfaceRates.ts
+                  extrai o cálculo de taxa (poll de /api/system/status, delta de bytes por
+                  segundo) hoje embutido em Interfaces.tsx, para reuso no Painel sem duplicar
 ```
 
 `tailwind.config.*`: adiciona cores semânticas (`colors.ok`, `colors.warn`, `colors.crit`) que
 mapeiam para a paleta já usada (`emerald`/`amber`/`red`), sem remover as classes Tailwind padrão
 — são um alias semântico, não substituição.
+
+`StatusBadge`/`AlertBadge` (`web/src/components/StatusBadge.tsx`) já são, na prática, badges de
+severidade — viram wrappers finos sobre `Tag`, mapeando seus rótulos de domínio
+(online/offline/degraded/unknown; info/warning/critical) para as variantes semânticas de `Tag`.
+Chamadores existentes não mudam (`<StatusBadge status=.../>` continua funcionando); evita um
+segundo sistema de badge convivendo com o novo.
 
 ## 6. Navegação (`Layout.tsx`)
 
@@ -109,16 +118,24 @@ Do topo pro fim:
 1. `GettingStarted`, `Recipes`, `SystemHealth` — mesma posição e comportamento, restilizados com
    `Panel`/`Tag` novos
 2. **Tira de status** (`StatStrip` de 4 `Stat`): WAN ativas (`online/total` via `GET /api/links`)
-   · Tráfego agora (soma das taxas atuais dos links WAN) · Hosts ativos (`GET /api/hosts`, vistos
-   nos últimos 5 min) · Uptime (`sys.uptime_str`)
+   · Tráfego agora (soma das taxas atuais dos links WAN) · Hosts ativos (`GET /api/hosts`,
+   `NetHost.online` — já é o estado ARP/NDP vivo, não precisa de janela de tempo própria) ·
+   Uptime (`sys.uptime_str`)
 3. **Painéis WAN** — um `Panel` por link WAN (`GET /api/links`): nome, `Tag` de status
    (online/offline/degraded), taxa atual, latência/perda, `Sparkline` dos últimos 30 min via
    `GET /api/system/traffic-history?iface={link.interface}&range=30m`
-4. **"Precisa de atenção"** — tabela com alertas ativos reais (`GET /api/alerts?unresolved=true`),
+4. **"Top consumidores agora"** — até 8 hosts via `GET /api/hosts/traffic`
+   (`internal/hosttraffic`, snapshot de bytes ativos no conntrack, requer
+   `nf_conntrack_acct=1`), nome resolvido cruzando com `GET /api/hosts` (mesmo padrão de
+   `Hosts.tsx`: `host?.alias || host?.hostname || traffic.ip`), barra proporcional ao maior
+   consumidor. **Rótulo explícito "agora"** — é fluxo ativo, não total de um período; a lista
+   fica vazia (painel omite o card, não mostra zero fabricado) se accounting estiver desligado
+5. **"Precisa de atenção"** — tabela com alertas ativos reais (`GET /api/alerts?unresolved=true`),
    severidade como `Tag`, tempo relativo, botão para `/alerts`
 
 Taxa atual dos links reusa o mesmo padrão de cálculo já usado em `Interfaces.tsx` (buffer de
-amostras recentes derivando bps), para não inventar um segundo jeito de calcular a mesma coisa.
+amostras recentes derivando bps), extraído para um hook compartilhado (`useInterfaceRates`) em
+vez de duplicado — ver §5.
 
 ## 8. Testes e verificação
 
@@ -142,9 +159,12 @@ amostras recentes derivando bps), para não inventar um segundo jeito de calcula
 ## 10. Riscos e armadilhas
 
 - **Não** introduzir uma segunda forma de calcular taxa de link — reusar o padrão de
-  `Interfaces.tsx`
+  `Interfaces.tsx` via `useInterfaceRates`
 - **Não** remover ou esconder `GettingStarted`/`Recipes`/`SystemHealth` — só restilizar
 - **Não** deixar o Painel quebrar com zero links WAN ou zero alertas — são estados normais no dia
   zero
 - **Não** vazar tokens de cor semânticos como substituição total do Tailwind padrão — é um alias
   por cima, o resto do app continua funcionando sem migração forçada
+- **Não** rotular "Top consumidores agora" como histórico/24h — é snapshot de fluxo ativo no
+  conntrack; se `nf_conntrack_acct` estiver desligado, `/api/hosts/traffic` volta vazio e o card
+  some, não mostra zero
