@@ -6,7 +6,7 @@ import { useI18n } from '../i18n';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
-  Menu, X, AlertTriangle, Cable, Server, Globe, ChevronDown, Sparkles, SlidersHorizontal, Lock,
+  Menu, X, AlertTriangle, Cable, Server, Globe, Sparkles, SlidersHorizontal, Lock,
 } from 'lucide-react';
 
 interface NavItem {
@@ -15,40 +15,47 @@ interface NavItem {
   icon: typeof LayoutDashboard;
   perm: string[];
   end?: boolean;
+  advanced?: boolean;
 }
 
 interface NavGroup {
   id: string;
   label: string | null;
-  advanced?: boolean;
   items: NavItem[];
 }
 
-// Grouped navigation. The "Avançado" group is collapsed in Simple mode (one
-// click expands it) and expanded in Advanced mode. `perm` lists the permissions
-// that reveal an item; the item shows when the user holds at least one.
-// `label` holds an i18n key resolved with t() at render time.
+// Grupos por domínio (Operação/Rede/Segurança/Sistema). `advanced` marca
+// itens que somem no modo Simples — antes era uma propriedade do grupo
+// inteiro; agora é por item, porque um mesmo grupo de domínio pode ter
+// itens do dia a dia (Links WAN) ao lado de itens avançados (Interfaces).
+// `perm` lista as permissões que revelam o item; aparece se o usuário tiver
+// pelo menos uma. `label` guarda uma chave de i18n resolvida com t().
 const navGroups: NavGroup[] = [
   {
-    id: 'main', label: null,
+    id: 'operacao', label: 'group.operacao',
     items: [
       { to: '/', label: 'nav.dashboard', icon: LayoutDashboard, end: true, perm: ['dashboard.read'] },
-      { to: '/links', label: 'nav.links', icon: Network, perm: ['links.read'] },
-      { to: '/firewall', label: 'nav.firewall', icon: Shield, perm: ['firewall.read'] },
-      { to: '/hosts', label: 'nav.hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
-      { to: '/dhcp', label: 'nav.dhcp', icon: Server, perm: ['dhcp.read'] },
-      { to: '/dns', label: 'nav.dns', icon: Globe, perm: ['dns.read'] },
-      { to: '/vpn', label: 'nav.vpn', icon: Lock, perm: ['vpn.read'] },
+      { to: '/alerts', label: 'nav.alerts', icon: Bell, perm: ['monitoring.read'] },
+      { to: '/monitoring', label: 'nav.monitoring', icon: Activity, perm: ['monitoring.read'], advanced: true },
+      { to: '/logs', label: 'nav.logs', icon: FileText, perm: ['logs.read'], advanced: true },
     ],
   },
   {
-    id: 'advanced', label: 'group.advanced', advanced: true,
+    id: 'rede', label: 'group.rede',
     items: [
-      { to: '/interfaces', label: 'nav.interfaces', icon: Cable, perm: ['system.read'] },
-      { to: '/routes', label: 'nav.routes', icon: Route, perm: ['routes.read'] },
-      { to: '/monitoring', label: 'nav.monitoring', icon: Activity, perm: ['monitoring.read'] },
-      { to: '/alerts', label: 'nav.alerts', icon: Bell, perm: ['monitoring.read'] },
-      { to: '/logs', label: 'nav.logs', icon: FileText, perm: ['logs.read'] },
+      { to: '/links', label: 'nav.links', icon: Network, perm: ['links.read'] },
+      { to: '/interfaces', label: 'nav.interfaces', icon: Cable, perm: ['system.read'], advanced: true },
+      { to: '/routes', label: 'nav.routes', icon: Route, perm: ['routes.read'], advanced: true },
+      { to: '/hosts', label: 'nav.hosts', icon: MonitorSmartphone, perm: ['hosts.read'] },
+      { to: '/dhcp', label: 'nav.dhcp', icon: Server, perm: ['dhcp.read'] },
+      { to: '/dns', label: 'nav.dns', icon: Globe, perm: ['dns.read'] },
+    ],
+  },
+  {
+    id: 'seguranca', label: 'group.seguranca',
+    items: [
+      { to: '/firewall', label: 'nav.firewall', icon: Shield, perm: ['firewall.read'] },
+      { to: '/vpn', label: 'nav.vpn', icon: Lock, perm: ['vpn.read'] },
     ],
   },
   {
@@ -71,7 +78,6 @@ export default function Layout() {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showSecWarn, setShowSecWarn] = useState(true);
-  const [advOpen, setAdvOpen] = useState(false);
 
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
@@ -89,12 +95,11 @@ export default function Layout() {
     .find((n) => (n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to)));
   const currentLabel = currentItem ? t(currentItem.label) : 'LinkGuard FW';
 
-  // The advanced group expands automatically in advanced mode, when the active
-  // route lives inside it, or when the user clicks to expand it.
-  const onAdvancedRoute = navGroups
-    .find((g) => g.advanced)!
-    .items.some((i) => location.pathname.startsWith(i.to) && i.to !== '/');
-  const advExpanded = !isSimple || advOpen || onAdvancedRoute;
+  const itemAdvancedVisible = (item: NavItem) => {
+    if (!item.advanced) return true;
+    if (!isSimple) return true;
+    return location.pathname.startsWith(item.to) && item.to !== '/';
+  };
 
   const renderItem = (item: NavItem) => {
     const { to, label, icon: Icon, end } = item;
@@ -156,25 +161,8 @@ export default function Layout() {
         {/* Navigation */}
         <nav className="flex-1 px-3 py-4 overflow-y-auto">
           {navGroups.map((group) => {
-            const items = group.items.filter(itemVisible);
+            const items = group.items.filter(itemVisible).filter(itemAdvancedVisible);
             if (items.length === 0) return null;
-
-            // Advanced group: collapsible in Simple mode, plain section otherwise.
-            if (group.advanced && isSimple) {
-              return (
-                <div key={group.id} className="mt-4">
-                  <button
-                    onClick={() => setAdvOpen((v) => !v)}
-                    className="flex w-full items-center justify-between px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-300"
-                    aria-expanded={advExpanded}
-                  >
-                    <span>{group.label ? t(group.label) : ''}</span>
-                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${advExpanded ? '' : '-rotate-90'}`} />
-                  </button>
-                  {advExpanded && <ul className="mt-1 space-y-1">{items.map(renderItem)}</ul>}
-                </div>
-              );
-            }
 
             return (
               <div key={group.id} className={group.label ? 'mt-4' : ''}>

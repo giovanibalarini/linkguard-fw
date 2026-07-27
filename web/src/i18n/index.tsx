@@ -15,7 +15,7 @@ type Dict = Record<string, string>;
 const pt: Dict = {
   'app.tagline': 'Firewall Manager',
   // nav
-  'nav.dashboard': 'Dashboard',
+  'nav.dashboard': 'Painel',
   'nav.links': 'Links WAN',
   'nav.firewall': 'Firewall',
   'nav.hosts': 'Hosts',
@@ -30,6 +30,9 @@ const pt: Dict = {
   'nav.settings': 'Configurações',
   'nav.admin': 'Administração',
   'nav.changelog': 'Novidades',
+  'group.operacao': 'Operação',
+  'group.rede': 'Rede',
+  'group.seguranca': 'Segurança',
   'group.advanced': 'Avançado',
   'group.system': 'Sistema',
   'mode.simple': 'Simples',
@@ -70,6 +73,9 @@ const en: Dict = {
   'nav.settings': 'Settings',
   'nav.admin': 'Administration',
   'nav.changelog': "What's new",
+  'group.operacao': 'Operations',
+  'group.rede': 'Network',
+  'group.seguranca': 'Security',
   'group.advanced': 'Advanced',
   'group.system': 'System',
   'mode.simple': 'Simple',
