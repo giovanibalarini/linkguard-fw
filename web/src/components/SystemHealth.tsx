@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ShieldCheck, ShieldAlert } from 'lucide-react';
 import client from '../api/client';
+import Panel from './ui/Panel';
 import type { HealthItem } from '../types';
 
 // Friendly labels for known service unit names.
@@ -25,8 +26,7 @@ export default function SystemHealth() {
 
   if (items.length === 0) return null;
   return (
-    <div className="card">
-      <h2 className="text-white font-semibold mb-3">Saúde do sistema</h2>
+    <Panel title="Saúde do sistema">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
         {items.map((it) => (
           <div key={`${it.kind}:${it.name}`}
@@ -39,6 +39,6 @@ export default function SystemHealth() {
           </div>
         ))}
       </div>
-    </div>
+    </Panel>
   );
 }

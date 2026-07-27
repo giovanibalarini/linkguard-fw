@@ -8,6 +8,7 @@ import Panel from '../components/ui/Panel';
 import Stat from '../components/ui/Stat';
 import Tag, { type TagVariant } from '../components/ui/Tag';
 import Sparkline, { type SparklinePoint } from '../components/ui/Sparkline';
+import { AlertBadge } from '../components/StatusBadge';
 import { deriveRate, type RateCounter } from '../lib/interfaceRates';
 import client from '../api/client';
 import { useI18n } from '../i18n';
@@ -25,6 +26,15 @@ function formatRate(bytesPerSecond: number): string {
   return `${formatBytes(bytesPerSecond)}/s`;
 }
 
+function formatRelativeTime(iso: string, lang: 'pt' | 'en'): string {
+  const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
+  const diffMin = Math.round((new Date(iso).getTime() - Date.now()) / 60000);
+  if (Math.abs(diffMin) < 60) return rtf.format(diffMin, 'minute');
+  const diffHour = Math.round(diffMin / 60);
+  if (Math.abs(diffHour) < 24) return rtf.format(diffHour, 'hour');
+  return rtf.format(Math.round(diffHour / 24), 'day');
+}
+
 const statusVariant: Record<string, TagVariant> = {
   online: 'ok',
   offline: 'crit',
@@ -40,7 +50,7 @@ const statusLabel: Record<string, string> = {
 };
 
 export default function Dashboard() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [wanLinks, setWanLinks] = useState<WanLink[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -261,6 +271,23 @@ export default function Dashboard() {
                 </div>
               );
             })}
+          </div>
+        </Panel>
+      )}
+
+      {alerts.length > 0 && (
+        <Panel title="Precisa de atenção">
+          <div className="space-y-2">
+            {alerts.slice(0, 5).map((alert) => (
+              <div key={alert.id} className="flex items-start gap-3 p-3 bg-gray-800 rounded-lg">
+                <AlertBadge severity={alert.severity} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-sm font-medium">{alert.title}</p>
+                  <p className="text-gray-500 text-xs mt-0.5">{alert.message}</p>
+                </div>
+                <span className="text-gray-600 text-xs flex-shrink-0">{formatRelativeTime(alert.created_at, lang)}</span>
+              </div>
+            ))}
           </div>
         </Panel>
       )}

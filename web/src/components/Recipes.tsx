@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   Wand2, ChevronRight, ChevronDown, Ban, Gauge, Pin, ShieldOff, Network, Lock, ArrowRightLeft, KeyRound,
 } from 'lucide-react';
+import Panel from './ui/Panel';
 
 /**
  * Recipes is the task-oriented entry point for beginners: instead of asking
@@ -145,12 +146,11 @@ export default function Recipes() {
   const dismiss = () => { localStorage.setItem(DISMISS_KEY, '1'); setHidden(true); };
 
   return (
-    <div className="card">
+    <Panel title="O que você quer fazer?">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <Wand2 className="w-5 h-5 text-blue-400" />
           <div>
-            <h2 className="text-white font-semibold">O que você quer fazer?</h2>
             <p className="text-gray-500 text-xs">Tarefas comuns, passo a passo — escolha uma e a gente te leva até lá.</p>
           </div>
         </div>
@@ -196,6 +196,6 @@ export default function Recipes() {
           );
         })}
       </ul>
-    </div>
+    </Panel>
   );
 }
