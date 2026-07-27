@@ -188,7 +188,7 @@ export default function Dashboard() {
           />
         )}
         {sys && <Stat label="Tráfego agora" value={hasTrafficSample ? formatRate(trafficNowBps) : '—'} />}
-        <Stat label="Hosts ativos" value={hostsOnline} sub={`${hosts.length} conhecidos`} />
+        {sys && <Stat label="Hosts ativos" value={hostsOnline} sub={`${hosts.length} conhecidos`} />}
         {sys && <Stat label="Uptime" value={sys.uptime_str || '—'} />}
       </div>
 
