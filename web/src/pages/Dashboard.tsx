@@ -134,6 +134,7 @@ export default function Dashboard() {
   const criticalAlerts = alerts.filter((a) => a.severity === 'critical').length;
   const hostsOnline = hosts.filter((h) => h.online).length;
   const trafficNowBps = wanLinks.reduce((sum, l) => sum + (rates[l.interface]?.rx ?? 0) + (rates[l.interface]?.tx ?? 0), 0);
+  const hasTrafficSample = wanLinks.some((l) => rates[l.interface]);
 
   return (
     <div className="p-6 space-y-6">
@@ -163,12 +164,14 @@ export default function Dashboard() {
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Stat
-          label="WAN ativas"
-          value={`${onlineLinks}/${wanLinks.length}`}
-          variant={wanLinks.length > 0 && onlineLinks === wanLinks.length ? 'ok' : wanLinks.length > 0 ? 'crit' : 'idle'}
-        />
-        <Stat label="Tráfego agora" value={formatRate(trafficNowBps)} />
+        {sys && (
+          <Stat
+            label="WAN ativas"
+            value={`${onlineLinks}/${wanLinks.length}`}
+            variant={wanLinks.length > 0 && onlineLinks === wanLinks.length ? 'ok' : wanLinks.length > 0 ? 'crit' : 'idle'}
+          />
+        )}
+        {sys && <Stat label="Tráfego agora" value={hasTrafficSample ? formatRate(trafficNowBps) : '—'} />}
         <Stat label="Hosts ativos" value={hostsOnline} sub={`${hosts.length} conhecidos`} />
         {sys && <Stat label="Uptime" value={sys.uptime_str || '—'} />}
       </div>
