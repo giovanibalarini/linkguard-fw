@@ -3,6 +3,7 @@ import { Network, ArrowDownToLine, ArrowUpToLine, Pencil, Pause, Play, ChevronDo
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Brush } from 'recharts';
 import client from '../api/client';
 import type { SystemMetrics, TrafficHistoryResponse } from '../types';
+import { deriveRate } from '../lib/interfaceRates';
 
 interface RatePoint {
   ts: number;
@@ -108,16 +109,10 @@ export default function Interfaces() {
 
       for (const iface of res.data.interfaces ?? []) {
         const prev = prevCountersRef[iface.name];
-        if (prev) {
-          const dt = (now - prev.ts) / 1000;
-          if (dt > 0) {
-            const rxDelta = Math.max(0, iface.rx_bytes - prev.rx);
-            const txDelta = Math.max(0, iface.tx_bytes - prev.tx);
-            const rxRate = rxDelta / dt;
-            const txRate = txDelta / dt;
-            nextRates[iface.name] = { rx: rxRate, tx: txRate };
-            pushRateSample(iface.name, now, rxRate, txRate);
-          }
+        const rate = deriveRate(prev, iface, now);
+        if (rate) {
+          nextRates[iface.name] = rate;
+          pushRateSample(iface.name, now, rate.rx, rate.tx);
         }
         prevCountersRef[iface.name] = { ts: now, rx: iface.rx_bytes, tx: iface.tx_bytes };
       }
