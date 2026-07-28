@@ -25,8 +25,13 @@ type ConfigFile struct {
 
 // Render produces the .network file for a physical interface. Pure — no I/O,
 // safe to call for a preview without touching the system. Every file carries
-// the "# managed by linkguard" header (spec 19/07 §5.3) — Apply (Task 4) only
-// ever deletes a file that has this exact header, never anything else.
+// the "# managed by linkguard" header (spec 19/07 §5.3) so that a *future*
+// cleanup/deletion step can tell managed files apart from unmanaged ones.
+// Nothing today reads or acts on this header — Apply (Task 4) only ever
+// writes/renames the single ConfigFile it's given and never deletes
+// anything; Fase 2 never needs to remove a .network file, since it only
+// edits an existing physical interface's own file. Orphaned-file cleanup
+// based on this header is not yet implemented.
 //
 // dir overrides the target directory — pass "" in production to use
 // defaultNetworkDir ("/etc/systemd/network"); tests pass a t.TempDir() so
@@ -87,6 +92,16 @@ func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("fechar arquivo temporário: %w", err)
+	}
+	// os.CreateTemp sempre cria o arquivo em 0600, independente do umask, e
+	// os.Rename preserva o modo da origem — sem isto o arquivo final ficaria
+	// legível só pelo dono. Config de endereçamento de interface não é
+	// segredo; seguimos a convenção 0644 do resto do codebase (ex.:
+	// internal/nftables, internal/keaunbound, internal/hosttraffic,
+	// internal/routes).
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("ajustar permissão do arquivo temporário: %w", err)
 	}
 	if err := os.Rename(tmpPath, f.Path); err != nil {
 		os.Remove(tmpPath)

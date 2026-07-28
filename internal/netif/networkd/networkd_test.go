@@ -84,6 +84,17 @@ func TestApplyWritesFileAtomicallyAndReloads(t *testing.T) {
 	if len(exec.reloadCalls) != 1 {
 		t.Fatalf("esperava 1 chamada de reload, veio %d: %+v", len(exec.reloadCalls), exec.reloadCalls)
 	}
+	if exec.reloadCalls[0] != "reload" {
+		t.Errorf("esperava argumento \"reload\", veio %q", exec.reloadCalls[0])
+	}
+
+	info, err := os.Stat(f.Path)
+	if err != nil {
+		t.Fatalf("stat no arquivo final: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("esperava permissão 0644 no arquivo final, veio %v", info.Mode().Perm())
+	}
 
 	// Confirma que não sobrou nenhum arquivo temporário no diretório.
 	entries, _ := os.ReadDir(dir)
