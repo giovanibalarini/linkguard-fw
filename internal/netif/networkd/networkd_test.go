@@ -1,6 +1,9 @@
 package networkd
 
 import (
+	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -60,3 +63,64 @@ func TestRenderRespectsDirOverride(t *testing.T) {
 		t.Errorf("path errado: %q", f.Path)
 	}
 }
+
+func TestApplyWritesFileAtomicallyAndReloads(t *testing.T) {
+	dir := t.TempDir()
+	f := ConfigFile{Path: dir + "/10-eth0.network", Content: "# managed by linkguard\n\n[Match]\nName=eth0\n\n[Network]\nDHCP=yes\n"}
+	exec := &fakeApplyExec{}
+
+	if err := Apply(context.Background(), exec, f); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	got, err := os.ReadFile(f.Path)
+	if err != nil {
+		t.Fatalf("arquivo não foi escrito: %v", err)
+	}
+	if string(got) != f.Content {
+		t.Errorf("conteúdo escrito errado:\ngot:  %q\nwant: %q", got, f.Content)
+	}
+
+	if len(exec.reloadCalls) != 1 {
+		t.Fatalf("esperava 1 chamada de reload, veio %d: %+v", len(exec.reloadCalls), exec.reloadCalls)
+	}
+
+	// Confirma que não sobrou nenhum arquivo temporário no diretório.
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Errorf("esperava só o arquivo final no diretório, achei %d entradas: %+v", len(entries), entries)
+	}
+}
+
+func TestApplySkipsWriteInDryRun(t *testing.T) {
+	dir := t.TempDir()
+	f := ConfigFile{Path: dir + "/10-eth0.network", Content: "conteudo"}
+	exec := &fakeApplyExec{dryRun: true}
+
+	if err := Apply(context.Background(), exec, f); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, err := os.Stat(f.Path); !os.IsNotExist(err) {
+		t.Error("em dry-run o arquivo não deveria ter sido escrito")
+	}
+	if len(exec.reloadCalls) != 0 {
+		t.Errorf("em dry-run não deveria chamar reload, chamou %d vezes", len(exec.reloadCalls))
+	}
+}
+
+type fakeApplyExec struct {
+	dryRun      bool
+	reloadCalls []string
+}
+
+func (e *fakeApplyExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "networkctl" {
+		e.reloadCalls = append(e.reloadCalls, strings.Join(args, " "))
+		return "", nil
+	}
+	return "", fmt.Errorf("comando de escrita inesperado no teste: %s", cmd)
+}
+func (e *fakeApplyExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	return "", fmt.Errorf("comando de leitura inesperado no teste: %s", cmd)
+}
+func (e *fakeApplyExec) IsDryRun() bool { return e.dryRun }

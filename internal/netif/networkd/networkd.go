@@ -5,9 +5,13 @@
 package networkd
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/netif"
 )
 
@@ -54,4 +58,43 @@ func Render(i netif.Iface, dir string) ConfigFile {
 		Path:    fmt.Sprintf("%s/10-%s.network", dir, i.Name),
 		Content: body.String(),
 	}
+}
+
+// Apply writes f atomically (temp file in the same directory, then rename —
+// atomic because it's the same filesystem, the first such pattern in this
+// codebase) and reloads systemd-networkd. A no-op write in dry-run mode,
+// matching the convention every other Provider in this codebase follows
+// (see internal/keaunbound.ReloadConfigs).
+//
+// Fase 2 never removes or changes an interface's type, so `networkctl reload`
+// always suffices — `reconfigure` (needed when a .netdev is added/removed)
+// is deferred to Fase 3.
+func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
+	if exec.IsDryRun() {
+		return nil
+	}
+	dir := filepath.Dir(f.Path)
+	tmp, err := os.CreateTemp(dir, ".linkguard-networkd-*.tmp")
+	if err != nil {
+		return fmt.Errorf("criar arquivo temporário em %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.WriteString(f.Content); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("escrever conteúdo temporário: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("fechar arquivo temporário: %w", err)
+	}
+	if err := os.Rename(tmpPath, f.Path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("mover %s para %s: %w", tmpPath, f.Path, err)
+	}
+
+	if _, err := exec.Execute(ctx, "networkctl", "reload"); err != nil {
+		return fmt.Errorf("networkctl reload: %w", err)
+	}
+	return nil
 }
