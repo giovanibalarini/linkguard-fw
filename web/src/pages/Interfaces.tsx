@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import client from '../api/client';
 import InterfaceTraffic from '../components/InterfaceTraffic';
 import Panel from '../components/ui/Panel';
 import Tabs, { type TabItem } from '../components/ui/Tabs';
 import Tag, { type TagVariant } from '../components/ui/Tag';
-import type { IfaceView } from '../types';
+import type { IfaceView, PendingChange } from '../types';
 
 const TABS: TabItem[] = [
   { id: 'overview', label: 'Visão geral' },
@@ -43,6 +44,9 @@ export default function Interfaces() {
   const [query, setQuery] = useState('');
   const [showSystem, setShowSystem] = useState(false);
   const [identifying, setIdentifying] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingChange[]>([]);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [actioning, setActioning] = useState<string | null>(null);
 
   const handleIdentify = async (name: string) => {
     setIdentifying(name);
@@ -50,6 +54,49 @@ export default function Interfaces() {
       await client.post(`/api/interfaces/${encodeURIComponent(name)}/identify`);
     } finally {
       setTimeout(() => setIdentifying((cur) => (cur === name ? null : cur)), 10000);
+    }
+  };
+
+  useEffect(() => {
+    let alive = true;
+    const loadPending = async () => {
+      try {
+        const { data } = await client.get<PendingChange[]>('/api/interfaces/pending');
+        if (alive) setPending(data ?? []);
+      } catch {
+        /* best-effort */
+      }
+    };
+    loadPending();
+    const t = setInterval(loadPending, 3000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const handleConfirm = async (name: string) => {
+    setActioning(name);
+    try {
+      await client.post('/api/interfaces/confirm', { name });
+      setPending((prev) => prev.filter((p) => p.interface !== name));
+    } finally {
+      setActioning(null);
+    }
+  };
+
+  const handleRollback = async (name: string) => {
+    setActioning(name);
+    try {
+      await client.post('/api/interfaces/rollback', { name });
+      setPending((prev) => prev.filter((p) => p.interface !== name));
+    } finally {
+      setActioning(null);
     }
   };
 
@@ -111,6 +158,33 @@ export default function Interfaces() {
         </div>
       )}
 
+      {pending.map((p) => {
+        const secondsLeft = Math.max(0, p.deadline_unix - now);
+        return (
+          <div key={p.interface} className="flex items-center gap-4 px-4 py-3 bg-amber-500/10 border border-amber-500/30 rounded-xl">
+            <Tag variant="warn" dot>{secondsLeft}s</Tag>
+            <div className="flex-1 text-sm text-amber-200">
+              <span className="font-medium">{p.interface}</span> foi alterada e aguarda confirmação.
+              Verifique se o acesso continua funcionando antes de confirmar. Em caso de dúvida, reverta.
+            </div>
+            <button
+              onClick={() => handleConfirm(p.interface)}
+              disabled={actioning === p.interface}
+              className="btn-primary text-xs"
+            >
+              Confirmar
+            </button>
+            <button
+              onClick={() => handleRollback(p.interface)}
+              disabled={actioning === p.interface}
+              className="btn-secondary text-xs"
+            >
+              Reverter
+            </button>
+          </div>
+        );
+      })}
+
       <Tabs items={TABS} active={tab} onChange={setTab} />
 
       {tab === 'overview' && (
@@ -152,6 +226,11 @@ export default function Interfaces() {
                       >
                         {identifying === i.name ? 'piscando…' : 'identificar'}
                       </button>
+                    )}
+                    {i.kind === 'physical' && (
+                      <Link to={`/interfaces/${encodeURIComponent(i.name)}/edit`} className="text-xs text-gray-500 hover:text-gray-300">
+                        editar
+                      </Link>
                     )}
                   </div>
                 </div>
@@ -233,7 +312,8 @@ export default function Interfaces() {
                     <th className="pb-3 pr-4 font-medium">Tipo</th>
                     <th className="pb-3 pr-4 font-medium">Endereço</th>
                     <th className="pb-3 pr-4 font-medium">Físico</th>
-                    <th className="pb-3 font-medium">Papel</th>
+                    <th className="pb-3 pr-4 font-medium">Papel</th>
+                    <th className="pb-3 font-medium">Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -259,15 +339,22 @@ export default function Interfaces() {
                             <span className="text-gray-600">—</span>
                           )}
                         </td>
-                        <td className="py-3">
+                        <td className="py-3 pr-4">
                           <Tag variant={roleCfg.variant}>{roleCfg.label}</Tag>
+                        </td>
+                        <td className="py-3">
+                          {i.kind === 'physical' && (
+                            <Link to={`/interfaces/${encodeURIComponent(i.name)}/edit`} className="text-xs text-gray-500 hover:text-gray-300">
+                              editar
+                            </Link>
+                          )}
                         </td>
                       </tr>
                     );
                   })}
                   {filtered.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="py-6 text-center text-gray-500">
+                      <td colSpan={6} className="py-6 text-center text-gray-500">
                         Nenhuma interface encontrada.
                       </td>
                     </tr>
