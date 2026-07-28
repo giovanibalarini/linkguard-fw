@@ -233,6 +233,7 @@ func TestServicePreviewShowsOldAndNewContent(t *testing.T) {
 	alertSvc := alerts.NewService(db)
 	svc := NewService(exec, db, linkSvc)
 	svc.SetAlertService(alertSvc) // ver Step 3 sobre por que isso é um setter, não um parâmetro do construtor
+	svc.networkDir = t.TempDir()  // evita que oldFileContent leia o /etc/systemd/network real da máquina de teste
 
 	result, err := svc.Preview(context.Background(), IfaceEdit{Name: "wlp2s0", AddrMode: "static", CIDR: "192.168.3.9/24"})
 	if err != nil {
