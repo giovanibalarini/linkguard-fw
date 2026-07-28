@@ -31,7 +31,13 @@ export default function InterfaceEdit() {
         } else {
           setIface(found);
           setAddrMode(found.addr_mode);
-          setCidr(found.cidr ?? '');
+          // found.cidr só vem preenchido depois que a interface já foi
+          // adotada pelo LinkGuard (apply+confirm). Antes disso — o caso de
+          // toda interface configurada fora do LinkGuard, como as WAN em
+          // produção hoje — cai no endereço real observado no kernel, senão
+          // o formulário abre em branco mesmo a interface já tendo um IP.
+          const liveCidr = found.live.addresses?.find((a) => a.family === 'ipv4')?.cidr;
+          setCidr(found.cidr || liveCidr || '');
           setGateway(found.gateway ?? '');
           setDescription(found.description ?? '');
         }
