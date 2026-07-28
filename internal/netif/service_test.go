@@ -169,6 +169,66 @@ func TestServiceListAssignsRoleFromConfiguredLinks(t *testing.T) {
 	}
 }
 
+// TestServiceListPopulatesGatewayFromConfiguredLink é a regressão do achado
+// de campo: uma interface WAN configurada fora do LinkGuard (o caso de toda
+// WAN de produção hoje, via /etc/network/interfaces) nunca teve seu Gateway
+// preenchido em IfaceView — o formulário de editar interface abria com o
+// campo de gateway em branco mesmo a interface já tendo um gateway real e
+// conhecido, porque esse gateway já está guardado em storage.Link (usado
+// pelo balanceador pra montar a rota) e simplesmente não era repassado.
+func TestServiceListPopulatesGatewayFromConfiguredLink(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	if err := linkSvc.Create(&storage.Link{ID: "wan1", Name: "WAN", Interface: "wlp2s0", Weight: 1, Gateway: "192.168.3.1"}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+
+	svc := NewService(exec, db, linkSvc)
+	views, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	byName := make(map[string]IfaceView, len(views))
+	for _, v := range views {
+		byName[v.Name] = v
+	}
+	if wl := byName["wlp2s0"]; wl.Gateway != "192.168.3.1" {
+		t.Errorf("wlp2s0: esperava Gateway=192.168.3.1 (do Link configurado), veio %q", wl.Gateway)
+	}
+}
+
+// TestServiceListManagedGatewayOverridesLinkGateway confirma que, uma vez
+// adotada via apply+confirm, o gateway gravado em managed_interfaces (o que
+// o admin efetivamente configurou pela Fase 2) prevalece sobre o gateway do
+// Link — a mesma prioridade que já vale pra CIDR/AddrMode/Description.
+func TestServiceListManagedGatewayOverridesLinkGateway(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	if err := linkSvc.Create(&storage.Link{ID: "wan1", Name: "WAN", Interface: "wlp2s0", Weight: 1, Gateway: "192.168.3.1"}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+	if err := db.UpsertManagedInterface(storage.ManagedInterface{Name: "wlp2s0", Kind: "physical", AddrMode: "static", CIDR: "192.168.3.9/24", Gateway: "192.168.3.254"}); err != nil {
+		t.Fatalf("seed managed interface: %v", err)
+	}
+
+	svc := NewService(exec, db, linkSvc)
+	views, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	byName := make(map[string]IfaceView, len(views))
+	for _, v := range views {
+		byName[v.Name] = v
+	}
+	if wl := byName["wlp2s0"]; wl.Gateway != "192.168.3.254" {
+		t.Errorf("wlp2s0: esperava Gateway=192.168.3.254 (managed_interfaces prevalece sobre o Link), veio %q", wl.Gateway)
+	}
+}
+
 func TestServiceListAppliesStoredAlias(t *testing.T) {
 	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
 	db := newTestDB(t)

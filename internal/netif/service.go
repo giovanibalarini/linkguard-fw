@@ -72,7 +72,7 @@ func (s *Service) List(ctx context.Context) ([]IfaceView, error) {
 	counters := parseProcNetDev(netDevOut)
 	views := mergeLinks(links_, addrs)
 
-	wanNames, lanNames := s.roleSets()
+	wanNames, lanNames, linkGateways := s.roleSets()
 	aliases := s.aliases()
 
 	for i := range views {
@@ -91,6 +91,15 @@ func (s *Service) List(ctx context.Context) ([]IfaceView, error) {
 			views[i].Live.TxErrors = c.TxErrors
 			views[i].Live.RxDropped = c.RxDropped
 			views[i].Live.TxDropped = c.TxDropped
+		}
+		// Interfaces configuradas como Link (WAN) já têm um gateway real
+		// conhecido pelo balanceador, mesmo antes de a interface ser
+		// "adotada" pela Fase 2 — sem isso, uma WAN configurada fora do
+		// LinkGuard (o caso de toda WAN em produção hoje) mostraria o campo
+		// de gateway em branco no formulário de edição mesmo já tendo um.
+		// A adoção via managed_interfaces (abaixo) tem prioridade sobre isto.
+		if gw, ok := linkGateways[name]; ok {
+			views[i].Gateway = gw
 		}
 	}
 
@@ -125,15 +134,21 @@ func (s *Service) Identify(ctx context.Context, name string, seconds int) error 
 
 // roleSets returns the interface names that count as WAN (any interface
 // referenced by a configured Link) and LAN (the interface netsvc.Config
-// serves DHCP/DNS on). Role is a label — see spec §5.1 — so a lookup miss is
-// not an error, it just leaves the interface Unassigned.
-func (s *Service) roleSets() (wan, lan map[string]bool) {
+// serves DHCP/DNS on), plus the gateway each configured Link already knows
+// (used by the balancer to build its routes) keyed by interface name. Role
+// is a label — see spec §5.1 — so a lookup miss is not an error, it just
+// leaves the interface Unassigned / the gateway empty.
+func (s *Service) roleSets() (wan, lan map[string]bool, gateway map[string]string) {
 	wan = map[string]bool{}
 	lan = map[string]bool{}
+	gateway = map[string]string{}
 
 	if configuredLinks, err := s.linkSvc.List(); err == nil {
 		for _, l := range configuredLinks {
 			wan[l.Interface] = true
+			if l.Gateway != "" {
+				gateway[l.Interface] = l.Gateway
+			}
 		}
 	}
 
@@ -144,7 +159,7 @@ func (s *Service) roleSets() (wan, lan map[string]bool) {
 	if cfg.Interface != "" {
 		lan[cfg.Interface] = true
 	}
-	return wan, lan
+	return wan, lan, gateway
 }
 
 // aliases returns the stored interface_aliases map. Reuses the exact same
