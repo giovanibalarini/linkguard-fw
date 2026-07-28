@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
+import Panel from './ui/Panel';
 import type { WanLink, BalanceStatus, BalanceSchedule } from '../types';
 
 const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -135,16 +136,20 @@ export default function WanBalancing({ links, onChanged }: Props) {
   const secondsLeft = pending && expiry > 0 ? Math.max(0, expiry - now) : 0;
 
   return (
-    <div className="card">
-      <div className="flex items-center gap-2 mb-1">
-        <Scale className="w-5 h-5 text-blue-400" />
-        <h2 className="text-white font-semibold">Balanceamento de saída (multi-WAN)</h2>
-        <HelpTip title="Balanceamento vs. Failover">
-          <><b>Failover</b>: usa um link por vez e troca se ele cair. <b>Balanceamento</b>: distribui as
-          conexões entre os links ao mesmo tempo, na proporção dos <b>pesos</b> — e ainda tira um link
-          do rodízio automaticamente se ele cair.</>
-        </HelpTip>
-      </div>
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          <Scale className="w-5 h-5 text-blue-400" />
+          <span className="text-white font-semibold">Balanceamento de saída (multi-WAN)</span>
+          <HelpTip title="Balanceamento vs. Failover">
+            <><b>Failover</b>: usa um link por vez e troca se ele cair. <b>Balanceamento</b>: distribui as
+            conexões entre os links ao mesmo tempo, na proporção dos <b>pesos</b> — e ainda tira um link
+            do rodízio automaticamente se ele cair.</>
+          </HelpTip>
+        </span>
+      }
+      className="mb-1"
+    >
       <p className="text-gray-500 text-xs mb-4">Define como o tráfego geral sai pelas suas internets.</p>
 
       {/* Mode selector */}
@@ -337,7 +342,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
           />
         )}
       </div>
-    </div>
+    </Panel>
   );
 }
 
