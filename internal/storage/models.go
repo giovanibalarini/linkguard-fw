@@ -213,6 +213,34 @@ type AIReport struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// ─── Managed interface (netif Fase 2) ────────────────────────────────────────
+
+// ManagedInterface is the desired addressing config for one interface the
+// admin has explicitly edited and confirmed. Only interfaces present here are
+// "Managed" — see internal/netif's Iface.Managed field, which this table backs.
+type ManagedInterface struct {
+	Name        string    `json:"name"`
+	Kind        string    `json:"kind"`
+	AddrMode    string    `json:"addr_mode"`
+	CIDR        string    `json:"cidr"`
+	Gateway     string    `json:"gateway"`
+	Description string    `json:"description"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PendingInterfaceChange is an applied-but-not-yet-confirmed interface edit.
+// Persisted (not just in memory) so a LinkGuard restart mid-window doesn't
+// silently turn an unconfirmed change permanent — see spec 19/07 §6.
+type PendingInterfaceChange struct {
+	ID           string    `json:"id"`
+	Interface    string    `json:"interface"`
+	OldConfig    string    `json:"old_config"` // JSON: ManagedInterface before this change (or "" if newly adopted)
+	OldFiles     string    `json:"old_files"`  // JSON: []ConfigFileSnapshot to restore on rollback
+	NewConfig    string    `json:"new_config"` // JSON: ManagedInterface being applied
+	DeadlineUnix int64     `json:"deadline_unix"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func nullableTime(t *time.Time) sql.NullTime {

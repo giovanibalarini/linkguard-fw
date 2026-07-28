@@ -72,6 +72,8 @@ func (db *DB) migrate() error {
 		createHostMetadataTable,
 		createDHCPReservationsTable,
 		createDNSBlocklistTable,
+		createManagedInterfacesTable,
+		createPendingInterfaceChangesTable,
 		createAIReportsTable,
 		insertDefaultAdmin,
 	}
@@ -404,6 +406,30 @@ CREATE TABLE IF NOT EXISTS state_intervals (
 const createStateIntervalsOpenIndex = `
 CREATE INDEX IF NOT EXISTS idx_state_intervals_open
 ON state_intervals(kind, label) WHERE ended_at IS NULL;`
+
+// ─── Managed interfaces schema (netif Fase 2) ───────────────────────────────
+
+const createManagedInterfacesTable = `
+CREATE TABLE IF NOT EXISTS managed_interfaces (
+    name        TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    addr_mode   TEXT NOT NULL,
+    cidr        TEXT NOT NULL DEFAULT '',
+    gateway     TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+const createPendingInterfaceChangesTable = `
+CREATE TABLE IF NOT EXISTS pending_interface_changes (
+    id            TEXT PRIMARY KEY,
+    interface     TEXT NOT NULL UNIQUE,
+    old_config    TEXT NOT NULL,
+    old_files     TEXT NOT NULL,
+    new_config    TEXT NOT NULL,
+    deadline_unix INTEGER NOT NULL,
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
 
 const createAIReportsTable = `
 CREATE TABLE IF NOT EXISTS ai_reports (
