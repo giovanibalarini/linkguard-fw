@@ -206,6 +206,9 @@ export default function Interfaces() {
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-white text-sm truncate">{i.alias || i.name}</span>
                     {i.alias && <span className="text-gray-600 text-xs font-mono">{i.name}</span>}
+                    <span className="text-gray-500 text-xs font-mono">
+                      {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
+                    </span>
                     {i.kind !== 'physical' && (
                       <span className="text-gray-600 text-xs">
                         {i.kind === 'vlan' ? `vlan · tag ${i.vlan_id}` : 'bridge'}
