@@ -14,6 +14,7 @@ import Monitoring from './pages/Monitoring';
 import Settings from './pages/Settings';
 import Interfaces from './pages/Interfaces';
 import InterfaceEdit from './pages/InterfaceEdit';
+import InterfaceReview from './pages/InterfaceReview';
 import Admin from './pages/Admin';
 import Hosts from './pages/Hosts';
 import Dhcp from './pages/Dhcp';
@@ -47,6 +48,7 @@ function AppRoutes() {
           <Route path="monitoring" element={<Monitoring />} />
           <Route path="interfaces" element={<Interfaces />} />
           <Route path="interfaces/:name/edit" element={<InterfaceEdit />} />
+          <Route path="interfaces/:name/review" element={<InterfaceReview />} />
           <Route path="settings" element={<Settings />} />
           <Route path="admin" element={<Admin />} />
           <Route path="changelog" element={<Changelog />} />
