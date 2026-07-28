@@ -2,6 +2,7 @@ package netif
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,20 @@ func containsArg(args []string, want string) bool {
 }
 
 func (e *fakeExec) IsDryRun() bool { return false }
+
+// failingReloadExec is like fakeExec but makes every "networkctl reload"
+// call fail — used to exercise the sweep's failed-auto-rollback branch
+// (restorePendingFiles returning an error).
+type failingReloadExec struct {
+	fakeExec
+}
+
+func (e *failingReloadExec) Execute(ctx context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "networkctl" && len(args) >= 1 && args[0] == "reload" {
+		return "", errors.New("simulated networkctl reload failure")
+	}
+	return e.fakeExec.Execute(ctx, cmd, args...)
+}
 
 func newTestDB(t *testing.T) *storage.DB {
 	t.Helper()
@@ -303,5 +318,71 @@ func TestRunExpirySweepAutoRollsBackExpiredChange(t *testing.T) {
 	}
 	if !found {
 		t.Error("esperava um alerta mencionando wlp2s0 após rollback automático")
+	}
+}
+
+func TestRunExpirySweepFailedRollbackKeepsPendingAndAlertsCritical(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+
+	if _, err := svc.ApplyChange(context.Background(), IfaceEdit{Name: "wlp2s0", AddrMode: "dhcp"}); err != nil {
+		t.Fatalf("ApplyChange: %v", err)
+	}
+	// Diferente de TestRunExpirySweepAutoRollsBackExpiredChange, este teste
+	// precisa de um old_files não-vazio: restorePendingFiles só chama
+	// networkd.Apply (e portanto só aciona o "networkctl reload" que este
+	// teste faz falhar) se houver ao menos um arquivo pra restaurar.
+	oldFiles, err := json.Marshal([]FileDiff{{
+		Path:       filepath.Join(svc.networkDir, "10-wlp2s0.network"),
+		OldContent: "# conteúdo anterior de teste\n",
+		NewContent: "# conteúdo novo de teste\n",
+	}})
+	if err != nil {
+		t.Fatalf("marshal oldFiles: %v", err)
+	}
+	// Força a mudança pendente a já estar vencida, sem esperar o deadline real.
+	expired := storage.PendingInterfaceChange{
+		ID: "forced", Interface: "wlp2s0",
+		OldConfig: "", OldFiles: string(oldFiles), NewConfig: "{}",
+		DeadlineUnix: time.Now().Add(-1 * time.Second).Unix(),
+	}
+	if err := db.DeletePendingInterfaceChange("wlp2s0"); err != nil {
+		t.Fatalf("DeletePendingInterfaceChange: %v", err)
+	}
+	if err := db.CreatePendingInterfaceChange(expired); err != nil {
+		t.Fatalf("CreatePendingInterfaceChange: %v", err)
+	}
+
+	// A partir daqui, o "networkctl reload" (disparado por restorePendingFiles
+	// dentro do sweep) passa a falhar — simula uma reversão automática que não
+	// consegue se aplicar.
+	svc.exec = &failingReloadExec{fakeExec: *exec}
+
+	svc.sweepExpiredOnce(context.Background())
+
+	p, err := db.GetPendingInterfaceChange("wlp2s0")
+	if err != nil {
+		t.Fatalf("GetPendingInterfaceChange: %v", err)
+	}
+	if p == nil {
+		t.Error("mudança pendente não deveria ter sido removida quando a reversão automática falha")
+	}
+
+	alertsList, err := db.GetAlerts(true, 100)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	found := false
+	for _, a := range alertsList {
+		if strings.Contains(a.Message, "wlp2s0") && a.Severity == "critical" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("esperava um alerta crítico mencionando wlp2s0 após falha na reversão automática")
 	}
 }
