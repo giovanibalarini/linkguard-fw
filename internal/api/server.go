@@ -28,6 +28,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
+	"github.com/giovanibalarini/linkguard-fw/internal/netif"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
@@ -54,6 +55,7 @@ type Server struct {
 	alertSvc    *alerts.Service
 	authSvc     *auth.Service
 	hostSvc     *hosts.Service
+	netifSvc    *netif.Service
 	nftSvc      *nftables.Service
 	netSvc      netsvc.Provider
 	vpnSvc      *wireguard.Service
@@ -81,7 +83,7 @@ type Config struct {
 func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
-	hostSvc *hosts.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
+	hostSvc *hosts.Service, netifSvc *netif.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
 	vpnSvc *wireguard.Service, notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
 	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
 	mon *monitoring.Collector, sec secrets.Secrets, aiClient *ai.Client) *Server {
@@ -97,6 +99,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		alertSvc:    alertSvc,
 		authSvc:     authSvc,
 		hostSvc:     hostSvc,
+		netifSvc:    netifSvc,
 		nftSvc:      nftSvc,
 		netSvc:      netSvc,
 		vpnSvc:      vpnSvc,
@@ -335,6 +338,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts/traffic", trafficH.TopTalkers)
 		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/alias", hostsH.SetAlias)
 		r.With(require(auth.PermHostsBlock)).Post("/api/hosts/block", hostsH.SetBlocked)
+
+		// Interface inventory (read-only, Phase 1)
+		netifH := handlers.NewNetifHandler(s.netifSvc, s.db)
+		r.With(require(auth.PermInterfacesRead)).Get("/api/interfaces", netifH.List)
+		r.With(require(auth.PermInterfacesRead)).Get("/api/interfaces/drift", netifH.Drift)
+		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/{name}/identify", netifH.Identify)
 
 		// User & role management (RBAC administration)
 		usersH := handlers.NewUsersHandler(s.db)
