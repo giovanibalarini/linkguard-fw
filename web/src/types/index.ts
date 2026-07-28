@@ -462,7 +462,6 @@ export interface IfaceAddress {
 
 export interface IfaceLiveState {
   carrier: boolean;
-  speed?: string;
   mac?: string;
   mtu?: number;
   addresses?: IfaceAddress[];

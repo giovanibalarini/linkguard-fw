@@ -42,6 +42,10 @@ func (s *Service) List(ctx context.Context) ([]IfaceView, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ip addr show: %w", err)
 	}
+	netDevOut, err := s.exec.ExecuteRead(ctx, "cat", "/proc/net/dev")
+	if err != nil {
+		return nil, fmt.Errorf("cat /proc/net/dev: %w", err)
+	}
 
 	links_, err := parseLinks(linkOut)
 	if err != nil {
@@ -51,6 +55,7 @@ func (s *Service) List(ctx context.Context) ([]IfaceView, error) {
 	if err != nil {
 		return nil, err
 	}
+	counters := parseProcNetDev(netDevOut)
 	views := mergeLinks(links_, addrs)
 
 	wanNames, lanNames := s.roleSets()
@@ -66,6 +71,12 @@ func (s *Service) List(ctx context.Context) ([]IfaceView, error) {
 		}
 		if a, ok := aliases[name]; ok {
 			views[i].Alias = a
+		}
+		if c, ok := counters[name]; ok {
+			views[i].Live.RxErrors = c.RxErrors
+			views[i].Live.TxErrors = c.TxErrors
+			views[i].Live.RxDropped = c.RxDropped
+			views[i].Live.TxDropped = c.TxDropped
 		}
 	}
 	return views, nil

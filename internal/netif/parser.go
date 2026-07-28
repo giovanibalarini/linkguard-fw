@@ -3,6 +3,8 @@ package netif
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // rawLink mirrors the fields `ip -d -j link show` emits that this package
@@ -169,6 +171,61 @@ func mergeLinks(links []parsedLink, addrs map[string][]addrInfo) []IfaceView {
 		})
 	}
 	return views
+}
+
+// ifaceCounters holds the error/dropped-packet counters this package cares
+// about, parsed from /proc/net/dev.
+type ifaceCounters struct {
+	RxErrors  uint64
+	TxErrors  uint64
+	RxDropped uint64
+	TxDropped uint64
+}
+
+// parseProcNetDev parses `cat /proc/net/dev` content into a map keyed by
+// interface name. Mirrors the same field layout internal/system.readNetDev
+// already parses (that function is unexported in a different package, so the
+// logic is intentionally duplicated here rather than imported — see this
+// package's doc comment on being independently derived from kernel state).
+//
+// Format: two header lines, then one line per interface —
+// "<name>: <16 space-separated fields>", where after the interface name and
+// colon the fields are (0-indexed): rx_bytes, rx_packets, rx_errs, rx_drop,
+// rx_fifo, rx_frame, rx_compressed, rx_multicast, tx_bytes, tx_packets,
+// tx_errs, tx_drop, tx_fifo, tx_colls, tx_carrier, tx_compressed.
+func parseProcNetDev(content string) map[string]ifaceCounters {
+	out := make(map[string]ifaceCounters)
+	lineNum := 0
+	for _, line := range strings.Split(content, "\n") {
+		lineNum++
+		if lineNum <= 2 {
+			continue // header lines
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		colonIdx := strings.Index(line, ":")
+		if colonIdx < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[:colonIdx])
+		fields := strings.Fields(line[colonIdx+1:])
+		if len(fields) < 16 {
+			continue
+		}
+		parse := func(s string) uint64 {
+			v, _ := strconv.ParseUint(s, 10, 64)
+			return v
+		}
+		out[name] = ifaceCounters{
+			RxErrors:  parse(fields[2]),
+			RxDropped: parse(fields[3]),
+			TxErrors:  parse(fields[10]),
+			TxDropped: parse(fields[11]),
+		}
+	}
+	return out
 }
 
 func familyLabel(ipFamily string) string {

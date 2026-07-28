@@ -62,9 +62,14 @@ type Iface struct {
 
 // LiveState is diagnostic data read fresh from the kernel on every request —
 // deliberately never persisted alongside Iface (spec §9.1).
+//
+// Negotiated speed/duplex (e.g. "1000M full") is deliberately not modeled
+// here yet: it requires parsing real `ethtool <iface>` output, a new
+// capability with no existing precedent in this codebase, and isn't rendered
+// anywhere in the frontend. Deferred to a later phase rather than adding an
+// unpopulated field.
 type LiveState struct {
 	Carrier   bool      `json:"carrier"`
-	Speed     string    `json:"speed,omitempty"` // e.g. "1000M full"; empty if down or not physical
 	MAC       string    `json:"mac,omitempty"`
 	MTU       int       `json:"mtu,omitempty"`
 	Addresses []Address `json:"addresses,omitempty"`

@@ -16,6 +16,7 @@ import (
 type fakeExec struct {
 	linkJSON      string
 	addrJSON      string
+	netDev        string
 	identifyCalls []string
 }
 
@@ -37,6 +38,9 @@ func (e *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 	}
 	if cmd == "ip" && containsArg(args, "addr") {
 		return e.addrJSON, nil
+	}
+	if cmd == "cat" && containsArg(args, "/proc/net/dev") {
+		return e.netDev, nil // empty string is fine: parseProcNetDev on "" yields no entries, tests below don't assert on counters
 	}
 	return "", errors.New("unexpected read command in test: " + cmd)
 }
@@ -106,6 +110,31 @@ func TestServiceListAppliesStoredAlias(t *testing.T) {
 		if v.Name == "wlp2s0" && v.Alias != "WAN Principal" {
 			t.Errorf("expected alias 'WAN Principal', got %q", v.Alias)
 		}
+	}
+}
+
+func TestServiceListMergesErrorDroppedCounters(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON, netDev: sampleProcNetDev}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+
+	svc := NewService(exec, db, linkSvc)
+	views, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	byName := make(map[string]IfaceView, len(views))
+	for _, v := range views {
+		byName[v.Name] = v
+	}
+	wl := byName["wlp2s0"]
+	if wl.Live.RxDropped != 1 || wl.Live.TxDropped != 44 {
+		t.Errorf("wlp2s0: expected RxDropped=1 TxDropped=44 from /proc/net/dev merge, got %+v", wl.Live)
+	}
+	en := byName["enp0s31f6"]
+	if en.Live.TxDropped != 111 {
+		t.Errorf("enp0s31f6: expected TxDropped=111 from /proc/net/dev merge, got %+v", en.Live)
 	}
 }
 

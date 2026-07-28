@@ -79,6 +79,53 @@ func TestParseAddrs(t *testing.T) {
 	}
 }
 
+// Real sample captured from `cat /proc/net/dev` on this dev machine (trimmed
+// to the header lines plus 3 representative interfaces: lo (all zero
+// counters), enp0s31f6 (a down physical NIC with a non-zero tx_drop from
+// carrier-loss events), and wlp2s0 (the up physical NIC with a non-zero
+// rx_drop)).
+const sampleProcNetDev = `Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo: 631917597 7187649    0    0    0     0          0         0 631917597 7187649    0    0    0     0       0          0
+enp0s31f6:       0       0    0    0    0     0          0         0        0       0    0  111    0     0       0          0
+wlp2s0: 44023652591 61639135    0    1    0     0          0         0 38670285432 47301966    0   44    0     0       0          0
+`
+
+func TestParseProcNetDev(t *testing.T) {
+	counters := parseProcNetDev(sampleProcNetDev)
+
+	if len(counters) != 3 {
+		t.Fatalf("expected 3 interfaces, got %d: %+v", len(counters), counters)
+	}
+
+	wl, ok := counters["wlp2s0"]
+	if !ok {
+		t.Fatalf("expected wlp2s0 entry, got %+v", counters)
+	}
+	if wl.RxDropped != 1 {
+		t.Errorf("wlp2s0: expected RxDropped=1, got %d", wl.RxDropped)
+	}
+	if wl.RxErrors != 0 || wl.TxErrors != 0 || wl.TxDropped != 44 {
+		t.Errorf("wlp2s0: expected RxErrors=0 TxErrors=0 TxDropped=44, got %+v", wl)
+	}
+
+	en, ok := counters["enp0s31f6"]
+	if !ok {
+		t.Fatalf("expected enp0s31f6 entry, got %+v", counters)
+	}
+	if en.TxDropped != 111 {
+		t.Errorf("enp0s31f6: expected TxDropped=111, got %d", en.TxDropped)
+	}
+
+	lo, ok := counters["lo"]
+	if !ok {
+		t.Fatalf("expected lo entry, got %+v", counters)
+	}
+	if lo.RxErrors != 0 || lo.TxErrors != 0 || lo.RxDropped != 0 || lo.TxDropped != 0 {
+		t.Errorf("lo: expected all-zero counters, got %+v", lo)
+	}
+}
+
 func TestMergeLinksDerivesAddrModeAndSystemFlag(t *testing.T) {
 	links, err := parseLinks(sampleLinkJSON)
 	if err != nil {
