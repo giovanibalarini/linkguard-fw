@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -100,8 +101,17 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 
 // validateKea writes the candidate config to a temp file and runs the Kea
 // config-test mode against it. Read-only, so it runs even in dry-run.
+//
+// The temp file is created next to the real Kea config (in the same
+// directory as s.keaConf, normally /etc/kea) instead of the system /tmp:
+// Debian's kea-dhcp4 package ships an AppArmor profile
+// (/etc/apparmor.d/usr.sbin.kea-dhcp4) that only grants kea-dhcp4 read
+// access under /etc/kea/ — a file in /tmp is invisible to it regardless of
+// Unix permissions, and `kea-dhcp4 -t` fails with "Unable to open file".
+// /etc/kea is already writable by this process (see ReadWritePaths in
+// deploy/linkguard-fw.service), so no new capability is needed.
 func (s *Service) validateKea(ctx context.Context, content string) error {
-	f, err := os.CreateTemp("", "kea-validate-*.conf")
+	f, err := os.CreateTemp(filepath.Dir(s.keaConf), "kea-validate-*.conf")
 	if err != nil {
 		return err
 	}

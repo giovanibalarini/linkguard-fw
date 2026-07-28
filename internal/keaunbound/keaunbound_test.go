@@ -13,8 +13,9 @@ import (
 
 // recExec records write commands and lets tests control the kea config-test.
 type recExec struct {
-	writes     []string
-	keaTestErr error // returned by `kea-dhcp4 -t` if set
+	writes      []string
+	keaTestErr  error  // returned by `kea-dhcp4 -t` if set
+	keaTestPath string // records the file path validateKea passed to `-t`
 }
 
 func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -22,7 +23,8 @@ func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string
 	return "", nil
 }
 func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
-	if len(args) >= 1 && args[0] == "-t" { // kea-dhcp4 -t <file>
+	if len(args) >= 2 && args[0] == "-t" { // kea-dhcp4 -t <file>
+		e.keaTestPath = args[1]
 		if e.keaTestErr != nil {
 			return "config error", e.keaTestErr
 		}
@@ -62,6 +64,27 @@ func TestReloadConfigsValidatesWritesAndReloads(t *testing.T) {
 	}
 	if !strings.Contains(joined, "systemctl reload-or-restart unbound") {
 		t.Errorf("missing unbound reload-or-restart; writes:\n%s", joined)
+	}
+}
+
+// TestValidateKeaWritesTempFileNextToRealConfig is the regression test for a
+// real production bug: the validate temp file used to go to os.TempDir()
+// (/tmp), but Debian's kea-dhcp4 AppArmor profile only allows reading under
+// /etc/kea/ — kea-dhcp4 -t failed with "Unable to open file" on every real
+// apply. The fix creates the temp file next to s.keaConf instead.
+func TestValidateKeaWritesTempFileNextToRealConfig(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	if e.keaTestPath == "" {
+		t.Fatal("kea-dhcp4 -t was never called")
+	}
+	wantDir := filepath.Dir(s.keaConf)
+	if gotDir := filepath.Dir(e.keaTestPath); gotDir != wantDir {
+		t.Errorf("validate temp file dir = %q, want %q (same dir as the real kea config, readable by kea-dhcp4's AppArmor profile)", gotDir, wantDir)
 	}
 }
 
