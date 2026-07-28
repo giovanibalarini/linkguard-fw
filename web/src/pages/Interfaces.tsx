@@ -76,7 +76,15 @@ export default function Interfaces() {
     };
   }, []);
 
-  const visible = ifaces.filter((i) => showSystem || !i.live.system);
+  // System is only a naming heuristic (docker/veth/tun/wg/… prefixes — spec
+  // §7.1); it says nothing about whether the interface is actually serving a
+  // real, cross-referenced Role today. A LAN bridge or WAN link can
+  // legitimately be named "wg0"/"tun0" (VPN-backed) or, as this dev machine's
+  // docker bridges demonstrate, a "br-<hex>" name — hiding it behind the
+  // system toggle would make the one interface an admin most needs to see
+  // (their live WAN/LAN) silently vanish. A role-bearing interface is by
+  // definition not decorative noise, so it's always visible.
+  const visible = ifaces.filter((i) => showSystem || !i.live.system || i.role !== 'unassigned');
   const filtered = visible.filter((i) => {
     if (!query.trim()) return true;
     const q = query.toLowerCase();
@@ -109,7 +117,10 @@ export default function Interfaces() {
         <Panel title="Painel traseiro">
           {(() => {
             const { wan, lan, unassigned } = groupByRole(visible);
-            const systemIfaces = ifaces.filter((i) => i.live.system);
+            // Only count interfaces actually still hidden — a role-bearing
+            // system interface is already included in `visible` above, so it
+            // must not inflate this "N hidden" count too.
+            const systemIfaces = ifaces.filter((i) => i.live.system && i.role === 'unassigned');
             const byName = new Map(visible.map((i) => [i.name, i]));
             const renderRow = (i: IfaceView, indent = false) => {
               const physAbnormal = i.kind === 'physical' && (!i.live.carrier || i.live.rx_errors > 0);
