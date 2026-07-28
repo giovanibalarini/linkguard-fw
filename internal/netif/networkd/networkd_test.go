@@ -149,6 +149,65 @@ func TestRemoveIsIdempotentWhenFileAlreadyMissing(t *testing.T) {
 	}
 }
 
+func TestApplyStillWritesFileButSkipsReloadWhenNetworkdInactive(t *testing.T) {
+	dir := t.TempDir()
+	f := ConfigFile{Path: dir + "/10-eth0.network", Content: "# managed by linkguard\n\n[Match]\nName=eth0\n\n[Network]\nDHCP=yes\n"}
+	exec := &fakeApplyExec{networkdInactive: true}
+
+	if err := Apply(context.Background(), exec, f); err != nil {
+		t.Fatalf("Apply não deveria falhar num host com networkd inativo (ex.: produção em ifupdown), veio: %v", err)
+	}
+	got, err := os.ReadFile(f.Path)
+	if err != nil {
+		t.Fatalf("arquivo deveria ter sido escrito mesmo com networkd inativo: %v", err)
+	}
+	if string(got) != f.Content {
+		t.Errorf("conteúdo escrito errado:\ngot:  %q\nwant: %q", got, f.Content)
+	}
+	if len(exec.reloadCalls) != 0 {
+		t.Errorf("com networkd inativo não deveria chamar networkctl reload, chamou %d vezes", len(exec.reloadCalls))
+	}
+}
+
+func TestApplyStillPropagatesRealReloadFailureWhenNetworkdActive(t *testing.T) {
+	dir := t.TempDir()
+	f := ConfigFile{Path: dir + "/10-eth0.network", Content: "conteudo"}
+	exec := &fakeApplyExec{failReload: true}
+
+	err := Apply(context.Background(), exec, f)
+	if err == nil {
+		t.Fatal("um reload que falha de verdade com networkd ativo ainda deve ser um erro real, não deveria ser tolerado")
+	}
+}
+
+func TestRemoveSkipsReloadWhenNetworkdInactive(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/10-eth0.network"
+	if err := os.WriteFile(path, []byte("# managed by linkguard\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	exec := &fakeApplyExec{networkdInactive: true}
+
+	if err := Remove(context.Background(), exec, path); err != nil {
+		t.Fatalf("Remove não deveria falhar num host com networkd inativo, veio: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("esperava que o arquivo fosse removido mesmo com networkd inativo")
+	}
+	if len(exec.reloadCalls) != 0 {
+		t.Errorf("com networkd inativo não deveria chamar networkctl reload, chamou %d vezes", len(exec.reloadCalls))
+	}
+}
+
+func TestIsActiveReflectsSystemctlIsActive(t *testing.T) {
+	if !IsActive(context.Background(), &fakeApplyExec{}) {
+		t.Error("esperava IsActive=true quando systemctl is-active retorna sucesso")
+	}
+	if IsActive(context.Background(), &fakeApplyExec{networkdInactive: true}) {
+		t.Error("esperava IsActive=false quando systemctl is-active falha")
+	}
+}
+
 func TestRemoveSkipsInDryRun(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/10-eth0.network"
@@ -168,19 +227,35 @@ func TestRemoveSkipsInDryRun(t *testing.T) {
 	}
 }
 
+// fakeApplyExec defaults to a host where systemd-networkd is active
+// (networkdInactive: false) — matching every pre-existing test's assumption
+// that "reload" gets called. Set networkdInactive: true to simulate an
+// ifupdown host, where `systemctl is-active systemd-networkd` fails and
+// reload must be skipped instead of erroring (see TestApply/RemoveSkipsReloadWhenNetworkdInactive).
 type fakeApplyExec struct {
-	dryRun      bool
-	reloadCalls []string
+	dryRun           bool
+	networkdInactive bool
+	failReload       bool
+	reloadCalls      []string
 }
 
 func (e *fakeApplyExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
 	if cmd == "networkctl" {
+		if e.failReload {
+			return "", fmt.Errorf("simulated networkctl reload failure")
+		}
 		e.reloadCalls = append(e.reloadCalls, strings.Join(args, " "))
 		return "", nil
 	}
 	return "", fmt.Errorf("comando de escrita inesperado no teste: %s", cmd)
 }
 func (e *fakeApplyExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "systemctl" && len(args) == 2 && args[0] == "is-active" && args[1] == "systemd-networkd" {
+		if e.networkdInactive {
+			return "", fmt.Errorf("inactive")
+		}
+		return "active\n", nil
+	}
 	return "", fmt.Errorf("comando de leitura inesperado no teste: %s", cmd)
 }
 func (e *fakeApplyExec) IsDryRun() bool { return e.dryRun }

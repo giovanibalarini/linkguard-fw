@@ -7,6 +7,7 @@ package networkd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,33 @@ func Render(i IfaceSpec, dir string) ConfigFile {
 	}
 }
 
+// IsActive reports whether systemd-networkd is the unit actually managing
+// the network on this host. Production still runs on `ifupdown` (spec adendo
+// 2026-07-28) — on those hosts `networkctl reload` fails outright (its D-Bus
+// service isn't registered), so Apply/Remove use this to skip the reload
+// call instead of treating the whole write as a failure.
+func IsActive(ctx context.Context, exec firewall.Executor) bool {
+	_, err := exec.ExecuteRead(ctx, "systemctl", "is-active", "systemd-networkd")
+	return err == nil
+}
+
+// reload calls `networkctl reload` when systemd-networkd is actually
+// managing the host, otherwise logs and skips it. Skipping (rather than
+// erroring) is what lets Apply/Remove still succeed — and Service still
+// register the pending change and its commit/confirm safety net — on a host
+// where the Provider is legitimately inert per spec §14 (ifupdown hosts
+// today), instead of leaving an unmanaged orphan file with no rollback.
+func reload(ctx context.Context, exec firewall.Executor, path string) error {
+	if !IsActive(ctx, exec) {
+		slog.Warn("systemd-networkd inativo — arquivo de interface escrito/removido mas reload pulado, sem efeito real na rede até a migração ifupdown→networkd", "path", path)
+		return nil
+	}
+	if _, err := exec.Execute(ctx, "networkctl", "reload"); err != nil {
+		return fmt.Errorf("networkctl reload: %w", err)
+	}
+	return nil
+}
+
 // Apply writes f atomically (temp file in the same directory, then rename —
 // atomic because it's the same filesystem, the first such pattern in this
 // codebase) and reloads systemd-networkd. A no-op write in dry-run mode,
@@ -122,10 +150,7 @@ func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
 		return fmt.Errorf("mover %s para %s: %w", tmpPath, f.Path, err)
 	}
 
-	if _, err := exec.Execute(ctx, "networkctl", "reload"); err != nil {
-		return fmt.Errorf("networkctl reload: %w", err)
-	}
-	return nil
+	return reload(ctx, exec, f.Path)
 }
 
 // Remove deletes path entirely and reloads systemd-networkd — used when
@@ -143,8 +168,5 @@ func Remove(ctx context.Context, exec firewall.Executor, path string) error {
 		return fmt.Errorf("remover %s: %w", path, err)
 	}
 
-	if _, err := exec.Execute(ctx, "networkctl", "reload"); err != nil {
-		return fmt.Errorf("networkctl reload: %w", err)
-	}
-	return nil
+	return reload(ctx, exec, path)
 }

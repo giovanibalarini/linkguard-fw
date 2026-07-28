@@ -23,6 +23,12 @@ type fakeExec struct {
 	addrJSON      string
 	netDev        string
 	identifyCalls []string
+	// networkdInactive simulates a host where systemd-networkd isn't the
+	// active network manager (e.g. today's ifupdown production) — Apply/
+	// Remove's `systemctl is-active` precheck fails, so they skip
+	// `networkctl reload` instead of erroring. Defaults to false (active),
+	// matching every pre-existing test's assumption that reload happens.
+	networkdInactive bool
 }
 
 func (e *fakeExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -37,6 +43,12 @@ func (e *fakeExec) Execute(_ context.Context, cmd string, args ...string) (strin
 }
 
 func (e *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "systemctl" && len(args) == 2 && args[0] == "is-active" && args[1] == "systemd-networkd" {
+		if e.networkdInactive {
+			return "", errors.New("inactive")
+		}
+		return "active\n", nil
+	}
 	// Match by scanning args rather than a fixed index: the real call uses
 	// "ip -d -j link show" (two flags before the subcommand) while "ip -j
 	// addr show" only has one, so a fixed-index check would only happen to
@@ -247,6 +259,29 @@ func TestServicePreviewShowsOldAndNewContent(t *testing.T) {
 	}
 }
 
+func TestServicePreviewWarnsWhenNetworkdInactive(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON, networkdInactive: true}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+
+	result, err := svc.Preview(context.Background(), IfaceEdit{Name: "wlp2s0", AddrMode: "dhcp"})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "systemd-networkd está inativo") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("esperava um aviso sobre systemd-networkd inativo, veio: %+v", result.Warnings)
+	}
+}
+
 func TestServicePreviewRejectsInvalidEdit(t *testing.T) {
 	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
 	db := newTestDB(t)
@@ -377,6 +412,39 @@ func TestServiceApplyThenConfirmPersistsManagedInterface(t *testing.T) {
 	// Confirmar já deve ter limpado a mudança pendente.
 	if p, _ := db.GetPendingInterfaceChange("wlp2s0"); p != nil {
 		t.Error("mudança pendente deveria ter sido removida após confirm")
+	}
+}
+
+// TestServiceApplyChangeSucceedsWhenNetworkdInactive é a regressão do achado
+// da revisão final: antes desta correção, ApplyChange chamava networkd.Apply
+// que por sua vez chamava "networkctl reload" incondicionalmente; num host
+// como a produção atual (ifupdown, networkd inativo) esse reload falhava, e
+// como o erro voltava de dentro de Apply, ApplyChange retornava erro *antes*
+// de registrar a mudança pendente no banco — o arquivo .network já tinha
+// sido escrito, mas sem nenhum registro de pendência, banner de confirmar/
+// reverter, ou proteção de auto-rollback. Esta correção faz Apply/Remove
+// pularem o reload (em vez de falhar) quando o systemd-networkd não está
+// ativo, então ApplyChange deve suceder e registrar a pendência normalmente.
+func TestServiceApplyChangeSucceedsWhenNetworkdInactive(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON, networkdInactive: true}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+
+	pending, err := svc.ApplyChange(context.Background(), IfaceEdit{Name: "wlp2s0", AddrMode: "dhcp"})
+	if err != nil {
+		t.Fatalf("ApplyChange não deveria falhar num host com networkd inativo (ex.: produção em ifupdown), veio: %v", err)
+	}
+	if pending.Interface != "wlp2s0" {
+		t.Fatalf("pending errado: %+v", pending)
+	}
+	if p, err := db.GetPendingInterfaceChange("wlp2s0"); err != nil || p == nil {
+		t.Fatalf("esperava a mudança pendente registrada no banco mesmo com networkd inativo, veio %+v, err=%v", p, err)
+	}
+	if _, err := os.Stat(filepath.Join(svc.networkDir, "10-wlp2s0.network")); err != nil {
+		t.Errorf("esperava que o arquivo .network fosse escrito mesmo com networkd inativo: %v", err)
 	}
 }
 

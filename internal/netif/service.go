@@ -269,6 +269,9 @@ func (s *Service) Preview(ctx context.Context, edit IfaceEdit) (PreviewResult, e
 			warnings = append(warnings, "Esta é uma interface WAN configurada — uma configuração errada pode derrubar o acesso remoto ao painel.")
 		}
 	}
+	if !networkd.IsActive(ctx, s.exec) {
+		warnings = append(warnings, "systemd-networkd está inativo neste servidor — a configuração será salva, mas não terá efeito real na rede até a migração de ifupdown para networkd.")
+	}
 
 	return PreviewResult{
 		Files:    []FileDiff{{Path: newFile.Path, OldContent: old, NewContent: newFile.Content}},
