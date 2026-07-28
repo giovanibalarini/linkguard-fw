@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Search } from 'lucide-react';
 import client from '../api/client';
 import InterfaceTraffic from '../components/InterfaceTraffic';
+import Panel from '../components/ui/Panel';
 import Tabs, { type TabItem } from '../components/ui/Tabs';
 import Tag, { type TagVariant } from '../components/ui/Tag';
 import type { IfaceView } from '../types';
@@ -21,6 +22,19 @@ const roleTag: Record<string, { label: string; variant: TagVariant }> = {
   unassigned: { label: 'não atribuída', variant: 'idle' },
 };
 
+// Groups by the Role the backend already computed (spec §5.1: Role is a
+// label, never re-derived on the frontend). The only extra step here is
+// keeping a LAN bridge's members (e.g. eth2/eth3 under br10) out of
+// "Não atribuídas" — they're rendered nested under their bridge instead of
+// twice.
+function groupByRole(ifaces: IfaceView[]) {
+  const wan = ifaces.filter((i) => i.role === 'wan');
+  const lan = ifaces.filter((i) => i.role === 'lan');
+  const memberNames = new Set(lan.flatMap((i) => i.members ?? []));
+  const unassigned = ifaces.filter((i) => i.role === 'unassigned' && !memberNames.has(i.name));
+  return { wan, lan, unassigned, memberNames };
+}
+
 export default function Interfaces() {
   const [tab, setTab] = useState('overview');
   const [ifaces, setIfaces] = useState<IfaceView[]>([]);
@@ -28,6 +42,16 @@ export default function Interfaces() {
   const [error, setError] = useState(false);
   const [query, setQuery] = useState('');
   const [showSystem, setShowSystem] = useState(false);
+  const [identifying, setIdentifying] = useState<string | null>(null);
+
+  const handleIdentify = async (name: string) => {
+    setIdentifying(name);
+    try {
+      await client.post(`/api/interfaces/${encodeURIComponent(name)}/identify`);
+    } finally {
+      setTimeout(() => setIdentifying((cur) => (cur === name ? null : cur)), 10000);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -82,10 +106,86 @@ export default function Interfaces() {
       <Tabs items={TABS} active={tab} onChange={setTab} />
 
       {tab === 'overview' && (
-        <div className="card text-gray-500 text-sm">
-          {/* Implementado na próxima tarefa deste plano — árvore de topologia. */}
-          Árvore de topologia — em construção nesta mesma fase (próxima tarefa).
-        </div>
+        <Panel title="Painel traseiro">
+          {(() => {
+            const { wan, lan, unassigned } = groupByRole(visible);
+            const systemIfaces = ifaces.filter((i) => i.live.system);
+            const byName = new Map(visible.map((i) => [i.name, i]));
+            const renderRow = (i: IfaceView, indent = false) => {
+              const physAbnormal = i.kind === 'physical' && (!i.live.carrier || i.live.rx_errors > 0);
+              return (
+                <div
+                  key={i.name}
+                  className={`flex items-center justify-between gap-3 py-2 border-b border-gray-800/50 last:border-0 ${indent ? 'pl-6' : ''}`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-white text-sm truncate">{i.alias || i.name}</span>
+                    {i.alias && <span className="text-gray-600 text-xs font-mono">{i.name}</span>}
+                    {i.kind !== 'physical' && (
+                      <span className="text-gray-600 text-xs">
+                        {i.kind === 'vlan' ? `vlan · tag ${i.vlan_id}` : 'bridge'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {i.kind === 'physical' && (
+                      <Tag variant={physAbnormal ? 'warn' : 'ok'} dot>
+                        {i.live.carrier ? 'link ativo' : 'sem link'}
+                      </Tag>
+                    )}
+                    {i.kind === 'physical' && (
+                      <button
+                        onClick={() => handleIdentify(i.name)}
+                        disabled={identifying === i.name}
+                        className="text-xs text-gray-500 hover:text-gray-300 disabled:text-blue-400"
+                      >
+                        {identifying === i.name ? 'piscando…' : 'identificar'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            };
+            return (
+              <div className="space-y-4">
+                {wan.length > 0 && (
+                  <div>
+                    <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">WAN</div>
+                    {wan.map((i) => renderRow(i))}
+                  </div>
+                )}
+                {lan.length > 0 && (
+                  <div>
+                    <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">LAN</div>
+                    {lan.map((i) => (
+                      <div key={i.name}>
+                        {renderRow(i)}
+                        {(i.members ?? []).map((m) => {
+                          const member = byName.get(m);
+                          return member ? renderRow(member, true) : null;
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {unassigned.length > 0 && (
+                  <div>
+                    <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Não atribuídas</div>
+                    {unassigned.map((i) => renderRow(i))}
+                  </div>
+                )}
+                {wan.length === 0 && lan.length === 0 && unassigned.length === 0 && (
+                  <p className="text-gray-500 text-sm">Nenhuma interface detectada.</p>
+                )}
+                {systemIfaces.length > 0 && !showSystem && (
+                  <button onClick={() => setShowSystem(true)} className="text-xs text-gray-600 hover:text-gray-400">
+                    {systemIfaces.length} interfaces de sistema ocultas · mostrar
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+        </Panel>
       )}
 
       {tab === 'list' && (
