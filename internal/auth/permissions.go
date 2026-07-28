@@ -22,6 +22,7 @@ const (
 	PermDHCPRead       Permission = "dhcp.read"
 	PermDNSRead        Permission = "dns.read"
 	PermVPNRead        Permission = "vpn.read"
+	PermInterfacesRead Permission = "interfaces.read"
 
 	// Write / action access per feature area.
 	PermLinksWrite    Permission = "links.write"
@@ -33,6 +34,7 @@ const (
 	PermDHCPWrite     Permission = "dhcp.write"   // ranges, reservas, aplicar
 	PermDNSWrite      Permission = "dns.write"    // upstreams, blocklist, aplicar
 	PermVPNWrite      Permission = "vpn.write"    // configurar VPN e clientes (WireGuard)
+	PermInterfacesWrite Permission = "interfaces.write" // editar interface, identificar porta fisicamente
 
 	// Administrative.
 	PermUsersManage Permission = "users.manage" // criar/editar/remover usuários
@@ -79,6 +81,9 @@ var Catalog = []CatalogEntry{
 	{PermVPNRead, "VPN", "Ver VPN", "Ver status do servidor WireGuard e clientes"},
 	{PermVPNWrite, "VPN", "Gerenciar VPN", "Ativar/configurar a VPN e criar/remover clientes"},
 
+	{PermInterfacesRead, "Interfaces", "Ver interfaces", "Topologia de rede, estado físico e diagnóstico"},
+	{PermInterfacesWrite, "Interfaces", "Gerenciar interfaces", "Identificar porta fisicamente (piscar LED)"},
+
 	{PermUsersManage, "Administração", "Gerenciar usuários", "Criar, editar e remover usuários e seus papéis"},
 	{PermRolesManage, "Administração", "Gerenciar papéis", "Criar, editar e remover papéis e suas permissões"},
 }
@@ -119,7 +124,7 @@ func readOnlyPermissions() []Permission {
 		switch e.Key {
 		case PermDashboardRead, PermMonitoringRead, PermLogsRead,
 			PermLinksRead, PermRoutesRead, PermFirewallRead,
-			PermHostsRead, PermSystemRead, PermDHCPRead, PermDNSRead, PermVPNRead:
+			PermHostsRead, PermSystemRead, PermDHCPRead, PermDNSRead, PermVPNRead, PermInterfacesRead:
 			perms = append(perms, e.Key)
 		}
 	}
@@ -147,6 +152,7 @@ var DefaultRoles = []DefaultRole{
 			PermSystemRead,
 			PermDHCPRead, PermDHCPWrite, PermDNSRead, PermDNSWrite,
 			PermVPNRead, PermVPNWrite,
+			PermInterfacesRead, PermInterfacesWrite,
 		},
 	},
 	{
