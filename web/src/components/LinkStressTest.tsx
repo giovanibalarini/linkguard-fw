@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
+import Panel from './ui/Panel';
 import type { WanLink, StressTest } from '../types';
 
 interface Props {
@@ -76,16 +77,20 @@ export default function LinkStressTest({ links, canRun }: Props) {
   const pct = test?.duration_sec ? Math.min(100, (elapsed / test.duration_sec) * 100) : 0;
 
   return (
-    <div className="card">
-      <div className="flex items-center gap-2 mb-1">
-        <FlaskConical className="w-5 h-5 text-amber-400" />
-        <h2 className="text-white font-semibold">Stress-test dos links</h2>
-        <HelpTip title="Stress-test">
-          <>Valida o failover multi-WAN <b>sob demanda</b>: derruba ou degrada uma WAN de propósito,
-          mede a continuidade (ping/DNS) enquanto o balanceador reage, e <b>restaura sozinho</b>.
-          Assim você confirma que o failover funciona sem esperar o provedor cair.</>
-        </HelpTip>
-      </div>
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          <FlaskConical className="w-5 h-5 text-amber-400" />
+          <span className="text-white font-semibold">Stress-test dos links</span>
+          <HelpTip title="Stress-test">
+            <>Valida o failover multi-WAN <b>sob demanda</b>: derruba ou degrada uma WAN de propósito,
+            mede a continuidade (ping/DNS) enquanto o balanceador reage, e <b>restaura sozinho</b>.
+            Assim você confirma que o failover funciona sem esperar o provedor cair.</>
+          </HelpTip>
+        </span>
+      }
+      className="mb-1"
+    >
       <p className="text-gray-500 text-xs mb-4">Testa uma WAN de cada vez, com restauração automática (à prova de falha do próprio painel).</p>
 
       {err && (
@@ -200,7 +205,7 @@ export default function LinkStressTest({ links, canRun }: Props) {
       )}
 
       {!canRun && <p className="text-gray-600 text-xs">Você não tem permissão para rodar testes (requer gestão de rotas).</p>}
-    </div>
+    </Panel>
   );
 }
 
