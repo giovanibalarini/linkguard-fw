@@ -447,3 +447,42 @@ export interface AIConfig {
   telemetry_consent: Record<string, boolean>;
   digest_hour: number;
 }
+
+// ─── Network interfaces (inventory) ─────────────────────────────────────────
+
+export type IfaceKind = 'physical' | 'vlan' | 'bridge';
+export type IfaceAddrMode = 'static' | 'dhcp' | 'none';
+export type IfaceRole = 'wan' | 'lan' | 'unassigned';
+
+export interface IfaceAddress {
+  family: 'ipv4' | 'ipv6';
+  ip: string;
+  cidr: string;
+}
+
+export interface IfaceLiveState {
+  carrier: boolean;
+  speed?: string;
+  mac?: string;
+  mtu?: number;
+  addresses?: IfaceAddress[];
+  rx_errors: number;
+  tx_errors: number;
+  rx_dropped: number;
+  tx_dropped: number;
+  system: boolean;
+}
+
+export interface IfaceView {
+  name: string;
+  kind: IfaceKind;
+  alias?: string;
+  description?: string;
+  parent?: string;
+  vlan_id?: number;
+  members?: string[];
+  addr_mode: IfaceAddrMode;
+  role: IfaceRole;
+  managed: boolean;
+  live: IfaceLiveState;
+}
