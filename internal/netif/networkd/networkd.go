@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
-	"github.com/giovanibalarini/linkguard-fw/internal/netif"
 )
 
 const defaultNetworkDir = "/etc/systemd/network"
@@ -21,6 +20,21 @@ const defaultNetworkDir = "/etc/systemd/network"
 type ConfigFile struct {
 	Path    string
 	Content string
+}
+
+// IfaceSpec is the minimal addressing info Render needs to produce a
+// .network file. Deliberately NOT netif.Iface: internal/netif's Service
+// (Task 5) needs to import this package to call Render/Apply, so this
+// package must not import internal/netif in turn (that would be an import
+// cycle — internal/netif -> internal/netif/networkd -> internal/netif).
+// AddrMode holds the same string values as netif.AddrMode
+// ("static"/"dhcp"/"none") — callers in package netif pass those through
+// directly, since IfaceEdit.AddrMode is already a plain string.
+type IfaceSpec struct {
+	Name     string
+	AddrMode string
+	CIDR     string
+	Gateway  string
 }
 
 // Render produces the .network file for a physical interface. Pure — no I/O,
@@ -37,7 +51,7 @@ type ConfigFile struct {
 // defaultNetworkDir ("/etc/systemd/network"); tests pass a t.TempDir() so
 // they never touch the real system path. Service (Task 5) is the only
 // production caller and always forwards its own configurable networkDir.
-func Render(i netif.Iface, dir string) ConfigFile {
+func Render(i IfaceSpec, dir string) ConfigFile {
 	if dir == "" {
 		dir = defaultNetworkDir
 	}
@@ -48,14 +62,14 @@ func Render(i netif.Iface, dir string) ConfigFile {
 	body.WriteString("[Network]\n")
 
 	switch i.AddrMode {
-	case netif.AddrModeStatic:
+	case "static":
 		fmt.Fprintf(&body, "Address=%s\n", i.CIDR)
 		if i.Gateway != "" {
 			fmt.Fprintf(&body, "Gateway=%s\n", i.Gateway)
 		}
-	case netif.AddrModeDHCP:
+	case "dhcp":
 		body.WriteString("DHCP=yes\n")
-	case netif.AddrModeNone:
+	case "none":
 		// Sem Address=/DHCP= — interface sobe sem endereço IP.
 	}
 

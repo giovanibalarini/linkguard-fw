@@ -6,13 +6,11 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/giovanibalarini/linkguard-fw/internal/netif"
 )
 
 func TestRenderStaticAddressing(t *testing.T) {
-	f := Render(netif.Iface{
-		Name: "eth0", Kind: netif.KindPhysical, AddrMode: netif.AddrModeStatic,
+	f := Render(IfaceSpec{
+		Name: "eth0", AddrMode: "static",
 		CIDR: "192.168.3.3/24", Gateway: "192.168.3.1",
 	}, "")
 	if f.Path != "/etc/systemd/network/10-eth0.network" {
@@ -25,7 +23,7 @@ func TestRenderStaticAddressing(t *testing.T) {
 }
 
 func TestRenderStaticNoGateway(t *testing.T) {
-	f := Render(netif.Iface{Name: "eth2", Kind: netif.KindPhysical, AddrMode: netif.AddrModeStatic, CIDR: "10.0.0.2/24"}, "")
+	f := Render(IfaceSpec{Name: "eth2", AddrMode: "static", CIDR: "10.0.0.2/24"}, "")
 	if strings.Contains(f.Content, "Gateway=") {
 		t.Errorf("não deveria ter linha Gateway= quando Gateway está vazio:\n%s", f.Content)
 	}
@@ -35,7 +33,7 @@ func TestRenderStaticNoGateway(t *testing.T) {
 }
 
 func TestRenderDHCP(t *testing.T) {
-	f := Render(netif.Iface{Name: "eth1", Kind: netif.KindPhysical, AddrMode: netif.AddrModeDHCP}, "")
+	f := Render(IfaceSpec{Name: "eth1", AddrMode: "dhcp"}, "")
 	want := "# managed by linkguard\n\n[Match]\nName=eth1\n\n[Network]\nDHCP=yes\n"
 	if f.Content != want {
 		t.Errorf("conteúdo errado:\n--- got ---\n%s\n--- want ---\n%s", f.Content, want)
@@ -43,7 +41,7 @@ func TestRenderDHCP(t *testing.T) {
 }
 
 func TestRenderNone(t *testing.T) {
-	f := Render(netif.Iface{Name: "eth3", Kind: netif.KindPhysical, AddrMode: netif.AddrModeNone}, "")
+	f := Render(IfaceSpec{Name: "eth3", AddrMode: "none"}, "")
 	want := "# managed by linkguard\n\n[Match]\nName=eth3\n\n[Network]\n"
 	if f.Content != want {
 		t.Errorf("conteúdo errado:\n--- got ---\n%s\n--- want ---\n%s", f.Content, want)
@@ -51,14 +49,14 @@ func TestRenderNone(t *testing.T) {
 }
 
 func TestRenderPathUsesPrefix10ForPhysical(t *testing.T) {
-	f := Render(netif.Iface{Name: "wlp2s0", Kind: netif.KindPhysical, AddrMode: netif.AddrModeDHCP}, "")
+	f := Render(IfaceSpec{Name: "wlp2s0", AddrMode: "dhcp"}, "")
 	if f.Path != "/etc/systemd/network/10-wlp2s0.network" {
 		t.Errorf("path errado: %q", f.Path)
 	}
 }
 
 func TestRenderRespectsDirOverride(t *testing.T) {
-	f := Render(netif.Iface{Name: "eth0", Kind: netif.KindPhysical, AddrMode: netif.AddrModeDHCP}, "/tmp/some-test-dir")
+	f := Render(IfaceSpec{Name: "eth0", AddrMode: "dhcp"}, "/tmp/some-test-dir")
 	if f.Path != "/tmp/some-test-dir/10-eth0.network" {
 		t.Errorf("path errado: %q", f.Path)
 	}
