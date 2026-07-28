@@ -165,11 +165,11 @@ func (s *Service) aliases() map[string]string {
 // IfaceEdit is the set of fields an admin can change for a physical
 // interface in Fase 2 — addressing only.
 type IfaceEdit struct {
-	Name        string
-	AddrMode    string
-	CIDR        string
-	Gateway     string
-	Description string
+	Name        string `json:"name"`
+	AddrMode    string `json:"addr_mode"`
+	CIDR        string `json:"cidr"`
+	Gateway     string `json:"gateway"`
+	Description string `json:"description"`
 }
 
 // FileDiff is one config file's before/after content, for the review screen.

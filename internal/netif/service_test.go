@@ -88,6 +88,38 @@ func newTestDB(t *testing.T) *storage.DB {
 	return db
 }
 
+// TestIfaceEditJSONTagsMatchFrontendSnakeCase round-trips a hand-written
+// snake_case JSON body — exactly what the frontend sends to Preview/Apply —
+// through encoding/json into IfaceEdit. Without `json:"..."` tags on
+// IfaceEdit, Go's case-insensitive fallback fails to match "addr_mode" to
+// AddrMode (an underscore is not a casing difference), so every field except
+// Name silently decoded as "". This test would have caught that: it fails on
+// the untagged struct and passes once the snake_case tags are in place.
+func TestIfaceEditJSONTagsMatchFrontendSnakeCase(t *testing.T) {
+	body := `{"name":"eth0","addr_mode":"static","cidr":"192.168.3.3/24","gateway":"192.168.3.1","description":"test"}`
+
+	var edit IfaceEdit
+	if err := json.Unmarshal([]byte(body), &edit); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	if edit.Name != "eth0" {
+		t.Errorf("Name: esperava %q, veio %q", "eth0", edit.Name)
+	}
+	if edit.AddrMode != "static" {
+		t.Errorf("AddrMode: esperava %q, veio %q (campo essencial p/ ValidateIface e networkd.Render)", "static", edit.AddrMode)
+	}
+	if edit.CIDR != "192.168.3.3/24" {
+		t.Errorf("CIDR: esperava %q, veio %q", "192.168.3.3/24", edit.CIDR)
+	}
+	if edit.Gateway != "192.168.3.1" {
+		t.Errorf("Gateway: esperava %q, veio %q", "192.168.3.1", edit.Gateway)
+	}
+	if edit.Description != "test" {
+		t.Errorf("Description: esperava %q, veio %q", "test", edit.Description)
+	}
+}
+
 func TestServiceListAssignsRoleFromConfiguredLinks(t *testing.T) {
 	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
 	db := newTestDB(t)
