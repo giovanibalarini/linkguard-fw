@@ -171,6 +171,7 @@ func run() int {
 	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
 	netifSvc := netif.NewService(exec, db, linkSvc)
+	netifSvc.SetAlertService(alertSvc)
 	sysCollector := system.NewCollector()
 	rrdSvc := tsdb.NewService(db)
 
@@ -237,6 +238,7 @@ func run() int {
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)
 	go balancerSvc.Run(ctx)
+	go netifSvc.RunExpirySweep(ctx, 10*time.Second)
 	go ai.RunDigest(ctx, aiClient, rrdSvc, alertSvc, db, func() []string {
 		all, _ := db.GetLinks()
 		names := make([]string, 0, len(all))

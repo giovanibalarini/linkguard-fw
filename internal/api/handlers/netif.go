@@ -80,3 +80,78 @@ func (h *NetifHandler) Identify(w http.ResponseWriter, r *http.Request) {
 	auditAction(h.db, r, "interface.identify", "interface:"+name, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// Preview shows what would change for an edit, without applying it.
+func (h *NetifHandler) Preview(w http.ResponseWriter, r *http.Request) {
+	var edit netif.IfaceEdit
+	if err := decodeJSON(r, &edit); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo da requisição inválido")
+		return
+	}
+	result, err := h.svc.Preview(r.Context(), edit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// Apply writes the new config and starts the confirm-or-rollback window.
+func (h *NetifHandler) Apply(w http.ResponseWriter, r *http.Request) {
+	var edit netif.IfaceEdit
+	if err := decodeJSON(r, &edit); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo da requisição inválido")
+		return
+	}
+	pending, err := h.svc.ApplyChange(r.Context(), edit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auditAction(h.db, r, "interface.apply", "interface:"+edit.Name, "")
+	writeJSON(w, http.StatusOK, pending)
+}
+
+// Confirm accepts a pending change.
+func (h *NetifHandler) Confirm(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo da requisição inválido")
+		return
+	}
+	if err := h.svc.Confirm(r.Context(), body.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auditAction(h.db, r, "interface.confirm", "interface:"+body.Name, "")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Rollback immediately reverts a pending change.
+func (h *NetifHandler) Rollback(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo da requisição inválido")
+		return
+	}
+	if err := h.svc.Rollback(r.Context(), body.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auditAction(h.db, r, "interface.rollback", "interface:"+body.Name, "")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Pending lists every in-flight unconfirmed change.
+func (h *NetifHandler) Pending(w http.ResponseWriter, r *http.Request) {
+	pending, err := h.svc.ListPending(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, pending)
+}

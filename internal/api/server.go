@@ -344,6 +344,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermInterfacesRead)).Get("/api/interfaces", netifH.List)
 		r.With(require(auth.PermInterfacesRead)).Get("/api/interfaces/drift", netifH.Drift)
 		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/{name}/identify", netifH.Identify)
+		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/preview", netifH.Preview)
+		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/apply", netifH.Apply)
+		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/confirm", netifH.Confirm)
+		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/rollback", netifH.Rollback)
+		r.With(require(auth.PermInterfacesRead)).Get("/api/interfaces/pending", netifH.Pending)
 
 		// User & role management (RBAC administration)
 		usersH := handlers.NewUsersHandler(s.db)
