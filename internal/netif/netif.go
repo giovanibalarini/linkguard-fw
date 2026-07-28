@@ -56,6 +56,8 @@ type Iface struct {
 	VLANID      int      `json:"vlan_id,omitempty"` // vlan: 1-4094
 	Members     []string `json:"members,omitempty"` // bridge: member interface names
 	AddrMode    AddrMode `json:"addr_mode"`
+	CIDR        string   `json:"cidr,omitempty"`    // static: ex. "192.168.3.3/24"
+	Gateway     string   `json:"gateway,omitempty"` // static: opcional, deve estar dentro da rede de CIDR
 	Role        Role     `json:"role"`
 	Managed     bool     `json:"managed"`
 }
