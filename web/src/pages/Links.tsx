@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
 import client from '../api/client';
+import Panel from '../components/ui/Panel';
 import type { WanLink, SystemMetrics, InterfaceMetrics } from '../types';
 
 const emptyLink: Partial<WanLink> = {
@@ -329,14 +330,14 @@ export default function Links() {
       </div>
 
       {success && (
-        <div className="px-4 py-3 rounded-lg text-sm bg-green-500/10 text-green-400 border border-green-500/20">{success}</div>
+        <div className="card border border-green-500/30 bg-green-500/10 text-green-400 text-sm">{success}</div>
       )}
 
       {!loading && links.length >= 2 && <WanBalancing links={links} onChanged={fetchLinks} />}
 
       {!loading && links.length >= 2 && <LinkStressTest links={links} canRun={can('routes.write')} />}
 
-      <div className="card">
+      <Panel title="Links WAN">
         {loading ? (
           <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
         ) : links.length === 0 ? (
@@ -396,7 +397,7 @@ export default function Links() {
             </table>
           </div>
         )}
-      </div>
+      </Panel>
 
       {/* Modal */}
       {showModal && (
