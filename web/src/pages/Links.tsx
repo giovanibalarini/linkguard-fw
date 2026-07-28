@@ -6,6 +6,7 @@ import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-re
 import StatusBadge from '../components/StatusBadge';
 import client from '../api/client';
 import Panel from '../components/ui/Panel';
+import Modal from '../components/ui/Modal';
 import type { WanLink, SystemMetrics, InterfaceMetrics } from '../types';
 
 const emptyLink: Partial<WanLink> = {
@@ -400,15 +401,14 @@ export default function Links() {
       </Panel>
 
       {/* Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">
-                {isEditing ? 'Editar Link WAN' : 'Novo Link WAN'}
-              </h2>
-            </div>
-            <form onSubmit={handleSave} className="p-6 space-y-4">
+      <Modal
+        open={showModal}
+        onClose={() => setShowModal(false)}
+        title={isEditing ? 'Editar Link WAN' : 'Novo Link WAN'}
+        size="md"
+        className="bg-gray-900 border border-gray-800 rounded-xl"
+      >
+        <form onSubmit={handleSave} className="p-6 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="label">Nome *</label>
@@ -465,25 +465,25 @@ export default function Links() {
                   Cancelar
                 </button>
               </div>
-            </form>
+        </form>
+      </Modal>
+
+      <Modal
+        open={showWizard}
+        onClose={() => setShowWizard(false)}
+        size="lg"
+        className="rounded-2xl border border-blue-500/30 bg-gradient-to-b from-gray-900 to-gray-950 shadow-2xl"
+        title={
+          <div>
+            <span className="text-white font-semibold flex items-center gap-2">
+              <Network className="w-5 h-5 text-blue-400" />
+              Assistente Mágico de 2 WAN
+            </span>
+            <p className="text-xs text-gray-400 mt-1">Configura failover rápido ou balanceamento por marcação de pacotes.</p>
           </div>
-        </div>
-      )}
-
-      {showWizard && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="w-full max-w-2xl rounded-2xl border border-blue-500/30 bg-gradient-to-b from-gray-900 to-gray-950 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
-              <div>
-                <h2 className="text-white font-semibold flex items-center gap-2">
-                  <Network className="w-5 h-5 text-blue-400" />
-                  Assistente Mágico de 2 WAN
-                </h2>
-                <p className="text-xs text-gray-400 mt-1">Configura failover rápido ou balanceamento por marcação de pacotes.</p>
-              </div>
-            </div>
-
-            <div className="p-6 space-y-5">
+        }
+      >
+        <div className="p-6 space-y-5">
               {!wizardConfirm && (
               <div className="space-y-5">
               <div className="grid sm:grid-cols-2 gap-3">
@@ -649,19 +649,19 @@ export default function Links() {
                   </>
                 )}
               </div>
-            </div>
-          </div>
         </div>
-      )}
+      </Modal>
 
       {/* Delete confirmation modal */}
-      {deleteTarget && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">Excluir Link WAN</h2>
-            </div>
-            <div className="p-6 space-y-4">
+      <Modal
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        title="Excluir Link WAN"
+        size="sm"
+        className="bg-gray-900 border border-gray-800 rounded-xl"
+      >
+        {deleteTarget && (
+        <div className="p-6 space-y-4">
               <p className="text-gray-400 text-sm">
                 Tem certeza que deseja excluir o link <span className="text-white font-medium">"{deleteTarget.name}"</span>? Esta ação não pode ser desfeita.
               </p>
@@ -674,10 +674,9 @@ export default function Links() {
                   Cancelar
                 </button>
               </div>
-            </div>
-          </div>
         </div>
-      )}
+        )}
+      </Modal>
     </div>
   );
 }
