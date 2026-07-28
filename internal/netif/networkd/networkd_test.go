@@ -117,6 +117,57 @@ func TestApplySkipsWriteInDryRun(t *testing.T) {
 	}
 }
 
+func TestRemoveDeletesFileAndReloads(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/10-eth0.network"
+	if err := os.WriteFile(path, []byte("# managed by linkguard\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	exec := &fakeApplyExec{}
+
+	if err := Remove(context.Background(), exec, path); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("esperava que o arquivo fosse removido")
+	}
+	if len(exec.reloadCalls) != 1 {
+		t.Fatalf("esperava 1 chamada de reload, veio %d: %+v", len(exec.reloadCalls), exec.reloadCalls)
+	}
+}
+
+func TestRemoveIsIdempotentWhenFileAlreadyMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/10-eth0.network" // nunca escrito
+	exec := &fakeApplyExec{}
+
+	if err := Remove(context.Background(), exec, path); err != nil {
+		t.Fatalf("Remove em arquivo inexistente deveria ser um no-op bem-sucedido, veio: %v", err)
+	}
+	if len(exec.reloadCalls) != 1 {
+		t.Errorf("esperava reload mesmo quando o arquivo já não existia, veio %d chamadas", len(exec.reloadCalls))
+	}
+}
+
+func TestRemoveSkipsInDryRun(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/10-eth0.network"
+	if err := os.WriteFile(path, []byte("conteudo"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	exec := &fakeApplyExec{dryRun: true}
+
+	if err := Remove(context.Background(), exec, path); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Error("em dry-run o arquivo não deveria ter sido removido")
+	}
+	if len(exec.reloadCalls) != 0 {
+		t.Errorf("em dry-run não deveria chamar reload, chamou %d vezes", len(exec.reloadCalls))
+	}
+}
+
 type fakeApplyExec struct {
 	dryRun      bool
 	reloadCalls []string

@@ -41,11 +41,10 @@ type IfaceSpec struct {
 // safe to call for a preview without touching the system. Every file carries
 // the "# managed by linkguard" header (spec 19/07 §5.3) so that a *future*
 // cleanup/deletion step can tell managed files apart from unmanaged ones.
-// Nothing today reads or acts on this header — Apply (Task 4) only ever
-// writes/renames the single ConfigFile it's given and never deletes
-// anything; Fase 2 never needs to remove a .network file, since it only
-// edits an existing physical interface's own file. Orphaned-file cleanup
-// based on this header is not yet implemented.
+// Nothing today reads or acts on this header — Apply (Task 4) writes/renames
+// the single ConfigFile it's given; Remove deletes a file entirely (used when
+// rolling back a first-time adoption that had no prior file to restore).
+// Orphaned-file cleanup based on this header is not yet implemented.
 //
 // dir overrides the target directory — pass "" in production to use
 // defaultNetworkDir ("/etc/systemd/network"); tests pass a t.TempDir() so
@@ -83,11 +82,12 @@ func Render(i IfaceSpec, dir string) ConfigFile {
 // atomic because it's the same filesystem, the first such pattern in this
 // codebase) and reloads systemd-networkd. A no-op write in dry-run mode,
 // matching the convention every other Provider in this codebase follows
-// (see internal/keaunbound.ReloadConfigs).
+// (see internal/keaunbound.ReloadConfigs). Apply itself never deletes a
+// file — see Remove for that.
 //
-// Fase 2 never removes or changes an interface's type, so `networkctl reload`
-// always suffices — `reconfigure` (needed when a .netdev is added/removed)
-// is deferred to Fase 3.
+// Fase 2 never changes an interface's type, so `networkctl reload` always
+// suffices — `reconfigure` (needed when a .netdev is added/removed) is
+// deferred to Fase 3.
 func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
 	if exec.IsDryRun() {
 		return nil
@@ -120,6 +120,27 @@ func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
 	if err := os.Rename(tmpPath, f.Path); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("mover %s para %s: %w", tmpPath, f.Path, err)
+	}
+
+	if _, err := exec.Execute(ctx, "networkctl", "reload"); err != nil {
+		return fmt.Errorf("networkctl reload: %w", err)
+	}
+	return nil
+}
+
+// Remove deletes path entirely and reloads systemd-networkd — used when
+// rolling back a first-time interface adoption, where the pre-change state
+// was "no .network file at all", not an empty one (writing an empty file via
+// Apply would leave an unrestricted [Match] with an empty [Network] block,
+// not restore the original unmanaged state). A no-op in dry-run mode, same
+// convention as Apply. Idempotent: path already missing is treated as
+// success, not an error.
+func Remove(ctx context.Context, exec firewall.Executor, path string) error {
+	if exec.IsDryRun() {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remover %s: %w", path, err)
 	}
 
 	if _, err := exec.Execute(ctx, "networkctl", "reload"); err != nil {

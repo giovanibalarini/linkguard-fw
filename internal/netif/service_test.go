@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,6 +49,16 @@ func (e *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 	}
 	if cmd == "cat" && containsArg(args, "/proc/net/dev") {
 		return e.netDev, nil // empty string is fine: parseProcNetDev on "" yields no entries, tests below don't assert on counters
+	}
+	if cmd == "cat" && len(args) == 1 {
+		// oldFileContent's "cat <path>" call. Mirrors RealExecutor: read the
+		// real file off disk (networkd.Apply writes with plain os calls, not
+		// through this fake), erroring the same way a real missing file would.
+		b, err := os.ReadFile(args[0])
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
 	}
 	return "", errors.New("unexpected read command in test: " + cmd)
 }
@@ -248,6 +259,88 @@ func TestServicePreviewRejectsInvalidEdit(t *testing.T) {
 	}
 }
 
+// TestServicePreviewRejectsNameWithNewline covers Finding 2: Name is
+// interpolated unescaped into the rendered [Match] body, so a newline must
+// be rejected before Preview ever calls networkd.Render.
+func TestServicePreviewRejectsNameWithNewline(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+
+	_, err := svc.Preview(context.Background(), IfaceEdit{Name: "wlp2s0\nDHCP=no", AddrMode: "dhcp"})
+	if err == nil {
+		t.Fatal("esperava erro de validação para nome com newline, não teve nenhum")
+	}
+}
+
+// TestServiceApplyChangeRejectsNameWithSlash covers Finding 2: Name is
+// interpolated unescaped into the rendered file path, so a "/" must be
+// rejected before ApplyChange ever calls networkd.Render/Apply.
+func TestServiceApplyChangeRejectsNameWithSlash(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+
+	_, err := svc.ApplyChange(context.Background(), IfaceEdit{Name: "../etc/passwd", AddrMode: "dhcp"})
+	if err == nil {
+		t.Fatal("esperava erro de validação para nome com barra, não teve nenhum")
+	}
+}
+
+// TestServicePreviewRejectsNonexistentInterface and
+// TestServiceApplyChangeRejectsNonexistentInterface cover Finding 2's second
+// half: a syntactically valid Name that isn't in the live interface
+// inventory must be rejected, not silently rendered/written.
+func TestServicePreviewRejectsNonexistentInterface(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+
+	_, err := svc.Preview(context.Background(), IfaceEdit{Name: "eth99-nao-existe", AddrMode: "dhcp"})
+	if err == nil {
+		t.Fatal("esperava erro para interface inexistente, não teve nenhum")
+	}
+}
+
+func TestServiceApplyChangeRejectsNonexistentInterface(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+
+	_, err := svc.ApplyChange(context.Background(), IfaceEdit{Name: "eth99-nao-existe", AddrMode: "dhcp"})
+	if err == nil {
+		t.Fatal("esperava erro para interface inexistente, não teve nenhum")
+	}
+}
+
+// TestServiceApplyChangeRejectsNonPhysicalInterface confirms the small
+// Kind==KindPhysical backstop added alongside the existence check: docker0
+// in sampleLinkJSON is a real, existing interface, but it's KindBridge, and
+// Fase 2 only edits physical interfaces.
+func TestServiceApplyChangeRejectsNonPhysicalInterface(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+
+	_, err := svc.ApplyChange(context.Background(), IfaceEdit{Name: "docker0", AddrMode: "dhcp"})
+	if err == nil {
+		t.Fatal("esperava erro ao tentar editar docker0 (não é uma interface física), não teve nenhum")
+	}
+}
+
 func TestServiceApplyThenConfirmPersistsManagedInterface(t *testing.T) {
 	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
 	db := newTestDB(t)
@@ -308,6 +401,78 @@ func TestServiceRollbackRestoresOldFileAndDoesNotPersist(t *testing.T) {
 	}
 }
 
+// TestServiceRollbackOfFirstTimeEditRemovesFile covers the Finding 1 fix: a
+// pending change on an interface with no prior .network file must, on
+// rollback, leave the file *removed* — not written back as an empty file
+// (which would apply an unrestricted [Network] block with no address/DHCP
+// once a live systemd-networkd reads it).
+func TestServiceRollbackOfFirstTimeEditRemovesFile(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+	path := filepath.Join(svc.networkDir, "10-wlp2s0.network")
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("pré-condição: arquivo não deveria existir antes do ApplyChange, err=%v", err)
+	}
+
+	if _, err := svc.ApplyChange(context.Background(), IfaceEdit{Name: "wlp2s0", AddrMode: "dhcp"}); err != nil {
+		t.Fatalf("ApplyChange: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("esperava que o ApplyChange tivesse escrito o arquivo: %v", err)
+	}
+
+	if err := svc.Rollback(context.Background(), "wlp2s0"); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("esperava que o rollback removesse o arquivo (não existia antes da mudança), veio err=%v", err)
+	}
+}
+
+// TestServiceRollbackWithPriorFileRestoresRealContent is the non-regression
+// counterpart of the test above: when a .network file already existed before
+// the change, rollback must restore its exact prior content, not remove it.
+func TestServiceRollbackWithPriorFileRestoresRealContent(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+	path := filepath.Join(svc.networkDir, "10-wlp2s0.network")
+
+	const priorContent = "# managed by linkguard\n\n[Match]\nName=wlp2s0\n\n[Network]\nDHCP=yes\n"
+	if err := os.WriteFile(path, []byte(priorContent), 0o644); err != nil {
+		t.Fatalf("seed prior file: %v", err)
+	}
+
+	if _, err := svc.ApplyChange(context.Background(), IfaceEdit{Name: "wlp2s0", AddrMode: "static", CIDR: "192.168.3.9/24"}); err != nil {
+		t.Fatalf("ApplyChange: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(got), "Address=192.168.3.9/24") {
+		t.Fatalf("esperava que o ApplyChange tivesse escrito a nova config: %q, err=%v", got, err)
+	}
+
+	if err := svc.Rollback(context.Background(), "wlp2s0"); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	restored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("esperava que o arquivo continuasse existindo após o rollback (havia conteúdo anterior): %v", err)
+	}
+	if string(restored) != priorContent {
+		t.Errorf("conteúdo restaurado errado:\ngot:  %q\nwant: %q", restored, priorContent)
+	}
+}
+
 func TestRunExpirySweepAutoRollsBackExpiredChange(t *testing.T) {
 	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
 	db := newTestDB(t)
@@ -350,6 +515,52 @@ func TestRunExpirySweepAutoRollsBackExpiredChange(t *testing.T) {
 	}
 	if !found {
 		t.Error("esperava um alerta mencionando wlp2s0 após rollback automático")
+	}
+}
+
+// TestRunExpirySweepAutoRollbackOfFirstTimeEditRemovesFile is the
+// sweep-triggered counterpart of TestServiceRollbackOfFirstTimeEditRemovesFile
+// — restorePendingFiles is shared by both Rollback and sweepExpiredOnce, but
+// the auto-expiry path is exercised separately here since that's the more
+// common real-world trigger (an admin who never confirms).
+func TestRunExpirySweepAutoRollbackOfFirstTimeEditRemovesFile(t *testing.T) {
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	svc := NewService(exec, db, linkSvc)
+	svc.SetAlertService(alerts.NewService(db))
+	svc.networkDir = t.TempDir()
+	path := filepath.Join(svc.networkDir, "10-wlp2s0.network")
+
+	if _, err := svc.ApplyChange(context.Background(), IfaceEdit{Name: "wlp2s0", AddrMode: "dhcp"}); err != nil {
+		t.Fatalf("ApplyChange: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("esperava que o ApplyChange tivesse escrito o arquivo: %v", err)
+	}
+
+	// Força a mudança pendente (com OldContent="", já que não havia arquivo
+	// prévio) a já estar vencida, sem esperar o deadline real.
+	oldFilesJSON, err := json.Marshal([]FileDiff{{Path: path, OldContent: ""}})
+	if err != nil {
+		t.Fatalf("marshal oldFiles: %v", err)
+	}
+	expired := storage.PendingInterfaceChange{
+		ID: "forced", Interface: "wlp2s0",
+		OldConfig: "", OldFiles: string(oldFilesJSON), NewConfig: "{}",
+		DeadlineUnix: time.Now().Add(-1 * time.Second).Unix(),
+	}
+	if err := db.DeletePendingInterfaceChange("wlp2s0"); err != nil {
+		t.Fatalf("DeletePendingInterfaceChange: %v", err)
+	}
+	if err := db.CreatePendingInterfaceChange(expired); err != nil {
+		t.Fatalf("CreatePendingInterfaceChange: %v", err)
+	}
+
+	svc.sweepExpiredOnce(context.Background())
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("esperava que o sweep removesse o arquivo (não existia antes da mudança), veio err=%v", err)
 	}
 }
 

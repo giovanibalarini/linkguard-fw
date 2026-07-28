@@ -6,13 +6,29 @@ package netif
 import (
 	"fmt"
 	"net"
+	"regexp"
 )
 
+// validIfaceName matches the Linux interface-name charset LinkGuard accepts
+// for a rendered file — letters, digits, dot, underscore, hyphen — capped at
+// IFNAMSIZ-1 (15) bytes. Deliberately stricter than what the kernel actually
+// allows (which excludes only whitespace/slash/etc.): Name is interpolated
+// unescaped into both a systemd-networkd [Match] body and a file path
+// (internal/netif/networkd.Render), so this is the one place guarding both
+// against a newline injecting directives into the unit file and a "/"
+// escaping the target directory.
+var validIfaceName = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
+
 // ValidateIface checks the addressing fields are internally consistent.
-// AddrMode="static" requires a valid CIDR; a present Gateway must parse as an
-// IP inside that CIDR's network. AddrMode="dhcp"/"none" ignore CIDR/Gateway
-// entirely (they're meaningless in those modes).
+// Name is validated unconditionally (every AddrMode renders it into a file
+// path and a systemd-networkd [Match] section). AddrMode="static" requires a
+// valid CIDR; a present Gateway must parse as an IP inside that CIDR's
+// network. AddrMode="dhcp"/"none" ignore CIDR/Gateway entirely (they're
+// meaningless in those modes).
 func ValidateIface(i Iface) error {
+	if !validIfaceName.MatchString(i.Name) {
+		return fmt.Errorf("nome de interface inválido: %q", i.Name)
+	}
 	if i.AddrMode != AddrModeStatic {
 		return nil
 	}

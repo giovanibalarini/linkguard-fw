@@ -212,6 +212,23 @@ func (e IfaceEdit) toSpec() networkd.IfaceSpec {
 // auto-reverting — spec 19/07 §6 default.
 const rollbackDeadline = 90 * time.Second
 
+// checkEditable rejects an edit targeting a name the kernel doesn't actually
+// know about, rather than silently rendering and writing a file for it.
+// Fase 2 only edits physical interfaces — VLAN/bridge are Fase 3, and the
+// frontend already blocks selecting them (InterfaceEdit.tsx); this is the
+// server-side backstop for the same rule.
+func checkEditable(views []IfaceView, name string) error {
+	for _, v := range views {
+		if v.Name == name {
+			if v.Kind != KindPhysical {
+				return fmt.Errorf("interface %s não é uma interface física — apenas interfaces físicas podem ser editadas nesta fase", name)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("interface %s não existe", name)
+}
+
 // oldFileContent reads the current content of a rendered file, or "" if it
 // doesn't exist yet (first-ever edit of that interface).
 func (s *Service) oldFileContent(path string) string {
@@ -229,6 +246,15 @@ func (s *Service) Preview(ctx context.Context, edit IfaceEdit) (PreviewResult, e
 	if err := ValidateIface(iface); err != nil {
 		return PreviewResult{}, err
 	}
+
+	views, err := s.List(ctx)
+	if err != nil {
+		return PreviewResult{}, fmt.Errorf("listar interfaces: %w", err)
+	}
+	if err := checkEditable(views, edit.Name); err != nil {
+		return PreviewResult{}, err
+	}
+
 	newFile := networkd.Render(edit.toSpec(), s.networkDir)
 	old := s.oldFileContent(newFile.Path)
 
@@ -238,12 +264,9 @@ func (s *Service) Preview(ctx context.Context, edit IfaceEdit) (PreviewResult, e
 	// agora (isso exigiria inspecionar a conexão HTTP recebida, fora do escopo
 	// deste Service) — o aviso genérico abaixo cobre o caso mais comum e barato
 	// de detectar: a interface é a WAN configurada.
-	views, err := s.List(ctx)
-	if err == nil {
-		for _, v := range views {
-			if v.Name == edit.Name && v.Role == RoleWAN {
-				warnings = append(warnings, "Esta é uma interface WAN configurada — uma configuração errada pode derrubar o acesso remoto ao painel.")
-			}
+	for _, v := range views {
+		if v.Name == edit.Name && v.Role == RoleWAN {
+			warnings = append(warnings, "Esta é uma interface WAN configurada — uma configuração errada pode derrubar o acesso remoto ao painel.")
 		}
 	}
 
@@ -258,6 +281,13 @@ func (s *Service) Preview(ctx context.Context, edit IfaceEdit) (PreviewResult, e
 func (s *Service) ApplyChange(ctx context.Context, edit IfaceEdit) (PendingChangeView, error) {
 	iface := edit.toIface()
 	if err := ValidateIface(iface); err != nil {
+		return PendingChangeView{}, err
+	}
+	views, err := s.List(ctx)
+	if err != nil {
+		return PendingChangeView{}, fmt.Errorf("listar interfaces: %w", err)
+	}
+	if err := checkEditable(views, edit.Name); err != nil {
 		return PendingChangeView{}, err
 	}
 	if existing, _ := s.db.GetPendingInterfaceChange(edit.Name); existing != nil {
@@ -284,7 +314,7 @@ func (s *Service) ApplyChange(ctx context.Context, edit IfaceEdit) (PendingChang
 	}
 
 	deadline := time.Now().Add(rollbackDeadline)
-	err := s.db.CreatePendingInterfaceChange(storage.PendingInterfaceChange{
+	err = s.db.CreatePendingInterfaceChange(storage.PendingInterfaceChange{
 		ID: uuid.NewString(), Interface: edit.Name,
 		OldConfig: oldConfigJSON, OldFiles: string(oldFilesJSON), NewConfig: string(newConfigJSON),
 		DeadlineUnix: deadline.Unix(),
@@ -339,6 +369,15 @@ func (s *Service) restorePendingFiles(ctx context.Context, p storage.PendingInte
 		return fmt.Errorf("snapshot de arquivos corrompido: %w", err)
 	}
 	for _, f := range files {
+		if f.OldContent == "" {
+			// Nada a restaurar — o arquivo não existia antes desta mudança
+			// (primeira edição da interface). Remover, não escrever um
+			// arquivo vazio (que aplicaria um [Network] irrestrito).
+			if err := networkd.Remove(ctx, s.exec, f.Path); err != nil {
+				return fmt.Errorf("remover %s: %w", f.Path, err)
+			}
+			continue
+		}
 		if err := networkd.Apply(ctx, s.exec, networkd.ConfigFile{Path: f.Path, Content: f.OldContent}); err != nil {
 			return fmt.Errorf("restaurar %s: %w", f.Path, err)
 		}
