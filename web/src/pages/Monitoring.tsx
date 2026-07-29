@@ -312,8 +312,30 @@ export default function Monitoring() {
       {/* Interface traffic */}
       {sys && sys.interfaces && sys.interfaces.length > 0 && (
         <Panel title="Tráfego por Interface">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          {/* Mobile: stacked cards (< sm) */}
+          <div className="sm:hidden space-y-2">
+            {sys.interfaces.filter(i => i.name !== 'lo').map(iface => (
+              <div key={iface.name} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                <div className="text-white font-mono font-medium truncate">{iface.name}</div>
+                <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                  <dt className="text-gray-500">RX total</dt>
+                  <dd className="text-gray-400 font-mono">{formatBytes(iface.rx_bytes)}</dd>
+                  <dt className="text-gray-500">TX total</dt>
+                  <dd className="text-gray-400 font-mono">{formatBytes(iface.tx_bytes)}</dd>
+                  <dt className="text-gray-500">RX Pacotes</dt>
+                  <dd className="text-gray-400 font-mono">{iface.rx_packets.toLocaleString()}</dd>
+                  <dt className="text-gray-500">TX Pacotes</dt>
+                  <dd className="text-gray-400 font-mono">{iface.tx_packets.toLocaleString()}</dd>
+                  <dt className="text-gray-500">Erros</dt>
+                  <dd className="text-gray-400 font-mono">{iface.rx_errors + iface.tx_errors}</dd>
+                </dl>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop: table (>= sm) */}
+          <div className="hidden sm:block overflow-x-auto">
+            <table className="hidden sm:table w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b border-gray-800">
                   <th className="pb-3 pr-4 font-medium">Interface</th>
