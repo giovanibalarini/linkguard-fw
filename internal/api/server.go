@@ -150,7 +150,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 	r.Post("/api/auth/login", authH.Login)
 
 	// Health (no auth needed)
-	healthH := handlers.NewHealthHandler(s.db, s.sysCol)
+	healthH := handlers.NewHealthHandler(s.db, s.sysCol, cfg.Version)
 	r.Get("/api/health", healthH.Health)
 
 	// Protected API routes. Each route is gated by a feature permission

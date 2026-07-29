@@ -17,6 +17,7 @@ const PROFILE_ORDER: RetentionProfile[] = ['30d', '1y', '5y'];
 
 export default function Settings() {
   const [activeSection, setActiveSection] = useState('about');
+  const [version, setVersion] = useState('');
   const [retentionProfile, setRetentionProfile] = useState<RetentionProfile>('30d');
   const [savingProfile, setSavingProfile] = useState(false);
   const [loadingRetention, setLoadingRetention] = useState(true);
@@ -42,6 +43,12 @@ export default function Settings() {
       }
     };
     loadRetention();
+  }, []);
+
+  useEffect(() => {
+    client.get<{ version: string }>('/api/health')
+      .then((res) => setVersion(res.data.version))
+      .catch(() => {});
   }, []);
 
   const persistRetentionProfile = async (profile: RetentionProfile) => {
@@ -111,9 +118,9 @@ export default function Settings() {
             <div className="card space-y-4">
               <h2 className="text-white font-semibold">Sobre o LinkGuard FW</h2>
               <div className="space-y-3 text-sm">
-                <InfoRow label="Versão" value="1.0.0" />
+                <InfoRow label="Versão" value={version ? `v${version}` : '—'} />
                 <InfoRow label="Descrição" value="Ferramenta de gestão de firewall Linux para servidores Debian com múltiplos links de internet" />
-                <InfoRow label="Tecnologias" value="Go, React, SQLite, iptables, iproute2" />
+                <InfoRow label="Tecnologias" value="Go, React, SQLite, nftables, iproute2" />
                 <InfoRow label="Licença" value="MIT" />
               </div>
               <div className="pt-4 border-t border-gray-800">
