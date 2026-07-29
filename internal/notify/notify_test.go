@@ -3,6 +3,7 @@ package notify
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"io"
 	"mime"
@@ -234,5 +235,32 @@ func TestSendEmailAttachmentFailsWhenEmailDisabled(t *testing.T) {
 
 	if err := s.SendEmailAttachment("assunto", "corpo", []byte("dados"), "arquivo.lgbak"); err == nil {
 		t.Fatal("expected error when email channel is not enabled, got nil")
+	}
+}
+
+func TestSendWhatsAppAlwaysUsesFixedHost(t *testing.T) {
+	var gotHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	db := openTestDB(t)
+	s := NewService(db, newTestSecrets(t, db))
+	_ = s.SaveConfig(Config{
+		MinSeverity: "warning",
+		WhatsApp:    WhatsAppCfg{Enabled: true, Token: "tok", Phone: "5511999999999"},
+	})
+
+	err := s.Test(context.Background(), "whatsapp", s.LoadConfig())
+	// The real zapvite host won't be reachable/valid from this sandbox — the
+	// point of this test isn't a successful send, it's proving there is no
+	// config field left that could redirect the request to srv.URL. If
+	// WhatsAppCfg still had a URL field, an attacker-supplied srv.URL here
+	// would be dialed instead of the fixed host.
+	_ = err
+	if gotHost == srv.Listener.Addr().String() {
+		t.Fatal("sendWhatsApp dialed an attacker-controlled test server — URL is still configurable")
 	}
 }

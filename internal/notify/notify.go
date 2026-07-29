@@ -42,10 +42,13 @@ type TelegramCfg struct {
 }
 
 // WhatsAppCfg sends via the zapvite WhatsApp API (Bearer token; the token
-// expires, so it is meant to be updated from the UI).
+// expires, so it is meant to be updated from the UI). The destination host is
+// NOT configurable (see defaultWhatsAppURL) — unlike a generic webhook, this
+// channel always attaches a real secret (the Bearer token), so letting an
+// admin-editable URL field redirect it would let a system.write-scoped
+// account exfiltrate the token to an attacker-controlled host.
 type WhatsAppCfg struct {
 	Enabled bool   `json:"enabled"`
-	URL     string `json:"url"`
 	Token   string `json:"token"`
 	Phone   string `json:"phone"`
 }
@@ -95,9 +98,6 @@ func (s *Service) LoadConfig() Config {
 	}
 	if c.MinSeverity == "" {
 		c.MinSeverity = "warning"
-	}
-	if c.WhatsApp.URL == "" {
-		c.WhatsApp.URL = defaultWhatsAppURL
 	}
 	return c
 }
@@ -236,13 +236,9 @@ func (s *Service) sendTelegram(ctx context.Context, c TelegramCfg, severity, tit
 }
 
 func (s *Service) sendWhatsApp(ctx context.Context, c WhatsAppCfg, severity, title, message string) error {
-	url := c.URL
-	if url == "" {
-		url = defaultWhatsAppURL
-	}
 	body := fmt.Sprintf("%s *%s*\n%s", severityEmoji(severity), title, message)
 	payload, _ := json.Marshal(map[string]string{"phone": c.Phone, "body": body})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, defaultWhatsAppURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

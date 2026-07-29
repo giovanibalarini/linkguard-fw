@@ -6,7 +6,7 @@ import Panel from './ui/Panel';
 
 interface WebhookCfg { enabled: boolean; url: string }
 interface TelegramCfg { enabled: boolean; token: string; chat_id: string }
-interface WhatsAppCfg { enabled: boolean; url: string; token: string; phone: string }
+interface WhatsAppCfg { enabled: boolean; token: string; phone: string }
 interface EmailCfg { enabled: boolean; host: string; port: number; username: string; password: string; from: string; to: string }
 interface NotifyConfig {
   min_severity: 'info' | 'warning' | 'critical';
@@ -20,7 +20,7 @@ const empty: NotifyConfig = {
   min_severity: 'warning',
   webhook: { enabled: false, url: '' },
   telegram: { enabled: false, token: '', chat_id: '' },
-  whatsapp: { enabled: false, url: '', token: '', phone: '' },
+  whatsapp: { enabled: false, token: '', phone: '' },
   email: { enabled: false, host: '', port: 587, username: '', password: '', from: '', to: '' },
 };
 
@@ -107,10 +107,8 @@ export default function NotificationSettings() {
             placeholder="Telefone com DDI (ex.: 5527999999999)" className="input w-full" />
           <input value={cfg.whatsapp.token} onChange={(e) => setCfg({ ...cfg, whatsapp: { ...cfg.whatsapp, token: e.target.value } })}
             placeholder="Token (Bearer) — expira, atualize aqui" className="input w-full" />
-          <input value={cfg.whatsapp.url} onChange={(e) => setCfg({ ...cfg, whatsapp: { ...cfg.whatsapp, url: e.target.value } })}
-            placeholder="URL da API" className="input w-full sm:col-span-2" />
         </div>
-        <p className="text-gray-600 text-xs mt-1">Provedor zapvite. O token expira — quando parar de enviar, gere um novo e cole aqui.</p>
+        <p className="text-gray-600 text-xs mt-1">Provedor zapvite (endereço fixo, não configurável por segurança). O token expira — quando parar de enviar, gere um novo e cole aqui.</p>
       </Channel>
 
       {/* Email */}
