@@ -13,6 +13,7 @@ package stresstest
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
@@ -325,6 +326,15 @@ func (s *Service) restore(t *Test, origFlat string) {
 // armWatchdog spawns a detached process that force-restores the link/tc after
 // the deadline no matter what — even if this process dies mid-test.
 func (s *Service) armWatchdog(t *Test) {
+	// Defense in depth: t.Interface is already validated (against this same
+	// reIface) in Start() before a Test is ever constructed, but this is the
+	// codebase's only sh -c call — re-checking here means a future refactor or
+	// new caller that skips Start()'s validation can't silently reintroduce
+	// shell injection through this one spot.
+	if !reIface.MatchString(t.Interface) {
+		slog.Error("armWatchdog: interface inválida, watchdog não armado", "interface", t.Interface)
+		return
+	}
 	ctx, cancel := bg()
 	defer cancel()
 	margin := t.DurationSec + 60

@@ -1,6 +1,7 @@
 package stresstest
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,35 @@ func TestApplyFaultRaisesOutageAlert(t *testing.T) {
 	}
 	if n := countAlertsOfType(got, alerts.TypeLinkOnline); n != 1 {
 		t.Errorf("link_online alerts = %d, want 1 (all: %+v)", n, got)
+	}
+}
+
+type spyExecutor struct{ calls int }
+
+func (f *spyExecutor) Execute(ctx context.Context, name string, args ...string) (string, error) {
+	f.calls++
+	return "", nil
+}
+func (f *spyExecutor) ExecuteRead(ctx context.Context, name string, args ...string) (string, error) {
+	return "", nil
+}
+func (f *spyExecutor) IsDryRun() bool { return true }
+
+func TestArmWatchdogSkipsMalformedInterface(t *testing.T) {
+	spy := &spyExecutor{}
+	s := &Service{exec: spy}
+	s.armWatchdog(&Test{Interface: `eth0; rm -rf /`, DurationSec: 30})
+	if spy.calls != 0 {
+		t.Fatalf("expected armWatchdog to skip exec.Execute for a malformed interface, got %d calls", spy.calls)
+	}
+}
+
+func TestArmWatchdogRunsForValidInterface(t *testing.T) {
+	spy := &spyExecutor{}
+	s := &Service{exec: spy}
+	s.armWatchdog(&Test{Interface: "enp3s0", DurationSec: 30})
+	if spy.calls != 1 {
+		t.Fatalf("expected armWatchdog to call exec.Execute once for a valid interface, got %d calls", spy.calls)
 	}
 }
 
