@@ -1,0 +1,122 @@
+package handlers_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
+	"github.com/giovanibalarini/linkguard-fw/internal/auth"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+)
+
+func withChiURLParam(r *http.Request, key, value string) *http.Request {
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(key, value)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
+
+func newUsersTestHandler(t *testing.T) (*handlers.UsersHandler, *storage.DB) {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return handlers.NewUsersHandler(db), db
+}
+
+// helpdeskOnlyUser creates a role with ONLY users.manage (no roles.manage) and
+// a user assigned to it — the exact "limited helpdesk account" scenario the
+// vulnerability targets.
+func helpdeskOnlyUser(t *testing.T, db *storage.DB) *storage.User {
+	t.Helper()
+	role := &storage.Role{Name: "Helpdesk", Permissions: []string{string(auth.PermUsersManage)}}
+	if err := db.CreateRole(role); err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	u := &storage.User{Username: "helpdesk"}
+	if err := db.CreateUser(u, "$2a$10$fakehashfakehashfakehashfakehashfakehashfakehashfa", []string{role.ID}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return u
+}
+
+func adminRoleID(t *testing.T, db *storage.DB) string {
+	t.Helper()
+	role := &storage.Role{Name: "Admin de verdade", Permissions: []string{string(auth.PermRolesManage), string(auth.PermUsersManage)}}
+	if err := db.CreateRole(role); err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	return role.ID
+}
+
+func TestUpdateBlocksSelfPromotionWithoutRolesManage(t *testing.T) {
+	h, db := newUsersTestHandler(t)
+	attacker := helpdeskOnlyUser(t, db)
+	adminRole := adminRoleID(t, db)
+
+	body, _ := json.Marshal(map[string]interface{}{"role_ids": []string{adminRole}})
+	req := httptest.NewRequest(http.MethodPut, "/api/users/"+attacker.ID, bytes.NewReader(body))
+	req = req.WithContext(auth.ContextWithClaims(req.Context(), &auth.Claims{UserID: attacker.ID, Username: attacker.Username}))
+	req = withChiURLParam(req, "id", attacker.ID)
+	w := httptest.NewRecorder()
+	h.Update(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (roles.manage required), got %d: %s", w.Code, w.Body.String())
+	}
+	roleIDs, err := db.GetUserRoleIDs(attacker.ID)
+	if err != nil {
+		t.Fatalf("GetUserRoleIDs: %v", err)
+	}
+	for _, rid := range roleIDs {
+		if rid == adminRole {
+			t.Fatal("attacker's role_ids were changed despite the 403 — self-promotion succeeded")
+		}
+	}
+}
+
+func TestUpdatePasswordOnlyDoesNotRequireRolesManage(t *testing.T) {
+	h, db := newUsersTestHandler(t)
+	attacker := helpdeskOnlyUser(t, db)
+
+	body, _ := json.Marshal(map[string]interface{}{"password": "novaSenhaForte123"})
+	req := httptest.NewRequest(http.MethodPut, "/api/users/"+attacker.ID, bytes.NewReader(body))
+	req = req.WithContext(auth.ContextWithClaims(req.Context(), &auth.Claims{UserID: attacker.ID, Username: attacker.Username}))
+	req = withChiURLParam(req, "id", attacker.ID)
+	w := httptest.NewRecorder()
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for password-only update (no role change), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateWithRolesManageCanChangeRoles(t *testing.T) {
+	h, db := newUsersTestHandler(t)
+	actorRole := adminRoleID(t, db)
+	actor := &storage.User{Username: "real-admin"}
+	if err := db.CreateUser(actor, "$2a$10$fakehashfakehashfakehashfakehashfakehashfakehashfa", []string{actorRole}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	target := helpdeskOnlyUser(t, db)
+
+	body, _ := json.Marshal(map[string]interface{}{"role_ids": []string{actorRole}})
+	req := httptest.NewRequest(http.MethodPut, "/api/users/"+target.ID, bytes.NewReader(body))
+	req = req.WithContext(auth.ContextWithClaims(req.Context(), &auth.Claims{UserID: actor.ID, Username: actor.Username}))
+	req = withChiURLParam(req, "id", target.ID)
+	w := httptest.NewRecorder()
+	h.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 — actor holds roles.manage, legitimate role change, got %d: %s", w.Code, w.Body.String())
+	}
+}

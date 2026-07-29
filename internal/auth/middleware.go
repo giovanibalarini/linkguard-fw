@@ -36,6 +36,12 @@ func ClaimsFromContext(ctx context.Context) *Claims {
 	return c
 }
 
+// ContextWithClaims returns a context carrying the given claims, for tests
+// that call a handler directly without going through Middleware.
+func ContextWithClaims(ctx context.Context, c *Claims) context.Context {
+	return context.WithValue(ctx, claimsKey, c)
+}
+
 // Require returns a middleware that allows the request only if the authenticated
 // user holds the given permission. It must be chained after Middleware (which
 // populates the claims). Effective permissions are resolved from the database on

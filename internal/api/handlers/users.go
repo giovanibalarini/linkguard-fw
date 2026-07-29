@@ -101,6 +101,30 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Changing role assignments is a permission GRANT — users.manage alone (e.g.
+	// a helpdesk role scoped to password resets) must not be enough to hand out
+	// any role, including one that includes roles.manage/admin-equivalent
+	// permissions the actor may not even hold themselves. This is deliberately
+	// a blanket roles.manage requirement, not a "target role can't exceed the
+	// actor's own permissions" check — simpler, and matches the separation the
+	// two permissions already imply.
+	if body.RoleIDs != nil {
+		claims := auth.ClaimsFromContext(r.Context())
+		if claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		perms, err := h.db.GetUserPermissions(claims.UserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !perms[string(auth.PermRolesManage)] {
+			writeError(w, http.StatusForbidden, "alterar papéis de um usuário exige a permissão roles.manage")
+			return
+		}
+	}
+
 	if body.RoleIDs != nil {
 		if err := h.validateRoles(*body.RoleIDs); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
