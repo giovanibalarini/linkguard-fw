@@ -19,6 +19,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
+	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnslog"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
@@ -67,6 +68,7 @@ type Server struct {
 	mon         *monitoring.Collector
 	sec         secrets.Secrets
 	aiClient    *ai.Client
+	backupSched *backup.Scheduler
 	webFS       embed.FS
 }
 
@@ -86,7 +88,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	hostSvc *hosts.Service, netifSvc *netif.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
 	vpnSvc *wireguard.Service, notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
 	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
-	mon *monitoring.Collector, sec secrets.Secrets, aiClient *ai.Client) *Server {
+	mon *monitoring.Collector, sec secrets.Secrets, aiClient *ai.Client, backupSched *backup.Scheduler) *Server {
 
 	s := &Server{
 		db:          db,
@@ -111,6 +113,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		mon:         mon,
 		sec:         sec,
 		aiClient:    aiClient,
+		backupSched: backupSched,
 		webFS:       cfg.WebFS,
 	}
 
@@ -276,9 +279,15 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermLogsRead)).Get("/api/logs", logsH.List)
 
 		// Backup / restore (admin: system.write)
-		backupH := handlers.NewBackupHandler(s.db, s.sec, cfg.Version)
+		backupH := handlers.NewBackupHandler(s.db, s.sec, cfg.Version, s.backupSched)
 		r.With(require(auth.PermSystemWrite)).Get("/api/backup", backupH.Export)
 		r.With(require(auth.PermSystemWrite)).Post("/api/backup/restore", backupH.Restore)
+		r.With(require(auth.PermSystemWrite)).Put("/api/backup/passphrase", backupH.PassphraseSet)
+		r.With(require(auth.PermSystemWrite)).Get("/api/backup/passphrase/status", backupH.PassphraseStatus)
+		r.With(require(auth.PermSystemWrite)).Get("/api/backup/schedule", backupH.ScheduleGet)
+		r.With(require(auth.PermSystemWrite)).Put("/api/backup/schedule", backupH.ScheduleSet)
+		r.With(require(auth.PermSystemWrite)).Post("/api/backup/send-now", backupH.SendNow)
+		r.With(require(auth.PermSystemWrite)).Get("/api/backup/last-run", backupH.LastRun)
 
 		// In-app update (admin: system.write)
 		updateH := handlers.NewUpdateHandler(s.db, s.sec, updater.NewService(s.exec, cfg.Version,

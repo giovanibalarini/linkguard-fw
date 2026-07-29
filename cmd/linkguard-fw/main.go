@@ -19,6 +19,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
+	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
@@ -185,6 +186,7 @@ func run() int {
 	promReg := prometheus.NewRegistry()
 	appMetrics := metrics.New(promReg)
 	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec, rrdSvc)
+	backupSched := backup.NewScheduler(db, secretsSvc, notifySvc, alertSvc, version)
 
 	server := api.New(api.Config{
 		Addr:    cfg.Addr(),
@@ -192,7 +194,7 @@ func run() int {
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
 		Version: version,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, netSvc, vpnSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, netSvc, vpnSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -238,6 +240,7 @@ func run() int {
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)
 	go balancerSvc.Run(ctx)
+	go backupSched.Run(ctx)
 	go netifSvc.RunExpirySweep(ctx, 10*time.Second)
 	go ai.RunDigest(ctx, aiClient, rrdSvc, alertSvc, db, func() []string {
 		all, _ := db.GetLinks()
