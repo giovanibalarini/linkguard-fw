@@ -279,6 +279,9 @@ func dnatRule(f PortForward) (string, error) {
 	}
 	var parts []string
 	if iif := strings.TrimSpace(f.Interface); iif != "" {
+		if !reIface.MatchString(iif) {
+			return "", fmt.Errorf("interface inválida: %q", iif)
+		}
 		parts = append(parts, fmt.Sprintf("iifname %q", iif))
 	}
 	parts = append(parts,
