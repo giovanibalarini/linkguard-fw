@@ -29,6 +29,12 @@ var ErrTOTPRequired = errors.New("totp_required")
 // ErrLockedOut signals the account is temporarily locked after repeated failures.
 var ErrLockedOut = errors.New("locked_out")
 
+// dummyHash has no corresponding real password — it exists purely so Login
+// pays the same bcrypt cost whether the username exists or not, closing a
+// timing side-channel that let an unauthenticated caller enumerate valid
+// usernames by measuring response latency.
+const dummyHash = "$2a$10$CwTycUXWue0Thq9StjUM0uJ8lhLevf0hkgzYzMXV6ZLqQGz9Y0h9G"
+
 type attemptInfo struct {
 	count     int
 	lockUntil time.Time
@@ -72,6 +78,11 @@ func (s *Service) Login(username, rawPassword, code string) (string, *storage.Us
 		return "", nil, fmt.Errorf("lookup user: %w", err)
 	}
 	if user == nil {
+		// Compare against a dummy hash so this path costs the same as a real
+		// wrong-password check below — otherwise "user doesn't exist" returns
+		// near-instantly while "wrong password" pays bcrypt's ~50-200ms, and
+		// that timing gap alone lets an attacker enumerate valid usernames.
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(rawPassword))
 		s.recordFailure(key)
 		return "", nil, errors.New("invalid credentials")
 	}

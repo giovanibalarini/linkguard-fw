@@ -39,22 +39,26 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrTOTPRequired):
-			// Password OK; the client must now present a 2FA code.
+			// Password OK; the client must now present a 2FA code. Not a
+			// failure yet — don't audit-log this as one.
 			writeJSON(w, http.StatusUnauthorized, map[string]interface{}{
 				"error":         "two-factor code required",
 				"totp_required": true,
 			})
 		case errors.Is(err, auth.ErrLockedOut):
+			auditAction(h.db, r, "login.locked_out", "user:"+body.Username, "")
 			writeJSON(w, http.StatusTooManyRequests, map[string]interface{}{
 				"error":      "muitas tentativas. Tente novamente em alguns minutos.",
 				"locked_out": true,
 			})
 		default:
+			auditAction(h.db, r, "login.failure", "user:"+body.Username, "")
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 		}
 		return
 	}
 
+	auditAction(h.db, r, "login.success", "user:"+user.Username, "")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"token": token,
 		"user": map[string]string{
