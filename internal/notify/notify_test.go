@@ -1,9 +1,17 @@
 package notify
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/base64"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,5 +96,70 @@ func TestSendNowIsSynchronous(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("webhook hits = %d, want 1", hits)
+	}
+}
+
+func TestBuildMultipartMessageIncludesAttachment(t *testing.T) {
+	msg, err := buildMultipartMessage("from@example.com", "to@example.com", "Backup LinkGuard", "Segue em anexo.",
+		[]byte("conteudo cifrado de teste"), "linkguard-backup.lgbak")
+	if err != nil {
+		t.Fatalf("buildMultipartMessage: %v", err)
+	}
+
+	tp := textproto.NewReader(bufio.NewReader(bytes.NewReader(msg)))
+	header, err := tp.ReadMIMEHeader()
+	if err != nil {
+		t.Fatalf("ReadMIMEHeader: %v", err)
+	}
+	mediaType, params, err := mime.ParseMediaType(header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("ParseMediaType: %v", err)
+	}
+	if mediaType != "multipart/mixed" {
+		t.Fatalf("expected multipart/mixed, got %q", mediaType)
+	}
+
+	mr := multipart.NewReader(tp.R, params["boundary"])
+	var sawText, sawAttachment bool
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("NextPart: %v", err)
+		}
+		partBody, _ := io.ReadAll(part)
+		switch {
+		case strings.HasPrefix(part.Header.Get("Content-Type"), "text/plain"):
+			sawText = true
+			if string(partBody) != "Segue em anexo." {
+				t.Fatalf("text part mismatch: %q", partBody)
+			}
+		case part.Header.Get("Content-Disposition") != "":
+			sawAttachment = true
+			decoded, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(partBody)))
+			if err != nil {
+				t.Fatalf("base64 decode attachment: %v", err)
+			}
+			if string(decoded) != "conteudo cifrado de teste" {
+				t.Fatalf("attachment mismatch: %q", decoded)
+			}
+			if !strings.Contains(part.Header.Get("Content-Disposition"), "linkguard-backup.lgbak") {
+				t.Fatalf("filename missing from Content-Disposition: %q", part.Header.Get("Content-Disposition"))
+			}
+		}
+	}
+	if !sawText || !sawAttachment {
+		t.Fatalf("expected both text and attachment parts, sawText=%v sawAttachment=%v", sawText, sawAttachment)
+	}
+}
+
+func TestSendEmailAttachmentFailsWhenEmailDisabled(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db, newTestSecrets(t, db))
+
+	if err := s.SendEmailAttachment("assunto", "corpo", []byte("dados"), "arquivo.lgbak"); err == nil {
+		t.Fatal("expected error when email channel is not enabled, got nil")
 	}
 }

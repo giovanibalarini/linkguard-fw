@@ -7,11 +7,14 @@ package notify
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/smtp"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -273,6 +276,79 @@ func (s *Service) sendEmail(c EmailCfg, severity, title, message string) error {
 		auth = smtp.PlainAuth("", c.Username, c.Password, c.Host)
 	}
 	if err := smtp.SendMail(addr, auth, from, strings.Split(c.To, ","), []byte(body)); err != nil {
+		return fmt.Errorf("email: %w", err)
+	}
+	return nil
+}
+
+// buildMultipartMessage assembles a MIME multipart/mixed e-mail (RFC822
+// headers + a text part + one base64 attachment part), ready to hand to
+// smtp.SendMail. Split out from SendEmailAttachment so the message format is
+// testable without a real SMTP connection.
+func buildMultipartMessage(from, to, subject, body string, attachment []byte, filename string) ([]byte, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	if _, err := fmt.Fprintf(&buf, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=%q\r\n\r\n",
+		from, to, subject, w.Boundary()); err != nil {
+		return nil, err
+	}
+
+	textPart, err := w.CreatePart(textproto.MIMEHeader{"Content-Type": {"text/plain; charset=utf-8"}})
+	if err != nil {
+		return nil, fmt.Errorf("criar parte de texto: %w", err)
+	}
+	if _, err := textPart.Write([]byte(body)); err != nil {
+		return nil, fmt.Errorf("escrever texto: %w", err)
+	}
+
+	attachPart, err := w.CreatePart(textproto.MIMEHeader{
+		"Content-Type":              {"application/octet-stream"},
+		"Content-Transfer-Encoding": {"base64"},
+		"Content-Disposition":       {fmt.Sprintf(`attachment; filename=%q`, filename)},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("criar parte do anexo: %w", err)
+	}
+	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(attachment)))
+	base64.StdEncoding.Encode(encoded, attachment)
+	if _, err := attachPart.Write(encoded); err != nil {
+		return nil, fmt.Errorf("escrever anexo: %w", err)
+	}
+
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("fechar multipart: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// SendEmailAttachment sends an e-mail with a single binary attachment via the
+// same SMTP config sendEmail uses. Alerts stay text-only via sendEmail — this
+// is the one case (the periodic encrypted backup) that needs a real
+// attachment.
+func (s *Service) SendEmailAttachment(subject, body string, attachment []byte, filename string) error {
+	cfg := s.LoadConfig().Email
+	if !cfg.Enabled {
+		return fmt.Errorf("e-mail não está habilitado em Notificações")
+	}
+	port := cfg.Port
+	if port == 0 {
+		port = 587
+	}
+	addr := fmt.Sprintf("%s:%d", cfg.Host, port)
+	from := cfg.From
+	if from == "" {
+		from = cfg.Username
+	}
+	msg, err := buildMultipartMessage(from, cfg.To, subject, body, attachment, filename)
+	if err != nil {
+		return fmt.Errorf("montar e-mail: %w", err)
+	}
+	var auth smtp.Auth
+	if cfg.Username != "" {
+		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+	}
+	if err := smtp.SendMail(addr, auth, from, strings.Split(cfg.To, ","), msg); err != nil {
 		return fmt.Errorf("email: %w", err)
 	}
 	return nil
