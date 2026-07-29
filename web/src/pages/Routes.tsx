@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { RefreshCw, Route as RouteIcon, Plus, Pencil, Trash2, ListTree } from 'lucide-react';
 import client from '../api/client';
 import type { Route, IpRule } from '../types';
+import IconButton from '../components/ui/IconButton';
 
 type RouteForm = {
   destination: string;
@@ -316,43 +317,71 @@ export default function Routes() {
               <p className="text-gray-500">Nenhuma rota disponível</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b border-gray-800">
-                    <th className="pb-3 pr-4 font-medium">Destino</th>
-                    <th className="pb-3 pr-4 font-medium">Gateway</th>
-                    <th className="pb-3 pr-4 font-medium">Interface</th>
-                    <th className="pb-3 pr-4 font-medium">Protocolo</th>
-                    <th className="pb-3 pr-4 font-medium">Métrica</th>
-                    <th className="pb-3 font-medium">Escopo</th>
-                    <th className="pb-3 font-medium">Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {routes.map((r) => (
-                    <tr key={`${r.destination}|${parseRouteTable(r) || 'main'}`} className="table-row">
-                      <td className="py-3 pr-4 text-white font-mono">{r.destination}</td>
-                      <td className="py-3 pr-4 text-gray-400 font-mono">{r.gateway || '—'}</td>
-                      <td className="py-3 pr-4 text-gray-400 font-mono">{r.interface || '—'}</td>
-                      <td className="py-3 pr-4 text-gray-400">{r.protocol || '—'}</td>
-                      <td className="py-3 pr-4 text-gray-400">{r.metric || '—'}</td>
-                      <td className="py-3 text-gray-400">{r.scope || '—'}</td>
-                      <td className="py-3">
-                        <div className="flex gap-2">
-                          <button onClick={() => openEditRoute(r)} disabled={saving} className="text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => handleDeleteRoute(r)} disabled={saving} className="text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
+            <>
+              {/* Mobile: stacked cards (< sm) */}
+              <div className="sm:hidden space-y-2">
+                {routes.map((r) => (
+                  <div key={`${r.destination}|${parseRouteTable(r) || 'main'}`} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-white font-medium font-mono truncate">{r.destination}</div>
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        <IconButton icon={Pencil} onClick={() => openEditRoute(r)} label="Editar rota" disabled={saving} />
+                        <IconButton icon={Trash2} onClick={() => handleDeleteRoute(r)} label="Remover rota" variant="danger" disabled={saving} />
+                      </div>
+                    </div>
+                    <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                      <dt className="text-gray-500">Gateway</dt>
+                      <dd className="text-gray-400 font-mono">{r.gateway || '—'}</dd>
+                      <dt className="text-gray-500">Interface</dt>
+                      <dd className="text-gray-400 font-mono">{r.interface || '—'}</dd>
+                      <dt className="text-gray-500">Protocolo</dt>
+                      <dd className="text-gray-400">{r.protocol || '—'}</dd>
+                      <dt className="text-gray-500">Métrica</dt>
+                      <dd className="text-gray-400">{r.metric || '—'}</dd>
+                      <dt className="text-gray-500">Escopo</dt>
+                      <dd className="text-gray-400">{r.scope || '—'}</dd>
+                    </dl>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop: table (>= sm) */}
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="hidden sm:table w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b border-gray-800">
+                      <th className="pb-3 pr-4 font-medium">Destino</th>
+                      <th className="pb-3 pr-4 font-medium">Gateway</th>
+                      <th className="pb-3 pr-4 font-medium">Interface</th>
+                      <th className="pb-3 pr-4 font-medium">Protocolo</th>
+                      <th className="pb-3 pr-4 font-medium">Métrica</th>
+                      <th className="pb-3 font-medium">Escopo</th>
+                      <th className="pb-3 font-medium">Ações</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {routes.map((r) => (
+                      <tr key={`${r.destination}|${parseRouteTable(r) || 'main'}`} className="table-row">
+                        <td className="py-3 pr-4 text-white font-mono">{r.destination}</td>
+                        <td className="py-3 pr-4 text-gray-400 font-mono">{r.gateway || '—'}</td>
+                        <td className="py-3 pr-4 text-gray-400 font-mono">{r.interface || '—'}</td>
+                        <td className="py-3 pr-4 text-gray-400">{r.protocol || '—'}</td>
+                        <td className="py-3 pr-4 text-gray-400">{r.metric || '—'}</td>
+                        <td className="py-3 text-gray-400">{r.scope || '—'}</td>
+                        <td className="py-3">
+                          <div className="flex gap-2">
+                            <IconButton icon={Pencil} onClick={() => openEditRoute(r)} label="Editar rota" disabled={saving} />
+                            <IconButton icon={Trash2} onClick={() => handleDeleteRoute(r)} label="Remover rota" variant="danger" disabled={saving} />
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )
         ) : (
           rules.length === 0 ? (
@@ -361,41 +390,68 @@ export default function Routes() {
               <p className="text-gray-500">Nenhuma regra ip rule disponível</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b border-gray-800">
-                    <th className="pb-3 pr-4 font-medium">Prioridade</th>
-                    <th className="pb-3 pr-4 font-medium">Seletor</th>
-                    <th className="pb-3 pr-4 font-medium">FWMark</th>
-                    <th className="pb-3 pr-4 font-medium">Ação</th>
-                    <th className="pb-3 font-medium">Tabela</th>
-                    <th className="pb-3 font-medium">Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rules.map((r) => (
-                    <tr key={`${r.selector}|${r.priority}`} className="table-row">
-                      <td className="py-3 pr-4 text-gray-400 font-mono">{r.priority}</td>
-                      <td className="py-3 pr-4 text-white font-mono">{r.selector}</td>
-                      <td className="py-3 pr-4 text-gray-400 font-mono">{r.fwmark || '—'}</td>
-                      <td className="py-3 pr-4 text-gray-400">{r.action || '—'}</td>
-                      <td className="py-3 text-gray-400 font-mono">{r.table || '—'}</td>
-                      <td className="py-3">
-                        <div className="flex gap-2">
-                          <button onClick={() => openEditRule(r)} disabled={saving} className="text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50">
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => handleDeleteRule(r)} disabled={saving} className="text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
+            <>
+              {/* Mobile: stacked cards (< sm) */}
+              <div className="sm:hidden space-y-2">
+                {rules.map((r) => (
+                  <div key={`${r.selector}|${r.priority}`} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-white font-medium font-mono truncate">{r.selector}</div>
+                        <span className="text-xs text-gray-500 font-mono">prioridade {r.priority}</span>
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        <IconButton icon={Pencil} onClick={() => openEditRule(r)} label="Editar regra" disabled={saving} />
+                        <IconButton icon={Trash2} onClick={() => handleDeleteRule(r)} label="Remover regra" variant="danger" disabled={saving} />
+                      </div>
+                    </div>
+                    <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                      <dt className="text-gray-500">Prioridade</dt>
+                      <dd className="text-gray-400 font-mono">{r.priority}</dd>
+                      <dt className="text-gray-500">FWMark</dt>
+                      <dd className="text-gray-400 font-mono">{r.fwmark || '—'}</dd>
+                      <dt className="text-gray-500">Ação</dt>
+                      <dd className="text-gray-400">{r.action || '—'}</dd>
+                      <dt className="text-gray-500">Tabela</dt>
+                      <dd className="text-gray-400 font-mono">{r.table || '—'}</dd>
+                    </dl>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop: table (>= sm) */}
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="hidden sm:table w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b border-gray-800">
+                      <th className="pb-3 pr-4 font-medium">Prioridade</th>
+                      <th className="pb-3 pr-4 font-medium">Seletor</th>
+                      <th className="pb-3 pr-4 font-medium">FWMark</th>
+                      <th className="pb-3 pr-4 font-medium">Ação</th>
+                      <th className="pb-3 font-medium">Tabela</th>
+                      <th className="pb-3 font-medium">Ações</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {rules.map((r) => (
+                      <tr key={`${r.selector}|${r.priority}`} className="table-row">
+                        <td className="py-3 pr-4 text-gray-400 font-mono">{r.priority}</td>
+                        <td className="py-3 pr-4 text-white font-mono">{r.selector}</td>
+                        <td className="py-3 pr-4 text-gray-400 font-mono">{r.fwmark || '—'}</td>
+                        <td className="py-3 pr-4 text-gray-400">{r.action || '—'}</td>
+                        <td className="py-3 text-gray-400 font-mono">{r.table || '—'}</td>
+                        <td className="py-3">
+                          <div className="flex gap-2">
+                            <IconButton icon={Pencil} onClick={() => openEditRule(r)} label="Editar regra" disabled={saving} />
+                            <IconButton icon={Trash2} onClick={() => handleDeleteRule(r)} label="Remover regra" variant="danger" disabled={saving} />
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )
         )}
       </div>
