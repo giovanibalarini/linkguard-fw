@@ -3,6 +3,8 @@ import { RefreshCw, Pencil, Ban, ShieldCheck, Circle, TrendingUp, ArrowDown, Arr
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import type { NetHost, HostTraffic } from '../types';
+import Panel from '../components/ui/Panel';
+import Modal from '../components/ui/Modal';
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -128,12 +130,7 @@ export default function Hosts() {
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchHosts} className="underline">Tentar novamente</button></div>}
 
       {talkers.length > 0 && (
-        <div className="card">
-          <div className="flex items-center gap-2 mb-3">
-            <TrendingUp className="w-4 h-4 text-blue-400" />
-            <h3 className="text-white font-semibold">Top consumidores</h3>
-            <span className="text-xs text-gray-600">— quem está usando a banda agora (fluxos ativos)</span>
-          </div>
+        <Panel title={<span className="flex items-center gap-2"><TrendingUp className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Top consumidores</span><span className="text-xs text-gray-600 font-normal">— quem está usando a banda agora (fluxos ativos)</span></span>}>
           <div className="space-y-2.5">
             {talkers.slice(0, 8).map((t) => {
               const total = t.rx_bytes + t.tx_bytes;
@@ -157,10 +154,10 @@ export default function Hosts() {
               );
             })}
           </div>
-        </div>
+        </Panel>
       )}
 
-      <div className="card">
+      <Panel>
         {loading && hosts.length === 0 ? (
           <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
         ) : error && hosts.length === 0 ? (
@@ -284,16 +281,17 @@ export default function Hosts() {
             </div>
           </>
         )}
-      </div>
+      </Panel>
 
-      {aliasFor && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-sm">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">Apelido do host</h2>
-              <p className="text-gray-500 text-xs mt-1 font-mono">{aliasFor.mac}</p>
-            </div>
-            <div className="p-6 space-y-4">
+      <Modal
+        open={aliasFor !== null}
+        onClose={() => setAliasFor(null)}
+        title={<div><span className="text-white font-semibold">Apelido do host</span>{aliasFor && <p className="text-gray-500 text-xs mt-1 font-mono font-normal">{aliasFor.mac}</p>}</div>}
+        size="xs"
+        className="bg-gray-900 border border-gray-800 rounded-xl"
+      >
+        {aliasFor && (
+        <div className="p-6 space-y-4">
               <input
                 className="input w-full"
                 placeholder="Ex.: PC do João, TV da sala"
@@ -310,21 +308,19 @@ export default function Hosts() {
                 </button>
                 <button onClick={() => setAliasFor(null)} className="btn-secondary flex-1">Cancelar</button>
               </div>
-            </div>
-          </div>
         </div>
-      )}
+        )}
+      </Modal>
 
-      {confirmFor && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-sm">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">
-                {confirmFor.blocked ? 'Desbloquear host' : 'Bloquear host'}
-              </h2>
-              <p className="text-gray-500 text-xs mt-1 font-mono">{confirmFor.mac}</p>
-            </div>
-            <div className="p-6 space-y-4">
+      <Modal
+        open={confirmFor !== null}
+        onClose={() => setConfirmFor(null)}
+        title={<div><span className="text-white font-semibold">{confirmFor ? (confirmFor.blocked ? 'Desbloquear host' : 'Bloquear host') : ''}</span>{confirmFor && <p className="text-gray-500 text-xs mt-1 font-mono font-normal">{confirmFor.mac}</p>}</div>}
+        size="xs"
+        className="bg-gray-900 border border-gray-800 rounded-xl"
+      >
+        {confirmFor && (
+        <div className="p-6 space-y-4">
               <p className="text-sm text-gray-300">
                 Deseja {confirmFor.blocked ? 'desbloquear' : 'bloquear'} o host{' '}
                 <span className="text-white font-medium">{confirmFor.alias || confirmFor.ip || confirmFor.mac}</span>?
@@ -344,10 +340,9 @@ export default function Hosts() {
                   Cancelar
                 </button>
               </div>
-            </div>
-          </div>
         </div>
-      )}
+        )}
+      </Modal>
     </div>
   );
 }
