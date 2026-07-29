@@ -13,6 +13,24 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.80',
+    date: '2026-07-29',
+    title: 'Revisão de segurança completa',
+    changes: [
+      { type: 'security', text: 'Corrigida uma falha grave na VPN: um nome de dispositivo ou endereço malformado salvo antes desta correção podia levar à execução de comandos indevidos no servidor ao aplicar a configuração. Agora todo dado é validado antes de gerar o arquivo da VPN, mesmo o que já estava salvo.' },
+      { type: 'security', text: 'Corrigida uma falha que permitia a um administrador com permissão só de "gerenciar usuários" se promover (ou promover outra conta) a um papel com mais poder do que deveria ter acesso — agora exige também a permissão de "gerenciar papéis".' },
+      { type: 'security', text: 'Reforçada a validação de endereços e interfaces de rede em redirecionamento de porta, no assistente de 2 internets e nas regras avançadas de firewall — bloqueando valores malformados antes que cheguem aos comandos do sistema.' },
+      { type: 'security', text: 'O login agora obriga o uso de uma chave interna forte (mínimo de 32 caracteres) — o serviço recusa iniciar com uma chave fraca em vez de rodar de forma insegura.' },
+      { type: 'security', text: 'Trocar a senha agora invalida imediatamente qualquer sessão antiga daquela conta (inclusive de quem já tinha um acesso salvo antes da troca).' },
+      { type: 'security', text: 'Mensagens de erro internas do servidor pararam de vazar detalhe técnico (caminhos de arquivo, erros de banco) para quem está usando o painel — o log continua completo, só o que aparece na tela ficou mais genérico.' },
+      { type: 'security', text: 'O backup agora usa uma proteção de senha ainda mais forte (mesmo se alguém tentasse "adivinhar" a senha testando muitas combinações, ficou bem mais caro). Backups antigos continuam podendo ser restaurados normalmente.' },
+      { type: 'security', text: 'Restaurar um backup com a senha errada repetidas vezes agora bloqueia novas tentativas por alguns minutos, e o tamanho do arquivo enviado tem um limite real.' },
+      { type: 'security', text: 'Todas as chamadas ao painel agora têm um limite de tamanho de corpo, e listagens (como o histórico de eventos) têm um teto máximo de itens por página — evita que um pedido malformado sobrecarregue o servidor.' },
+      { type: 'security', text: 'O login ficou mais resistente a tentativas de descobrir nomes de usuário válidos por tempo de resposta, e agora toda tentativa de login (certa, errada ou bloqueada) fica registrada no log de auditoria.' },
+      { type: 'fix', text: 'O campo de URL do WhatsApp (que não deveria ser editável) foi removido das configurações — evita configuração incorreta que impedia o envio de alertas.' },
+    ],
+  },
+  {
     version: '1.0.79',
     date: '2026-07-29',
     title: 'Backup cifrado e envio automático por e-mail',
