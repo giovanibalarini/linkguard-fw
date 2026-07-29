@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Trash2, ArrowRight, Loader2, Network, Power } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
+import Panel from './ui/Panel';
 import type { PortForward } from '../types';
 
 interface Props {
@@ -71,16 +72,11 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
   };
 
   return (
-    <div className="card">
-      <div className="flex items-center gap-2 mb-1">
-        <Network className="w-4 h-4 text-blue-400" />
-        <h3 className="text-white font-semibold">Encaminhamento de portas</h3>
-        <HelpTip title="O que é encaminhar uma porta?">
+    <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Encaminhamento de portas</span><HelpTip title="O que é encaminhar uma porta?">
           <>Permite que algo de <b>fora</b> (internet) alcance um <b>serviço dentro da sua rede</b> —
           como um servidor, câmera ou jogo. Você diz: "conexões que chegam na porta X da minha internet
           devem ir para o aparelho Y na porta Z". Abra só o necessário.</>
-        </HelpTip>
-      </div>
+        </HelpTip></span>}>
       <p className="text-gray-500 text-xs mb-4">Redireciona uma porta externa (WAN) para um aparelho da sua rede (DNAT).</p>
 
       {list.length === 0 ? (
@@ -159,7 +155,7 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
           </p>
         </div>
       )}
-    </div>
+    </Panel>
   );
 }
 
