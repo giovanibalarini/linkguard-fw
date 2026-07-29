@@ -3,6 +3,7 @@ import { RefreshCw, Globe, Ban, Plus, X, Play } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import DnsQueryLog from '../components/DnsQueryLog';
+import Panel from '../components/ui/Panel';
 import type { DNSData, NetsvcConfig } from '../types';
 
 export default function Dns() {
@@ -51,21 +52,20 @@ export default function Dns() {
       </div>
 
       {data?.last_apply && !data.last_apply.ok && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+        <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
           Última aplicação automática falhou: {data.last_apply.error || 'erro desconhecido'}. Corrija e use "Aplicar agora".
         </div>
       )}
       <p className="text-gray-500 text-xs">Salvar config ou filtro já aplica automaticamente (sem reiniciar o serviço).</p>
 
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchData} className="underline">Tentar novamente</button></div>}
-      {msg && <div className={`px-4 py-3 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'}`}>{msg}</div>}
+      {msg && <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
 
       {loading || !cfg ? (
         <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
       ) : (
         <>
-          <div className="card">
-            <div className="flex items-center gap-2 mb-3"><Globe className="w-4 h-4 text-blue-400" /><h3 className="text-white font-semibold">Resolução</h3></div>
+          <Panel title={<span className="flex items-center gap-2"><Globe className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Resolução</span></span>}>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="label">Upstreams / forwarders (separados por vírgula)</label>
@@ -81,10 +81,9 @@ export default function Dns() {
               </div>
             </div>
             {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">Salvar config</button></div>}
-          </div>
+          </Panel>
 
-          <div className="card">
-            <div className="flex items-center gap-2 mb-1"><Ban className="w-4 h-4 text-red-400" /><h3 className="text-white font-semibold">Filtro / blocklist</h3></div>
+          <Panel title={<span className="flex items-center gap-2"><Ban className="w-4 h-4 text-red-400" /><span className="text-white font-semibold">Filtro / blocklist</span></span>}>
             <p className="text-gray-500 text-xs mb-3">Domínios bloqueados resolvem para NXDOMAIN (estilo Pi-hole). Lembre: DNS é visibilidade/filtro, não enforcement — o bloqueio real é no firewall.</p>
             {canWrite && (
               <div className="flex flex-col sm:flex-row gap-2 mb-3">
@@ -98,7 +97,7 @@ export default function Dns() {
                 <span key={d} className="inline-flex items-center gap-2 px-2.5 py-1 rounded bg-gray-800 text-sm text-gray-200 font-mono">{d}{canWrite && <button onClick={() => delDomain(d)} className="text-gray-500 hover:text-green-400"><X className="w-3.5 h-3.5" /></button>}</span>
               ))}
             </div>
-          </div>
+          </Panel>
 
           <DnsQueryLog
             loggingEnabled={!!cfg?.log_queries}
