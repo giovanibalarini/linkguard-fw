@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import type { DHCPData, DHCPReservation, NetsvcConfig } from '../types';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
+import IconButton from '../components/ui/IconButton';
 
 const emptyRes = { mac: '', ip: '', hostname: '' };
 
@@ -105,20 +106,50 @@ export default function Dhcp() {
             {(data?.reservations.length ?? 0) === 0 ? (
               <p className="text-gray-600 text-sm">Nenhuma reserva. Reservas dão IP estável por MAC (conserta o pin de WAN).</p>
             ) : (
-              <div className="overflow-x-auto"><table className="w-full text-sm">
-                <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">Hostname</th><th className="pb-3 pr-4 font-medium">IP</th><th className="pb-3 pr-4 font-medium">MAC</th>{canWrite && <th className="pb-3 font-medium">Ações</th>}</tr></thead>
-                <tbody>{data!.reservations.map((r) => (
-                  <tr key={r.mac} className="table-row">
-                    <td className="py-3 pr-4 text-white">{r.hostname || '—'}</td>
-                    <td className="py-3 pr-4 text-gray-300 font-mono text-xs">{r.ip}</td>
-                    <td className="py-3 pr-4 text-gray-500 font-mono text-xs">{r.mac}</td>
-                    {canWrite && <td className="py-3"><div className="flex gap-2">
-                      <button onClick={() => setResModal({ mac: r.mac, ip: r.ip, hostname: r.hostname, editing: true })} aria-label="Editar" className="text-gray-400 hover:text-blue-400"><Pencil className="w-4 h-4" /></button>
-                      <button onClick={() => delRes(r)} aria-label="Remover" className="text-gray-400 hover:text-red-400"><Trash2 className="w-4 h-4" /></button>
-                    </div></td>}
-                  </tr>
-                ))}</tbody>
-              </table></div>
+              <>
+                {/* Mobile: stacked cards (< sm) */}
+                <div className="sm:hidden space-y-2">
+                  {data!.reservations.map((r) => (
+                    <div key={r.mac} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-white font-medium truncate">{r.hostname || '—'}</div>
+                        </div>
+                        {canWrite && (
+                          <div className="flex shrink-0 gap-1">
+                            <IconButton icon={Pencil} onClick={() => setResModal({ mac: r.mac, ip: r.ip, hostname: r.hostname, editing: true })} label="Editar reserva" />
+                            <IconButton icon={Trash2} onClick={() => delRes(r)} label="Remover reserva" variant="danger" />
+                          </div>
+                        )}
+                      </div>
+                      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                        <dt className="text-gray-500">IP</dt>
+                        <dd className="text-gray-400 font-mono">{r.ip}</dd>
+                        <dt className="text-gray-500">MAC</dt>
+                        <dd className="text-gray-500 font-mono">{r.mac}</dd>
+                      </dl>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Desktop: table (>= sm) */}
+                <div className="hidden sm:block overflow-x-auto">
+                  <table className="hidden sm:table w-full text-sm">
+                    <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">Hostname</th><th className="pb-3 pr-4 font-medium">IP</th><th className="pb-3 pr-4 font-medium">MAC</th>{canWrite && <th className="pb-3 font-medium">Ações</th>}</tr></thead>
+                    <tbody>{data!.reservations.map((r) => (
+                      <tr key={r.mac} className="table-row">
+                        <td className="py-3 pr-4 text-white">{r.hostname || '—'}</td>
+                        <td className="py-3 pr-4 text-gray-300 font-mono text-xs">{r.ip}</td>
+                        <td className="py-3 pr-4 text-gray-500 font-mono text-xs">{r.mac}</td>
+                        {canWrite && <td className="py-3"><div className="flex gap-2">
+                          <IconButton icon={Pencil} onClick={() => setResModal({ mac: r.mac, ip: r.ip, hostname: r.hostname, editing: true })} label="Editar reserva" />
+                          <IconButton icon={Trash2} onClick={() => delRes(r)} label="Remover reserva" variant="danger" />
+                        </div></td>}
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </>
             )}
           </Panel>
 
@@ -127,17 +158,41 @@ export default function Dhcp() {
             {(data?.leases.length ?? 0) === 0 ? (
               <p className="text-gray-600 text-sm">Nenhum lease ativo (o servidor DHCP pode ainda não estar ativo).</p>
             ) : (
-              <div className="overflow-x-auto"><table className="w-full text-sm">
-                <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">Hostname</th><th className="pb-3 pr-4 font-medium">IP</th><th className="pb-3 pr-4 font-medium">MAC</th><th className="pb-3 font-medium">Expira em</th></tr></thead>
-                <tbody>{data!.leases.map((l) => (
-                  <tr key={l.ip + l.mac} className="table-row">
-                    <td className="py-3 pr-4 text-white">{l.hostname || '—'}</td>
-                    <td className="py-3 pr-4 text-gray-300 font-mono text-xs">{l.ip}</td>
-                    <td className="py-3 pr-4 text-gray-500 font-mono text-xs">{l.mac}</td>
-                    <td className="py-3 text-gray-400">{expiresIn(l.expiry)}</td>
-                  </tr>
-                ))}</tbody>
-              </table></div>
+              <>
+                {/* Mobile: stacked cards (< sm) */}
+                <div className="sm:hidden space-y-2">
+                  {data!.leases.map((l) => (
+                    <div key={l.ip + l.mac} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                      <div className="min-w-0">
+                        <div className="text-white font-medium truncate">{l.hostname || '—'}</div>
+                      </div>
+                      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                        <dt className="text-gray-500">IP</dt>
+                        <dd className="text-gray-400 font-mono">{l.ip}</dd>
+                        <dt className="text-gray-500">MAC</dt>
+                        <dd className="text-gray-500 font-mono">{l.mac}</dd>
+                        <dt className="text-gray-500">Expira em</dt>
+                        <dd className="text-gray-400">{expiresIn(l.expiry)}</dd>
+                      </dl>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Desktop: table (>= sm) */}
+                <div className="hidden sm:block overflow-x-auto">
+                  <table className="hidden sm:table w-full text-sm">
+                    <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">Hostname</th><th className="pb-3 pr-4 font-medium">IP</th><th className="pb-3 pr-4 font-medium">MAC</th><th className="pb-3 font-medium">Expira em</th></tr></thead>
+                    <tbody>{data!.leases.map((l) => (
+                      <tr key={l.ip + l.mac} className="table-row">
+                        <td className="py-3 pr-4 text-white">{l.hostname || '—'}</td>
+                        <td className="py-3 pr-4 text-gray-300 font-mono text-xs">{l.ip}</td>
+                        <td className="py-3 pr-4 text-gray-500 font-mono text-xs">{l.mac}</td>
+                        <td className="py-3 text-gray-400">{expiresIn(l.expiry)}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </>
             )}
           </Panel>
         </>
