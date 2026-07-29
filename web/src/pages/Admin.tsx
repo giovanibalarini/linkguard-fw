@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Plus, Pencil, Trash2, RefreshCw, Users, ShieldCheck, Lock } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import Panel from '../components/ui/Panel';
+import Modal from '../components/ui/Modal';
 import type { AppUser, AppRole, PermissionCatalogEntry } from '../types';
 
 type Tab = 'users' | 'roles';
@@ -177,9 +179,9 @@ function UsersTab() {
         </button>
       </div>
 
-      {fetchError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{fetchError}</div>}
+      {fetchError && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">{fetchError}</div>}
 
-      <div className="card">
+      <Panel>
         {loading ? (
           <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
         ) : fetchError ? (
@@ -241,98 +243,84 @@ function UsersTab() {
             </table>
           </div>
         )}
-      </div>
+      </Panel>
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">{isEditing ? 'Editar Usuário' : 'Novo Usuário'}</h2>
-            </div>
-            <form onSubmit={handleSave} className="p-6 space-y-4 overflow-y-auto">
-              <div>
-                <label className="label">Nome de usuário *</label>
-                <input
-                  className="input w-full disabled:opacity-50"
-                  value={form.username}
-                  disabled={isEditing}
-                  onChange={(e) => setForm({ ...form, username: e.target.value })}
-                  required
-                />
-              </div>
-              <div>
-                <label className="label">{isEditing ? 'Nova senha (deixe vazio para manter)' : 'Senha *'}</label>
-                <input
-                  type="password"
-                  className="input w-full"
-                  value={form.password}
-                  placeholder={isEditing ? '••••••••' : 'mínimo 8 caracteres'}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  required={!isEditing}
-                  minLength={!isEditing || form.password ? 8 : undefined}
-                />
-              </div>
-              <div>
-                <label className="label">Papéis</label>
-                <div className="space-y-2 mt-1 max-h-48 overflow-y-auto">
-                  {roles.map((r) => (
-                    <label key={r.id} className="flex items-start gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        className="w-4 h-4 mt-0.5"
-                        checked={form.role_ids.includes(r.id)}
-                        onChange={() => toggleRole(r.id)}
-                      />
-                      <span>
-                        <span className="text-gray-200 text-sm">{r.name}</span>
-                        {r.description && <span className="text-gray-600 text-xs block">{r.description}</span>}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
-              <div className="flex gap-3 pt-2">
-                <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
-                  {saving ? 'Salvando...' : 'Salvar'}
-                </button>
-                <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
-                  Cancelar
-                </button>
-              </div>
-            </form>
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? 'Editar Usuário' : 'Novo Usuário'} size="md">
+        <form onSubmit={handleSave} className="p-6 space-y-4">
+          <div>
+            <label className="label">Nome de usuário *</label>
+            <input
+              className="input w-full disabled:opacity-50"
+              value={form.username}
+              disabled={isEditing}
+              onChange={(e) => setForm({ ...form, username: e.target.value })}
+              required
+            />
           </div>
-        </div>
-      )}
-
-      {deleteTarget && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">Excluir usuário</h2>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-gray-300 text-sm">
-                Tem certeza que deseja excluir o usuário <span className="font-medium text-white">"{deleteTarget.username}"</span>? Esta ação não pode ser desfeita.
-              </p>
-              {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  disabled={deleting}
-                  onClick={handleDelete}
-                  className="btn-primary flex-1 bg-red-600 hover:bg-red-500 border-red-600 disabled:opacity-50"
-                >
-                  {deleting ? 'Excluindo...' : 'Excluir'}
-                </button>
-                <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">
-                  Cancelar
-                </button>
-              </div>
+          <div>
+            <label className="label">{isEditing ? 'Nova senha (deixe vazio para manter)' : 'Senha *'}</label>
+            <input
+              type="password"
+              className="input w-full"
+              value={form.password}
+              placeholder={isEditing ? '••••••••' : 'mínimo 8 caracteres'}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              required={!isEditing}
+              minLength={!isEditing || form.password ? 8 : undefined}
+            />
+          </div>
+          <div>
+            <label className="label">Papéis</label>
+            <div className="space-y-2 mt-1 max-h-48 overflow-y-auto">
+              {roles.map((r) => (
+                <label key={r.id} className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 mt-0.5"
+                    checked={form.role_ids.includes(r.id)}
+                    onChange={() => toggleRole(r.id)}
+                  />
+                  <span>
+                    <span className="text-gray-200 text-sm">{r.name}</span>
+                    {r.description && <span className="text-gray-600 text-xs block">{r.description}</span>}
+                  </span>
+                </label>
+              ))}
             </div>
           </div>
+          {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
+          <div className="flex gap-3 pt-2">
+            <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
+              {saving ? 'Salvando...' : 'Salvar'}
+            </button>
+            <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
+              Cancelar
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Excluir usuário" size="sm">
+        <div className="p-6 space-y-4">
+          <p className="text-gray-300 text-sm">
+            Tem certeza que deseja excluir o usuário <span className="font-medium text-white">"{deleteTarget?.username}"</span>? Esta ação não pode ser desfeita.
+          </p>
+          {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={handleDelete}
+              className="btn-primary flex-1 bg-red-600 hover:bg-red-500 border-red-600 disabled:opacity-50"
+            >
+              {deleting ? 'Excluindo...' : 'Excluir'}
+            </button>
+            <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">
+              Cancelar
+            </button>
+          </div>
         </div>
-      )}
+      </Modal>
     </div>
   );
 }
