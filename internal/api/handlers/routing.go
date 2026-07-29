@@ -31,7 +31,7 @@ type statusResponse struct {
 func (h *RoutingHandler) Status(w http.ResponseWriter, r *http.Request) {
 	plan, err := h.svc.Plan(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, statusResponse{Config: h.svc.LoadConfig(), Plan: plan})
@@ -46,7 +46,7 @@ func (h *RoutingHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	prev := h.svc.LoadConfig()
 	if err := h.svc.SaveConfig(cfg); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "update", "routing/balance",

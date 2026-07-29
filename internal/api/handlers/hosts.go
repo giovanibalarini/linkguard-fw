@@ -23,7 +23,7 @@ func NewHostsHandler(svc *hosts.Service, db *storage.DB) *HostsHandler {
 func (h *HostsHandler) List(w http.ResponseWriter, r *http.Request) {
 	hs, err := h.svc.List(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if hs == nil {
@@ -48,7 +48,7 @@ func (h *HostsHandler) SetAlias(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.SetAlias(body.MAC, strings.TrimSpace(body.Alias)); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -70,7 +70,7 @@ func (h *HostsHandler) SetBlocked(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.SetBlocked(r.Context(), body.MAC, body.Blocked); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	action := "host.unblock"

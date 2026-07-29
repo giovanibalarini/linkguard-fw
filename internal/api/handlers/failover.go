@@ -30,7 +30,7 @@ func (h *FailoverHandler) ListEvents(w http.ResponseWriter, r *http.Request) {
 
 	events, err := h.svc.GetEvents(limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if events == nil {

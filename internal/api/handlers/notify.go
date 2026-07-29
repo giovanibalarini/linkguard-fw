@@ -64,7 +64,7 @@ func (h *NotifyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	merged := mergeSecrets(in, h.svc.LoadConfig())
 	if err := h.svc.SaveConfig(merged); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "update", "notifications", "")

@@ -24,7 +24,7 @@ func NewIptablesHandler(svc *iptables.Service, db *storage.DB) *IptablesHandler 
 func (h *IptablesHandler) ListAll(w http.ResponseWriter, r *http.Request) {
 	tables, err := h.svc.ListAll(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, tables)
@@ -48,7 +48,7 @@ func (h *IptablesHandler) ListMangle(w http.ResponseWriter, r *http.Request) {
 func (h *IptablesHandler) listTable(w http.ResponseWriter, r *http.Request, table string) {
 	t, err := h.svc.ListTable(r.Context(), table)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
@@ -98,7 +98,7 @@ func (h *IptablesHandler) Backup(w http.ResponseWriter, r *http.Request) {
 func (h *IptablesHandler) ListBackups(w http.ResponseWriter, r *http.Request) {
 	backups, err := h.db.GetIptablesBackups(20)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if backups == nil {
@@ -119,7 +119,7 @@ func (h *IptablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 
 	backups, err := h.db.GetIptablesBackups(100)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

@@ -58,7 +58,7 @@ func (h *SystemHandler) Status(w http.ResponseWriter, r *http.Request) {
 func (h *SystemHandler) ListInterfaceAliases(w http.ResponseWriter, r *http.Request) {
 	aliases, err := h.getInterfaceAliases()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, aliases)
@@ -91,7 +91,7 @@ func (h *SystemHandler) UpsertInterfaceAlias(w http.ResponseWriter, r *http.Requ
 
 	aliases, err := h.getInterfaceAliases()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if alias == "" {
@@ -100,7 +100,7 @@ func (h *SystemHandler) UpsertInterfaceAlias(w http.ResponseWriter, r *http.Requ
 		aliases[iface] = alias
 	}
 	if err := h.saveInterfaceAliases(aliases); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

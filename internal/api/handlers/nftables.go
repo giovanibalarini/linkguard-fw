@@ -27,7 +27,7 @@ func NewNftablesHandler(svc *nftables.Service, db *storage.DB) *NftablesHandler 
 func (h *NftablesHandler) Ruleset(w http.ResponseWriter, r *http.Request) {
 	rs, err := h.svc.Ruleset(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"ruleset": rs})
@@ -37,7 +37,7 @@ func (h *NftablesHandler) Ruleset(w http.ResponseWriter, r *http.Request) {
 func (h *NftablesHandler) Managed(w http.ResponseWriter, r *http.Request) {
 	m, err := h.svc.Managed(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
@@ -106,7 +106,7 @@ func (h *NftablesHandler) Blocklist(w http.ResponseWriter, r *http.Request) {
 func (h *NftablesHandler) ListUserRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.svc.ListUserRules(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if rules == nil {
@@ -258,7 +258,7 @@ func (h *NftablesHandler) Backup(w http.ResponseWriter, r *http.Request) {
 func (h *NftablesHandler) ListBackups(w http.ResponseWriter, r *http.Request) {
 	backups, err := h.db.GetIptablesBackups(20)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if backups == nil {
@@ -278,7 +278,7 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	}
 	backups, err := h.db.GetIptablesBackups(100)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	var target *storage.IptablesBackup

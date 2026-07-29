@@ -39,7 +39,7 @@ func (h *BackupHandler) Export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "export", "backup", "")
@@ -144,7 +144,7 @@ func (h *BackupHandler) PassphraseSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.sec.Set(backup.PassphraseSecretName, body.Passphrase); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "set", "backup_passphrase", "")
@@ -190,7 +190,7 @@ func (h *BackupHandler) ScheduleSet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := h.db.SetSetting(backup.ScheduleSettingKey, body.Schedule); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "set", "backup_schedule", body.Schedule)

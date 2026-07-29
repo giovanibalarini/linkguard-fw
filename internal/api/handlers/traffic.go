@@ -32,7 +32,7 @@ func (h *TrafficHandler) TopTalkers(w http.ResponseWriter, r *http.Request) {
 	}
 	talkers, err := h.svc.TopTalkers(r.Context(), subnet)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if len(talkers) > 20 {

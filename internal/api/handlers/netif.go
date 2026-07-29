@@ -24,7 +24,7 @@ func NewNetifHandler(svc *netif.Service, db *storage.DB) *NetifHandler {
 func (h *NetifHandler) List(w http.ResponseWriter, r *http.Request) {
 	views, err := h.svc.List(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if views == nil {
@@ -54,7 +54,7 @@ func (h *NetifHandler) Identify(w http.ResponseWriter, r *http.Request) {
 
 	views, err := h.svc.List(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	var found *netif.IfaceView
@@ -74,7 +74,7 @@ func (h *NetifHandler) Identify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.Identify(r.Context(), name, 10); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "interface.identify", "interface:"+name, "")
@@ -150,7 +150,7 @@ func (h *NetifHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 func (h *NetifHandler) Pending(w http.ResponseWriter, r *http.Request) {
 	pending, err := h.svc.ListPending(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, pending)

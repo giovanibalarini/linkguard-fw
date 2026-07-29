@@ -24,7 +24,7 @@ func (h *AlertsHandler) List(w http.ResponseWriter, r *http.Request) {
 	unresolvedOnly := r.URL.Query().Get("unresolved") == "true"
 	ls, err := h.svc.List(unresolvedOnly, 100)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if ls == nil {
@@ -37,7 +37,7 @@ func (h *AlertsHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *AlertsHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.svc.Resolve(id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

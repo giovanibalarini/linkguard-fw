@@ -61,7 +61,7 @@ func (h *AIHandler) SetToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.sec.Set(aiTokenSecretName, tok); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "ai.token.set", "system", "")
@@ -72,7 +72,7 @@ func (h *AIHandler) SetToken(w http.ResponseWriter, r *http.Request) {
 // (Analyze returns ErrTokenNotConfigured).
 func (h *AIHandler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	if err := h.sec.Delete(aiTokenSecretName); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "ai.token.delete", "system", "")
@@ -101,7 +101,7 @@ func (h *AIHandler) SetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.SpentThisMonthUSD = existing.SpentThisMonthUSD
 	cfg.BudgetResetAt = existing.BudgetResetAt
 	if err := ai.SaveConfig(h.db, cfg); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "ai.config.set", "system", "")
@@ -112,7 +112,7 @@ func (h *AIHandler) SetConfig(w http.ResponseWriter, r *http.Request) {
 func (h *AIHandler) ListReports(w http.ResponseWriter, r *http.Request) {
 	reports, err := h.db.ListAIReports(50)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, reports)
@@ -123,7 +123,7 @@ func (h *AIHandler) GetReport(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	report, err := h.db.GetAIReport(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if report == nil {

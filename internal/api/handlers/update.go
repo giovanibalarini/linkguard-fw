@@ -45,7 +45,7 @@ func (h *UpdateHandler) SetToken(w http.ResponseWriter, r *http.Request) {
 	}
 	tok := strings.TrimSpace(b.Token)
 	if err := h.sec.Set(githubTokenKey, tok); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "update.token.set", "system", "")

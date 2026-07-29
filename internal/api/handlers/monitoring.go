@@ -39,7 +39,7 @@ func (h *MonitoringHandler) SetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := monitoring.SaveConfig(h.db, in); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, monitoring.LoadConfig(h.db))

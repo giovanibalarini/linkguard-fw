@@ -30,7 +30,7 @@ func (h *LogsHandler) List(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("filter")
 	logs, err := h.db.SearchAuditLogs(filter, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if logs == nil {

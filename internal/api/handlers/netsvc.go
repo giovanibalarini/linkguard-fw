@@ -210,7 +210,7 @@ func (h *NetsvcHandler) UpdateDHCPConfig(w http.ResponseWriter, r *http.Request)
 	cfg.Gateway, cfg.LeaseHours = gw, b.LeaseHours
 	cfg.DNSToClients, cfg.DomainSuffix = dns, suffix
 	if err := h.saveConfig(cfg); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "dhcp.config", "netsvc", "")
@@ -235,7 +235,7 @@ func (h *NetsvcHandler) UpsertReservation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := h.db.UpsertDHCPReservation(mac, strings.TrimSpace(b.IP), strings.TrimSpace(b.Hostname)); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "dhcp.reservation.set", "mac:"+mac, b.IP)
@@ -256,7 +256,7 @@ func (h *NetsvcHandler) DeleteReservation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := h.db.DeleteDHCPReservation(mac); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "dhcp.reservation.del", "mac:"+mac, "")
@@ -306,7 +306,7 @@ func (h *NetsvcHandler) UpdateDNSConfig(w http.ResponseWriter, r *http.Request) 
 	cfg.Upstreams = ups
 	cfg.LogQueries = b.LogQueries
 	if err := h.saveConfig(cfg); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "dns.config", "netsvc", "")
@@ -347,7 +347,7 @@ func (h *NetsvcHandler) blocklist(w http.ResponseWriter, r *http.Request, add bo
 		auditAction(h.db, r, "dns.blocklist.del", d, "")
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	h.scheduleApply()

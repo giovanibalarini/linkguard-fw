@@ -24,7 +24,7 @@ func NewLinksHandler(svc *links.Service, db *storage.DB) *LinksHandler {
 func (h *LinksHandler) List(w http.ResponseWriter, r *http.Request) {
 	ls, err := h.svc.List()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if ls == nil {
@@ -90,7 +90,7 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.Delete(id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -100,7 +100,7 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *LinksHandler) AutoDetect(w http.ResponseWriter, r *http.Request) {
 	res, err := h.svc.DiscoverAndSyncWANLinks()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)

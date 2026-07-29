@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
@@ -16,6 +17,15 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeInternalError logs the real error server-side (traceable via journalctl)
+// and returns a generic message to the client — a raw err.Error() can embed
+// exec stderr, SQLite driver detail, or file paths that shouldn't be visible
+// to a lower-privileged authenticated role in a multi-admin RBAC setup.
+func writeInternalError(w http.ResponseWriter, err error) {
+	slog.Error("internal error", "err", err)
+	writeError(w, http.StatusInternalServerError, "erro interno do servidor")
 }
 
 func decodeJSON(r *http.Request, v interface{}) error {

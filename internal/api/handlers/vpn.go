@@ -128,7 +128,7 @@ func (h *VPNHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.save(c); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "update", "vpn/config", "enabled="+boolStr(c.Enabled))
@@ -157,7 +157,7 @@ func (h *VPNHandler) AddPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	priv, pub, err := wireguard.GenerateKeypair()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	peer := wireguard.Peer{
@@ -177,7 +177,7 @@ func (h *VPNHandler) AddPeer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := h.save(c); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "add", "vpn/peer", peer.Name)
@@ -210,7 +210,7 @@ func (h *VPNHandler) DeletePeer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := h.save(c); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "delete", "vpn/peer", name)

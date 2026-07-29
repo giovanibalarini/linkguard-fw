@@ -29,7 +29,7 @@ func (h *RolesHandler) Catalog(w http.ResponseWriter, r *http.Request) {
 func (h *RolesHandler) List(w http.ResponseWriter, r *http.Request) {
 	roles, err := h.db.ListRoles()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if roles == nil {
@@ -65,7 +65,7 @@ func (h *RolesHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Permissions: body.Permissions,
 	}
 	if err := h.db.CreateRole(role); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "role.create", "role:"+role.Name, strings.Join(body.Permissions, ","))
@@ -77,7 +77,7 @@ func (h *RolesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	role, err := h.db.GetRole(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if role == nil {
@@ -105,7 +105,7 @@ func (h *RolesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	role.Permissions = body.Permissions
 
 	if err := h.db.UpdateRole(role); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "role.update", "role:"+role.Name, strings.Join(body.Permissions, ","))
@@ -118,7 +118,7 @@ func (h *RolesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	role, err := h.db.GetRole(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if role == nil {
@@ -131,7 +131,7 @@ func (h *RolesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := h.db.CountUsersWithRole(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if n > 0 {
@@ -139,7 +139,7 @@ func (h *RolesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.DeleteRole(id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "role.delete", "role:"+role.Name, "")

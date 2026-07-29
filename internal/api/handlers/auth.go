@@ -84,7 +84,7 @@ func (h *AuthHandler) TwoFASetup(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, otpauth, err := h.svc.BeginTwoFASetup(claims.UserID, claims.Username)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"secret": secret, "otpauth_url": otpauth})
@@ -137,7 +137,7 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 	perms, err := h.svc.EffectivePermissions(claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	roleIDs, _ := h.db.GetUserRoleIDs(claims.UserID)

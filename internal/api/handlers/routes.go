@@ -21,7 +21,7 @@ func NewRoutesHandler(svc *routes.Service) *RoutesHandler {
 func (h *RoutesHandler) List(w http.ResponseWriter, r *http.Request) {
 	rs, err := h.svc.ListRoutes(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if rs == nil {
@@ -34,7 +34,7 @@ func (h *RoutesHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *RoutesHandler) ListRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.svc.ListRules(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if rules == nil {

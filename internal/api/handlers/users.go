@@ -26,7 +26,7 @@ func NewUsersHandler(db *storage.DB) *UsersHandler {
 func (h *UsersHandler) List(w http.ResponseWriter, r *http.Request) {
 	users, err := h.db.ListUsers()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if users == nil {
@@ -80,7 +80,7 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		perms, err := h.db.GetUserPermissions(claims.UserID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		if !perms[string(auth.PermRolesManage)] {
@@ -96,7 +96,7 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	u := &storage.User{Username: body.Username}
 	if err := h.db.CreateUser(u, hash, body.RoleIDs); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "user.create", "user:"+u.Username, "roles="+strings.Join(body.RoleIDs, ","))
@@ -109,7 +109,7 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	user, err := h.db.GetUserByID(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if user == nil {
@@ -141,7 +141,7 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		perms, err := h.db.GetUserPermissions(claims.UserID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		if !perms[string(auth.PermRolesManage)] {
@@ -161,7 +161,7 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.db.SetUserRoles(id, *body.RoleIDs); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 	}
@@ -177,7 +177,7 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.db.UpdateUserPassword(id, hash); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 	}
@@ -192,7 +192,7 @@ func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	user, err := h.db.GetUserByID(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if user == nil {
@@ -209,7 +209,7 @@ func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.DeleteUser(id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	auditAction(h.db, r, "user.delete", "user:"+user.Username, "")

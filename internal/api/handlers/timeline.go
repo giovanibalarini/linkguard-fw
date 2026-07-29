@@ -68,7 +68,7 @@ func (h *TimelineHandler) Timeline(w http.ResponseWriter, r *http.Request) {
 
 	step, series, states, err := h.tsdbSvc.Timeline(req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if series == nil {
@@ -80,7 +80,7 @@ func (h *TimelineHandler) Timeline(w http.ResponseWriter, r *http.Request) {
 
 	all, err := h.alertSvc.List(false, 500)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	alertsOut := []timelineAlert{}
