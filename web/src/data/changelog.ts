@@ -13,6 +13,38 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.78',
+    date: '2026-07-29',
+    title: 'Reskin de Administração e Configurações',
+    changes: [
+      { type: 'feat', text: 'Telas de Administração (usuários e papéis) e Configurações (todas as seções, incluindo notificações, 2FA, HTTPS, backup, atualizações e assistente de IA) ganharam o visual novo do painel — sem mudar nada de como funcionam.' },
+    ],
+  },
+  {
+    version: '1.0.77',
+    date: '2026-07-29',
+    title: 'Reskin de Hosts, Alertas, Monitoramento e Logs',
+    changes: [
+      { type: 'feat', text: 'Telas de Hosts, Monitoramento e Logs ganharam o visual novo do painel — sem mudar nada de como funcionam.' },
+    ],
+  },
+  {
+    version: '1.0.76',
+    date: '2026-07-28',
+    title: 'Reskin de Firewall e VPN',
+    changes: [
+      { type: 'feat', text: 'Telas de Firewall (regras, direcionamento por WAN, bloqueios, encaminhamento de portas) e VPN ganharam o visual novo do painel — sem mudar nada de como funcionam.' },
+    ],
+  },
+  {
+    version: '1.0.75',
+    date: '2026-07-28',
+    title: 'Reskin de DHCP e DNS',
+    changes: [
+      { type: 'feat', text: 'Telas de DHCP e DNS ganharam o visual novo do painel — sem mudar nada de como funcionam.' },
+    ],
+  },
+  {
     version: '1.0.74',
     date: '2026-07-28',
     title: 'Versão certa em Configurações → Sobre',
