@@ -13,6 +13,115 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.74',
+    date: '2026-07-28',
+    title: 'Versão certa em Configurações → Sobre',
+    changes: [
+      { type: 'fix', text: 'A tela Configurações → Sobre sempre mostrou "1.0.0" como versão instalada, não importa a versão real rodando. Agora mostra a versão de verdade.' },
+    ],
+  },
+  {
+    version: '1.0.73',
+    date: '2026-07-28',
+    title: 'Apply de DHCP voltava a falhar sempre',
+    changes: [
+      { type: 'fix', text: 'Clicar em "Aplicar agora" na tela de DHCP sempre dava erro. A causa era uma restrição de segurança do serviço de DHCP que impedia ele de ler o arquivo de verificação — corrigido.' },
+    ],
+  },
+  {
+    version: '1.0.72',
+    date: '2026-07-28',
+    title: 'Reskin da tela Links WAN',
+    changes: [
+      { type: 'feat', text: 'Tela de Links WAN (lista de links, diálogos de criar/editar/excluir, assistente de 2 internets, balanceamento e teste de estresse) ganhou o visual novo do painel — sem mudar nada de como ela funciona.' },
+    ],
+  },
+  {
+    version: '1.0.71',
+    date: '2026-07-28',
+    title: 'Formulário de interface preenche o gateway certo',
+    changes: [
+      { type: 'fix', text: 'Ao editar uma interface física que nunca tinha sido configurada pelo painel, o campo de gateway aparecia em branco mesmo já existindo um configurado. Agora vem preenchido.' },
+    ],
+  },
+  {
+    version: '1.0.70',
+    date: '2026-07-28',
+    title: 'Formulário de interface preenche o IP certo',
+    changes: [
+      { type: 'fix', text: 'Mesma correção do gateway, mas para o campo de endereço IP (CIDR) — agora mostra o IP real da interface em vez de ficar em branco.' },
+    ],
+  },
+  {
+    version: '1.0.69',
+    date: '2026-07-28',
+    title: 'IP visível na árvore de Interfaces',
+    changes: [
+      { type: 'fix', text: 'A aba "Visão geral" de Interfaces (a árvore de WAN/LAN/portas) não mostrava o endereço IP de cada interface — só a aba "Interfaces" mostrava. Agora aparece nas duas.' },
+    ],
+  },
+  {
+    version: '1.0.68',
+    date: '2026-07-28',
+    title: 'Editar interface física direto pelo painel',
+    changes: [
+      { type: 'feat', text: 'Agora dá para editar o endereçamento de uma interface física (DHCP, IP fixo ou nenhum, com gateway) direto pela tela de Interfaces — clique em "editar". Uma tela de revisão mostra exatamente o que vai mudar antes de aplicar.' },
+      { type: 'feat', text: 'Depois de aplicar, um aviso de segurança dá 90 segundos para você confirmar a mudança — se não confirmar (ou algo der errado), volta sozinho para como estava antes.' },
+    ],
+  },
+  {
+    version: '1.0.67',
+    date: '2026-07-28',
+    title: 'Visual novo do painel + árvore de topologia em Interfaces',
+    changes: [
+      { type: 'feat', text: 'Painel principal (Dashboard) ganhou um visual novo, mais limpo e direto.' },
+      { type: 'feat', text: 'Interfaces virou uma árvore de topologia: mostra de relance quais portas são WAN, quais são LAN e o que está ligado em cada uma.' },
+      { type: 'feat', text: 'Botão para piscar o LED de uma porta física — útil para achar o cabo certo no rack.' },
+    ],
+  },
+  {
+    version: '1.0.66',
+    date: '2026-07-24',
+    title: 'Interfaces em resumo colapsado',
+    changes: [
+      { type: 'feat', text: 'Gráficos de tráfego por interface viraram cards pequenos por padrão, que expandem ao clicar — a tela deixou de rolar demais quando havia muitas interfaces.' },
+    ],
+  },
+  {
+    version: '1.0.65',
+    date: '2026-07-24',
+    title: 'Correção no histórico de 30 minutos e 12 horas',
+    changes: [
+      { type: 'fix', text: 'As visões de 30 minutos e 12 horas em Interfaces apareciam vazias logo depois de abrir a página. Agora usam o histórico já salvo, não um buffer que reiniciava a cada carregamento.' },
+    ],
+  },
+  {
+    version: '1.0.64',
+    date: '2026-07-24',
+    title: 'Zoom nos gráficos de histórico',
+    changes: [
+      { type: 'feat', text: 'Dá para arrastar e dar zoom nos gráficos de tráfego e latência, com detalhe de média e faixa mínima/máxima do período selecionado.' },
+    ],
+  },
+  {
+    version: '1.0.63',
+    date: '2026-07-24',
+    title: 'Correção de migração de banco de dados',
+    changes: [
+      { type: 'fix', text: 'Ajuste interno para evitar que servidores com muito histórico acumulado travassem na inicialização após uma atualização.' },
+    ],
+  },
+  {
+    version: '1.0.62',
+    date: '2026-07-24',
+    title: 'Base para histórico de longo prazo + assistente de IA opcional',
+    changes: [
+      { type: 'feat', text: 'Nova base de armazenamento para métricas de longo prazo, mais rápida e econômica.' },
+      { type: 'feat', text: 'Cofre de segredos interno, para guardar chaves de API com segurança.' },
+      { type: 'feat', text: 'Assistente de IA opcional (você usa sua própria chave de API — nada é enviado sem você configurar).' },
+    ],
+  },
+  {
     version: '1.0.61',
     date: '2026-07-12',
     title: 'DHCP/DNS aplicam sozinhos + atualização pela tela volta a funcionar',
