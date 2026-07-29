@@ -111,3 +111,16 @@ func Save(cfg *Config, path string) error {
 func (c *Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.ListenAddr, c.Port)
 }
+
+// Validate checks the loaded configuration for values that make the service
+// unsafe to run. A weak/empty JWTSecret is the one checked today — it lets
+// anyone forge a valid authentication token, bypassing login, password,
+// lockout and 2FA entirely. 32 bytes is the practical floor for HMAC-SHA256
+// (256 bits); deploy/deb/postinst already generates 64 random chars, so this
+// never fires on a correctly-installed box.
+func (c *Config) Validate() error {
+	if len(c.JWTSecret) < 32 {
+		return fmt.Errorf("jwt_secret precisa ter pelo menos 32 caracteres (tem %d) — gere um valor aleatório forte antes de iniciar o serviço", len(c.JWTSecret))
+	}
+	return nil
+}

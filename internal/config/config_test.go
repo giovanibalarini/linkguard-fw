@@ -79,6 +79,36 @@ func TestLoadInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsShortSecret(t *testing.T) {
+	c := config.Default()
+	c.JWTSecret = "curto"
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for short jwt_secret, got nil")
+	}
+}
+
+func TestValidateRejectsDefaultPlaceholder(t *testing.T) {
+	c := config.Default()
+	// "change-me-in-production" tem 24 chars — abaixo do piso de 32, então já
+	// falha pelo mesmo motivo do teste acima; este teste documenta
+	// explicitamente que o valor padrão do struct NUNCA deveria passar sem o
+	// admin trocar, não só que "é curto".
+	if len(c.JWTSecret) >= 32 {
+		t.Fatalf("default placeholder JWTSecret unexpectedly >= 32 chars (%d) — Validate's length check would silently accept the shipped default", len(c.JWTSecret))
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for the unmodified default JWTSecret, got nil")
+	}
+}
+
+func TestValidateAcceptsStrongSecret(t *testing.T) {
+	c := config.Default()
+	c.JWTSecret = "a-random-64-char-secret-generated-by-postinst-1234567890ab"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("expected a 32+ char secret to be valid, got: %v", err)
+	}
+}
+
 func TestConfigJSON(t *testing.T) {
 	cfg := config.Default()
 	data, err := json.Marshal(cfg)

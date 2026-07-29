@@ -75,6 +75,10 @@ func run() int {
 		slog.Error("failed to load config", "path", *configPath, "err", err)
 		return 1
 	}
+	if err := cfg.Validate(); err != nil {
+		slog.Error("configuração inválida", "err", err)
+		return 1
+	}
 
 	if setFlags["addr"] {
 		cfg.ListenAddr = *addr
