@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Search } from 'lucide-react';
+import { Search, Pencil } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import client from '../api/client';
 import InterfaceTraffic from '../components/InterfaceTraffic';
 import Panel from '../components/ui/Panel';
 import Tabs, { type TabItem } from '../components/ui/Tabs';
 import Tag, { type TagVariant } from '../components/ui/Tag';
+import IconButton from '../components/ui/IconButton';
 import type { IfaceView, PendingChange } from '../types';
 
 const TABS: TabItem[] = [
@@ -307,33 +308,39 @@ export default function Interfaces() {
           {loading ? (
             <div className="text-gray-500 text-sm">Carregando...</div>
           ) : (
-            <div className="card overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b border-gray-800">
-                    <th className="pb-3 pr-4 font-medium">Interface</th>
-                    <th className="pb-3 pr-4 font-medium">Tipo</th>
-                    <th className="pb-3 pr-4 font-medium">Endereço</th>
-                    <th className="pb-3 pr-4 font-medium">Físico</th>
-                    <th className="pb-3 pr-4 font-medium">Papel</th>
-                    <th className="pb-3 font-medium">Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((i) => {
-                    const roleCfg = roleTag[i.role] ?? roleTag.unassigned;
-                    const physAbnormal = !i.live.carrier || i.live.rx_errors > 0 || i.live.tx_errors > 0;
-                    return (
-                      <tr key={i.name} className="table-row">
-                        <td className="py-3 pr-4">
-                          <div className="text-white font-medium">{i.alias || i.name}</div>
-                          {i.alias && <div className="text-gray-500 text-xs font-mono">{i.name}</div>}
-                        </td>
-                        <td className="py-3 pr-4 text-gray-400">{kindLabel[i.kind] ?? i.kind}</td>
-                        <td className="py-3 pr-4 text-gray-400 font-mono">
+            <>
+              {/* Mobile: stacked cards (< sm) */}
+              <div className="sm:hidden space-y-2">
+                {filtered.map((i) => {
+                  const roleCfg = roleTag[i.role] ?? roleTag.unassigned;
+                  const physAbnormal = !i.live.carrier || i.live.rx_errors > 0 || i.live.tx_errors > 0;
+                  return (
+                    <div key={i.name} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-white font-medium truncate">{i.alias || i.name}</div>
+                          {i.alias && <div className="text-gray-500 text-xs font-mono truncate">{i.name}</div>}
+                          <Tag variant={roleCfg.variant} className="mt-1">{roleCfg.label}</Tag>
+                        </div>
+                        {i.kind === 'physical' && (
+                          <div className="flex shrink-0 gap-1">
+                            <IconButton
+                              icon={Pencil}
+                              to={`/interfaces/${encodeURIComponent(i.name)}/edit`}
+                              label="Editar interface"
+                            />
+                          </div>
+                        )}
+                      </div>
+                      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                        <dt className="text-gray-500">Tipo</dt>
+                        <dd className="text-gray-400">{kindLabel[i.kind] ?? i.kind}</dd>
+                        <dt className="text-gray-500">Endereço</dt>
+                        <dd className="text-gray-400 font-mono">
                           {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
-                        </td>
-                        <td className="py-3 pr-4">
+                        </dd>
+                        <dt className="text-gray-500">Físico</dt>
+                        <dd>
                           {i.kind === 'physical' ? (
                             <Tag variant={physAbnormal ? 'warn' : 'ok'} dot>
                               {i.live.carrier ? 'link ativo' : 'sem link'}
@@ -341,95 +348,197 @@ export default function Interfaces() {
                           ) : (
                             <span className="text-gray-600">—</span>
                           )}
-                        </td>
-                        <td className="py-3 pr-4">
-                          <Tag variant={roleCfg.variant}>{roleCfg.label}</Tag>
-                        </td>
-                        <td className="py-3">
-                          {i.kind === 'physical' && (
-                            <Link to={`/interfaces/${encodeURIComponent(i.name)}/edit`} className="text-xs text-gray-500 hover:text-gray-300">
-                              editar
-                            </Link>
-                          )}
+                        </dd>
+                      </dl>
+                    </div>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <div className="text-center text-gray-500 text-sm py-6">Nenhuma interface encontrada.</div>
+                )}
+              </div>
+
+              {/* Desktop: table (>= sm) */}
+              <div className="hidden sm:block card overflow-x-auto">
+                <table className="hidden sm:table w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b border-gray-800">
+                      <th className="pb-3 pr-4 font-medium">Interface</th>
+                      <th className="pb-3 pr-4 font-medium">Tipo</th>
+                      <th className="pb-3 pr-4 font-medium">Endereço</th>
+                      <th className="pb-3 pr-4 font-medium">Físico</th>
+                      <th className="pb-3 pr-4 font-medium">Papel</th>
+                      <th className="pb-3 font-medium">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((i) => {
+                      const roleCfg = roleTag[i.role] ?? roleTag.unassigned;
+                      const physAbnormal = !i.live.carrier || i.live.rx_errors > 0 || i.live.tx_errors > 0;
+                      return (
+                        <tr key={i.name} className="table-row">
+                          <td className="py-3 pr-4">
+                            <div className="text-white font-medium">{i.alias || i.name}</div>
+                            {i.alias && <div className="text-gray-500 text-xs font-mono">{i.name}</div>}
+                          </td>
+                          <td className="py-3 pr-4 text-gray-400">{kindLabel[i.kind] ?? i.kind}</td>
+                          <td className="py-3 pr-4 text-gray-400 font-mono">
+                            {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
+                          </td>
+                          <td className="py-3 pr-4">
+                            {i.kind === 'physical' ? (
+                              <Tag variant={physAbnormal ? 'warn' : 'ok'} dot>
+                                {i.live.carrier ? 'link ativo' : 'sem link'}
+                              </Tag>
+                            ) : (
+                              <span className="text-gray-600">—</span>
+                            )}
+                          </td>
+                          <td className="py-3 pr-4">
+                            <Tag variant={roleCfg.variant}>{roleCfg.label}</Tag>
+                          </td>
+                          <td className="py-3">
+                            {i.kind === 'physical' && (
+                              <IconButton
+                                icon={Pencil}
+                                to={`/interfaces/${encodeURIComponent(i.name)}/edit`}
+                                label="Editar interface"
+                              />
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filtered.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="py-6 text-center text-gray-500">
+                          Nenhuma interface encontrada.
                         </td>
                       </tr>
-                    );
-                  })}
-                  {filtered.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="py-6 text-center text-gray-500">
-                        Nenhuma interface encontrada.
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {tab === 'vlans' && (() => {
+        const vlans = visible.filter((i) => i.kind === 'vlan');
+        return (
+          <>
+            {/* Mobile: stacked cards (< sm) */}
+            <div className="sm:hidden space-y-2">
+              {vlans.map((i) => (
+                <div key={i.name} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                  <div className="text-white font-medium truncate">{i.alias || i.name}</div>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-gray-500">Pai</dt>
+                    <dd className="text-gray-400 font-mono">{i.parent ?? '—'}</dd>
+                    <dt className="text-gray-500">Tag</dt>
+                    <dd className="text-gray-400 font-mono">{i.vlan_id ?? '—'}</dd>
+                    <dt className="text-gray-500">Endereço</dt>
+                    <dd className="text-gray-400 font-mono">
+                      {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
+                    </dd>
+                  </dl>
+                </div>
+              ))}
+              {vlans.length === 0 && (
+                <div className="text-center text-gray-500 text-sm py-6">Nenhuma VLAN detectada.</div>
+              )}
+            </div>
+
+            {/* Desktop: table (>= sm) */}
+            <div className="hidden sm:block card overflow-x-auto">
+              <table className="hidden sm:table w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-800">
+                    <th className="pb-3 pr-4 font-medium">Nome</th>
+                    <th className="pb-3 pr-4 font-medium">Pai</th>
+                    <th className="pb-3 pr-4 font-medium">Tag</th>
+                    <th className="pb-3 font-medium">Endereço</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {vlans.map((i) => (
+                    <tr key={i.name} className="table-row">
+                      <td className="py-3 pr-4 text-white">{i.alias || i.name}</td>
+                      <td className="py-3 pr-4 text-gray-400 font-mono">{i.parent ?? '—'}</td>
+                      <td className="py-3 pr-4 text-gray-400 font-mono">{i.vlan_id ?? '—'}</td>
+                      <td className="py-3 text-gray-400 font-mono">
+                        {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
                       </td>
+                    </tr>
+                  ))}
+                  {vlans.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="py-6 text-center text-gray-500">Nenhuma VLAN detectada.</td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
-          )}
-        </div>
-      )}
+          </>
+        );
+      })()}
 
-      {tab === 'vlans' && (
-        <div className="card overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-500 border-b border-gray-800">
-                <th className="pb-3 pr-4 font-medium">Nome</th>
-                <th className="pb-3 pr-4 font-medium">Pai</th>
-                <th className="pb-3 pr-4 font-medium">Tag</th>
-                <th className="pb-3 font-medium">Endereço</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.filter((i) => i.kind === 'vlan').map((i) => (
-                <tr key={i.name} className="table-row">
-                  <td className="py-3 pr-4 text-white">{i.alias || i.name}</td>
-                  <td className="py-3 pr-4 text-gray-400 font-mono">{i.parent ?? '—'}</td>
-                  <td className="py-3 pr-4 text-gray-400 font-mono">{i.vlan_id ?? '—'}</td>
-                  <td className="py-3 text-gray-400 font-mono">
-                    {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
-                  </td>
-                </tr>
+      {tab === 'bridges' && (() => {
+        const bridges = visible.filter((i) => i.kind === 'bridge');
+        return (
+          <>
+            {/* Mobile: stacked cards (< sm) */}
+            <div className="sm:hidden space-y-2">
+              {bridges.map((i) => (
+                <div key={i.name} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                  <div className="text-white font-medium truncate">{i.alias || i.name}</div>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-gray-500">Membros</dt>
+                    <dd className="text-gray-400 font-mono">{(i.members ?? []).join(', ') || '—'}</dd>
+                    <dt className="text-gray-500">Endereço</dt>
+                    <dd className="text-gray-400 font-mono">
+                      {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
+                    </dd>
+                  </dl>
+                </div>
               ))}
-              {visible.filter((i) => i.kind === 'vlan').length === 0 && (
-                <tr>
-                  <td colSpan={4} className="py-6 text-center text-gray-500">Nenhuma VLAN detectada.</td>
-                </tr>
+              {bridges.length === 0 && (
+                <div className="text-center text-gray-500 text-sm py-6">Nenhuma bridge detectada.</div>
               )}
-            </tbody>
-          </table>
-        </div>
-      )}
+            </div>
 
-      {tab === 'bridges' && (
-        <div className="card overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-500 border-b border-gray-800">
-                <th className="pb-3 pr-4 font-medium">Nome</th>
-                <th className="pb-3 pr-4 font-medium">Membros</th>
-                <th className="pb-3 font-medium">Endereço</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.filter((i) => i.kind === 'bridge').map((i) => (
-                <tr key={i.name} className="table-row">
-                  <td className="py-3 pr-4 text-white">{i.alias || i.name}</td>
-                  <td className="py-3 pr-4 text-gray-400 font-mono">{(i.members ?? []).join(', ') || '—'}</td>
-                  <td className="py-3 text-gray-400 font-mono">
-                    {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
-                  </td>
-                </tr>
-              ))}
-              {visible.filter((i) => i.kind === 'bridge').length === 0 && (
-                <tr>
-                  <td colSpan={3} className="py-6 text-center text-gray-500">Nenhuma bridge detectada.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
+            {/* Desktop: table (>= sm) */}
+            <div className="hidden sm:block card overflow-x-auto">
+              <table className="hidden sm:table w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-800">
+                    <th className="pb-3 pr-4 font-medium">Nome</th>
+                    <th className="pb-3 pr-4 font-medium">Membros</th>
+                    <th className="pb-3 font-medium">Endereço</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bridges.map((i) => (
+                    <tr key={i.name} className="table-row">
+                      <td className="py-3 pr-4 text-white">{i.alias || i.name}</td>
+                      <td className="py-3 pr-4 text-gray-400 font-mono">{(i.members ?? []).join(', ') || '—'}</td>
+                      <td className="py-3 text-gray-400 font-mono">
+                        {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
+                      </td>
+                    </tr>
+                  ))}
+                  {bridges.length === 0 && (
+                    <tr>
+                      <td colSpan={3} className="py-6 text-center text-gray-500">Nenhuma bridge detectada.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        );
+      })()}
 
       {tab === 'traffic' && <InterfaceTraffic />}
     </div>
