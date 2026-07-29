@@ -251,7 +251,7 @@ export default function Settings() {
         </div>
       </div>
 
-      <Modal open={!!pendingShorten} onClose={() => setPendingShorten(null)} title="Reduzir retenção de tráfego" size="sm">
+      <Modal open={!!pendingShorten} onClose={() => setPendingShorten(null)} title="Reduzir retenção de tráfego" size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
         <div className="p-6 space-y-4">
           <p className="text-gray-300 text-sm">
             Reduzir a retenção pode descartar amostras antigas. Continuar?

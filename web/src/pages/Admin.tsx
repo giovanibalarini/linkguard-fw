@@ -245,7 +245,7 @@ function UsersTab() {
         )}
       </Panel>
 
-      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? 'Editar Usuário' : 'Novo Usuário'} size="md">
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? 'Editar Usuário' : 'Novo Usuário'} size="md" className="bg-gray-900 border border-gray-800 rounded-xl">
         <form onSubmit={handleSave} className="p-6 space-y-4">
           <div>
             <label className="label">Nome de usuário *</label>
@@ -300,7 +300,7 @@ function UsersTab() {
         </form>
       </Modal>
 
-      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Excluir usuário" size="sm">
+      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Excluir usuário" size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
         <div className="p-6 space-y-4">
           <p className="text-gray-300 text-sm">
             Tem certeza que deseja excluir o usuário <span className="font-medium text-white">"{deleteTarget?.username}"</span>? Esta ação não pode ser desfeita.
@@ -512,7 +512,7 @@ function RolesTab() {
         )}
       </Panel>
 
-      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? 'Editar Papel' : 'Novo Papel'} size="lg">
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? 'Editar Papel' : 'Novo Papel'} size="lg" className="bg-gray-900 border border-gray-800 rounded-xl">
         <form onSubmit={handleSave} className="p-6 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -591,7 +591,7 @@ function RolesTab() {
         </form>
       </Modal>
 
-      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Excluir papel" size="sm">
+      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Excluir papel" size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
         <div className="p-6 space-y-4">
           <p className="text-gray-300 text-sm">
             Tem certeza que deseja excluir o papel <span className="font-medium text-white">"{deleteTarget?.name}"</span>? Esta ação não pode ser desfeita.
