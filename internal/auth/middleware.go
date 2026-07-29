@@ -10,7 +10,14 @@ type contextKey string
 
 const claimsKey contextKey = "claims"
 
-// Middleware returns an HTTP middleware that validates JWT tokens.
+// Middleware returns an HTTP middleware that validates JWT tokens. Beyond
+// signature/expiry, it also confirms the token's PasswordVersion still
+// matches the user's current one in the database — a password reset or user
+// deletion is meant to invalidate any token issued before it, and neither
+// action can otherwise revoke an already-signed JWT (it stays validly signed
+// until natural expiry). This costs one DB lookup per authenticated request,
+// which Require() already pays per mutating route today; acceptable for a
+// home/SMB admin panel's traffic volume.
 func (s *Service) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := extractToken(r)
@@ -22,6 +29,16 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		claims, err := s.ValidateToken(token)
 		if err != nil {
 			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+			return
+		}
+
+		user, err := s.db.GetUserByID(claims.UserID)
+		if err != nil {
+			http.Error(w, `{"error":"session check failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if user == nil || user.PasswordVersion != claims.PasswordVersion {
+			http.Error(w, `{"error":"session expired, please log in again"}`, http.StatusUnauthorized)
 			return
 		}
 
@@ -83,15 +100,15 @@ func (s *Service) EffectivePermissions(userID string) ([]string, error) {
 	return perms, nil
 }
 
+// extractToken reads the JWT strictly from the Authorization header. No
+// cookie fallback: this app never sets a cookie (the frontend always uses the
+// header), and keeping a dead cookie-read path here would silently reopen
+// classic CSRF the moment anything — a future feature, a reverse proxy, debug
+// code — ever sets a cookie literally named "token".
 func extractToken(r *http.Request) string {
 	header := r.Header.Get("Authorization")
 	if strings.HasPrefix(header, "Bearer ") {
 		return strings.TrimPrefix(header, "Bearer ")
-	}
-	// Check cookie
-	cookie, err := r.Cookie("token")
-	if err == nil {
-		return cookie.Value
 	}
 	return ""
 }

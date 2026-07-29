@@ -291,10 +291,10 @@ func (db *DB) GetIptablesBackups(limit int) ([]IptablesBackup, error) {
 // GetUserByUsername returns a user by username.
 func (db *DB) GetUserByUsername(username string) (*User, error) {
 	row := db.conn.QueryRow(`
-		SELECT id, username, password, role, created_at, updated_at
+		SELECT id, username, password, role, password_version, created_at, updated_at
 		FROM users WHERE username = ?`, username)
 	var u User
-	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.CreatedAt, &u.UpdatedAt); err == sql.ErrNoRows {
+	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.PasswordVersion, &u.CreatedAt, &u.UpdatedAt); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
@@ -302,10 +302,13 @@ func (db *DB) GetUserByUsername(username string) (*User, error) {
 	return &u, nil
 }
 
-// UpdateUserPassword changes a user's bcrypt-hashed password.
+// UpdateUserPassword changes a user's bcrypt-hashed password and bumps
+// password_version so any JWT issued before this change fails Middleware's
+// version check on its next request, even though the token itself is still
+// validly signed until it naturally expires.
 func (db *DB) UpdateUserPassword(id, hashedPassword string) error {
 	pwdCol := "pass" + "word"
-	query := fmt.Sprintf("UPDATE users SET %s=?, updated_at=? WHERE id=?", pwdCol)
+	query := fmt.Sprintf("UPDATE users SET %s=?, password_version=password_version+1, updated_at=? WHERE id=?", pwdCol)
 	_, err := db.conn.Exec(query, hashedPassword, time.Now(), id)
 	return err
 }
@@ -382,10 +385,10 @@ func (db *DB) ListUsers() ([]User, error) {
 // GetUserByID returns a user by ID (without populating RoleIDs).
 func (db *DB) GetUserByID(id string) (*User, error) {
 	row := db.conn.QueryRow(`
-		SELECT id, username, password, role, created_at, updated_at
+		SELECT id, username, password, role, password_version, created_at, updated_at
 		FROM users WHERE id = ?`, id)
 	var u User
-	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.CreatedAt, &u.UpdatedAt); err == sql.ErrNoRows {
+	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &u.PasswordVersion, &u.CreatedAt, &u.UpdatedAt); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, err

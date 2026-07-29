@@ -87,8 +87,37 @@ func (db *DB) migrate() error {
 	if err := db.migrateTrafficSamplesToMetricSamples(); err != nil {
 		return fmt.Errorf("migrate traffic_samples to metric_samples: %w", err)
 	}
+	if err := db.migrateAddPasswordVersion(); err != nil {
+		return fmt.Errorf("migrate add password_version: %w", err)
+	}
 
 	return nil
+}
+
+// migrateAddPasswordVersion adds users.password_version if the column doesn't
+// exist yet (first ALTER TABLE ADD COLUMN in this project — every prior
+// migration was a fresh CREATE TABLE IF NOT EXISTS). Existing rows get
+// DEFAULT 1, matching a freshly created user's starting version.
+func (db *DB) migrateAddPasswordVersion() error {
+	rows, err := db.conn.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "password_version" {
+			return nil // already migrated
+		}
+	}
+	_, err = db.conn.Exec(`ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 1`)
+	return err
 }
 
 // migrateTrafficSamplesToMetricSamples copies every row from the legacy

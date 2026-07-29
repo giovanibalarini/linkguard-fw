@@ -100,13 +100,14 @@ type IptablesBackup struct {
 
 // User represents an application user.
 type User struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	Password  string    `json:"-"`        // bcrypt hash, never serialised
-	Role      string    `json:"role"`     // legacy single-role column (kept for compat)
-	RoleIDs   []string  `json:"role_ids"` // assigned roles (RBAC); populated on demand
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Username        string    `json:"username"`
+	Password        string    `json:"-"`        // bcrypt hash, never serialised
+	Role            string    `json:"role"`     // legacy single-role column (kept for compat)
+	RoleIDs         []string  `json:"role_ids"` // assigned roles (RBAC); populated on demand
+	PasswordVersion int       `json:"-"`        // bumped on every password change; embedded in JWT to revoke old tokens
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // ─── Role (RBAC) ─────────────────────────────────────────────────────────────

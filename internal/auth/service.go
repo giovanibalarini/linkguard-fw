@@ -36,9 +36,10 @@ type attemptInfo struct {
 
 // Claims are the JWT payload claims.
 type Claims struct {
-	UserID   string `json:"user_id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	UserID          string `json:"user_id"`
+	Username        string `json:"username"`
+	Role            string `json:"role"`
+	PasswordVersion int    `json:"pwd_ver"`
 	jwt.RegisteredClaims
 }
 
@@ -129,9 +130,10 @@ func (s *Service) resetAttempts(key string) {
 
 func (s *Service) generateToken(user *storage.User) (string, error) {
 	claims := Claims{
-		UserID:   user.ID,
-		Username: user.Username,
-		Role:     user.Role,
+		UserID:          user.ID,
+		Username:        user.Username,
+		Role:            user.Role,
+		PasswordVersion: user.PasswordVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(tokenExpiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
