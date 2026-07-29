@@ -5,6 +5,7 @@ import {
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import HelpTip from '../components/HelpTip';
+import Panel from '../components/ui/Panel';
 import type { VPNView, VPNConfig, AddPeerResponse } from '../types';
 
 export default function Vpn() {
@@ -96,10 +97,10 @@ export default function Vpn() {
         </div>
       </div>
 
-      {msg && <div className={`px-4 py-3 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'}`}>{msg}</div>}
+      {msg && <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
 
       {/* Status */}
-      <div className="card">
+      <Panel>
         <div className="flex items-center gap-2">
           <span className={`w-2.5 h-2.5 rounded-full ${cfg.enabled && online ? 'bg-green-400' : cfg.enabled ? 'bg-amber-400' : 'bg-gray-600'}`} />
           <span className="text-white font-medium">
@@ -108,11 +109,10 @@ export default function Vpn() {
           {cfg.public_key && <span className="text-gray-600 text-xs font-mono ml-auto truncate max-w-[40%]">srv: {cfg.public_key}</span>}
         </div>
         {online && <pre className="mt-3 text-xs font-mono text-gray-400 overflow-x-auto whitespace-pre-wrap">{view.status}</pre>}
-      </div>
+      </Panel>
 
       {/* Server settings */}
-      <div className="card">
-        <h3 className="text-white font-semibold mb-3">Servidor</h3>
+      <Panel title="Servidor">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Endereço público (endpoint)" hint="IP público ou DDNS pelo qual os clientes chegam">
             <input value={form.endpoint ?? ''} onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
@@ -138,13 +138,10 @@ export default function Vpn() {
           </button>
         )}
         <p className="text-gray-600 text-xs mt-2">A porta {form.listen_port ?? 51820}/UDP precisa chegar ao firewall (encaminhe no modem se houver).</p>
-      </div>
+      </Panel>
 
       {/* Clients */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-white font-semibold flex items-center gap-2"><Smartphone className="w-4 h-4 text-blue-400" /> Clientes ({cfg.peers.length})</h3>
-        </div>
+      <Panel title={<span className="flex items-center gap-2"><Smartphone className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Clientes ({cfg.peers.length})</span></span>}>
 
         {canWrite && (
           <div className="flex gap-2 mb-4">
@@ -179,7 +176,7 @@ export default function Vpn() {
             ))}
           </div>
         )}
-      </div>
+      </Panel>
 
       {reveal && <PeerConfigModal name={reveal.name} config={reveal.config} onClose={() => setReveal(null)} />}
     </div>
