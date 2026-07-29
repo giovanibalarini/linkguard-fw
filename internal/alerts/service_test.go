@@ -85,3 +85,34 @@ func TestLinkDegradedMessageIncludesMeasuredValues(t *testing.T) {
 		t.Errorf("expected message to include the measured packet loss, got: %q", msg)
 	}
 }
+
+func TestBackupFailedIsWarningNormal(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.BackupFailed("smtp indisponível"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fn.normal) != 1 || fn.normal[0] != "warning|Falha ao enviar backup" {
+		t.Errorf("normal notifies = %v", fn.normal)
+	}
+	if len(fn.recovery) != 0 {
+		t.Errorf("unexpected recovery notify: %v", fn.recovery)
+	}
+}
+
+func TestBackupSucceededDeliversViaRecovery(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.BackupSucceeded(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fn.recovery) != 1 {
+		t.Errorf("recovery notifies = %v, want 1", fn.recovery)
+	}
+}

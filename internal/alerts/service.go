@@ -22,6 +22,7 @@ const (
 	TypeServiceOnline  = "service_online"
 	TypeDiskFull       = "disk_full"
 	TypeAppDown        = "app_down"
+	TypeBackupFailed   = "backup_failed"
 
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
@@ -209,4 +210,20 @@ func (s *Service) AutoResolve(alertType, linkID string) {
 			_ = s.db.ResolveAlert(a.ID)
 		}
 	}
+}
+
+// BackupFailed raises a warning alert when the periodic (or manual "enviar
+// agora") backup e-mail fails to send. Severity is warning, not critical —
+// the server's own configuration didn't change, only the off-site copy is
+// late; it's not a service outage.
+func (s *Service) BackupFailed(detail string) error {
+	return s.Create(TypeBackupFailed, SeverityWarning, "Falha ao enviar backup",
+		"O backup automático não pôde ser enviado: "+detail, "")
+}
+
+// BackupSucceeded clears BackupFailed and notifies recovery.
+func (s *Service) BackupSucceeded() error {
+	s.AutoResolve(TypeBackupFailed, "")
+	return s.createRecovery(TypeBackupFailed, "Backup enviado",
+		"O backup automático voltou a ser enviado com sucesso.", "")
 }
