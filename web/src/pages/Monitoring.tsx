@@ -6,6 +6,7 @@ import {
   ComposedChart, Area, Brush, ReferenceArea,
 } from 'recharts';
 import client from '../api/client';
+import Panel from '../components/ui/Panel';
 import type { WanLink, SystemMetrics, TimelineResponse } from '../types';
 
 interface HistoryPoint {
@@ -175,11 +176,7 @@ export default function Monitoring() {
 
       {/* Latency chart */}
       {links.length > 0 && (
-        <div className="card">
-          <div className="flex items-center gap-2 mb-4">
-            <Activity className="w-4 h-4 text-blue-400" />
-            <h2 className="text-white font-semibold">Latência por Link (ms)</h2>
-          </div>
+        <Panel title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Latência por Link (ms)</span></span>}>
           {latencyHistory.length > 1 ? (
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={latencyHistory}>
@@ -196,15 +193,11 @@ export default function Monitoring() {
           ) : (
             <p className="text-gray-500 text-sm text-center py-12">Coletando dados…</p>
           )}
-        </div>
+        </Panel>
       )}
 
       {/* CPU / Memory chart */}
-      <div className="card">
-        <div className="flex items-center gap-2 mb-4">
-          <Activity className="w-4 h-4 text-purple-400" />
-          <h2 className="text-white font-semibold">CPU e Memória (%)</h2>
-        </div>
+      <Panel title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-purple-400" /><span className="text-white font-semibold">CPU e Memória (%)</span></span>}>
         {cpuHistory.length > 1 ? (
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={cpuHistory}>
@@ -220,15 +213,12 @@ export default function Monitoring() {
         ) : (
           <p className="text-gray-500 text-sm text-center py-12">Coletando dados…</p>
         )}
-      </div>
+      </Panel>
 
       {/* Correlated diagnostic timeline */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4 text-emerald-400" />
-            <h2 className="text-white font-semibold">Linha do tempo</h2>
-          </div>
+      <Panel
+        title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-emerald-400" /><span className="text-white font-semibold">Linha do tempo</span></span>}
+        action={
           <div className="flex gap-2">
             {[1, 6, 24].map(h => (
               <button
@@ -240,7 +230,8 @@ export default function Monitoring() {
               </button>
             ))}
           </div>
-        </div>
+        }
+      >
         {timelineLoading && !timeline && (
           <p className="text-gray-500 text-sm text-center py-12">Carregando linha do tempo…</p>
         )}
@@ -316,12 +307,11 @@ export default function Monitoring() {
             )}
           </div>
         )}
-      </div>
+      </Panel>
 
       {/* Interface traffic */}
       {sys && sys.interfaces && sys.interfaces.length > 0 && (
-        <div className="card">
-          <h2 className="text-white font-semibold mb-4">Tráfego por Interface</h2>
+        <Panel title="Tráfego por Interface">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -348,7 +338,7 @@ export default function Monitoring() {
               </tbody>
             </table>
           </div>
-        </div>
+        </Panel>
       )}
     </div>
   );
