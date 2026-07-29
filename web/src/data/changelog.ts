@@ -13,6 +13,17 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.79',
+    date: '2026-07-29',
+    title: 'Backup cifrado e envio automático por e-mail',
+    changes: [
+      { type: 'security', text: 'O arquivo de backup (baixado ou enviado por e-mail) agora é sempre cifrado com uma senha que você define em Configurações → Backup — antes ele saía em texto puro, expondo a topologia da rede e o inventário de aparelhos se vazasse.' },
+      { type: 'feat', text: 'Backup automático agendado (diário, semanal ou mensal), enviado cifrado por e-mail usando o mesmo e-mail já configurado em Notificações. Desligado por padrão.' },
+      { type: 'feat', text: 'Botão "Enviar por e-mail agora" para disparar um backup avulso a qualquer momento, sem esperar o agendamento.' },
+      { type: 'feat', text: 'A tela mostra o resultado do último envio automático (sucesso ou falha) e avisa em Alertas se o envio parar de funcionar.' },
+    ],
+  },
+  {
     version: '1.0.78',
     date: '2026-07-29',
     title: 'Reskin de Administração e Configurações',
