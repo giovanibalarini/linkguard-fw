@@ -5,13 +5,14 @@ interface ModalProps {
   onClose: () => void;
   title: ReactNode;
   children: ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   className?: string;
   action?: ReactNode;
   closeOnBackdropClick?: boolean;
 }
 
 const sizeClass: Record<NonNullable<ModalProps['size']>, string> = {
+  xs: 'max-w-sm',
   sm: 'max-w-md',
   md: 'max-w-lg',
   lg: 'max-w-2xl',
