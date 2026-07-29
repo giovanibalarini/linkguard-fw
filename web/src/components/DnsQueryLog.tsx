@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Search, RefreshCw, Ban, ScrollText, Info } from 'lucide-react';
 import client from '../api/client';
+import Panel from './ui/Panel';
 
 interface DNSQuery { time: string; client: string; name: string; type: string }
 
@@ -37,12 +38,9 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
   };
 
   return (
-    <div className="card">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-        <div className="flex items-center gap-2">
-          <ScrollText className="w-4 h-4 text-blue-400" />
-          <h3 className="text-white font-semibold">Consultas recentes</h3>
-        </div>
+    <Panel
+      title={<span className="flex items-center gap-2"><ScrollText className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Consultas recentes</span></span>}
+      action={
         <div className="flex gap-2">
           <div className="relative">
             <Search className="w-4 h-4 text-gray-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
@@ -58,8 +56,8 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar
           </button>
         </div>
-      </div>
-
+      }
+    >
       {!loggingEnabled && (
         <div className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-amber-300 text-sm mb-3">
           <Info className="w-4 h-4 mt-0.5 shrink-0" />
@@ -101,6 +99,6 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
           </table>
         </div>
       )}
-    </div>
+    </Panel>
   );
 }
