@@ -312,8 +312,22 @@ func buildMultipartMessage(from, to, subject, body string, attachment []byte, fi
 	}
 	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(attachment)))
 	base64.StdEncoding.Encode(encoded, attachment)
-	if _, err := attachPart.Write(encoded); err != nil {
-		return nil, fmt.Errorf("escrever anexo: %w", err)
+	// RFC 2045 §6.8: base64 body content must be wrapped at 76 characters per
+	// line. Without this, strict SMTP servers may reject or corrupt the
+	// message — the small (26-byte) fixture in the existing test never
+	// crossed one line, so this went unnoticed until a real-size attachment.
+	const lineLen = 76
+	for i := 0; i < len(encoded); i += lineLen {
+		end := i + lineLen
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		if _, err := attachPart.Write(encoded[i:end]); err != nil {
+			return nil, fmt.Errorf("escrever anexo: %w", err)
+		}
+		if _, err := attachPart.Write([]byte("\r\n")); err != nil {
+			return nil, fmt.Errorf("escrever anexo: %w", err)
+		}
 	}
 
 	if err := w.Close(); err != nil {

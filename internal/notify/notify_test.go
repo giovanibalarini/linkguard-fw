@@ -155,6 +155,79 @@ func TestBuildMultipartMessageIncludesAttachment(t *testing.T) {
 	}
 }
 
+// TestBuildMultipartMessageWrapsLongAttachmentLines uses an attachment large
+// enough that its base64 encoding exceeds 76 characters (RFC 2045 §6.8), to
+// catch the case the 26-byte fixture above cannot: a single unbroken base64
+// line that stricter SMTP servers reject or corrupt.
+func TestBuildMultipartMessageWrapsLongAttachmentLines(t *testing.T) {
+	attachment := bytes.Repeat([]byte("A-conteudo-cifrado-de-backup-"), 8) // 232 bytes -> ~310 base64 chars
+	if base64.StdEncoding.EncodedLen(len(attachment)) <= 76 {
+		t.Fatalf("test fixture too small to exercise line wrapping")
+	}
+
+	msg, err := buildMultipartMessage("from@example.com", "to@example.com", "Backup LinkGuard", "Segue em anexo.",
+		attachment, "linkguard-backup.lgbak")
+	if err != nil {
+		t.Fatalf("buildMultipartMessage: %v", err)
+	}
+
+	tp := textproto.NewReader(bufio.NewReader(bytes.NewReader(msg)))
+	header, err := tp.ReadMIMEHeader()
+	if err != nil {
+		t.Fatalf("ReadMIMEHeader: %v", err)
+	}
+	_, params, err := mime.ParseMediaType(header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("ParseMediaType: %v", err)
+	}
+
+	mr := multipart.NewReader(tp.R, params["boundary"])
+	var sawAttachment bool
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("NextPart: %v", err)
+		}
+		if part.Header.Get("Content-Disposition") == "" {
+			continue
+		}
+		sawAttachment = true
+		rawBody, err := io.ReadAll(part)
+		if err != nil {
+			t.Fatalf("read attachment part: %v", err)
+		}
+
+		lines := strings.Split(strings.TrimRight(string(rawBody), "\r\n"), "\r\n")
+		if len(lines) < 2 {
+			t.Fatalf("expected attachment to be wrapped across multiple lines, got %d line(s)", len(lines))
+		}
+		var joined strings.Builder
+		for i, line := range lines {
+			if len(line) > 76 {
+				t.Fatalf("line %d exceeds 76 characters (%d): %q", i, len(line), line)
+			}
+			if i < len(lines)-1 && len(line) != 76 {
+				t.Fatalf("non-final line %d should be exactly 76 characters, got %d", i, len(line))
+			}
+			joined.WriteString(line)
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(joined.String())
+		if err != nil {
+			t.Fatalf("base64 decode joined attachment: %v", err)
+		}
+		if !bytes.Equal(decoded, attachment) {
+			t.Fatalf("decoded attachment mismatch: got %d bytes, want %d bytes", len(decoded), len(attachment))
+		}
+	}
+	if !sawAttachment {
+		t.Fatalf("expected attachment part, got none")
+	}
+}
+
 func TestSendEmailAttachmentFailsWhenEmailDisabled(t *testing.T) {
 	db := openTestDB(t)
 	s := NewService(db, newTestSecrets(t, db))
