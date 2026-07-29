@@ -187,6 +187,16 @@ func incIP(ip net.IP) {
 // Apply writes the server config and reconciles the systemd service to match
 // c.Enabled. Writing happens with 0600 perms (the file holds private keys).
 func (s *Service) Apply(ctx context.Context, c Config) (string, error) {
+	// Defense in depth: re-validate every field that reaches wg0.conf right here
+	// at the sink, before rendering/writing. The HTTP handlers already validate
+	// new input on ingress, but that only protects data entering from now on — a
+	// peer name persisted before ingress validation existed (e.g. an accidental
+	// newline from a malformed client) must never be rendered into the
+	// root-owned config unchecked. If any renderable field is invalid we refuse
+	// to write the file or touch systemd.
+	if err := validateRenderable(c); err != nil {
+		return "", err
+	}
 	if s.exec.IsDryRun() {
 		return "dry-run", nil
 	}
@@ -229,6 +239,27 @@ var peerNameRe = regexp.MustCompile(`^[\p{L}\p{N} ._-]{1,64}$`)
 func ValidatePeerName(name string) error {
 	if !peerNameRe.MatchString(name) {
 		return fmt.Errorf("nome do cliente inválido — use letras, números, espaço, ponto, hífen ou underscore (1-64 caracteres)")
+	}
+	return nil
+}
+
+// validateRenderable is the sink-side guard used by Apply(): it re-checks every
+// field that ServerConfig() writes into wg0.conf (the server Address and each
+// peer's Name comment) so a value persisted before ingress validation existed
+// can never reach the rendered, root-owned config. It intentionally duplicates
+// the handler-side checks — that duplication is the defense in depth: the sink
+// stays safe even if some future code path reaches Apply() without going
+// through the validating HTTP handlers.
+func validateRenderable(c Config) error {
+	if c.Address != "" {
+		if _, _, err := net.ParseCIDR(c.Address); err != nil {
+			return fmt.Errorf("endereço do servidor inválido no config persistido: %w", err)
+		}
+	}
+	for _, p := range c.Peers {
+		if err := ValidatePeerName(p.Name); err != nil {
+			return fmt.Errorf("nome de cliente inválido no config persistido (id %s): %w", p.ID, err)
+		}
 	}
 	return nil
 }
