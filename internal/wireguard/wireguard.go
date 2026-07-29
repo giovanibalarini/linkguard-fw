@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"golang.org/x/crypto/curve25519"
@@ -214,4 +215,48 @@ func (s *Service) Status(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+// ─── input validation ─────────────────────────────────────────────────────────
+
+var peerNameRe = regexp.MustCompile(`^[\p{L}\p{N} ._-]{1,64}$`)
+
+// ValidatePeerName rejects anything that isn't a safe display label. Peer.Name
+// is rendered as a bare "# %s\n" comment line in ServerConfig() — an embedded
+// newline would close the comment and let an attacker inject an entirely new
+// [Peer] block (or any other wg0.conf directive) that wg-quick then applies as
+// root on the next restart.
+func ValidatePeerName(name string) error {
+	if !peerNameRe.MatchString(name) {
+		return fmt.Errorf("nome do cliente inválido — use letras, números, espaço, ponto, hífen ou underscore (1-64 caracteres)")
+	}
+	return nil
+}
+
+var endpointRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?)*$`)
+
+// ValidateConfig rejects any server-config field that could break out of its
+// slot when ServerConfig() renders wg0.conf. Address is the field that
+// actually reaches wg0.conf (Endpoint/DNS only reach the client .conf
+// returned to the browser, not this server's own config) — all four are
+// validated for defense in depth and because the original spec already
+// expected a real format here.
+func ValidateConfig(c Config) error {
+	if c.Address != "" {
+		if _, _, err := net.ParseCIDR(c.Address); err != nil {
+			return fmt.Errorf("endereço do servidor inválido (use CIDR, ex.: 10.7.0.1/24): %w", err)
+		}
+	}
+	if c.Subnet != "" {
+		if _, _, err := net.ParseCIDR(c.Subnet); err != nil {
+			return fmt.Errorf("sub-rede inválida (use CIDR, ex.: 10.7.0.0/24): %w", err)
+		}
+	}
+	if c.DNS != "" && net.ParseIP(c.DNS) == nil {
+		return fmt.Errorf("DNS inválido (use um endereço IP)")
+	}
+	if c.Endpoint != "" && net.ParseIP(c.Endpoint) == nil && !endpointRe.MatchString(c.Endpoint) {
+		return fmt.Errorf("endpoint inválido (use um IP ou hostname, ex.: meufirewall.duckdns.org)")
+	}
+	return nil
 }

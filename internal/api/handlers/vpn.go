@@ -108,6 +108,11 @@ func (h *VPNHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	c.DNS = strings.TrimSpace(in.DNS)
 	c.Enabled = in.Enabled
 
+	if err := wireguard.ValidateConfig(c); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Generate the server keypair the first time it is needed.
 	if c.PrivateKey == "" || c.PublicKey == "" {
 		priv, pub, err := wireguard.GenerateKeypair()
@@ -135,8 +140,13 @@ func (h *VPNHandler) AddPeer(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name string `json:"name"`
 	}
-	if err := decodeJSON(r, &in); err != nil || strings.TrimSpace(in.Name) == "" {
-		writeError(w, http.StatusBadRequest, "nome do cliente é obrigatório")
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	if err := wireguard.ValidatePeerName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	c := h.load()
@@ -152,7 +162,7 @@ func (h *VPNHandler) AddPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	peer := wireguard.Peer{
 		ID:         uuid.NewString(),
-		Name:       strings.TrimSpace(in.Name),
+		Name:       name,
 		PublicKey:  pub,
 		PrivateKey: priv,
 		AllowedIP:  ip,
