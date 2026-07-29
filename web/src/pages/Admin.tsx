@@ -459,9 +459,9 @@ function RolesTab() {
         </button>
       </div>
 
-      {fetchError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{fetchError}</div>}
+      {fetchError && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">{fetchError}</div>}
 
-      <div className="card">
+      <Panel>
         {loading ? (
           <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
         ) : fetchError ? (
@@ -510,122 +510,108 @@ function RolesTab() {
             ))}
           </div>
         )}
-      </div>
+      </Panel>
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">{isEditing ? 'Editar Papel' : 'Novo Papel'}</h2>
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? 'Editar Papel' : 'Novo Papel'} size="lg">
+        <form onSubmit={handleSave} className="p-6 space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="label">Nome *</label>
+              <input
+                className="input w-full"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                required
+              />
             </div>
-            <form onSubmit={handleSave} className="p-6 space-y-4 overflow-y-auto">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="label">Nome *</label>
-                  <input
-                    className="input w-full"
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="label">Descrição</label>
-                  <input
-                    className="input w-full"
-                    value={form.description}
-                    onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="label">Permissões por funcionalidade</label>
-                <div className="space-y-4 mt-2">
-                  {areas.map(({ area, entries }) => {
-                    const keys = entries.map((e) => e.key);
-                    const selectedCount = keys.filter((k) => form.permissions.includes(k)).length;
-                    const allSelected = selectedCount === keys.length && keys.length > 0;
-                    return (
-                      <div key={area}>
-                        <div className="flex items-center justify-between mb-2 gap-2">
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              className="w-4 h-4"
-                              checked={allSelected}
-                              ref={(el) => {
-                                if (el) el.indeterminate = selectedCount > 0 && !allSelected;
-                              }}
-                              onChange={() => toggleArea(keys, !allSelected)}
-                              aria-label={`${allSelected ? 'Limpar' : 'Marcar tudo'} em ${area}`}
-                              title={allSelected ? 'Limpar' : 'Marcar tudo'}
-                            />
-                            <span className="text-gray-400 text-xs font-semibold uppercase tracking-wide">{area}</span>
-                          </label>
-                          <span className="text-gray-600 text-xs whitespace-nowrap">{selectedCount}/{keys.length} selecionadas</span>
-                        </div>
-                        <div className="grid sm:grid-cols-2 gap-2">
-                          {entries.map((e) => (
-                            <label key={e.key} className="flex items-start gap-2 cursor-pointer" title={e.description}>
-                              <input
-                                type="checkbox"
-                                className="w-4 h-4 mt-0.5"
-                                checked={form.permissions.includes(e.key)}
-                                onChange={() => togglePerm(e.key)}
-                              />
-                              <span className="text-gray-200 text-sm">{e.label}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
-              <div className="flex gap-3 pt-2">
-                <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
-                  {saving ? 'Salvando...' : 'Salvar'}
-                </button>
-                <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
-                  Cancelar
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {deleteTarget && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">Excluir papel</h2>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-gray-300 text-sm">
-                Tem certeza que deseja excluir o papel <span className="font-medium text-white">"{deleteTarget.name}"</span>? Esta ação não pode ser desfeita.
-              </p>
-              {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  disabled={deleting}
-                  onClick={handleDelete}
-                  className="btn-primary flex-1 bg-red-600 hover:bg-red-500 border-red-600 disabled:opacity-50"
-                >
-                  {deleting ? 'Excluindo...' : 'Excluir'}
-                </button>
-                <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">
-                  Cancelar
-                </button>
-              </div>
+            <div>
+              <label className="label">Descrição</label>
+              <input
+                className="input w-full"
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+              />
             </div>
           </div>
+
+          <div>
+            <label className="label">Permissões por funcionalidade</label>
+            <div className="space-y-4 mt-2">
+              {areas.map(({ area, entries }) => {
+                const keys = entries.map((e) => e.key);
+                const selectedCount = keys.filter((k) => form.permissions.includes(k)).length;
+                const allSelected = selectedCount === keys.length && keys.length > 0;
+                return (
+                  <div key={area}>
+                    <div className="flex items-center justify-between mb-2 gap-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4"
+                          checked={allSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = selectedCount > 0 && !allSelected;
+                          }}
+                          onChange={() => toggleArea(keys, !allSelected)}
+                          aria-label={`${allSelected ? 'Limpar' : 'Marcar tudo'} em ${area}`}
+                          title={allSelected ? 'Limpar' : 'Marcar tudo'}
+                        />
+                        <span className="text-gray-400 text-xs font-semibold uppercase tracking-wide">{area}</span>
+                      </label>
+                      <span className="text-gray-600 text-xs whitespace-nowrap">{selectedCount}/{keys.length} selecionadas</span>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      {entries.map((e) => (
+                        <label key={e.key} className="flex items-start gap-2 cursor-pointer" title={e.description}>
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 mt-0.5"
+                            checked={form.permissions.includes(e.key)}
+                            onChange={() => togglePerm(e.key)}
+                          />
+                          <span className="text-gray-200 text-sm">{e.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
+          <div className="flex gap-3 pt-2">
+            <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
+              {saving ? 'Salvando...' : 'Salvar'}
+            </button>
+            <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
+              Cancelar
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Excluir papel" size="sm">
+        <div className="p-6 space-y-4">
+          <p className="text-gray-300 text-sm">
+            Tem certeza que deseja excluir o papel <span className="font-medium text-white">"{deleteTarget?.name}"</span>? Esta ação não pode ser desfeita.
+          </p>
+          {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={handleDelete}
+              className="btn-primary flex-1 bg-red-600 hover:bg-red-500 border-red-600 disabled:opacity-50"
+            >
+              {deleting ? 'Excluindo...' : 'Excluir'}
+            </button>
+            <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">
+              Cancelar
+            </button>
+          </div>
         </div>
-      )}
+      </Modal>
     </div>
   );
 }
