@@ -6,6 +6,7 @@ import {
 import client from '../api/client';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
+import IconButton from '../components/ui/IconButton';
 import { useAuth } from '../context/AuthContext';
 import PortForwarding from '../components/PortForwarding';
 import type { IptablesBackup, NftManaged, NftUserRule, SystemMetrics } from '../types';
@@ -169,20 +170,36 @@ export default function Firewall() {
                 {rules.map((r, i) => {
                   const a = ACTIONS[r.action as Action] || ACTIONS.drop;
                   return (
-                    <div key={r.handle} className="flex items-center gap-3 bg-gray-800/60 rounded-lg px-3 py-2">
-                      <span className="text-gray-600 text-xs w-5 text-right select-none">{i + 1}</span>
+                    <div key={r.handle} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 flex-wrap bg-gray-800/60 rounded-lg px-3 py-2">
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <span className="text-gray-600 text-xs w-5 text-right select-none shrink-0">{i + 1}</span>
+                        {canWrite && (
+                          <div className="flex flex-col shrink-0">
+                            <IconButton
+                              icon={ArrowUp}
+                              onClick={() => moveRule(r.handle, 'up')}
+                              disabled={i === 0 || busy}
+                              label="Mover regra para cima"
+                              variant="custom"
+                              className="text-gray-500 hover:text-gray-200 disabled:opacity-20"
+                            />
+                            <IconButton
+                              icon={ArrowDown}
+                              onClick={() => moveRule(r.handle, 'down')}
+                              disabled={i === rules.length - 1 || busy}
+                              label="Mover regra para baixo"
+                              variant="custom"
+                              className="text-gray-500 hover:text-gray-200 disabled:opacity-20"
+                            />
+                          </div>
+                        )}
+                        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium border shrink-0 ${a.ring} ${a.color}`}><a.Icon className="w-3 h-3" />{a.label}</span>
+                        <span className="text-gray-300 text-sm flex-1 min-w-0 truncate">{describe(r)}</span>
+                      </div>
                       {canWrite && (
-                        <div className="flex flex-col">
-                          <button onClick={() => moveRule(r.handle, 'up')} disabled={i === 0 || busy} className="text-gray-500 hover:text-gray-200 disabled:opacity-20"><ArrowUp className="w-3.5 h-3.5" /></button>
-                          <button onClick={() => moveRule(r.handle, 'down')} disabled={i === rules.length - 1 || busy} className="text-gray-500 hover:text-gray-200 disabled:opacity-20"><ArrowDown className="w-3.5 h-3.5" /></button>
-                        </div>
-                      )}
-                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium border ${a.ring} ${a.color}`}><a.Icon className="w-3 h-3" />{a.label}</span>
-                      <span className="text-gray-300 text-sm flex-1 min-w-0 truncate">{describe(r)}</span>
-                      {canWrite && (
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button onClick={() => openEdit(r)} className="text-gray-400 hover:text-blue-400"><Pencil className="w-4 h-4" /></button>
-                          <button onClick={() => delRule(r)} className="text-gray-400 hover:text-red-400"><Trash2 className="w-4 h-4" /></button>
+                        <div className="flex justify-end gap-1 sm:justify-start shrink-0">
+                          <IconButton icon={Pencil} onClick={() => openEdit(r)} label="Editar regra" />
+                          <IconButton icon={Trash2} onClick={() => delRule(r)} label="Excluir regra" variant="danger" />
                         </div>
                       )}
                     </div>
@@ -247,21 +264,61 @@ export default function Firewall() {
           {backups.length === 0 ? (
             <div className="text-center py-12"><Download className="w-12 h-12 text-gray-700 mx-auto mb-3" /><p className="text-gray-400">Nenhum snapshot disponível</p></div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">Label</th><th className="pb-3 pr-4 font-medium">Tamanho</th><th className="pb-3 pr-4 font-medium">Data</th>{canWrite && <th className="pb-3 font-medium">Ações</th>}</tr></thead>
-                <tbody>
-                  {backups.map((b) => (
-                    <tr key={b.id} className="table-row">
-                      <td className="py-3 pr-4 text-white">{b.label}</td>
-                      <td className="py-3 pr-4 text-gray-400">{(b.rules.length / 1024).toFixed(1)} KB</td>
-                      <td className="py-3 pr-4 text-gray-400">{new Date(b.created_at).toLocaleString()}</td>
-                      {canWrite && <td className="py-3"><button onClick={() => handleRollback(b)} disabled={busy} className="text-gray-400 hover:text-blue-400 flex items-center gap-1 disabled:opacity-50"><RotateCcw className="w-4 h-4" /> Restaurar</button></td>}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              {/* Mobile: stacked cards (< sm) */}
+              <div className="sm:hidden space-y-2">
+                {backups.map((b) => (
+                  <div key={b.id} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-white font-medium truncate">{b.label}</div>
+                      </div>
+                      {canWrite && (
+                        <IconButton
+                          icon={RotateCcw}
+                          onClick={() => handleRollback(b)}
+                          disabled={busy}
+                          label="Restaurar"
+                          className="shrink-0"
+                        />
+                      )}
+                    </div>
+                    <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                      <dt className="text-gray-500">Tamanho</dt>
+                      <dd className="text-gray-400 font-mono">{(b.rules.length / 1024).toFixed(1)} KB</dd>
+                      <dt className="text-gray-500">Data</dt>
+                      <dd className="text-gray-400 font-mono">{new Date(b.created_at).toLocaleString()}</dd>
+                    </dl>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop: table (>= sm) */}
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">Label</th><th className="pb-3 pr-4 font-medium">Tamanho</th><th className="pb-3 pr-4 font-medium">Data</th>{canWrite && <th className="pb-3 font-medium">Ações</th>}</tr></thead>
+                  <tbody>
+                    {backups.map((b) => (
+                      <tr key={b.id} className="table-row">
+                        <td className="py-3 pr-4 text-white">{b.label}</td>
+                        <td className="py-3 pr-4 text-gray-400">{(b.rules.length / 1024).toFixed(1)} KB</td>
+                        <td className="py-3 pr-4 text-gray-400">{new Date(b.created_at).toLocaleString()}</td>
+                        {canWrite && (
+                          <td className="py-3">
+                            <IconButton
+                              icon={RotateCcw}
+                              onClick={() => handleRollback(b)}
+                              disabled={busy}
+                              label="Restaurar"
+                            />
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </Panel>
       )}
