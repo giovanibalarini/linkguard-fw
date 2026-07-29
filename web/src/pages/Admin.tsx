@@ -4,6 +4,7 @@ import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
+import IconButton from '../components/ui/IconButton';
 import type { AppUser, AppRole, PermissionCatalogEntry } from '../types';
 
 type Tab = 'users' | 'roles';
@@ -189,24 +190,26 @@ function UsersTab() {
         ) : users.length === 0 ? (
           <div className="text-center py-12 text-gray-500">Nenhum usuário</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-800">
-                  <th className="pb-3 pr-4 font-medium">Usuário</th>
-                  <th className="pb-3 pr-4 font-medium">Papéis</th>
-                  <th className="pb-3 pr-4 font-medium">Criado em</th>
-                  <th className="pb-3 font-medium">Ações</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => (
-                  <tr key={u.id} className="table-row">
-                    <td className="py-3 pr-4">
-                      <span className="text-white font-medium">{u.username}</span>
-                      {currentUser?.id === u.id && <span className="text-gray-600 text-xs ml-2">(você)</span>}
-                    </td>
-                    <td className="py-3 pr-4">
+          <>
+            {/* Mobile: stacked cards (< sm) */}
+            <div className="sm:hidden space-y-2">
+              {users.map((u) => (
+                <div key={u.id} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-white font-medium truncate">
+                        {u.username}
+                        {currentUser?.id === u.id && <span className="text-gray-600 text-xs ml-2">(você)</span>}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 gap-1">
+                      <IconButton icon={Pencil} onClick={() => openEdit(u)} label={`Editar usuário ${u.username}`} />
+                      <IconButton icon={Trash2} onClick={() => openDelete(u)} label={`Excluir usuário ${u.username}`} variant="danger" />
+                    </div>
+                  </div>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-gray-500">Papéis</dt>
+                    <dd className="text-gray-400">
                       <div className="flex flex-wrap gap-1">
                         {u.role_ids.length === 0 && <span className="text-gray-600 text-xs">sem papel</span>}
                         {u.role_ids.map((rid) => (
@@ -215,33 +218,55 @@ function UsersTab() {
                           </span>
                         ))}
                       </div>
-                    </td>
-                    <td className="py-3 pr-4 text-gray-500 text-xs">{new Date(u.created_at).toLocaleString()}</td>
-                    <td className="py-3">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => openEdit(u)}
-                          title="Editar usuário"
-                          aria-label={`Editar usuário ${u.username}`}
-                          className="text-gray-400 hover:text-blue-400 transition-colors"
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => openDelete(u)}
-                          title="Excluir usuário"
-                          aria-label={`Excluir usuário ${u.username}`}
-                          className="text-gray-400 hover:text-red-400 transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
+                    </dd>
+                    <dt className="text-gray-500">Criado em</dt>
+                    <dd className="text-gray-400 font-mono">{new Date(u.created_at).toLocaleString()}</dd>
+                  </dl>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop: table (>= sm) */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className="hidden sm:table w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-800">
+                    <th className="pb-3 pr-4 font-medium">Usuário</th>
+                    <th className="pb-3 pr-4 font-medium">Papéis</th>
+                    <th className="pb-3 pr-4 font-medium">Criado em</th>
+                    <th className="pb-3 font-medium">Ações</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {users.map((u) => (
+                    <tr key={u.id} className="table-row">
+                      <td className="py-3 pr-4">
+                        <span className="text-white font-medium">{u.username}</span>
+                        {currentUser?.id === u.id && <span className="text-gray-600 text-xs ml-2">(você)</span>}
+                      </td>
+                      <td className="py-3 pr-4">
+                        <div className="flex flex-wrap gap-1">
+                          {u.role_ids.length === 0 && <span className="text-gray-600 text-xs">sem papel</span>}
+                          {u.role_ids.map((rid) => (
+                            <span key={rid} className="px-2 py-0.5 rounded bg-blue-600/20 text-blue-300 text-xs">
+                              {roleName.get(rid) ?? rid}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-3 pr-4 text-gray-500 text-xs">{new Date(u.created_at).toLocaleString()}</td>
+                      <td className="py-3">
+                        <div className="flex gap-2">
+                          <IconButton icon={Pencil} onClick={() => openEdit(u)} label={`Editar usuário ${u.username}`} />
+                          <IconButton icon={Trash2} onClick={() => openDelete(u)} label={`Excluir usuário ${u.username}`} variant="danger" />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </Panel>
 
@@ -485,23 +510,9 @@ function RolesTab() {
                     <p className="text-gray-500 text-xs mt-0.5">{r.description || '—'}</p>
                   </div>
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => openEdit(r)}
-                      title="Editar papel"
-                      aria-label={`Editar papel ${r.name}`}
-                      className="text-gray-400 hover:text-blue-400 transition-colors"
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
+                    <IconButton icon={Pencil} onClick={() => openEdit(r)} label={`Editar papel ${r.name}`} />
                     {!r.builtin && (
-                      <button
-                        onClick={() => openDelete(r)}
-                        title="Excluir papel"
-                        aria-label={`Excluir papel ${r.name}`}
-                        className="text-gray-400 hover:text-red-400 transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <IconButton icon={Trash2} onClick={() => openDelete(r)} label={`Excluir papel ${r.name}`} variant="danger" />
                     )}
                   </div>
                 </div>
