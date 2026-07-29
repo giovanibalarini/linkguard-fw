@@ -6,6 +6,7 @@ import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import HelpTip from '../components/HelpTip';
 import Panel from '../components/ui/Panel';
+import Modal from '../components/ui/Modal';
 import type { VPNView, VPNConfig, AddPeerResponse } from '../types';
 
 export default function Vpn() {
@@ -204,22 +205,24 @@ function PeerConfigModal({ name, config, onClose }: { name: string; config: stri
     a.click(); URL.revokeObjectURL(url);
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg p-5" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-white font-semibold">Configuração de "{name}"</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-200"><X className="w-5 h-5" /></button>
-        </div>
-        <p className="text-gray-500 text-xs mb-3">Importe este arquivo no app WireGuard do aparelho (ou cole o conteúdo). Guarde com cuidado: contém a chave privada do cliente.</p>
-        <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs font-mono text-gray-300 overflow-x-auto whitespace-pre max-h-60">{config}</pre>
-        <div className="flex gap-2 mt-4">
-          <button onClick={copy} className="btn-secondary flex items-center gap-1.5 text-sm">
-            {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />} {copied ? 'Copiado' : 'Copiar'}
-          </button>
-          <button onClick={download} className="btn-primary flex items-center gap-1.5 text-sm"><Download className="w-4 h-4" /> Baixar .conf</button>
-        </div>
+    <Modal
+      open
+      onClose={onClose}
+      closeOnBackdropClick
+      title={`Configuração de "${name}"`}
+      size="md"
+      className="bg-gray-900 border border-gray-800 rounded-xl p-5"
+      action={<button onClick={onClose} className="text-gray-500 hover:text-gray-200"><X className="w-5 h-5" /></button>}
+    >
+      <p className="text-gray-500 text-xs mb-3">Importe este arquivo no app WireGuard do aparelho (ou cole o conteúdo). Guarde com cuidado: contém a chave privada do cliente.</p>
+      <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs font-mono text-gray-300 overflow-x-auto whitespace-pre max-h-60">{config}</pre>
+      <div className="flex gap-2 mt-4">
+        <button onClick={copy} className="btn-secondary flex items-center gap-1.5 text-sm">
+          {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />} {copied ? 'Copiado' : 'Copiar'}
+        </button>
+        <button onClick={download} className="btn-primary flex items-center gap-1.5 text-sm"><Download className="w-4 h-4" /> Baixar .conf</button>
       </div>
-    </div>
+    </Modal>
   );
 }
 
