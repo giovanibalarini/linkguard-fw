@@ -109,33 +109,60 @@ export default function Logs() {
             <p className="text-gray-400 font-medium">Nenhum log disponível</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-800">
-                  <th className="pb-3 pr-4 font-medium">Data/Hora</th>
-                  <th className="pb-3 pr-4 font-medium">Usuário</th>
-                  <th className="pb-3 pr-4 font-medium">Ação</th>
-                  <th className="pb-3 pr-4 font-medium">Recurso</th>
-                  <th className="pb-3 font-medium">Detalhes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logs.map(log => (
-                  <tr key={log.id} className="table-row">
-                    <td className="py-3 pr-4 text-gray-500 text-xs">{new Date(log.created_at).toLocaleString()}</td>
-                    <td className="py-3 pr-4 text-gray-300">{log.user}</td>
-                    <td className="py-3 pr-4">
-                      <span className={`font-mono text-xs ${actionColors[log.action.toLowerCase()] ?? 'text-gray-400'}`}>
+          <div>
+            {/* Mobile: stacked cards (< sm) */}
+            <div className="sm:hidden space-y-2">
+              {logs.map(log => (
+                <div key={log.id} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <span className={`font-mono text-xs font-medium ${actionColors[log.action.toLowerCase()] ?? 'text-gray-400'}`}>
                         {log.action}
                       </span>
-                    </td>
-                    <td className="py-3 pr-4 text-gray-400 font-mono text-xs">{log.resource || '—'}</td>
-                    <td className="py-3 text-gray-500 text-xs max-w-xs truncate" title={log.details}>{log.details || '—'}</td>
+                      <div className="text-white font-medium truncate">{log.resource || '—'}</div>
+                    </div>
+                    <div className="text-gray-500 text-xs shrink-0 text-right">{new Date(log.created_at).toLocaleString()}</div>
+                  </div>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-gray-500">Usuário</dt>
+                    <dd className="text-gray-300">{log.user}</dd>
+                    <dt className="text-gray-500">Detalhes</dt>
+                    <dd className="text-gray-400">{log.details || '—'}</dd>
+                  </dl>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop: table (>= sm) */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-800">
+                    <th className="pb-3 pr-4 font-medium">Data/Hora</th>
+                    <th className="pb-3 pr-4 font-medium">Usuário</th>
+                    <th className="pb-3 pr-4 font-medium">Ação</th>
+                    <th className="pb-3 pr-4 font-medium">Recurso</th>
+                    <th className="pb-3 font-medium">Detalhes</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {logs.map(log => (
+                    <tr key={log.id} className="table-row">
+                      <td className="py-3 pr-4 text-gray-500 text-xs">{new Date(log.created_at).toLocaleString()}</td>
+                      <td className="py-3 pr-4 text-gray-300">{log.user}</td>
+                      <td className="py-3 pr-4">
+                        <span className={`font-mono text-xs ${actionColors[log.action.toLowerCase()] ?? 'text-gray-400'}`}>
+                          {log.action}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-4 text-gray-400 font-mono text-xs">{log.resource || '—'}</td>
+                      <td className="py-3 text-gray-500 text-xs max-w-xs truncate" title={log.details}>{log.details || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
             {logs.length >= LIMIT && (
               <p className="text-gray-600 text-xs text-center mt-4">
                 Mostrando as {LIMIT} entradas mais recentes
