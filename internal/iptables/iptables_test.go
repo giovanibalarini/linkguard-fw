@@ -179,13 +179,33 @@ func TestReplaceRuleDryRun(t *testing.T) {
 	exec := firewall.NewDryRunExecutor()
 	svc := iptables.NewService(exec)
 
-	if _, err := svc.ReplaceRule(context.Background(), "filter", "INPUT", 2, "-s 10.0.0.0/24 -j ACCEPT"); err != nil {
+	if _, err := svc.ReplaceRule(context.Background(), "mangle", "PREROUTING", 2, "-s 10.0.0.0/24 -j ACCEPT"); err != nil {
 		t.Fatalf("ReplaceRule: %v", err)
 	}
 	if len(exec.Commands) != 1 {
 		t.Fatalf("expected 1 command, got %d", len(exec.Commands))
 	}
-	if exec.Commands[0] != "iptables -t filter -R INPUT 2 -s 10.0.0.0/24 -j ACCEPT" {
+	if exec.Commands[0] != "iptables -t mangle -R PREROUTING 2 -s 10.0.0.0/24 -j ACCEPT" {
 		t.Fatalf("unexpected command: %s", exec.Commands[0])
+	}
+}
+
+func TestCreateRuleRejectsUnknownTableChain(t *testing.T) {
+	m := &mockExecutor{}
+	s := iptables.NewService(m)
+	_, err := s.CreateRule(context.Background(), "nat", "POSTROUTING",
+		"-s 192.168.1.0/24 -j MARK --set-mark 0x1", 0)
+	if err == nil {
+		t.Fatal("expected error for table/chain outside the allowlist, got nil")
+	}
+}
+
+func TestCreateRuleAcceptsMangleprerouting(t *testing.T) {
+	m := &mockExecutor{}
+	s := iptables.NewService(m)
+	_, err := s.CreateRule(context.Background(), "mangle", "PREROUTING",
+		"-s 192.168.1.0/24 -m conntrack --ctstate NEW -j MARK --set-mark 0x1", 0)
+	if err != nil {
+		t.Fatalf("expected mangle/PREROUTING to be accepted, got: %v", err)
 	}
 }

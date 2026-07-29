@@ -181,6 +181,10 @@ export default function Links() {
         setWizardError('Informe a sub-rede LAN para balanceamento (ex.: 192.168.0.0/24).');
         return false;
       }
+      if (!/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(wizardLan.trim())) {
+        setWizardError('Sub-rede inválida — use o formato CIDR, ex.: 192.168.1.0/24.');
+        return false;
+      }
       if (wizardPrimaryWeight + wizardSecondaryWeight !== 100) {
         setWizardError('A soma dos pesos das WANs deve ser 100%.');
         return false;

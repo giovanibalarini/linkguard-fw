@@ -4,7 +4,10 @@ package iptables
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -101,8 +104,8 @@ func (s *Service) Restore(ctx context.Context, rules string) (string, error) {
 // CreateRule inserts/appends a rule in the specified table and chain.
 // ruleSpec should contain only rule arguments (e.g. "-s 10.0.0.0/24 -j ACCEPT").
 func (s *Service) CreateRule(ctx context.Context, table, chain, ruleSpec string, line int) (string, error) {
-	if table == "" || chain == "" {
-		return "", fmt.Errorf("table and chain are required")
+	if err := validateTableChain(table, chain); err != nil {
+		return "", err
 	}
 	if err := validateRuleSpec(ruleSpec); err != nil {
 		return "", err
@@ -133,8 +136,11 @@ func (s *Service) DeleteRule(ctx context.Context, table, chain string, line int)
 // ReplaceRule replaces a rule by table/chain/line number.
 // ruleSpec should contain only rule arguments (e.g. "-s 10.0.0.0/24 -j ACCEPT").
 func (s *Service) ReplaceRule(ctx context.Context, table, chain string, line int, ruleSpec string) (string, error) {
-	if table == "" || chain == "" || line <= 0 {
-		return "", fmt.Errorf("table, chain and valid line are required")
+	if line <= 0 {
+		return "", fmt.Errorf("valid line is required")
+	}
+	if err := validateTableChain(table, chain); err != nil {
+		return "", err
 	}
 	if err := validateRuleSpec(ruleSpec); err != nil {
 		return "", err
@@ -148,41 +154,106 @@ func (s *Service) ReplaceRule(ctx context.Context, table, chain string, line int
 	return s.exec.Execute(ctx, "iptables", args...)
 }
 
+var (
+	allowedModules = map[string]bool{"conntrack": true, "statistic": true}
+	allowedCtstate = map[string]bool{"NEW": true, "ESTABLISHED": true, "RELATED": true, "INVALID": true}
+	allowedMode    = map[string]bool{"random": true, "nth": true}
+	allowedTarget  = map[string]bool{"ACCEPT": true, "DROP": true, "REJECT": true, "RETURN": true, "MARK": true}
+	setMarkRe      = regexp.MustCompile(`^0x[0-9a-fA-F]{1,8}$`)
+)
+
+// validateRuleSpec accepts only the exact rule shape the WAN-balance wizard
+// (the sole caller of this legacy endpoint) needs to build:
+//
+//	-s <CIDR> -m conntrack --ctstate <states> [-m statistic --mode <mode> --probability <p>] -j <target> [--set-mark <hex>]
+//
+// Every token must be recognized; anything else — including match/target
+// extensions not in this allowlist — rejects the whole spec. This replaces a
+// denylist that only blocked rule-management flags (-A/-I/-F/...) but let
+// arbitrary -j targets and unvalidated -s/-d values through as extra argv
+// tokens on the real `iptables` invocation.
 func validateRuleSpec(ruleSpec string) error {
 	parts := strings.Fields(strings.TrimSpace(ruleSpec))
-	blockedShort := map[string]struct{}{
-		"-A": {},
-		"-I": {},
-		"-R": {},
-		"-D": {},
-		"-F": {},
-		"-X": {},
-		"-P": {},
-		"-N": {},
-		"-E": {},
-		"-Z": {},
+	if len(parts) == 0 {
+		return fmt.Errorf("rule_spec is required")
 	}
-	blockedLong := map[string]struct{}{
-		"--append":       {},
-		"--insert":       {},
-		"--replace":      {},
-		"--delete":       {},
-		"--flush":        {},
-		"--delete-chain": {},
-		"--policy":       {},
-		"--new-chain":    {},
-		"--rename-chain": {},
-		"--zero":         {},
-	}
-	for _, token := range parts {
-		if _, ok := blockedShort[token]; ok {
-			return fmt.Errorf("rule_spec contains blocked operation: %s", token)
+	i := 0
+	next := func() (string, bool) {
+		if i >= len(parts) {
+			return "", false
 		}
-		if _, ok := blockedLong[strings.ToLower(token)]; ok {
-			return fmt.Errorf("rule_spec contains blocked operation: %s", token)
+		v := parts[i]
+		i++
+		return v, true
+	}
+	for i < len(parts) {
+		flag, _ := next()
+		switch flag {
+		case "-s", "-d":
+			val, ok := next()
+			if !ok {
+				return fmt.Errorf("%s requires a value", flag)
+			}
+			if net.ParseIP(val) == nil {
+				if _, _, err := net.ParseCIDR(val); err != nil {
+					return fmt.Errorf("%s: endereço/CIDR inválido: %q", flag, val)
+				}
+			}
+		case "-m":
+			val, ok := next()
+			if !ok || !allowedModules[val] {
+				return fmt.Errorf("módulo -m não permitido: %q", val)
+			}
+		case "--ctstate":
+			val, ok := next()
+			if !ok {
+				return fmt.Errorf("--ctstate requires a value")
+			}
+			for _, state := range strings.Split(val, ",") {
+				if !allowedCtstate[state] {
+					return fmt.Errorf("--ctstate não permitido: %q", state)
+				}
+			}
+		case "--mode":
+			val, ok := next()
+			if !ok || !allowedMode[val] {
+				return fmt.Errorf("--mode não permitido: %q", val)
+			}
+		case "--probability":
+			val, ok := next()
+			if !ok {
+				return fmt.Errorf("--probability requires a value")
+			}
+			p, err := strconv.ParseFloat(val, 64)
+			if err != nil || p < 0 || p > 1 {
+				return fmt.Errorf("--probability inválida: %q", val)
+			}
+		case "-j":
+			val, ok := next()
+			if !ok || !allowedTarget[val] {
+				return fmt.Errorf("alvo -j não permitido: %q", val)
+			}
+		case "--set-mark":
+			val, ok := next()
+			if !ok || !setMarkRe.MatchString(val) {
+				return fmt.Errorf("--set-mark inválido: %q", val)
+			}
+		default:
+			return fmt.Errorf("flag não reconhecida: %q", flag)
 		}
 	}
 	return nil
+}
+
+// validateTableChain restricts table/chain to the one combination the WAN-
+// balance wizard (the sole caller of this legacy endpoint) actually uses.
+// Extending this list is a deliberate, explicit decision for a future real
+// use case — not something any caller can widen by just passing a new string.
+func validateTableChain(table, chain string) error {
+	if table == "mangle" && chain == "PREROUTING" {
+		return nil
+	}
+	return fmt.Errorf("table/chain não suportados: %s/%s", table, chain)
 }
 
 // ─── Parser ──────────────────────────────────────────────────────────────────
