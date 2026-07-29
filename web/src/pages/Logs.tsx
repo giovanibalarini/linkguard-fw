@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw, FileText, X } from 'lucide-react';
 import client from '../api/client';
 import type { AuditLog } from '../types';
+import Panel from '../components/ui/Panel';
 
 const ACTIONS = ['create', 'update', 'delete', 'login', 'failover'] as const;
 const LIMIT = 200;
@@ -93,7 +94,7 @@ export default function Logs() {
         <button onClick={fetchData} className="btn-secondary">Buscar</button>
       </div>
 
-      <div className="card">
+      <Panel>
         {loading && logs.length === 0 ? (
           <div className="text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
         ) : logs.length === 0 && error ? (
@@ -142,7 +143,7 @@ export default function Logs() {
             )}
           </div>
         )}
-      </div>
+      </Panel>
     </div>
   );
 }
