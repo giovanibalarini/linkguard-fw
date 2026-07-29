@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -117,7 +118,7 @@ func (h *VPNHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if c.PrivateKey == "" || c.PublicKey == "" {
 		priv, pub, err := wireguard.GenerateKeypair()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "gerar chave do servidor: "+err.Error())
+			writeInternalError(w, fmt.Errorf("gerar chave do servidor: %w", err))
 			return
 		}
 		c.PrivateKey, c.PublicKey = priv, pub

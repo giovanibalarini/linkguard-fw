@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"regexp"
@@ -367,7 +368,7 @@ func (h *NetsvcHandler) Preview(w http.ResponseWriter, r *http.Request) {
 // immediately (bypassing the debounce), validating the config first.
 func (h *NetsvcHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	if err := h.doReload(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "falha ao aplicar: "+err.Error())
+		writeInternalError(w, fmt.Errorf("falha ao aplicar: %w", err))
 		return
 	}
 	auditAction(h.db, r, "netsvc.apply", string(h.provider.Backend()), "")

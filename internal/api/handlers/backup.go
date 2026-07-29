@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -201,7 +202,7 @@ func (h *BackupHandler) ScheduleSet(w http.ResponseWriter, r *http.Request) {
 // RunOnce path the scheduler's ticker uses.
 func (h *BackupHandler) SendNow(w http.ResponseWriter, r *http.Request) {
 	if err := h.sched.RunOnce(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "falha ao enviar backup: "+err.Error())
+		writeInternalError(w, fmt.Errorf("falha ao enviar backup: %w", err))
 		return
 	}
 	auditAction(h.db, r, "send", "backup_email", "")

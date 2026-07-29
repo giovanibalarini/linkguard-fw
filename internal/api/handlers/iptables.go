@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -82,13 +83,13 @@ func (h *IptablesHandler) Backup(w http.ResponseWriter, r *http.Request) {
 
 	rules, err := h.svc.Save(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save iptables rules: "+err.Error())
+		writeInternalError(w, fmt.Errorf("failed to save iptables rules: %w", err))
 		return
 	}
 
 	backup := &storage.IptablesBackup{Label: body.Label, Rules: rules}
 	if err := h.db.CreateIptablesBackup(backup); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to store backup: "+err.Error())
+		writeInternalError(w, fmt.Errorf("failed to store backup: %w", err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, backup)
@@ -137,7 +138,7 @@ func (h *IptablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.svc.Restore(r.Context(), target.Rules)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "rollback failed: "+err.Error())
+		writeInternalError(w, fmt.Errorf("rollback failed: %w", err))
 		return
 	}
 
@@ -166,7 +167,7 @@ func (h *IptablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	}
 	backup, err := h.createAutoBackup(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		writeInternalError(w, fmt.Errorf("failed to create backup: %w", err))
 		return
 	}
 	out, err := h.svc.CreateRule(r.Context(), body.Table, body.Chain, body.RuleSpec, body.Line)
@@ -198,7 +199,7 @@ func (h *IptablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	}
 	backup, err := h.createAutoBackup(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		writeInternalError(w, fmt.Errorf("failed to create backup: %w", err))
 		return
 	}
 	out, err := h.svc.DeleteRule(r.Context(), body.Table, body.Chain, body.Line)
@@ -231,7 +232,7 @@ func (h *IptablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	}
 	backup, err := h.createAutoBackup(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create backup: "+err.Error())
+		writeInternalError(w, fmt.Errorf("failed to create backup: %w", err))
 		return
 	}
 	out, err := h.svc.ReplaceRule(r.Context(), body.Table, body.Chain, body.Line, body.RuleSpec)

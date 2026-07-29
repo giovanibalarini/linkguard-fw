@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -242,12 +243,12 @@ func (h *NftablesHandler) Backup(w http.ResponseWriter, r *http.Request) {
 	}
 	rs, err := h.svc.Save(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read nft ruleset: "+err.Error())
+		writeInternalError(w, fmt.Errorf("failed to read nft ruleset: %w", err))
 		return
 	}
 	backup := &storage.IptablesBackup{Label: body.Label, Rules: rs}
 	if err := h.db.CreateIptablesBackup(backup); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to store backup: "+err.Error())
+		writeInternalError(w, fmt.Errorf("failed to store backup: %w", err))
 		return
 	}
 	auditAction(h.db, r, "nft.backup", "ruleset", body.Label)
@@ -294,7 +295,7 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := h.svc.Restore(r.Context(), target.Rules)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "rollback failed: "+err.Error())
+		writeInternalError(w, fmt.Errorf("rollback failed: %w", err))
 		return
 	}
 	auditAction(h.db, r, "nft.rollback", "ruleset", target.Label)
