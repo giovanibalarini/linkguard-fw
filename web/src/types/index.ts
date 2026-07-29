@@ -427,6 +427,22 @@ export interface RestoreResult {
   secrets_to_reconfigure: string[];
 }
 
+export interface BackupPassphraseStatusResponse {
+  configured: boolean;
+}
+
+export type BackupSchedule = 'off' | 'daily' | 'weekly' | 'monthly';
+
+export interface BackupScheduleResponse {
+  schedule: BackupSchedule;
+}
+
+export interface BackupLastRunResponse {
+  ok: boolean;
+  error?: string;
+  at: number; // unix seconds, 0 se nunca rodou
+}
+
 // ─── Assistente de IA (BYOK) ────────────────────────────────────────────────
 
 export interface AIStatus {
