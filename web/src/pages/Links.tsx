@@ -7,6 +7,7 @@ import StatusBadge from '../components/StatusBadge';
 import client from '../api/client';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
+import IconButton from '../components/ui/IconButton';
 import type { WanLink, SystemMetrics, InterfaceMetrics } from '../types';
 
 const emptyLink: Partial<WanLink> = {
@@ -352,55 +353,87 @@ export default function Links() {
             <p className="text-gray-600 text-sm mt-1">Clique em "Novo Link" para começar</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-800">
-                  <th className="pb-3 pr-4 font-medium">Nome</th>
-                  <th className="pb-3 pr-4 font-medium">Interface</th>
-                  <th className="pb-3 pr-4 font-medium">IP / Gateway</th>
-                  <th className="pb-3 pr-4 font-medium">Peso</th>
-                  <th className="pb-3 pr-4 font-medium">Latência</th>
-                  <th className="pb-3 pr-4 font-medium">Perda</th>
-                  <th className="pb-3 pr-4 font-medium">Status</th>
-                  <th className="pb-3 font-medium">Ações</th>
-                </tr>
-              </thead>
-              <tbody>
-                {links.map(link => (
-                  <tr key={link.id} className="table-row">
-                    <td className="py-3 pr-4">
-                      <div className="text-white font-medium">{link.name}</div>
+          <>
+            {/* Mobile: stacked cards (< sm) */}
+            <div className="sm:hidden space-y-2">
+              {links.map(link => (
+                <div key={link.id} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-white font-medium truncate">{link.name}</div>
                       {!link.enabled && <span className="text-gray-600 text-xs">desativado</span>}
-                    </td>
-                    <td className="py-3 pr-4 text-gray-400 font-mono">{formatInterfaceLabel(link.interface)}</td>
-                    <td className="py-3 pr-4">
-                      <div className="text-gray-400 font-mono text-xs">{link.ip_address || '—'}</div>
-                      <div className="text-gray-600 font-mono text-xs">{link.gateway || '—'}</div>
-                    </td>
-                    <td className="py-3 pr-4 text-gray-400">{link.weight}</td>
-                    <td className="py-3 pr-4 text-gray-400">
-                      {link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'}
-                    </td>
-                    <td className="py-3 pr-4 text-gray-400">
-                      {link.packet_loss.toFixed(1)}%
-                    </td>
-                    <td className="py-3 pr-4"><StatusBadge status={link.status} /></td>
-                    <td className="py-3">
-                      <div className="flex gap-2">
-                        <button onClick={() => openEdit(link)} className="text-gray-400 hover:text-blue-400 transition-colors">
-                          <Pencil className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => requestDelete(link.id, link.name)} className="text-gray-400 hover:text-red-400 transition-colors">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <StatusBadge status={link.status} />
+                      <IconButton icon={Pencil} onClick={() => openEdit(link)} label="Editar link" />
+                      <IconButton icon={Trash2} onClick={() => requestDelete(link.id, link.name)} label="Excluir link" variant="danger" />
+                    </div>
+                  </div>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-gray-500">Interface</dt>
+                    <dd className="text-gray-400 font-mono">{formatInterfaceLabel(link.interface)}</dd>
+                    <dt className="text-gray-500">IP</dt>
+                    <dd className="text-gray-400 font-mono">{link.ip_address || '—'}</dd>
+                    <dt className="text-gray-500">Gateway</dt>
+                    <dd className="text-gray-400 font-mono">{link.gateway || '—'}</dd>
+                    <dt className="text-gray-500">Peso</dt>
+                    <dd className="text-gray-400">{link.weight}</dd>
+                    <dt className="text-gray-500">Latência</dt>
+                    <dd className="text-gray-400">{link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'}</dd>
+                    <dt className="text-gray-500">Perda</dt>
+                    <dd className="text-gray-400">{link.packet_loss.toFixed(1)}%</dd>
+                  </dl>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop: table (>= sm) */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-800">
+                    <th className="pb-3 pr-4 font-medium">Nome</th>
+                    <th className="pb-3 pr-4 font-medium">Interface</th>
+                    <th className="pb-3 pr-4 font-medium">IP / Gateway</th>
+                    <th className="pb-3 pr-4 font-medium">Peso</th>
+                    <th className="pb-3 pr-4 font-medium">Latência</th>
+                    <th className="pb-3 pr-4 font-medium">Perda</th>
+                    <th className="pb-3 pr-4 font-medium">Status</th>
+                    <th className="pb-3 font-medium">Ações</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {links.map(link => (
+                    <tr key={link.id} className="table-row">
+                      <td className="py-3 pr-4">
+                        <div className="text-white font-medium">{link.name}</div>
+                        {!link.enabled && <span className="text-gray-600 text-xs">desativado</span>}
+                      </td>
+                      <td className="py-3 pr-4 text-gray-400 font-mono">{formatInterfaceLabel(link.interface)}</td>
+                      <td className="py-3 pr-4">
+                        <div className="text-gray-400 font-mono text-xs">{link.ip_address || '—'}</div>
+                        <div className="text-gray-600 font-mono text-xs">{link.gateway || '—'}</div>
+                      </td>
+                      <td className="py-3 pr-4 text-gray-400">{link.weight}</td>
+                      <td className="py-3 pr-4 text-gray-400">
+                        {link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'}
+                      </td>
+                      <td className="py-3 pr-4 text-gray-400">
+                        {link.packet_loss.toFixed(1)}%
+                      </td>
+                      <td className="py-3 pr-4"><StatusBadge status={link.status} /></td>
+                      <td className="py-3">
+                        <div className="flex gap-2">
+                          <IconButton icon={Pencil} onClick={() => openEdit(link)} label="Editar link" />
+                          <IconButton icon={Trash2} onClick={() => requestDelete(link.id, link.name)} label="Excluir link" variant="danger" />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </Panel>
 
