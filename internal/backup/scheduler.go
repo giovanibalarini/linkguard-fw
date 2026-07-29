@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
@@ -61,6 +62,13 @@ type Scheduler struct {
 	sender  emailSender
 	alerts  *alerts.Service
 	version string
+
+	// mu serializes RunOnce end-to-end (reading the previous status through
+	// deciding whether to raise/clear an alert), so a concurrent ticker tick
+	// and a manual "enviar agora" click never race: without it, two
+	// overlapping runs could both read the same prev status, send two
+	// e-mails, and each fire its own (duplicate) alert transition.
+	mu sync.Mutex
 }
 
 // NewScheduler creates a Scheduler.
@@ -108,6 +116,9 @@ func (s *Scheduler) maybeRun(ctx context.Context) {
 // including "first ever run" counting as a transition either way) — a
 // routine daily send never spams a new alert or recovery notification.
 func (s *Scheduler) RunOnce(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	prev := s.lastRun()
 	neverRan := prev.At == 0
 
