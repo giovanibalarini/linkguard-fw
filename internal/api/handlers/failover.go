@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -20,13 +19,7 @@ func NewFailoverHandler(svc *failover.Service) *FailoverHandler {
 
 // ListEvents returns recent failover events.
 func (h *FailoverHandler) ListEvents(w http.ResponseWriter, r *http.Request) {
-	limitStr := r.URL.Query().Get("limit")
-	limit := 50
-	if limitStr != "" {
-		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
-			limit = n
-		}
-	}
+	limit := clampLimit(r.URL.Query().Get("limit"), 50, 1000)
 
 	events, err := h.svc.GetEvents(limit)
 	if err != nil {

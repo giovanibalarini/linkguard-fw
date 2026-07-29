@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -30,6 +31,24 @@ func writeInternalError(w http.ResponseWriter, err error) {
 
 func decodeJSON(r *http.Request, v interface{}) error {
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// clampLimit parses a "limit" query-string value, falling back to def when
+// absent/invalid/non-positive, and never returning more than max — an
+// unbounded limit lets a single authenticated request force the server to
+// load and serialize an unbounded number of rows.
+func clampLimit(raw string, def, max int) int {
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return def
+	}
+	if n > max {
+		return max
+	}
+	return n
 }
 
 // auditAction records who performed a mutating action, for the audit log.

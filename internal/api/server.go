@@ -135,6 +135,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
+	r.Use(maxBodySize(2 << 20)) // 2MB — generoso pra qualquer corpo JSON desta API; backup/restore define seu próprio limite maior
 
 	// CORS — restrict to localhost by default
 	r.Use(cors.Handler(cors.Options{
@@ -404,6 +405,34 @@ func (s *Server) mountWebUI(r *chi.Mux) {
 		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// backupRestorePath is exempt from the global maxBodySize cap: it manages
+// its own, larger http.MaxBytesReader call (see BackupHandler.Restore).
+// http.MaxBytesReader nests rather than replaces — a second call wraps
+// whatever r.Body currently is, and reads still flow through the inner
+// reader first, so the *smaller* of two nested limits always wins, not the
+// most recently applied one. If the global middleware wrapped this route's
+// body too, restore would be silently capped at the global 2MB instead of
+// its intended 32MB. Skipping it here means Restore's own MaxBytesReader
+// call is the only one that ever wraps this route's body.
+const backupRestorePath = "/api/backup/restore"
+
+// maxBodySize caps request bodies globally — the vast majority of this API's
+// endpoints only ever receive small JSON bodies (a few KB at most). Backup
+// restore is the one legitimate exception (see backupRestorePath) and is
+// skipped here so its own, larger limit is the only one applied to it.
+func maxBodySize(limit int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == backupRestorePath {
+				next.ServeHTTP(w, r)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func requestLogger(next http.Handler) http.Handler {

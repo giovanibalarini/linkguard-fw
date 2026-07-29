@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -19,13 +18,7 @@ func NewLogsHandler(db *storage.DB) *LogsHandler {
 
 // List returns recent audit logs.
 func (h *LogsHandler) List(w http.ResponseWriter, r *http.Request) {
-	limitStr := r.URL.Query().Get("limit")
-	limit := 100
-	if limitStr != "" {
-		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
-			limit = n
-		}
-	}
+	limit := clampLimit(r.URL.Query().Get("limit"), 100, 1000)
 
 	filter := r.URL.Query().Get("filter")
 	logs, err := h.db.SearchAuditLogs(filter, limit)
