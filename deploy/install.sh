@@ -62,12 +62,20 @@ install -d -m 0750 "${CONFIG_DIR}"
 
 if [[ ! -f "${CONFIG_DIR}/config.json" ]]; then
     info "Generating default configuration..."
-    cat > "${CONFIG_DIR}/config.json" << 'EOF'
+
+    # Generate a random JWT secret (64 chars) so the service is not
+    # accidentally started with an empty/insecure secret.
+    JWT_SECRET=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 64 || true)
+    if [[ -z "${JWT_SECRET}" ]]; then
+        JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | head -c 64)
+    fi
+
+    cat > "${CONFIG_DIR}/config.json" << EOF
 {
   "listen_addr": "127.0.0.1",
   "port": 9997,
   "db_path": "/var/lib/linkguard-fw/linkguard.db",
-  "jwt_secret": "",
+  "jwt_secret": "${JWT_SECRET}",
   "dry_run": false,
   "debug": false,
   "monitor_interval_seconds": 30,
@@ -80,7 +88,7 @@ if [[ ! -f "${CONFIG_DIR}/config.json" ]]; then
 EOF
     chmod 640 "${CONFIG_DIR}/config.json"
     info "Config file created at ${CONFIG_DIR}/config.json"
-    warn "IMPORTANT: Set a strong jwt_secret in ${CONFIG_DIR}/config.json before starting!"
+    info "jwt_secret gerado automaticamente."
 else
     info "Config file already exists at ${CONFIG_DIR}/config.json — skipping."
 fi
@@ -107,7 +115,7 @@ info "LinkGuard FW installed successfully!"
 info ""
 info "Next steps:"
 info "  1. Edit the config:  nano ${CONFIG_DIR}/config.json"
-info "     - Set a strong 'jwt_secret' value"
+info "     - 'jwt_secret' was generated automatically; no action needed"
 info "     - Set 'listen_addr' (127.0.0.1 for local, or a specific IP)"
 info "     - Set 'dry_run: false' when ready to apply firewall changes"
 info ""
