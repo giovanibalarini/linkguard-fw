@@ -41,12 +41,30 @@ const (
 	scryptR = 8
 	scryptP = 1
 	keySize = 32 // AES-256
+
+	// maxScryptN caps the N a .lgbak file is allowed to request before
+	// Decrypt will even attempt scrypt.Key. LGB2 files carry N in the file
+	// itself so a future cost bump doesn't strand old backups (see the
+	// comment above), but that also means an attacker- or corruption-supplied
+	// N is untrusted input: scrypt.Key's memory use is ~128*N*r bytes, so an
+	// N near the uint32 max (as read straight off the wire) would try to
+	// allocate terabytes and OOM/hang the process before the passphrase is
+	// even checked. 1<<20 (2^20) is 8x today's scryptN (2^17) — plenty of
+	// headroom for future cost bumps like the 2^15→2^17 one this format
+	// already survived — while keeping worst-case memory in the ~1GB range.
+	maxScryptN = 1 << 20
 )
 
 // ErrInvalidFormat means data is not a recognizable LinkGuard backup file
 // (wrong magic, or too short to contain one) — distinct from a wrong
 // passphrase, which fails inside GCM's authentication check instead.
 var ErrInvalidFormat = errors.New("backupcrypt: not a valid LinkGuard backup file")
+
+// ErrScryptCostTooHigh means the file's embedded scrypt N exceeds
+// maxScryptN. Returned before scrypt.Key is ever called, so a malicious or
+// corrupted file can't force a huge memory allocation / CPU stall just by
+// claiming an absurd cost parameter.
+var ErrScryptCostTooHigh = errors.New("backupcrypt: scrypt cost parameter exceeds allowed maximum")
 
 // Encrypt derives a key from passphrase via scrypt (fresh random salt every
 // call) and seals plaintext with AES-256-GCM (fresh random nonce every call).
@@ -108,6 +126,12 @@ func Decrypt(data []byte, passphrase string) ([]byte, error) {
 		offset = 8
 	default:
 		return nil, ErrInvalidFormat
+	}
+	// Applied to both formats: legacyScryptN is a fixed code constant well
+	// under the cap, so this is a no-op there; for LGB2 it's the load-bearing
+	// check that stops a file-supplied N from reaching scrypt.Key uncapped.
+	if n <= 0 || n > maxScryptN {
+		return nil, ErrScryptCostTooHigh
 	}
 	if len(data) < offset+saltSize {
 		return nil, ErrInvalidFormat

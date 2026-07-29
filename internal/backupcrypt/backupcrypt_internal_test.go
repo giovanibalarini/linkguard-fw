@@ -3,7 +3,10 @@ package backupcrypt
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
+	"errors"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/scrypt"
 )
@@ -58,6 +61,43 @@ func TestDecryptStillOpensLegacyLGB1Files(t *testing.T) {
 	}
 	if string(got) != string(plaintext) {
 		t.Fatalf("decrypted content mismatch: got %q, want %q", got, plaintext)
+	}
+}
+
+func TestDecryptRejectsExcessiveScryptN(t *testing.T) {
+	// Hand-build an LGB2 file whose embedded N is above maxScryptN. Asserting
+	// on the specific sentinel error (not just "any error") matters: without
+	// the cap, Decrypt would still return *an* error eventually (GCM auth
+	// failure on the bogus nonce/ciphertext below), but only after actually
+	// running scrypt.Key with N=1<<21 — several seconds and ~2GB of memory
+	// for this test's N, and unboundedly worse for a hostile N near the
+	// uint32 max. Checking for ErrScryptCostTooHigh specifically, combined
+	// with a wall-clock budget, proves the reject happens before scrypt runs
+	// at all.
+	passphrase := "senha-123456789012"
+	salt := make([]byte, saltSize)
+	nBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(nBytes, uint32(1<<21)) // above maxScryptN (1<<20)
+
+	file := append([]byte("LGB2"), nBytes...)
+	file = append(file, salt...)
+	// No valid nonce/ciphertext needed — Decrypt must reject on N before
+	// getting anywhere near GCM.
+	file = append(file, make([]byte, 32)...)
+
+	done := make(chan struct{})
+	var err error
+	go func() {
+		_, err = Decrypt(file, passphrase)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Decrypt did not return within 2s — looks like it ran scrypt.Key with the untrusted N instead of rejecting it upfront")
+	}
+	if !errors.Is(err, ErrScryptCostTooHigh) {
+		t.Fatalf("expected ErrScryptCostTooHigh, got %v", err)
 	}
 }
 
