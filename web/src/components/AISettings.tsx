@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Sparkles, Check, X } from 'lucide-react';
 import client from '../api/client';
+import Panel from './ui/Panel';
 import type { AIStatus, AIConfig } from '../types';
 
 const MODELS = [
@@ -102,11 +103,8 @@ export default function AISettings() {
   };
 
   return (
-    <div className="card space-y-4">
-      <div className="flex items-center gap-2">
-        <Sparkles className="w-4 h-4 text-purple-400" />
-        <h2 className="text-white font-semibold">Assistente de IA</h2>
-      </div>
+    <Panel title={<span className="flex items-center gap-2"><Sparkles className="w-4 h-4 text-purple-400" /><span className="text-white font-semibold">Assistente de IA</span></span>}>
+      <div className="space-y-4">
       <p className="text-gray-500 text-sm">
         Análise opcional de padrões de degradação usando sua própria chave da API do Claude.
         Nunca decide failover, peso ou expulsão de link — só explica e sugere.
@@ -197,6 +195,7 @@ export default function AISettings() {
           <button onClick={saveConfig} disabled={saving} className="btn-primary">Salvar configurações</button>
         </>
       )}
-    </div>
+      </div>
+    </Panel>
   );
 }

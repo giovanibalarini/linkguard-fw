@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ShieldCheck, ShieldAlert, Copy, Check, Loader2 } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
+import Panel from './ui/Panel';
 
 type Stage = 'idle' | 'enrolling';
 
@@ -54,16 +55,11 @@ export default function TwoFactorSettings() {
   const copySecret = () => { navigator.clipboard.writeText(secret); setCopied(true); setTimeout(() => setCopied(false), 2000); };
 
   return (
-    <div className="card space-y-4">
-      <div className="flex items-center gap-2">
-        {enabled ? <ShieldCheck className="w-5 h-5 text-green-400" /> : <ShieldAlert className="w-5 h-5 text-amber-400" />}
-        <h3 className="text-white font-semibold">Verificação em duas etapas (2FA)</h3>
-        <HelpTip title="2FA">
+    <Panel title={<span className="flex items-center gap-2">{enabled ? <ShieldCheck className="w-5 h-5 text-green-400" /> : <ShieldAlert className="w-5 h-5 text-amber-400" />}<span className="text-white font-semibold">Verificação em duas etapas (2FA)</span><HelpTip title="2FA">
           <>Além da senha, pede um <b>código que muda a cada 30s</b> gerado por um app autenticador
           (Google Authenticator, Authy, etc.). Mesmo que descubram sua senha, não entram sem o código.</>
-        </HelpTip>
-      </div>
-
+        </HelpTip></span>}>
+      <div className="space-y-4">
       {msg && <div className={`px-3 py-2 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>{msg}</div>}
 
       {enabled === null ? (
@@ -107,7 +103,8 @@ export default function TwoFactorSettings() {
           <button onClick={() => { setStage('idle'); setSecret(''); }} className="text-gray-500 text-xs hover:text-gray-300">Cancelar</button>
         </div>
       )}
-    </div>
+      </div>
+    </Panel>
   );
 }
 

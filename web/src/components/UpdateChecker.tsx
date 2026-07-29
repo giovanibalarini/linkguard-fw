@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RefreshCw, Download, CheckCircle2, ExternalLink, Loader2, AlertTriangle } from 'lucide-react';
 import client from '../api/client';
+import Panel from './ui/Panel';
 
 interface CheckResult {
   current: string;
@@ -75,14 +76,15 @@ export default function UpdateChecker() {
   };
 
   return (
-    <div className="card space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-white font-semibold">Atualizações</h3>
+    <Panel
+      title="Atualizações"
+      action={
         <button onClick={check} disabled={checking || applying} className="btn-secondary text-sm flex items-center gap-1.5">
           <RefreshCw className={`w-4 h-4 ${checking ? 'animate-spin' : ''}`} /> Verificar
         </button>
-      </div>
-
+      }
+    >
+      <div className="space-y-4">
       {msg && (
         <div className={`px-3 py-2 rounded-lg text-sm flex items-start gap-2 ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400' : 'bg-blue-500/10 text-blue-300'}`}>
           {applying && !msg.startsWith('Erro') ? <Loader2 className="w-4 h-4 mt-0.5 animate-spin shrink-0" /> : <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />}
@@ -145,7 +147,8 @@ export default function UpdateChecker() {
           )}
         </div>
       )}
-    </div>
+      </div>
+    </Panel>
   );
 }
 

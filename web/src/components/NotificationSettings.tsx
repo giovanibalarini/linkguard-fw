@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Bell, Webhook, Send, Mail, Loader2, Check, AlertTriangle, MessageCircle } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
+import Panel from './ui/Panel';
 
 interface WebhookCfg { enabled: boolean; url: string }
 interface TelegramCfg { enabled: boolean; token: string; chat_id: string }
@@ -59,16 +60,11 @@ export default function NotificationSettings() {
   };
 
   return (
-    <div className="card space-y-5">
-      <div className="flex items-center gap-2">
-        <Bell className="w-5 h-5 text-blue-400" />
-        <h3 className="text-white font-semibold">Notificações</h3>
-        <HelpTip title="Notificações">
+    <Panel title={<span className="flex items-center gap-2"><Bell className="w-5 h-5 text-blue-400" /><span className="text-white font-semibold">Notificações</span><HelpTip title="Notificações">
           <>Avise você fora do painel quando algo importante acontecer (um link cair, falha de regra...).
           Escolha um ou mais canais e o nível mínimo de severidade.</>
-        </HelpTip>
-      </div>
-
+        </HelpTip></span>}>
+      <div className="space-y-5">
       {msg && (
         <div className={`px-3 py-2 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>{msg}</div>
       )}
@@ -135,7 +131,8 @@ export default function NotificationSettings() {
       <button onClick={save} disabled={busy} className="btn-primary flex items-center gap-2">
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Salvar
       </button>
-    </div>
+      </div>
+    </Panel>
   );
 }
 

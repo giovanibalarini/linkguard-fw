@@ -1,5 +1,6 @@
 import { Lock, ShieldAlert } from 'lucide-react';
 import HelpTip from './HelpTip';
+import Panel from './ui/Panel';
 
 /**
  * HttpsInfo shows whether the panel is currently served over HTTPS and explains
@@ -11,16 +12,11 @@ export default function HttpsInfo() {
   const secure = typeof window !== 'undefined' && window.location.protocol === 'https:';
 
   return (
-    <div className="card space-y-3">
-      <div className="flex items-center gap-2">
-        {secure ? <Lock className="w-5 h-5 text-green-400" /> : <ShieldAlert className="w-5 h-5 text-amber-400" />}
-        <h3 className="text-white font-semibold">Acesso ao painel (HTTPS)</h3>
-        <HelpTip title="HTTPS">
+    <Panel title={<span className="flex items-center gap-2">{secure ? <Lock className="w-5 h-5 text-green-400" /> : <ShieldAlert className="w-5 h-5 text-amber-400" />}<span className="text-white font-semibold">Acesso ao painel (HTTPS)</span><HelpTip title="HTTPS">
           <>HTTPS criptografa o tráfego entre o seu navegador e o painel. Importante se o painel
           for acessível pela internet ou por uma rede não confiável.</>
-        </HelpTip>
-      </div>
-
+        </HelpTip></span>}>
+      <div className="space-y-3">
       <p className={`text-sm ${secure ? 'text-green-400' : 'text-amber-300'}`}>
         {secure
           ? 'Você está acessando via HTTPS (conexão criptografada). 🔒'
@@ -39,6 +35,7 @@ export default function HttpsInfo() {
           </p>
         </div>
       )}
-    </div>
+      </div>
+    </Panel>
   );
 }

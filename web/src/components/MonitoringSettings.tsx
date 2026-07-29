@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import client from '../api/client';
+import Panel from './ui/Panel';
 import { useUIMode } from '../context/UIModeContext';
 import type { MonitoringConfig } from '../types';
 
@@ -24,8 +25,7 @@ export default function MonitoringSettings() {
   };
 
   return (
-    <div className="card">
-      <h2 className="text-white font-semibold mb-1">Vigilância</h2>
+    <Panel title="Vigilância">
       <p className="text-gray-500 text-xs mb-3">Avisa no seu canal de notificação quando algo cai (e quando volta).</p>
       <label className="flex items-center gap-2">
         <input type="checkbox" checked={cfg.enabled} onChange={(e) => save({ ...cfg, enabled: e.target.checked })} />
@@ -44,6 +44,6 @@ export default function MonitoringSettings() {
         </div>
       )}
       {msg && <div className="mt-2 text-xs text-gray-400">{msg}</div>}
-    </div>
+    </Panel>
   );
 }

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Download, Upload, Loader2, AlertTriangle, Check } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
+import Panel from './ui/Panel';
 import { RestoreResult } from '../types';
 
 /**
@@ -60,16 +61,11 @@ export default function BackupRestore() {
   };
 
   return (
-    <div className="card space-y-4">
-      <div className="flex items-center gap-2">
-        <Download className="w-5 h-5 text-blue-400" />
-        <h3 className="text-white font-semibold">Backup e restauração</h3>
-        <HelpTip title="Backup">
+    <Panel title={<span className="flex items-center gap-2"><Download className="w-5 h-5 text-blue-400" /><span className="text-white font-semibold">Backup e restauração</span><HelpTip title="Backup">
           <>Salva num arquivo todas as suas configurações (links, firewall, DHCP/DNS, VPN, balanceamento,
           notificações...). Útil antes de mexer em algo ou para migrar de máquina.</>
-        </HelpTip>
-      </div>
-
+        </HelpTip></span>}>
+      <div className="space-y-4">
       {msg && <div className={`px-3 py-2 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>{msg}</div>}
 
       {restoreResult && (
@@ -128,7 +124,8 @@ export default function BackupRestore() {
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </Panel>
   );
 }
 
