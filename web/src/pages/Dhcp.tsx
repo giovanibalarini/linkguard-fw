@@ -3,6 +3,8 @@ import { RefreshCw, Plus, Pencil, Trash2, Server, Network, ListChecks, Play } fr
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import type { DHCPData, DHCPReservation, NetsvcConfig } from '../types';
+import Panel from '../components/ui/Panel';
+import Modal from '../components/ui/Modal';
 
 const emptyRes = { mac: '', ip: '', hostname: '' };
 
@@ -68,22 +70,21 @@ export default function Dhcp() {
       </div>
 
       {data?.last_apply && !data.last_apply.ok && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+        <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
           Última aplicação automática falhou: {data.last_apply.error || 'erro desconhecido'}. Corrija e use "Aplicar agora".
         </div>
       )}
       <p className="text-gray-500 text-xs">Salvar reservas ou config já aplica automaticamente (sem reiniciar o serviço).</p>
 
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchData} className="underline">Tentar novamente</button></div>}
-      {msg && <div className={`px-4 py-3 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'}`}>{msg}</div>}
+      {msg && <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
 
       {loading || !cfg ? (
         <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
       ) : (
         <>
           {/* Config */}
-          <div className="card">
-            <div className="flex items-center gap-2 mb-3"><Server className="w-4 h-4 text-blue-400" /><h3 className="text-white font-semibold">Configuração</h3></div>
+          <Panel title={<span className="flex items-center gap-2"><Server className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Configuração</span></span>}>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <div><label className="label">Interface (LAN)</label><input className="input w-full" value={cfg.interface} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, interface: e.target.value })} /></div>
               <div><label className="label">Sub-rede (CIDR)</label><input className="input w-full" value={cfg.subnet_cidr} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, subnet_cidr: e.target.value })} /></div>
@@ -94,14 +95,13 @@ export default function Dhcp() {
               <div className="sm:col-span-2 lg:col-span-3"><label className="label">DNS para os clientes (separados por vírgula)</label><input className="input w-full" value={cfg.dns_to_clients.join(', ')} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, dns_to_clients: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} /></div>
             </div>
             {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">Salvar config</button></div>}
-          </div>
+          </Panel>
 
           {/* Reservations */}
-          <div className="card">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
-              <div className="flex items-center gap-2"><ListChecks className="w-4 h-4 text-blue-400" /><h3 className="text-white font-semibold">Reservas (IP fixo por MAC)</h3></div>
-              {canWrite && <button onClick={() => setResModal({ ...emptyRes, editing: false })} className="btn-primary flex items-center gap-2 w-full sm:w-auto justify-center"><Plus className="w-4 h-4" /> Nova reserva</button>}
-            </div>
+          <Panel
+            title={<span className="flex items-center gap-2"><ListChecks className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Reservas (IP fixo por MAC)</span></span>}
+            action={canWrite ? <button onClick={() => setResModal({ ...emptyRes, editing: false })} className="btn-primary flex items-center gap-2 justify-center"><Plus className="w-4 h-4" /> Nova reserva</button> : undefined}
+          >
             {(data?.reservations.length ?? 0) === 0 ? (
               <p className="text-gray-600 text-sm">Nenhuma reserva. Reservas dão IP estável por MAC (conserta o pin de WAN).</p>
             ) : (
@@ -120,11 +120,10 @@ export default function Dhcp() {
                 ))}</tbody>
               </table></div>
             )}
-          </div>
+          </Panel>
 
           {/* Active leases */}
-          <div className="card">
-            <div className="flex items-center gap-2 mb-3"><Network className="w-4 h-4 text-green-400" /><h3 className="text-white font-semibold">Leases ativos ({data?.leases.length ?? 0})</h3></div>
+          <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-green-400" /><span className="text-white font-semibold">Leases ativos ({data?.leases.length ?? 0})</span></span>}>
             {(data?.leases.length ?? 0) === 0 ? (
               <p className="text-gray-600 text-sm">Nenhum lease ativo (o servidor DHCP pode ainda não estar ativo).</p>
             ) : (
@@ -140,16 +139,20 @@ export default function Dhcp() {
                 ))}</tbody>
               </table></div>
             )}
-          </div>
+          </Panel>
         </>
       )}
 
       {/* Reservation modal */}
-      {resModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-800"><h2 className="text-white font-semibold">{resModal.editing ? 'Editar reserva' : 'Nova reserva'}</h2></div>
-            <div className="p-6 space-y-4">
+      <Modal
+        open={resModal !== null}
+        onClose={() => setResModal(null)}
+        title={resModal ? (resModal.editing ? 'Editar reserva' : 'Nova reserva') : ''}
+        size="sm"
+        className="bg-gray-900 border border-gray-800 rounded-xl"
+      >
+        {resModal && (
+        <div className="p-6 space-y-4">
               <div><label className="label">MAC *</label><input className="input w-full disabled:opacity-50" placeholder="aa:bb:cc:dd:ee:ff" value={resModal.mac} disabled={resModal.editing} onChange={(e) => setResModal({ ...resModal, mac: e.target.value })} /></div>
               <div><label className="label">IP *</label><input className="input w-full" placeholder="192.168.3.50" value={resModal.ip} onChange={(e) => setResModal({ ...resModal, ip: e.target.value })} /></div>
               <div><label className="label">Hostname</label><input className="input w-full" placeholder="opcional" value={resModal.hostname} onChange={(e) => setResModal({ ...resModal, hostname: e.target.value })} /></div>
@@ -157,10 +160,9 @@ export default function Dhcp() {
                 <button onClick={saveRes} disabled={busy} className="btn-primary flex-1 disabled:opacity-50">{busy ? 'Salvando...' : 'Salvar'}</button>
                 <button onClick={() => setResModal(null)} className="btn-secondary flex-1">Cancelar</button>
               </div>
-            </div>
-          </div>
         </div>
-      )}
+        )}
+      </Modal>
     </div>
   );
 }
