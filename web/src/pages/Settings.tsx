@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Settings as SettingsIcon, Info, Database, Bell, ShieldCheck, Download, RefreshCw, Sparkles } from 'lucide-react';
 import client from '../api/client';
+import Panel from '../components/ui/Panel';
+import Modal from '../components/ui/Modal';
 import NotificationSettings from '../components/NotificationSettings';
 import MonitoringSettings from '../components/MonitoringSettings';
 import TwoFactorSettings from '../components/TwoFactorSettings';
@@ -89,7 +91,7 @@ export default function Settings() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="card space-y-1">
+        <Panel className="space-y-1">
           {[
             { id: 'about', label: 'Sobre', icon: Info },
             { id: 'general', label: 'Geral', icon: SettingsIcon },
@@ -111,12 +113,11 @@ export default function Settings() {
               {label}
             </button>
           ))}
-        </div>
+        </Panel>
 
         <div className="md:col-span-3">
           {activeSection === 'about' && (
-            <div className="card space-y-4">
-              <h2 className="text-white font-semibold">Sobre o LinkGuard FW</h2>
+            <Panel title="Sobre o LinkGuard FW" className="space-y-4">
               <div className="space-y-3 text-sm">
                 <InfoRow label="Versão" value={version ? `v${version}` : '—'} />
                 <InfoRow label="Descrição" value="Ferramenta de gestão de firewall Linux para servidores Debian com múltiplos links de internet" />
@@ -143,12 +144,11 @@ export default function Settings() {
                   ))}
                 </ul>
               </div>
-            </div>
+            </Panel>
           )}
 
           {activeSection === 'general' && (
-            <div className="card space-y-4">
-              <h2 className="text-white font-semibold">Configurações Gerais</h2>
+            <Panel title="Configurações Gerais" className="space-y-4">
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
                 Somente leitura — editável via arquivo de configuração.
               </div>
@@ -170,12 +170,11 @@ export default function Settings() {
                 <p><span className="text-white">fail_threshold:</span> Falhas consecutivas para marcar offline</p>
                 <p><span className="text-white">recover_threshold:</span> Sucessos para marcar online</p>
               </div>
-            </div>
+            </Panel>
           )}
 
           {activeSection === 'traffic-retention' && (
-            <div className="card space-y-4">
-              <h2 className="text-white font-semibold">Retenção de tráfego (RRD)</h2>
+            <Panel title="Retenção de tráfego (RRD)" className="space-y-4">
               <p className="text-gray-500 text-sm">
                 Define por quanto tempo as amostras históricas de tráfego ficam persistidas.
                 Esta configuração afeta as janelas de 30d, 1y e 5y usadas na aba Interfaces.
@@ -227,7 +226,7 @@ export default function Settings() {
                   O caminho do banco pode ser alterado pela chave <span className="font-mono">db_path</span> no arquivo de configuração.
                 </p>
               </div>
-            </div>
+            </Panel>
           )}
 
           {activeSection === 'security' && (
@@ -252,45 +251,38 @@ export default function Settings() {
         </div>
       </div>
 
-      {pendingShorten && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">Reduzir retenção de tráfego</h2>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-gray-300 text-sm">
-                Reduzir a retenção pode descartar amostras antigas. Continuar?
-              </p>
-              <p className="text-gray-500 text-xs">
-                Perfil atual: <span className="font-mono text-gray-300">{retentionProfile}</span> →{' '}
-                novo perfil: <span className="font-mono text-gray-300">{pendingShorten}</span>
-              </p>
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  disabled={savingProfile}
-                  onClick={() => {
-                    const target = pendingShorten;
-                    setPendingShorten(null);
-                    if (target) persistRetentionProfile(target);
-                  }}
-                  className="btn-primary flex-1 disabled:opacity-50"
-                >
-                  Continuar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPendingShorten(null)}
-                  className="btn-secondary flex-1"
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
+      <Modal open={!!pendingShorten} onClose={() => setPendingShorten(null)} title="Reduzir retenção de tráfego" size="sm">
+        <div className="p-6 space-y-4">
+          <p className="text-gray-300 text-sm">
+            Reduzir a retenção pode descartar amostras antigas. Continuar?
+          </p>
+          <p className="text-gray-500 text-xs">
+            Perfil atual: <span className="font-mono text-gray-300">{retentionProfile}</span> →{' '}
+            novo perfil: <span className="font-mono text-gray-300">{pendingShorten}</span>
+          </p>
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              disabled={savingProfile}
+              onClick={() => {
+                const target = pendingShorten;
+                setPendingShorten(null);
+                if (target) persistRetentionProfile(target);
+              }}
+              className="btn-primary flex-1 disabled:opacity-50"
+            >
+              Continuar
+            </button>
+            <button
+              type="button"
+              onClick={() => setPendingShorten(null)}
+              className="btn-secondary flex-1"
+            >
+              Cancelar
+            </button>
           </div>
         </div>
-      )}
+      </Modal>
     </div>
   );
 }
