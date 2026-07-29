@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
+	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -23,13 +26,30 @@ type BackupHandler struct {
 	sec     secrets.Secrets
 	version string
 	sched   *backup.Scheduler
+
+	mu             sync.Mutex
+	failedRestores map[string]*restoreAttempts
 }
+
+// restoreAttempts tracks consecutive wrong-passphrase restore attempts for a
+// single authenticated user, so a lockout can kick in independently of IP
+// (the restore endpoint already requires system.write, so "who" is always
+// known — unlike login, which has no user identity to key on yet).
+type restoreAttempts struct {
+	count     int
+	lockUntil time.Time
+}
+
+const (
+	maxRestoreAttempts = 5
+	restoreLockout     = 5 * time.Minute
+)
 
 // NewBackupHandler creates a BackupHandler. sched is used by SendNow to
 // trigger an immediate encrypted backup e-mail — the same code path the
 // scheduler's ticker uses.
 func NewBackupHandler(db *storage.DB, sec secrets.Secrets, version string, sched *backup.Scheduler) *BackupHandler {
-	return &BackupHandler{db: db, sec: sec, version: version, sched: sched}
+	return &BackupHandler{db: db, sec: sec, version: version, sched: sched, failedRestores: map[string]*restoreAttempts{}}
 }
 
 // Export downloads the full configuration, encrypted, as a .lgbak attachment.
@@ -66,9 +86,48 @@ type restoreResult struct {
 // configured secret — the main restore scenario is a *different* machine
 // than the one that created the backup, so assuming "the local passphrase
 // must be the same one" would be wrong more often than right.
+func (h *BackupHandler) restoreLockedOut(userID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	a := h.failedRestores[userID]
+	return a != nil && time.Now().Before(a.lockUntil)
+}
+
+func (h *BackupHandler) recordRestoreFailure(userID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	a := h.failedRestores[userID]
+	if a == nil {
+		a = &restoreAttempts{}
+		h.failedRestores[userID] = a
+	}
+	a.count++
+	if a.count >= maxRestoreAttempts {
+		a.lockUntil = time.Now().Add(restoreLockout)
+		a.count = 0
+	}
+}
+
+func (h *BackupHandler) resetRestoreAttempts(userID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.failedRestores, userID)
+}
+
 func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
+	claims := auth.ClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.restoreLockedOut(claims.UserID) {
+		writeError(w, http.StatusTooManyRequests, "muitas tentativas com senha incorreta. Tente novamente em alguns minutos.")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "requisição inválida")
+		writeError(w, http.StatusBadRequest, "requisição inválida ou arquivo maior que 32MB")
 		return
 	}
 	passphrase := r.FormValue("passphrase")
@@ -90,9 +149,11 @@ func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 
 	data, err := backup.DecryptRestore(ciphertext, passphrase)
 	if err != nil {
+		h.recordRestoreFailure(claims.UserID)
 		writeError(w, http.StatusBadRequest, "senha incorreta ou arquivo inválido")
 		return
 	}
+	h.resetRestoreAttempts(claims.UserID)
 
 	var res restoreResult
 	for k, v := range data.Settings {

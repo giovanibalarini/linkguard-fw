@@ -11,6 +11,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
+	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -87,13 +88,14 @@ func TestExportThenRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("Export: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	encrypted := w.Body.Bytes()
-	if len(encrypted) < 4 || string(encrypted[:4]) != "LGB1" {
-		t.Fatalf("expected encrypted output starting with LGB1 magic, got %d bytes", len(encrypted))
+	if len(encrypted) < 4 || string(encrypted[:4]) != "LGB2" {
+		t.Fatalf("expected encrypted output starting with LGB2 magic, got %d bytes", len(encrypted))
 	}
 
 	body, contentType := multipartRestoreBody(t, encrypted, "senha-de-teste-123456")
 	rreq := httptest.NewRequest(http.MethodPost, "/api/backup/restore", body)
 	rreq.Header.Set("Content-Type", contentType)
+	rreq = rreq.WithContext(auth.ContextWithClaims(rreq.Context(), &auth.Claims{UserID: "u1", Username: "tester"}))
 	rw := httptest.NewRecorder()
 	h.Restore(rw, rreq)
 	if rw.Code != http.StatusOK {
@@ -115,6 +117,7 @@ func TestRestoreWithWrongPassphraseFails(t *testing.T) {
 	body, contentType := multipartRestoreBody(t, encrypted, "senha-errada-123456")
 	rreq := httptest.NewRequest(http.MethodPost, "/api/backup/restore", body)
 	rreq.Header.Set("Content-Type", contentType)
+	rreq = rreq.WithContext(auth.ContextWithClaims(rreq.Context(), &auth.Claims{UserID: "u1", Username: "tester"}))
 	rw := httptest.NewRecorder()
 	h.Restore(rw, rreq)
 	if rw.Code != http.StatusBadRequest {
@@ -143,6 +146,7 @@ func TestRestoreReportsMissingSecretsToReconfigure(t *testing.T) {
 	body, contentType := multipartRestoreBody(t, encrypted, "senha-de-teste-123456")
 	rreq := httptest.NewRequest(http.MethodPost, "/api/backup/restore", body)
 	rreq.Header.Set("Content-Type", contentType)
+	rreq = rreq.WithContext(auth.ContextWithClaims(rreq.Context(), &auth.Claims{UserID: "u1", Username: "tester"}))
 	rw := httptest.NewRecorder()
 	h.Restore(rw, rreq)
 	if rw.Code != http.StatusOK {
@@ -167,6 +171,48 @@ func TestRestoreReportsMissingSecretsToReconfigure(t *testing.T) {
 	}
 	if got["github_update_token"] {
 		t.Fatalf("expected 'github_update_token' NOT in secrets_to_reconfigure (it was configured before Restore), got %v", resp.SecretsToReconfigure)
+	}
+}
+
+func TestRestoreLocksOutAfterRepeatedWrongPassphrase(t *testing.T) {
+	h, sec := newBackupTestHandler(t)
+	if err := sec.Set(backup.PassphraseSecretName, "senha-certa-123456"); err != nil {
+		t.Fatalf("sec.Set: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/backup", nil)
+	w := httptest.NewRecorder()
+	h.Export(w, req)
+	encrypted := w.Body.Bytes()
+
+	var lastCode int
+	for i := 0; i < 10; i++ {
+		body, contentType := multipartRestoreBody(t, encrypted, "senha-errada-123456")
+		rreq := httptest.NewRequest(http.MethodPost, "/api/backup/restore", body)
+		rreq.Header.Set("Content-Type", contentType)
+		rreq = rreq.WithContext(auth.ContextWithClaims(rreq.Context(), &auth.Claims{UserID: "u1", Username: "tester"}))
+		rw := httptest.NewRecorder()
+		h.Restore(rw, rreq)
+		lastCode = rw.Code
+	}
+	if lastCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after repeated wrong-passphrase attempts, got %d", lastCode)
+	}
+}
+
+func TestRestoreRejectsOversizedBody(t *testing.T) {
+	h, sec := newBackupTestHandler(t)
+	if err := sec.Set(backup.PassphraseSecretName, "senha-certa-123456"); err != nil {
+		t.Fatalf("sec.Set: %v", err)
+	}
+	oversized := make([]byte, 33<<20) // 33MB, over the 32MB cap
+	body, contentType := multipartRestoreBody(t, oversized, "senha-certa-123456")
+	rreq := httptest.NewRequest(http.MethodPost, "/api/backup/restore", body)
+	rreq.Header.Set("Content-Type", contentType)
+	rreq = rreq.WithContext(auth.ContextWithClaims(rreq.Context(), &auth.Claims{UserID: "u1", Username: "tester"}))
+	rw := httptest.NewRecorder()
+	h.Restore(rw, rreq)
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized upload, got %d", rw.Code)
 	}
 }
 
