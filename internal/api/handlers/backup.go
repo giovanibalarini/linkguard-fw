@@ -29,6 +29,7 @@ type BackupHandler struct {
 
 	mu             sync.Mutex
 	failedRestores map[string]*restoreAttempts
+	restoreLocks   map[string]*sync.Mutex
 }
 
 // restoreAttempts tracks consecutive wrong-passphrase restore attempts for a
@@ -49,7 +50,11 @@ const (
 // trigger an immediate encrypted backup e-mail — the same code path the
 // scheduler's ticker uses.
 func NewBackupHandler(db *storage.DB, sec secrets.Secrets, version string, sched *backup.Scheduler) *BackupHandler {
-	return &BackupHandler{db: db, sec: sec, version: version, sched: sched, failedRestores: map[string]*restoreAttempts{}}
+	return &BackupHandler{
+		db: db, sec: sec, version: version, sched: sched,
+		failedRestores: map[string]*restoreAttempts{},
+		restoreLocks:   map[string]*sync.Mutex{},
+	}
 }
 
 // Export downloads the full configuration, encrypted, as a .lgbak attachment.
@@ -114,12 +119,48 @@ func (h *BackupHandler) resetRestoreAttempts(userID string) {
 	delete(h.failedRestores, userID)
 }
 
+// userRestoreLock returns the per-userID mutex that serializes restore
+// attempts for that user, creating it on first use.
+//
+// Without this, "check lockout" -> "decrypt (slow, scrypt)" -> "record
+// failure" is a check-then-act sequence split across separate critical
+// sections: N concurrent requests from the *same* user can all read
+// restoreLockedOut()==false before any of them calls recordRestoreFailure,
+// because the decrypt in between is deliberately expensive. That lets an
+// attacker fire attempts in parallel and bypass the 5-attempt cap entirely
+// (confirmed 0/20 blocked in the Task 11 review).
+//
+// Holding this lock for the whole check-decrypt-record-apply sequence in
+// Restore closes the race: only one in-flight restore per user is ever
+// mid-decrypt, so the next one to acquire the lock always observes the
+// previous attempt's recorded failure (or lockout) before running its own
+// check. Different users get different locks and are not serialized against
+// each other — this is not a global restore lock.
+func (h *BackupHandler) userRestoreLock(userID string) *sync.Mutex {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	l := h.restoreLocks[userID]
+	if l == nil {
+		l = &sync.Mutex{}
+		h.restoreLocks[userID] = l
+	}
+	return l
+}
+
 func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 	claims := auth.ClaimsFromContext(r.Context())
 	if claims == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+
+	// Serialize per-user: see userRestoreLock for why this is required to
+	// close the lockout race, and why it's scoped per-user rather than
+	// global.
+	lock := h.userRestoreLock(claims.UserID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	if h.restoreLockedOut(claims.UserID) {
 		writeError(w, http.StatusTooManyRequests, "muitas tentativas com senha incorreta. Tente novamente em alguns minutos.")
 		return

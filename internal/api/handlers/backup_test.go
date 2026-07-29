@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
@@ -196,6 +197,82 @@ func TestRestoreLocksOutAfterRepeatedWrongPassphrase(t *testing.T) {
 	}
 	if lastCode != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 after repeated wrong-passphrase attempts, got %d", lastCode)
+	}
+}
+
+// TestRestoreConcurrentWrongPassphraseRespectsLockout reproduces the Task 11
+// review finding: firing many concurrent restore requests for the *same*
+// userID with a wrong passphrase used to let every single one of them race
+// past the restoreLockedOut() check before any recorded a failure, because
+// the check and the (slow, scrypt) decrypt-then-record step were split
+// across separate critical sections. With the fix (a per-user lock held for
+// the whole check-decrypt-record sequence), no more than maxRestoreAttempts
+// requests should ever reach a real decrypt attempt (400) before the rest
+// are rejected by the lockout (429) — regardless of how many requests start
+// at the same instant.
+func TestRestoreConcurrentWrongPassphraseRespectsLockout(t *testing.T) {
+	const maxRestoreAttempts = 5 // must match the unexported constant in backup.go
+	const concurrency = 20
+
+	h, sec := newBackupTestHandler(t)
+	if err := sec.Set(backup.PassphraseSecretName, "senha-certa-123456"); err != nil {
+		t.Fatalf("sec.Set: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/backup", nil)
+	w := httptest.NewRecorder()
+	h.Export(w, req)
+	encrypted := w.Body.Bytes()
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	codes := make([]int, concurrency)
+	for i := 0; i < concurrency; i++ {
+		i := i
+		body, contentType := multipartRestoreBody(t, encrypted, "senha-errada-123456")
+		rreq := httptest.NewRequest(http.MethodPost, "/api/backup/restore", body)
+		rreq.Header.Set("Content-Type", contentType)
+		rreq = rreq.WithContext(auth.ContextWithClaims(rreq.Context(), &auth.Claims{UserID: "concurrent-user", Username: "tester"}))
+		rw := httptest.NewRecorder()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // release all goroutines at (as close to) the same instant as possible
+			h.Restore(rw, rreq)
+			codes[i] = rw.Code
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var badRequestCount, tooManyRequestsCount, other int
+	for _, code := range codes {
+		switch code {
+		case http.StatusBadRequest:
+			badRequestCount++
+		case http.StatusTooManyRequests:
+			tooManyRequestsCount++
+		default:
+			other++
+		}
+	}
+
+	if other != 0 {
+		t.Fatalf("expected every response to be 400 or 429, got %d unexpected codes: %v", other, codes)
+	}
+	if badRequestCount > maxRestoreAttempts {
+		t.Fatalf("lockout race: %d/%d concurrent requests reached a real decrypt attempt (400), "+
+			"want at most maxRestoreAttempts=%d — the rest should have been rejected by the "+
+			"lockout (429) instead; got codes=%v", badRequestCount, concurrency, maxRestoreAttempts, codes)
+	}
+	if badRequestCount+tooManyRequestsCount != concurrency {
+		t.Fatalf("expected %d total responses, got %d 400s + %d 429s", concurrency, badRequestCount, tooManyRequestsCount)
+	}
+	// Sanity: the lockout must actually have kicked in for at least one
+	// request, otherwise this test would trivially pass with an
+	// unserialized handler that just happens to be slow enough in CI.
+	if tooManyRequestsCount == 0 {
+		t.Fatalf("expected at least one 429 among %d concurrent requests, got none — codes=%v", concurrency, codes)
 	}
 }
 
