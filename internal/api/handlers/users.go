@@ -64,6 +64,31 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Assigning roles at creation time is a permission GRANT — same escalation
+	// as Update. users.manage alone (e.g. a helpdesk role scoped to account
+	// creation) must not be enough to hand out any role, including one that
+	// includes roles.manage/admin-equivalent permissions the actor may not even
+	// hold. The requirement only kicks in when at least one role is actually
+	// being granted; creating a role-less account (assign the role later) stays
+	// a legitimate users.manage-only operation. Mirrors the blanket
+	// roles.manage gate already enforced in Update.
+	if len(body.RoleIDs) > 0 {
+		claims := auth.ClaimsFromContext(r.Context())
+		if claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		perms, err := h.db.GetUserPermissions(claims.UserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !perms[string(auth.PermRolesManage)] {
+			writeError(w, http.StatusForbidden, "atribuir papéis a um usuário exige a permissão roles.manage")
+			return
+		}
+	}
+
 	hash, err := auth.HashPassword(body.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to hash password")

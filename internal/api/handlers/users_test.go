@@ -84,6 +84,89 @@ func TestUpdateBlocksSelfPromotionWithoutRolesManage(t *testing.T) {
 	}
 }
 
+func TestCreateBlocksRoleGrantWithoutRolesManage(t *testing.T) {
+	h, db := newUsersTestHandler(t)
+	attacker := helpdeskOnlyUser(t, db)
+	adminRole := adminRoleID(t, db)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"username": "backdoor",
+		"password": "senhaForte12345",
+		"role_ids": []string{adminRole},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/users", bytes.NewReader(body))
+	req = req.WithContext(auth.ContextWithClaims(req.Context(), &auth.Claims{UserID: attacker.ID, Username: attacker.Username}))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 (roles.manage required to grant a role at creation), got %d: %s", w.Code, w.Body.String())
+	}
+	// The attack must not have created the user in the DB.
+	created, err := db.GetUserByUsername("backdoor")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if created != nil {
+		t.Fatal("user was created despite the 403 — privilege escalation via Create succeeded")
+	}
+}
+
+func TestCreateWithoutRolesDoesNotRequireRolesManage(t *testing.T) {
+	h, db := newUsersTestHandler(t)
+	actor := helpdeskOnlyUser(t, db)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"username": "conta-sem-papel",
+		"password": "senhaForte12345",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/users", bytes.NewReader(body))
+	req = req.WithContext(auth.ContextWithClaims(req.Context(), &auth.Claims{UserID: actor.ID, Username: actor.Username}))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for role-less creation (no grant), got %d: %s", w.Code, w.Body.String())
+	}
+	created, err := db.GetUserByUsername("conta-sem-papel")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if created == nil {
+		t.Fatal("legitimate role-less user was not created")
+	}
+}
+
+func TestCreateWithRolesManageCanGrantRoles(t *testing.T) {
+	h, db := newUsersTestHandler(t)
+	actorRole := adminRoleID(t, db)
+	actor := &storage.User{Username: "real-admin"}
+	if err := db.CreateUser(actor, "$2a$10$fakehashfakehashfakehashfakehashfakehashfakehashfa", []string{actorRole}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"username": "novo-admin",
+		"password": "senhaForte12345",
+		"role_ids": []string{actorRole},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/users", bytes.NewReader(body))
+	req = req.WithContext(auth.ContextWithClaims(req.Context(), &auth.Claims{UserID: actor.ID, Username: actor.Username}))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 — actor holds roles.manage, legitimate role grant, got %d: %s", w.Code, w.Body.String())
+	}
+	created, err := db.GetUserByUsername("novo-admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if created == nil {
+		t.Fatal("user with granted role was not created")
+	}
+}
+
 func TestUpdatePasswordOnlyDoesNotRequireRolesManage(t *testing.T) {
 	h, db := newUsersTestHandler(t)
 	attacker := helpdeskOnlyUser(t, db)
