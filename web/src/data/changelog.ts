@@ -13,6 +13,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.81',
+    date: '2026-07-29',
+    title: 'Painel mais fácil de usar no celular',
+    changes: [
+      { type: 'fix', text: 'As telas com tabelas (Links WAN, Rotas, Interfaces, Monitoramento, Firewall, Administração, DHCP, Logs e consultas DNS) agora se reorganizam em cartões no celular, em vez de uma tabela apertada que obrigava a rolar de lado.' },
+      { type: 'fix', text: 'Botões de editar/excluir/etc ganharam uma área de toque maior — mais fácil de acertar o botão certo com o dedo, sem precisar dar zoom.' },
+      { type: 'fix', text: 'A linha de cada regra personalizada do Firewall não fica mais espremida numa única linha no celular — as ações agora ficam numa faixa própria, com espaço.' },
+    ],
+  },
+  {
     version: '1.0.80',
     date: '2026-07-29',
     title: 'Revisão de segurança completa',
