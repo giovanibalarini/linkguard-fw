@@ -207,8 +207,8 @@ func TestCheckNTPRaisesOnSecondUnsynced(t *testing.T) {
 	}
 }
 
-const passingSmartJSON = `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":0}},{"id":194,"raw":{"value":35}}]}}`
-const failingSmartJSON = `{"smart_status":{"passed":false},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":9}},{"id":194,"raw":{"value":60}}]}}`
+const passingSmartJSON = `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":0,"string":"0"}},{"id":194,"raw":{"value":35,"string":"35"}}]}}`
+const failingSmartJSON = `{"smart_status":{"passed":false},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":9,"string":"9"}},{"id":194,"raw":{"value":60,"string":"60"}}]}}`
 
 func TestCheckSMARTRaisesHealthFailOnSecondReading(t *testing.T) {
 	fe := &fakeExec{findmntOut: "/dev/sda2\n", lsblkOut: "sda\n", smartctlOut: passingSmartJSON}
@@ -266,8 +266,8 @@ func TestCheckSMARTReadErrorSkipsTickWithoutAlert(t *testing.T) {
 // threshold is 0). checkResource's own comparison is strict "<", so
 // checkSMART must pass threshold+1, not threshold, or this polarity flips.
 func TestCheckSMARTReallocatedPolarity(t *testing.T) {
-	healthyJSON := `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":0}},{"id":194,"raw":{"value":30}}]}}`
-	oneReallocatedJSON := `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":1}},{"id":194,"raw":{"value":30}}]}}`
+	healthyJSON := `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":0,"string":"0"}},{"id":194,"raw":{"value":30,"string":"30"}}]}}`
+	oneReallocatedJSON := `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":1,"string":"1"}},{"id":194,"raw":{"value":30,"string":"30"}}]}}`
 
 	fe := &fakeExec{findmntOut: "/dev/sda2\n", lsblkOut: "sda\n", smartctlOut: healthyJSON}
 	db := openTestDB(t)

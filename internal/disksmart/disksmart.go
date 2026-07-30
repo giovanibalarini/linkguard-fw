@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -28,7 +29,8 @@ type smartctlOutput struct {
 		Table []struct {
 			ID  int `json:"id"`
 			Raw struct {
-				Value int `json:"value"`
+				Value  int    `json:"value"`
+				String string `json:"string"`
 			} `json:"raw"`
 		} `json:"table"`
 	} `json:"ata_smart_attributes"`
@@ -90,8 +92,27 @@ func Read(ctx context.Context, exec firewall.Executor, device string) (Report, e
 		case attrReallocatedSectorCt:
 			r.ReallocatedSectors = attr.Raw.Value
 		case attrTemperatureCelsius:
-			r.TemperatureC = attr.Raw.Value
+			// raw.value for attribute 194 is frequently a vendor-packed
+			// 48-bit field (historical min/max, over-limit counter mixed in
+			// with the actual reading) — smartctl already resolves this for
+			// us in raw.string, e.g. "37 (0 15 0 0 0)", so parse the leading
+			// integer from there instead of trusting raw.value directly.
+			// (Attribute 5 has no such packing, so it keeps using raw.value
+			// as-is above.)
+			if temp, err := parseLeadingInt(attr.Raw.String); err == nil {
+				r.TemperatureC = temp
+			}
 		}
 	}
 	return r, nil
+}
+
+// parseLeadingInt parses the first whitespace-separated token of s as an
+// integer, e.g. "37 (0 15 0 0 0)" -> 37.
+func parseLeadingInt(s string) (int, error) {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("empty string")
+	}
+	return strconv.Atoi(fields[0])
 }

@@ -57,8 +57,8 @@ const sampleSmartctlJSON = `{
   "smart_status": {"passed": true},
   "ata_smart_attributes": {
     "table": [
-      {"id": 5, "name": "Reallocated_Sector_Ct", "raw": {"value": 0}},
-      {"id": 194, "name": "Temperature_Celsius", "raw": {"value": 35}}
+      {"id": 5, "name": "Reallocated_Sector_Ct", "raw": {"value": 0, "string": "0"}},
+      {"id": 194, "name": "Temperature_Celsius", "raw": {"value": 35, "string": "35"}}
     ]
   }
 }`
@@ -84,8 +84,8 @@ const failingSmartctlJSON = `{
   "smart_status": {"passed": false},
   "ata_smart_attributes": {
     "table": [
-      {"id": 5, "name": "Reallocated_Sector_Ct", "raw": {"value": 12}},
-      {"id": 194, "name": "Temperature_Celsius", "raw": {"value": 58}}
+      {"id": 5, "name": "Reallocated_Sector_Ct", "raw": {"value": 12, "string": "12"}},
+      {"id": 194, "name": "Temperature_Celsius", "raw": {"value": 58, "string": "58"}}
     ]
   }
 }`
@@ -139,6 +139,69 @@ func TestReadParsesJSONEvenWhenExecReturnsError(t *testing.T) {
 	}
 	if r.TemperatureC != 58 {
 		t.Errorf("TemperatureC = %d, want 58", r.TemperatureC)
+	}
+}
+
+// productionPackedTempJSON reproduces a real `smartctl -x -j /dev/sda`
+// reading seen in production: attribute 194's raw.value is a 48-bit field
+// that packs extra bytes (historical min/max, over-limit counter) alongside
+// the actual temperature, so raw.value itself (64424509477) is garbage — the
+// real temperature (37) only appears as the first token of raw.string.
+const productionPackedTempJSON = `{
+  "smart_status": {"passed": true},
+  "ata_smart_attributes": {
+    "table": [
+      {"id": 5, "name": "Reallocated_Sector_Ct", "raw": {"value": 0, "string": "0"}},
+      {"id": 194, "name": "Temperature_Celsius", "raw": {"value": 64424509477, "string": "37 (0 15 0 0 0)"}}
+    ]
+  }
+}`
+
+// TestReadParsesTemperatureFromRawStringNotPackedValue guards against the
+// production bug where raw.value for attribute 194 is a vendor-packed 48-bit
+// field, not a plain temperature — Read must parse the leading integer out
+// of raw.string instead.
+func TestReadParsesTemperatureFromRawStringNotPackedValue(t *testing.T) {
+	fe := &fakeExec{smartctlOut: productionPackedTempJSON}
+	r, err := Read(context.Background(), fe, "/dev/sda")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.TemperatureC != 37 {
+		t.Errorf("TemperatureC = %d, want 37 (parsed from raw.string, not the packed raw.value)", r.TemperatureC)
+	}
+}
+
+// malformedTempStringJSON has an empty raw.string for the temperature
+// attribute, simulating an unexpected/malformed smartctl output.
+const malformedTempStringJSON = `{
+  "smart_status": {"passed": true},
+  "ata_smart_attributes": {
+    "table": [
+      {"id": 5, "name": "Reallocated_Sector_Ct", "raw": {"value": 3, "string": "3"}},
+      {"id": 194, "name": "Temperature_Celsius", "raw": {"value": 12345, "string": ""}}
+    ]
+  }
+}`
+
+// TestReadToleratesMalformedTemperatureString confirms a malformed/empty
+// raw.string for the temperature attribute doesn't fail the whole Read (the
+// other two signals, Passed and ReallocatedSectors, remain valid) — it just
+// leaves TemperatureC at 0.
+func TestReadToleratesMalformedTemperatureString(t *testing.T) {
+	fe := &fakeExec{smartctlOut: malformedTempStringJSON}
+	r, err := Read(context.Background(), fe, "/dev/sda")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Passed {
+		t.Error("expected Passed=true")
+	}
+	if r.ReallocatedSectors != 3 {
+		t.Errorf("ReallocatedSectors = %d, want 3", r.ReallocatedSectors)
+	}
+	if r.TemperatureC != 0 {
+		t.Errorf("TemperatureC = %d, want 0 (malformed raw.string must not crash Read)", r.TemperatureC)
 	}
 }
 
