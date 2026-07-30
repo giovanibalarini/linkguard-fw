@@ -116,3 +116,111 @@ func TestBackupSucceededDeliversViaRecovery(t *testing.T) {
 		t.Errorf("recovery notifies = %v, want 1", fn.recovery)
 	}
 }
+
+func TestNTPUnsyncedIsWarning(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.NTPUnsynced(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fn.normal) != 1 || fn.normal[0] != "warning|Relógio dessincronizado" {
+		t.Errorf("normal notifies = %v", fn.normal)
+	}
+}
+
+func TestNTPSyncedDeliversViaRecovery(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.NTPSynced(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fn.recovery) != 1 {
+		t.Errorf("expected 1 recovery notify, got %v", fn.recovery)
+	}
+}
+
+func TestDiskSMARTFailIsCritical(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.DiskSMARTFail(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fn.normal) != 1 || fn.normal[0] != "critical|Disco: falha no SMART" {
+		t.Errorf("normal notifies = %v", fn.normal)
+	}
+}
+
+func TestDiskSMARTDegradedCitesCount(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.DiskSMARTDegraded(3); err != nil {
+		t.Fatal(err)
+	}
+	alertsList, _ := db.GetAlerts(false, 0)
+	if len(alertsList) != 1 || !strings.Contains(alertsList[0].Message, "3") {
+		t.Errorf("expected message to cite the count, got %+v", alertsList)
+	}
+}
+
+func TestDiskSMARTHotCitesTemp(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.DiskSMARTHot(60); err != nil {
+		t.Fatal(err)
+	}
+	alertsList, _ := db.GetAlerts(false, 0)
+	if len(alertsList) != 1 || !strings.Contains(alertsList[0].Message, "60") {
+		t.Errorf("expected message to cite the temperature, got %+v", alertsList)
+	}
+}
+
+func TestSlowBootCitesSeconds(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.SlowBoot(245); err != nil {
+		t.Fatal(err)
+	}
+	alertsList, _ := db.GetAlerts(false, 0)
+	if len(alertsList) != 1 || alertsList[0].Severity != SeverityWarning || !strings.Contains(alertsList[0].Message, "245") {
+		t.Errorf("expected a warning citing the duration, got %+v", alertsList)
+	}
+}
+
+func TestJournalCorruptCitesDetail(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.JournalCorrupt("system@abc.journal~ invalid object"); err != nil {
+		t.Fatal(err)
+	}
+	alertsList, _ := db.GetAlerts(false, 0)
+	if len(alertsList) != 1 || !strings.Contains(alertsList[0].Message, "system@abc.journal~") {
+		t.Errorf("expected message to cite the detail, got %+v", alertsList)
+	}
+}
+
+func TestJournalOKDeliversViaRecovery(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.JournalOK(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fn.recovery) != 1 {
+		t.Errorf("expected 1 recovery notify, got %v", fn.recovery)
+	}
+}

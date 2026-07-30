@@ -24,6 +24,16 @@ const (
 	TypeAppDown        = "app_down"
 	TypeBackupFailed   = "backup_failed"
 
+	TypeNTPUnsynced       = "ntp_unsynced"
+	TypeNTPSynced         = "ntp_synced"
+	TypeDiskSMARTFail     = "disk_smart_fail"
+	TypeDiskSMARTOK       = "disk_smart_ok"
+	TypeDiskSMARTDegraded = "disk_smart_degraded"
+	TypeDiskSMARTHot      = "disk_smart_hot"
+	TypeSlowBoot          = "slow_boot"
+	TypeJournalCorrupt    = "journal_corrupt"
+	TypeJournalOK         = "journal_ok"
+
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
 	SeverityCritical = "critical"
@@ -226,4 +236,91 @@ func (s *Service) BackupSucceeded() error {
 	s.AutoResolve(TypeBackupFailed, "")
 	return s.createRecovery(TypeBackupFailed, "Backup enviado",
 		"O backup automático voltou a ser enviado com sucesso.", "")
+}
+
+// NTPUnsynced raises a warning when the system clock is not NTP-synchronized
+// — a silent degradation (logs, TLS, TOTP 2FA all depend on correct time),
+// not a service outage, hence Warning not Critical.
+func (s *Service) NTPUnsynced() error {
+	return s.Create(TypeNTPUnsynced, SeverityWarning, "Relógio dessincronizado",
+		"O relógio do sistema não está sincronizado via NTP.", "")
+}
+
+// NTPSynced clears NTPUnsynced and notifies recovery.
+func (s *Service) NTPSynced() error {
+	s.AutoResolve(TypeNTPUnsynced, "")
+	return s.createRecovery(TypeNTPSynced, "Relógio sincronizado",
+		"O relógio do sistema voltou a sincronizar via NTP.", "")
+}
+
+// DiskSMARTFail raises a critical alert when the disk's own S.M.A.R.T.
+// self-assessment reports failure — the strongest signal this package
+// raises, since the drive firmware itself is reporting trouble.
+func (s *Service) DiskSMARTFail() error {
+	return s.Create(TypeDiskSMARTFail, SeverityCritical, "Disco: falha no SMART",
+		"O disco reporta falha no autodiagnóstico SMART — considere substituí-lo.", "")
+}
+
+// DiskSMARTOK clears DiskSMARTFail and notifies recovery.
+func (s *Service) DiskSMARTOK() error {
+	s.AutoResolve(TypeDiskSMARTFail, "")
+	return s.createRecovery(TypeDiskSMARTOK, "Disco: SMART normalizado",
+		"O disco voltou a passar no autodiagnóstico SMART.", "")
+}
+
+// DiskSMARTDegraded raises a warning when the disk's reallocated-sector count
+// crosses the configured threshold — an earlier, softer signal than
+// DiskSMARTFail. Signature matches Collector.checkResource's `high`
+// callback.
+func (s *Service) DiskSMARTDegraded(count float64) error {
+	return s.Create(TypeDiskSMARTDegraded, SeverityWarning, "Disco: setores realocados",
+		fmt.Sprintf("O disco reporta %.0f setor(es) realocado(s) via SMART.", count), "")
+}
+
+// DiskSMARTNormal clears DiskSMARTDegraded and notifies recovery. Signature
+// matches Collector.checkResource's `normal` callback.
+func (s *Service) DiskSMARTNormal(count float64) error {
+	s.AutoResolve(TypeDiskSMARTDegraded, "")
+	return s.createRecovery(TypeDiskSMARTDegraded, "Disco: setores realocados normalizados",
+		fmt.Sprintf("Contagem de setores realocados voltou a %.0f.", count), "")
+}
+
+// DiskSMARTHot raises a warning when disk temperature crosses the configured
+// threshold. Signature matches Collector.checkResource's `high` callback.
+func (s *Service) DiskSMARTHot(tempC float64) error {
+	return s.Create(TypeDiskSMARTHot, SeverityWarning, "Disco: temperatura alta",
+		fmt.Sprintf("Temperatura do disco em %.0f°C.", tempC), "")
+}
+
+// DiskSMARTCool clears DiskSMARTHot and notifies recovery. Signature matches
+// Collector.checkResource's `normal` callback.
+func (s *Service) DiskSMARTCool(tempC float64) error {
+	s.AutoResolve(TypeDiskSMARTHot, "")
+	return s.createRecovery(TypeDiskSMARTHot, "Disco: temperatura normalizada",
+		fmt.Sprintf("Temperatura do disco voltou a %.0f°C.", tempC), "")
+}
+
+// SlowBoot raises a one-time warning when the box takes longer than the
+// configured threshold to reach its first monitoring tick. There is no
+// recovery counterpart: a slow boot can't un-happen, only the next reboot
+// can be fast.
+func (s *Service) SlowBoot(seconds float64) error {
+	return s.Create(TypeSlowBoot, SeverityWarning, "Boot lento",
+		fmt.Sprintf("O sistema levou %.0fs para o LinkGuard ficar pronto neste boot.", seconds), "")
+}
+
+// JournalCorrupt raises a warning when a periodic `journalctl --verify` finds
+// corruption — degrades observability, not an operational outage, hence
+// Warning.
+func (s *Service) JournalCorrupt(detail string) error {
+	return s.Create(TypeJournalCorrupt, SeverityWarning, "Logs do sistema corrompidos",
+		"journalctl --verify encontrou corrupção: "+detail, "")
+}
+
+// JournalOK clears JournalCorrupt and notifies recovery (a corrupted journal
+// file rotating out of retention is enough to "heal" this on its own).
+func (s *Service) JournalOK() error {
+	s.AutoResolve(TypeJournalCorrupt, "")
+	return s.createRecovery(TypeJournalOK, "Logs do sistema normalizados",
+		"journalctl --verify não encontra mais corrupção nos logs.", "")
 }
