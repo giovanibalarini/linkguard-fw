@@ -39,6 +39,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
+	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 	"github.com/giovanibalarini/linkguard-fw/internal/tlscert"
 	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
@@ -191,6 +192,7 @@ func run() int {
 	appMetrics := metrics.New(promReg)
 	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec, rrdSvc)
 	backupSched := backup.NewScheduler(db, secretsSvc, notifySvc, alertSvc, version)
+	journalSched := monitoring.NewJournalScheduler(metricsCollector)
 
 	server := api.New(api.Config{
 		Addr:    cfg.Addr(),
@@ -240,11 +242,16 @@ func run() int {
 	// computed; without it /proc/net/nf_conntrack has no byte counters.
 	trafficSvc.EnsureAccounting()
 
+	// Enable NTP time sync (chrony) if it's installed — LinkGuard owns this
+	// the same way it owns the three prerequisites above.
+	timesync.EnsureEnabled(ctx, exec)
+
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)
 	go balancerSvc.Run(ctx)
 	go backupSched.Run(ctx)
+	go journalSched.Run(ctx)
 	go netifSvc.RunExpirySweep(ctx, 10*time.Second)
 	go ai.RunDigest(ctx, aiClient, rrdSvc, alertSvc, db, func() []string {
 		all, _ := db.GetLinks()
