@@ -1241,27 +1241,16 @@ nenhum teste do pacote hoje passa por aí — todos usam o struct literal `&Coll
 direto), o que testaria só a fiação, não lógica nova — risco desproporcional ao tamanho da
 mudança. A garantia aqui vem da suíte completa não quebrar (Step 2) mais a revisão de código.
 
+**Nota (corrigido após a execução do Task 5):** o campo `Collector.bootChecked bool` — que este
+texto originalmente listava como sendo adicionado aqui — já foi adicionado pelo Task 5 (era
+necessário pra `healthchecks.go` compilar, já que Go exige que o campo exista em algum arquivo
+do pacote; o Task 5 não podia esperar o Task 6 pra isso). Confirme com `grep -n "bootChecked"
+internal/monitoring/collector.go` que o campo já está lá antes de prosseguir — se por algum
+motivo não estiver, adicione-o você mesmo (mesma declaração: `bootChecked bool` no struct
+`Collector`, protegido por `healthMu`), mas o esperado é que já exista. Este task só cuida da
+fiação em `collect()` abaixo.
+
 - [ ] **Step 1: Implementar**
-
-Em `internal/monitoring/collector.go`, adicionar o campo `bootChecked` ao struct `Collector`
-(logo abaixo de `health map[string]*itemState`):
-
-```go
-type Collector struct {
-	db        *storage.DB
-	sysCol    *system.Collector
-	m         *metrics.Metrics
-	alertSvc  *alerts.Service
-	exec      firewall.Executor
-	rec       tsdb.Recorder
-	startTime time.Time
-
-	healthMu    sync.Mutex
-	health      map[string]*itemState
-	bootChecked bool
-	nowFn       func() int64
-}
-```
 
 Em `collect()`, adicionar as três chamadas novas. Trocar:
 
