@@ -13,6 +13,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.0.82',
+    date: '2026-07-30',
+    title: 'Vigia agora cuida do relógio, do disco e do boot',
+    changes: [
+      { type: 'feat', text: 'O LinkGuard passa a garantir sozinho que o relógio do servidor fica sincronizado (NTP via chrony) e avisa se isso parar de funcionar — evita que logs, certificados e o código de segurança (2FA) fiquem com data errada sem ninguém perceber.' },
+      { type: 'feat', text: 'Monitoramento de saúde do disco (SMART): avisa se o disco reportar falha, setores danificados ou temperatura alta — um alerta antecipado antes de uma pane real.' },
+      { type: 'feat', text: 'Avisa quando o servidor demora demais pra ligar (padrão: mais de 3 minutos) — útil pra perceber problemas de hardware/disco logo depois de uma queda de energia.' },
+      { type: 'feat', text: 'Verificação semanal da integridade dos arquivos de log do sistema, com aviso se algum ficar corrompido.' },
+      { type: 'feat', text: 'Os 4 novos itens aparecem automaticamente no painel "Saúde do sistema" e seguem o mesmo interruptor "Me avise de qualquer queda" já existente — os limites de cada um podem ser ajustados em Configurações → Monitoramento → Avançado.' },
+    ],
+  },
+  {
     version: '1.0.81',
     date: '2026-07-29',
     title: 'Painel mais fácil de usar no celular',
