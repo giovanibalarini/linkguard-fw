@@ -25,9 +25,10 @@ type Collector struct {
 	rec       tsdb.Recorder
 	startTime time.Time
 
-	healthMu sync.Mutex
-	health   map[string]*itemState
-	nowFn    func() int64
+	healthMu    sync.Mutex
+	health      map[string]*itemState
+	nowFn       func() int64
+	bootChecked bool // guards checkBootTime (Task 5) so it fires at most once per process
 }
 
 // NewCollector creates a monitoring Collector. rec receives every measurement

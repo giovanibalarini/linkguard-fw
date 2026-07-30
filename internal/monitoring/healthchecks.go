@@ -2,7 +2,11 @@ package monitoring
 
 import (
 	"context"
+	"log/slog"
 	"regexp"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/disksmart"
+	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 )
 
 type transition int
@@ -168,4 +172,103 @@ func (c *Collector) isActive(svc string) bool {
 	}
 	_, err := c.exec.ExecuteRead(context.Background(), "systemctl", "is-active", svc)
 	return err == nil
+}
+
+// checkNTP verifies the system clock is NTP-synchronized and raises/clears
+// alerts.TypeNTPUnsynced on a confirmed transition.
+func (c *Collector) checkNTP() {
+	up := timesync.IsSynced(context.Background(), c.exec)
+	now := c.nowFn()
+	tr := c.observe("ntp:sync", up, now)
+	c.ensureMeta("ntp:sync", "ntp-sync", "resource")
+	switch tr {
+	case transDown:
+		_ = c.alertSvc.NTPUnsynced()
+	case transUp:
+		_ = c.alertSvc.NTPSynced()
+	}
+}
+
+// checkSMART reads the root disk's SMART status once and applies three
+// checks from that single reading: overall health (boolean, via observe()
+// directly), reallocated sector count and temperature (both threshold-based,
+// routed through the existing checkResource — same "lower is healthier"
+// polarity as CPU/mem/disk). A read failure (tool missing, disk not found)
+// is treated as "unknown for this tick" and skipped entirely, rather than
+// raising a false SMART-fail alert — see the design spec's Casos de borda.
+func (c *Collector) checkSMART(cfg Config) {
+	ctx := context.Background()
+	device, err := disksmart.DetectRootDisk(ctx, c.exec)
+	if err != nil {
+		slog.Warn("smart: could not detect root disk", "err", err)
+		return
+	}
+	report, err := disksmart.Read(ctx, c.exec, device)
+	if err != nil {
+		slog.Warn("smart: read failed", "device", device, "err", err)
+		return
+	}
+
+	now := c.nowFn()
+	tr := c.observe("smart:health", report.Passed, now)
+	c.ensureMeta("smart:health", "smart-health", "resource")
+	switch tr {
+	case transDown:
+		_ = c.alertSvc.DiskSMARTFail()
+	case transUp:
+		_ = c.alertSvc.DiskSMARTOK()
+	}
+
+	if c.rec != nil {
+		c.rec.Gauge("smart.reallocated", "", float64(report.ReallocatedSectors))
+		c.rec.Gauge("smart.temp_c", "", float64(report.TemperatureC))
+	}
+
+	// checkResource's polarity is `pct < thresholdPct` (strictly less-than).
+	// SMARTReallocatedThreshold defaults to 0 meaning "any reallocated sector
+	// at all is a problem" — passing threshold+1 turns the strict "<" into
+	// the intended "<= threshold is healthy" without changing
+	// checkResource's shared comparison logic.
+	c.checkResource("smart:realloc", "Setores realocados", float64(report.ReallocatedSectors),
+		cfg.SMARTReallocatedThreshold+1, c.alertSvc.DiskSMARTDegraded, c.alertSvc.DiskSMARTNormal)
+	c.checkResource("smart:temp", "Temperatura do disco", float64(report.TemperatureC),
+		cfg.SMARTTempThresholdC, c.alertSvc.DiskSMARTHot, c.alertSvc.DiskSMARTCool)
+}
+
+// checkBootTime runs at most once per process lifetime (guarded by
+// c.bootChecked — /proc/uptime only grows, so re-checking on a later tick
+// would measure "how long the process has been running", not "how long the
+// boot took"). uptimeSeconds is the system uptime at the moment this first
+// tick fires (caller passes sys.UptimeSeconds from the same collect() pass).
+//
+// Unlike every other check in this file, the alert here is fired directly
+// from the freshly-computed `up` value, NOT from observe()'s returned
+// transition — observe()'s anti-flap model requires a SECOND confirming
+// reading before a first-ever "down" fires, which never happens for a check
+// that only ever runs once. observe()/ensureMeta() are still called so the
+// item shows up on the dashboard panel and is bookkept consistently with
+// every other item.
+//
+// cfg.Enabled gates the ALERT, but not the measurement/bookkeeping above it:
+// gating the whole function would let a later re-enable of monitoring fire
+// this using a stale (much larger) uptime reading instead of the real boot
+// duration. The caller (collect(), Task 6) calls this unconditionally.
+func (c *Collector) checkBootTime(uptimeSeconds float64, cfg Config) {
+	c.healthMu.Lock()
+	if c.bootChecked {
+		c.healthMu.Unlock()
+		return
+	}
+	c.bootChecked = true
+	c.healthMu.Unlock()
+
+	up := uptimeSeconds < float64(cfg.BootTimeThresholdSec)
+	c.observe("boot:time", up, c.nowFn())
+	c.ensureMeta("boot:time", "boot-time", "resource")
+	if c.rec != nil {
+		c.rec.Gauge("boot.seconds", "", uptimeSeconds)
+	}
+	if !up && cfg.Enabled {
+		_ = c.alertSvc.SlowBoot(uptimeSeconds)
+	}
 }

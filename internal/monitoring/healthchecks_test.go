@@ -57,16 +57,37 @@ func TestObserveDownAtStartupAlertsOnConfirm(t *testing.T) {
 	}
 }
 
-type fakeExec struct{ active map[string]bool }
+type fakeExec struct {
+	active      map[string]bool
+	ntpSynced   string // valor de retorno de `timedatectl show ...` ("yes"/"no")
+	findmntOut  string
+	lsblkOut    string
+	smartctlOut string
+	smartctlErr error
+	journalOut  string
+	journalErr  error
+}
 
 func (f *fakeExec) Execute(_ context.Context, _ string, _ ...string) (string, error) { return "", nil }
 func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
-	// emulate: systemctl is-active <svc>
-	if cmd == "systemctl" && len(args) == 2 && args[0] == "is-active" {
-		if f.active[args[1]] {
-			return "active\n", nil
+	switch cmd {
+	case "systemctl":
+		if len(args) == 2 && args[0] == "is-active" {
+			if f.active[args[1]] {
+				return "active\n", nil
+			}
+			return "inactive\n", assertErr{}
 		}
-		return "inactive\n", assertErr{}
+	case "timedatectl":
+		return f.ntpSynced, nil
+	case "findmnt":
+		return f.findmntOut, nil
+	case "lsblk":
+		return f.lsblkOut, nil
+	case "smartctl":
+		return f.smartctlOut, f.smartctlErr
+	case "journalctl":
+		return f.journalOut, f.journalErr
 	}
 	return "", nil
 }
@@ -160,5 +181,160 @@ func TestCheckResourceDiskPolarity(t *testing.T) {
 	}
 	if full != 1 {
 		t.Fatalf("expected 1 disk_full critical alert, got %d", full)
+	}
+}
+
+func TestCheckNTPRaisesOnSecondUnsynced(t *testing.T) {
+	fe := &fakeExec{ntpSynced: "yes\n"}
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, exec: fe, health: map[string]*itemState{}, nowFn: seqClock()}
+
+	c.checkNTP() // synced -> no alert
+	fe.ntpSynced = "no\n"
+	c.checkNTP() // 1st unsynced -> suppressed
+	c.checkNTP() // 2nd unsynced -> alert
+
+	al, _ := db.GetAlerts(false, 0)
+	n := 0
+	for _, a := range al {
+		if a.Type == alerts.TypeNTPUnsynced {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 ntp_unsynced alert, got %d", n)
+	}
+}
+
+const passingSmartJSON = `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":0}},{"id":194,"raw":{"value":35}}]}}`
+const failingSmartJSON = `{"smart_status":{"passed":false},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":9}},{"id":194,"raw":{"value":60}}]}}`
+
+func TestCheckSMARTRaisesHealthFailOnSecondReading(t *testing.T) {
+	fe := &fakeExec{findmntOut: "/dev/sda2\n", lsblkOut: "sda\n", smartctlOut: passingSmartJSON}
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, exec: fe, health: map[string]*itemState{}, nowFn: seqClock()}
+	cfg := Config{SMARTReallocatedThreshold: 0, SMARTTempThresholdC: 55}
+
+	c.checkSMART(cfg) // passed -> no alert
+	fe.smartctlOut = failingSmartJSON
+	c.checkSMART(cfg) // 1st fail -> suppressed
+	c.checkSMART(cfg) // 2nd fail -> alert
+
+	al, _ := db.GetAlerts(false, 0)
+	var health, realloc, hot int
+	for _, a := range al {
+		switch a.Type {
+		case alerts.TypeDiskSMARTFail:
+			health++
+		case alerts.TypeDiskSMARTDegraded:
+			realloc++
+		case alerts.TypeDiskSMARTHot:
+			hot++
+		}
+	}
+	if health != 1 {
+		t.Errorf("expected exactly 1 disk_smart_fail alert, got %d", health)
+	}
+	if realloc != 1 {
+		t.Errorf("expected exactly 1 disk_smart_degraded alert (9 > 0 threshold), got %d", realloc)
+	}
+	if hot != 1 {
+		t.Errorf("expected exactly 1 disk_smart_hot alert (60 >= 55 threshold), got %d", hot)
+	}
+}
+
+func TestCheckSMARTReadErrorSkipsTickWithoutAlert(t *testing.T) {
+	fe := &fakeExec{findmntOut: "/dev/sda2\n", lsblkOut: "sda\n", smartctlErr: assertErr{}}
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, exec: fe, health: map[string]*itemState{}, nowFn: seqClock()}
+
+	c.checkSMART(Config{SMARTReallocatedThreshold: 0, SMARTTempThresholdC: 55})
+
+	al, _ := db.GetAlerts(false, 0)
+	if len(al) != 0 {
+		t.Fatalf("a read error should not raise a false SMART-fail alert, got %d alerts", len(al))
+	}
+}
+
+// TestCheckSMARTReallocatedPolarity locks down the +1 polarity trick in
+// checkSMART's call to checkResource: with threshold=0, a reallocated-sector
+// count of exactly 0 must stay healthy (0 <= 0 is fine), while a count of 1
+// must already alert (any reallocated sector at all is a problem when the
+// threshold is 0). checkResource's own comparison is strict "<", so
+// checkSMART must pass threshold+1, not threshold, or this polarity flips.
+func TestCheckSMARTReallocatedPolarity(t *testing.T) {
+	healthyJSON := `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":0}},{"id":194,"raw":{"value":30}}]}}`
+	oneReallocatedJSON := `{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":1}},{"id":194,"raw":{"value":30}}]}}`
+
+	fe := &fakeExec{findmntOut: "/dev/sda2\n", lsblkOut: "sda\n", smartctlOut: healthyJSON}
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, exec: fe, health: map[string]*itemState{}, nowFn: seqClock()}
+	cfg := Config{SMARTReallocatedThreshold: 0, SMARTTempThresholdC: 55}
+
+	c.checkSMART(cfg) // count=0, threshold=0 -> healthy, no alert
+	fe.smartctlOut = oneReallocatedJSON
+	c.checkSMART(cfg) // count=1, threshold=0 -> 1st over -> suppressed
+	c.checkSMART(cfg) // count=1, threshold=0 -> 2nd over -> alert
+
+	al, _ := db.GetAlerts(false, 0)
+	n := 0
+	for _, a := range al {
+		if a.Type == alerts.TypeDiskSMARTDegraded {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 disk_smart_degraded alert (count=1 > threshold=0), got %d", n)
+	}
+}
+
+func TestCheckBootTimeOnlyRunsOnce(t *testing.T) {
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+	cfg := Config{Enabled: true, BootTimeThresholdSec: 180}
+
+	c.checkBootTime(200, cfg) // slow boot -> alert
+	c.checkBootTime(5, cfg)   // second call must be a no-op (bootChecked guard)
+
+	al, _ := db.GetAlerts(false, 0)
+	n := 0
+	for _, a := range al {
+		if a.Type == alerts.TypeSlowBoot {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 slow_boot alert (second call must be ignored), got %d", n)
+	}
+}
+
+func TestCheckBootTimeFastBootNoAlert(t *testing.T) {
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+
+	c.checkBootTime(20, Config{Enabled: true, BootTimeThresholdSec: 180})
+
+	al, _ := db.GetAlerts(false, 0)
+	if len(al) != 0 {
+		t.Fatalf("a fast boot must not alert, got %d alerts", len(al))
+	}
+}
+
+func TestCheckBootTimeRespectsDisabledToggle(t *testing.T) {
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+
+	c.checkBootTime(300, Config{Enabled: false, BootTimeThresholdSec: 180})
+
+	al, _ := db.GetAlerts(false, 0)
+	if len(al) != 0 {
+		t.Fatalf("cfg.Enabled=false must suppress the alert even on a slow boot, got %d alerts", len(al))
 	}
 }

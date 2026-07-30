@@ -9,9 +9,11 @@ import (
 // producer measures at. Gauge() looks this up so callers never have to know
 // or pass a step — the tsdb package is the single owner of bucketing.
 var nativeSteps = map[string]int{
-	"link.": 10,
-	"sys.":  30,
-	"if.":   1,
+	"link.":  10,
+	"sys.":   30,
+	"if.":    1,
+	"smart.": 30,
+	"boot.":  3600,
 }
 
 // derivedSteps are the rollup degrees every series gets in addition to its
