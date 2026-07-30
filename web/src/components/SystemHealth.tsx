@@ -9,6 +9,10 @@ const LABEL: Record<string, string> = {
   'nftables': 'Firewall',
   'kea-dhcp4-server': 'DHCP',
   'unbound': 'DNS',
+  'ntp-sync': 'Sincronização de horário',
+  'smart-health': 'Disco (SMART)',
+  'boot-time': 'Tempo de boot',
+  'journal-integrity': 'Integridade dos logs',
 };
 
 export default function SystemHealth() {
