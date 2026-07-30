@@ -112,3 +112,53 @@ func TestRealExecutorCommandNotFound(t *testing.T) {
 		t.Error("expected error for nonexistent command")
 	}
 }
+
+// TestRealExecutorReadPreservesStdoutOnNonZeroExit guards against a real
+// regression: smartctl (and other diagnostic tools) use their exit code as a
+// bitmask where several bits mean "ran fine, but the disk/subject is
+// unhealthy" rather than "execution failed". Discarding stdout whenever err
+// != nil silently throws away the exact JSON payload callers need in that
+// case. sh -c is used here only as a test fixture to simulate a real process
+// that writes to stdout and then exits non-zero — never use sh -c in
+// production code.
+func TestRealExecutorReadPreservesStdoutOnNonZeroExit(t *testing.T) {
+	exec := firewall.NewRealExecutor(0)
+	ctx := context.Background()
+
+	out, err := exec.ExecuteRead(ctx, "sh", "-c", "echo ola; exit 3")
+	if err == nil {
+		t.Fatal("expected error for non-zero exit code")
+	}
+	if out != "ola\n" {
+		t.Errorf("expected stdout %q to be preserved alongside the error, got %q", "ola\n", out)
+	}
+}
+
+func TestRealExecutorExecutePreservesStdoutOnNonZeroExit(t *testing.T) {
+	exec := firewall.NewRealExecutor(0)
+	ctx := context.Background()
+
+	out, err := exec.Execute(ctx, "sh", "-c", "echo ola; exit 3")
+	if err == nil {
+		t.Fatal("expected error for non-zero exit code")
+	}
+	if out != "ola\n" {
+		t.Errorf("expected stdout %q to be preserved alongside the error, got %q", "ola\n", out)
+	}
+}
+
+// TestDryRunExecutorReadPreservesStdoutOnNonZeroExit is the DryRunExecutor
+// counterpart: ExecuteRead always runs for real (it's read-only), so it must
+// preserve stdout on a non-zero exit too.
+func TestDryRunExecutorReadPreservesStdoutOnNonZeroExit(t *testing.T) {
+	exec := firewall.NewDryRunExecutor()
+	ctx := context.Background()
+
+	out, err := exec.ExecuteRead(ctx, "sh", "-c", "echo ola; exit 3")
+	if err == nil {
+		t.Fatal("expected error for non-zero exit code")
+	}
+	if out != "ola\n" {
+		t.Errorf("expected stdout %q to be preserved alongside the error, got %q", "ola\n", out)
+	}
+}

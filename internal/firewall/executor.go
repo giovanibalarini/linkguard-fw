@@ -59,7 +59,13 @@ func (e *RealExecutor) run(ctx context.Context, cmd string, args ...string) (str
 		if errMsg == "" {
 			errMsg = err.Error()
 		}
-		return "", fmt.Errorf("command %q failed: %s", strings.Join(append([]string{cmd}, args...), " "), errMsg)
+		// Return the captured stdout alongside the error: several diagnostic
+		// tools (e.g. smartctl) use their exit code as a bitmask where some
+		// bits mean "ran fine, subject is unhealthy" rather than "execution
+		// failed", while still writing a complete, valid payload to stdout.
+		// When the process never actually ran (e.g. binary not found),
+		// stdout.String() is naturally empty, so this is safe either way.
+		return stdout.String(), fmt.Errorf("command %q failed: %s", strings.Join(append([]string{cmd}, args...), " "), errMsg)
 	}
 
 	return stdout.String(), nil
@@ -100,7 +106,10 @@ func (e *DryRunExecutor) ExecuteRead(ctx context.Context, cmd string, args ...st
 		if errMsg == "" {
 			errMsg = err.Error()
 		}
-		return "", fmt.Errorf("command %q failed: %s", strings.Join(append([]string{cmd}, args...), " "), errMsg)
+		// See the matching comment in RealExecutor.run: preserve stdout even
+		// on a non-zero exit, since some tools encode diagnostic state in
+		// the exit code while still writing a useful payload to stdout.
+		return stdout.String(), fmt.Errorf("command %q failed: %s", strings.Join(append([]string{cmd}, args...), " "), errMsg)
 	}
 
 	return stdout.String(), nil

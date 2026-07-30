@@ -117,3 +117,42 @@ func TestReadErrorPropagates(t *testing.T) {
 		t.Errorf("error should mention device: %v", err)
 	}
 }
+
+// TestReadParsesJSONEvenWhenExecReturnsError guards against the real
+// smartctl behavior: it uses its exit code as a bitmask where bits 3-7 mean
+// "ran fine, and the disk (or its history) is unhealthy" — not "execution
+// failed" — while still writing a complete, valid JSON report to stdout.
+// This is exactly the scenario Vigia SMART exists to detect, so Read must
+// not discard it just because the underlying exec call also returned an
+// error.
+func TestReadParsesJSONEvenWhenExecReturnsError(t *testing.T) {
+	fe := &fakeExec{smartctlOut: failingSmartctlJSON, smartctlErr: errBoom{}}
+	r, err := Read(context.Background(), fe, "/dev/sda")
+	if err != nil {
+		t.Fatalf("expected no error when a valid JSON report is present despite exec error, got: %v", err)
+	}
+	if r.Passed {
+		t.Error("expected Passed=false")
+	}
+	if r.ReallocatedSectors != 12 {
+		t.Errorf("ReallocatedSectors = %d, want 12", r.ReallocatedSectors)
+	}
+	if r.TemperatureC != 58 {
+		t.Errorf("TemperatureC = %d, want 58", r.TemperatureC)
+	}
+}
+
+// TestReadErrorPropagatesWhenNoJSONEvenWithError confirms Read still
+// propagates the original exec error when there is genuinely no usable JSON
+// on stdout alongside it (e.g. smartctl missing, device not found) — the
+// fallback parse must not swallow real failures.
+func TestReadErrorPropagatesWhenNoJSONEvenWithError(t *testing.T) {
+	fe := &fakeExec{smartctlOut: "", smartctlErr: errBoom{}}
+	_, err := Read(context.Background(), fe, "/dev/sda")
+	if err == nil {
+		t.Fatal("expected error when neither valid JSON nor a clean run is available")
+	}
+	if !strings.Contains(err.Error(), "/dev/sda") {
+		t.Errorf("error should mention device: %v", err)
+	}
+}

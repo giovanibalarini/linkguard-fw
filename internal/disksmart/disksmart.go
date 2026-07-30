@@ -67,13 +67,21 @@ func DetectRootDisk(ctx context.Context, exec firewall.Executor) (string, error)
 // Read runs `smartctl -x -j <device>` and parses its JSON output. JSON
 // (not the text table) so parsing never depends on smartctl's
 // column-alignment/wording across versions.
+//
+// smartctl encodes its findings in its exit code as a bitmask: bits 0-2
+// mean the command itself failed to run, but bits 3-7 (e.g. "disk failing
+// now", a pre-fail attribute, or a non-empty error log) make it exit
+// non-zero even though it wrote a perfectly valid, informative JSON report
+// to stdout — exactly the case Vigia SMART exists to catch. So on error we
+// still try to parse whatever stdout we got; only if that also fails do we
+// propagate the original exec error.
 func Read(ctx context.Context, exec firewall.Executor, device string) (Report, error) {
-	out, err := exec.ExecuteRead(ctx, "smartctl", "-x", "-j", device)
-	if err != nil {
-		return Report{}, fmt.Errorf("smartctl %s: %w", device, err)
-	}
+	out, execErr := exec.ExecuteRead(ctx, "smartctl", "-x", "-j", device)
 	var parsed smartctlOutput
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		if execErr != nil {
+			return Report{}, fmt.Errorf("smartctl %s: %w", device, execErr)
+		}
 		return Report{}, fmt.Errorf("parse smartctl JSON for %s: %w", device, err)
 	}
 	r := Report{Passed: parsed.SmartStatus.Passed}
