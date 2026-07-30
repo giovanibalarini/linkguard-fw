@@ -107,7 +107,18 @@ func (c *Collector) collect() {
 			c.checkResource("resource:cpu", "CPU", sys.CPUPercent, 90, c.alertSvc.HighCPU, c.alertSvc.CPUNormal)
 			c.checkResource("resource:mem", "Memória", sys.MemPercent, 90, c.alertSvc.HighMemory, c.alertSvc.MemoryNormal)
 			c.checkResource("resource:disk", "Disco", sys.DiskPercent, cfg.DiskThresholdPct, c.alertSvc.DiskFull, c.alertSvc.DiskCleared)
+			c.checkNTP()
+			c.checkSMART(cfg)
 		}
+
+		// Boot-time is measured once per process lifetime (see
+		// checkBootTime's own doc comment) — deliberately called
+		// unconditionally, NOT inside `if cfg.Enabled`, because gating it
+		// would let a later re-enable of monitoring fire the alert using a
+		// stale (much larger) uptime reading instead of the real boot
+		// duration. checkBootTime itself still respects cfg.Enabled before
+		// raising the alert.
+		c.checkBootTime(sys.UptimeSeconds, cfg)
 	}
 
 	if cfg.Enabled {
