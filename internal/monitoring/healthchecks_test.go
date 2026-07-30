@@ -295,7 +295,7 @@ func TestCheckSMARTReallocatedPolarity(t *testing.T) {
 func TestCheckBootTimeOnlyRunsOnce(t *testing.T) {
 	db := openTestDB(t)
 	as := alerts.NewService(db)
-	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock(), bootIDFn: fakeBootID("boot-new")}
 	cfg := Config{Enabled: true, BootTimeThresholdSec: 180}
 
 	c.checkBootTime(200, cfg) // slow boot -> alert
@@ -316,7 +316,7 @@ func TestCheckBootTimeOnlyRunsOnce(t *testing.T) {
 func TestCheckBootTimeFastBootNoAlert(t *testing.T) {
 	db := openTestDB(t)
 	as := alerts.NewService(db)
-	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock(), bootIDFn: fakeBootID("boot-new")}
 
 	c.checkBootTime(20, Config{Enabled: true, BootTimeThresholdSec: 180})
 
@@ -329,12 +329,98 @@ func TestCheckBootTimeFastBootNoAlert(t *testing.T) {
 func TestCheckBootTimeRespectsDisabledToggle(t *testing.T) {
 	db := openTestDB(t)
 	as := alerts.NewService(db)
-	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock()}
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock(), bootIDFn: fakeBootID("boot-new")}
 
 	c.checkBootTime(300, Config{Enabled: false, BootTimeThresholdSec: 180})
 
 	al, _ := db.GetAlerts(false, 0)
 	if len(al) != 0 {
 		t.Fatalf("cfg.Enabled=false must suppress the alert even on a slow boot, got %d alerts", len(al))
+	}
+}
+
+// fakeBootID returns a bootIDFn stub that always reports the given id.
+func fakeBootID(id string) func() (string, error) {
+	return func() (string, error) { return id, nil }
+}
+
+// TestCheckBootTimeSkipsWhenSameBootID reproduces the production bug this
+// fix targets: a `systemctl restart linkguard-fw` (e.g. from every package
+// deploy's postinst) does NOT reboot the machine, so the kernel's boot_id
+// is unchanged from the last time checkBootTime persisted it. In that case
+// the process must not measure/alert on the kernel's (large, stale-looking)
+// uptime, and the boot-time item must not appear in Snapshot at all.
+func TestCheckBootTimeSkipsWhenSameBootID(t *testing.T) {
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	if err := db.SetSetting(bootLastKnownIDSettingKey, "boot-same"); err != nil {
+		t.Fatal(err)
+	}
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock(), bootIDFn: fakeBootID("boot-same")}
+
+	// Simulate exactly the production scenario: kernel uptime of hours
+	// (well over BootTimeThresholdSec) at the first tick after a plain
+	// service restart.
+	c.checkBootTime(14400, Config{Enabled: true, BootTimeThresholdSec: 180})
+
+	al, _ := db.GetAlerts(false, 0)
+	n := 0
+	for _, a := range al {
+		if a.Type == alerts.TypeSlowBoot {
+			n++
+		}
+	}
+	if n != 0 {
+		t.Fatalf("a same-boot_id restart must not alert slow_boot, got %d", n)
+	}
+
+	for _, item := range c.Snapshot() {
+		if item.Name == "boot-time" {
+			t.Fatalf("boot-time must not appear in Snapshot when boot_id is unchanged (same service restart, not a real boot), got %+v", item)
+		}
+	}
+}
+
+// TestCheckBootTimeDifferentBootIDMeasuresAndPersists confirms the "real
+// boot" path: a boot_id different from the last known one (or none saved
+// yet) measures/alerts as before AND persists the new boot_id, so that a
+// subsequent same-session service restart can recognize it.
+func TestCheckBootTimeDifferentBootIDMeasuresAndPersists(t *testing.T) {
+	db := openTestDB(t)
+	as := alerts.NewService(db)
+	if err := db.SetSetting(bootLastKnownIDSettingKey, "boot-old"); err != nil {
+		t.Fatal(err)
+	}
+	c := &Collector{db: db, alertSvc: as, health: map[string]*itemState{}, nowFn: seqClock(), bootIDFn: fakeBootID("boot-new")}
+
+	c.checkBootTime(200, Config{Enabled: true, BootTimeThresholdSec: 180})
+
+	al, _ := db.GetAlerts(false, 0)
+	n := 0
+	for _, a := range al {
+		if a.Type == alerts.TypeSlowBoot {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("a genuinely new boot_id over threshold should alert slow_boot, got %d", n)
+	}
+
+	found := false
+	for _, item := range c.Snapshot() {
+		if item.Name == "boot-time" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("boot-time should appear in Snapshot for a real boot")
+	}
+
+	saved, err := db.GetSetting(bootLastKnownIDSettingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved != "boot-new" {
+		t.Fatalf("expected the new boot_id to be persisted, got %q", saved)
 	}
 }

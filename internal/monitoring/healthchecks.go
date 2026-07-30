@@ -6,8 +6,18 @@ import (
 	"regexp"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/disksmart"
+	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 )
+
+// bootLastKnownIDSettingKey persists the kernel boot_id observed the last
+// time checkBootTime actually measured a boot, so a later process restart
+// (same kernel boot, e.g. from a package upgrade's `systemctl restart`) can
+// recognize itself as "not a new boot" instead of re-measuring
+// /proc/uptime — which only grows across restarts and would falsely look
+// like a slow boot every time (mirrors journalLastVerifySettingKey's
+// pattern in journalcheck.go).
+const bootLastKnownIDSettingKey = "boot_last_known_id"
 
 type transition int
 
@@ -241,6 +251,20 @@ func (c *Collector) checkSMART(cfg Config) {
 // boot took"). uptimeSeconds is the system uptime at the moment this first
 // tick fires (caller passes sys.UptimeSeconds from the same collect() pass).
 //
+// The bootChecked guard alone isn't enough to avoid false positives: it
+// only prevents re-measuring within a single process lifetime, but every
+// `systemctl restart linkguard-fw` (which happens on every package
+// deploy's postinst) starts a fresh process whose FIRST tick sees whatever
+// the KERNEL's uptime is — often hours, since the machine didn't actually
+// reboot. To tell "the machine really rebooted" apart from "just the
+// service restarted", we compare the kernel's boot_id (stable for the
+// whole life of a boot, see system.ReadBootID) against the last one we
+// persisted. Same boot_id as last time -> this is a same-session service
+// restart, not a real boot -> skip the measurement/alert entirely (no
+// stale/wrong data is better than showing a false "boot lento"). Different
+// (or no) boot_id -> a real boot happened -> measure as before and persist
+// the new boot_id for the next restart to recognize.
+//
 // Unlike every other check in this file, the alert here is fired directly
 // from the freshly-computed `up` value, NOT from observe()'s returned
 // transition — observe()'s anti-flap model requires a SECOND confirming
@@ -261,6 +285,25 @@ func (c *Collector) checkBootTime(uptimeSeconds float64, cfg Config) {
 	}
 	c.bootChecked = true
 	c.healthMu.Unlock()
+
+	bootIDFn := c.bootIDFn
+	if bootIDFn == nil {
+		bootIDFn = system.ReadBootID
+	}
+	currentID, err := bootIDFn()
+	if err != nil {
+		slog.Warn("boot-time: could not read boot_id, measuring anyway", "err", err)
+	} else {
+		lastID, _ := c.db.GetSetting(bootLastKnownIDSettingKey)
+		if lastID != "" && lastID == currentID {
+			// Same kernel boot session as last time we checked (only the
+			// service restarted) — nothing new to measure. Leaving the
+			// boot-time item out of Snapshot until the next real boot is
+			// more honest than showing stale/wrong data.
+			return
+		}
+		_ = c.db.SetSetting(bootLastKnownIDSettingKey, currentID)
+	}
 
 	up := uptimeSeconds < float64(cfg.BootTimeThresholdSec)
 	c.observe("boot:time", up, c.nowFn())

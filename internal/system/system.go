@@ -28,25 +28,25 @@ type Metrics struct {
 
 // InterfaceMetrics holds traffic counters for a network interface.
 type InterfaceMetrics struct {
-	Name        string `json:"name"`
-	Alias       string `json:"alias,omitempty"`
-	Addresses   []InterfaceAddress `json:"addresses,omitempty"`
-	RxBytes     uint64 `json:"rx_bytes"`
-	TxBytes     uint64 `json:"tx_bytes"`
-	RxPackets   uint64 `json:"rx_packets"`
-	TxPackets   uint64 `json:"tx_packets"`
-	RxErrors    uint64 `json:"rx_errors"`
-	TxErrors    uint64 `json:"tx_errors"`
-	RxDropped   uint64 `json:"rx_dropped"`
-	TxDropped   uint64 `json:"tx_dropped"`
+	Name      string             `json:"name"`
+	Alias     string             `json:"alias,omitempty"`
+	Addresses []InterfaceAddress `json:"addresses,omitempty"`
+	RxBytes   uint64             `json:"rx_bytes"`
+	TxBytes   uint64             `json:"tx_bytes"`
+	RxPackets uint64             `json:"rx_packets"`
+	TxPackets uint64             `json:"tx_packets"`
+	RxErrors  uint64             `json:"rx_errors"`
+	TxErrors  uint64             `json:"tx_errors"`
+	RxDropped uint64             `json:"rx_dropped"`
+	TxDropped uint64             `json:"tx_dropped"`
 }
 
 // InterfaceAddress represents an IP address configured on an interface.
 type InterfaceAddress struct {
-	Family  string `json:"family"`
-	IP      string `json:"ip"`
-	Subnet  string `json:"subnet"`
-	CIDR    string `json:"cidr"`
+	Family string `json:"family"`
+	IP     string `json:"ip"`
+	Subnet string `json:"subnet"`
+	CIDR   string `json:"cidr"`
 }
 
 // Collector collects system metrics.
@@ -119,6 +119,20 @@ func readUptime() float64 {
 	return v
 }
 
+// ReadBootID returns the kernel's boot_id — a UUID that stays stable for the
+// entire lifetime of the current kernel boot and changes on every real
+// reboot. Unlike /proc/uptime (which only tells you how long the KERNEL has
+// been up), comparing successive boot_ids is how callers distinguish "the
+// machine actually rebooted" from "just this process restarted" (e.g. a
+// `systemctl restart` from a package upgrade).
+func ReadBootID() (string, error) {
+	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 // ─── load average ────────────────────────────────────────────────────────────
 
 func readLoadAvg() [3]float64 {
@@ -138,7 +152,7 @@ func readLoadAvg() [3]float64 {
 
 type cpuStat struct {
 	user, nice, system, idle, iowait, irq, softirq, steal uint64
-	ts                                                     time.Time
+	ts                                                    time.Time
 }
 
 func (s cpuStat) total() uint64 {
@@ -309,7 +323,7 @@ func readNetDev() ([]InterfaceMetrics, error) {
 			ipNet, ok := addr.(*net.IPNet)
 			if !ok || ipNet.IP == nil {
 				continue
-		}
+			}
 			ip := ipNet.IP.String()
 			maskSize, _ := ipNet.Mask.Size()
 			family := "ipv4"

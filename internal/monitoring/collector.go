@@ -28,7 +28,8 @@ type Collector struct {
 	healthMu    sync.Mutex
 	health      map[string]*itemState
 	nowFn       func() int64
-	bootChecked bool // guards checkBootTime (Task 5) so it fires at most once per process
+	bootChecked bool                   // guards checkBootTime (Task 5) so it fires at most once per process
+	bootIDFn    func() (string, error) // returns the kernel's current boot_id; overridable in tests
 }
 
 // NewCollector creates a monitoring Collector. rec receives every measurement
@@ -45,6 +46,7 @@ func NewCollector(db *storage.DB, m *metrics.Metrics, alertSvc *alerts.Service, 
 		startTime: time.Now(),
 		health:    map[string]*itemState{},
 		nowFn:     func() int64 { return time.Now().Unix() },
+		bootIDFn:  system.ReadBootID,
 	}
 }
 
