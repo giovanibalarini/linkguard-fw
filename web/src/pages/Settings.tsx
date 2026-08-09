@@ -119,7 +119,7 @@ export default function Settings() {
           {activeSection === 'about' && (
             <Panel title="Sobre o LinkGuard FW" className="space-y-4">
               <div className="space-y-3 text-sm">
-                <InfoRow label="Versão" value={version ? `v${version}` : '—'} />
+                <InfoRow label="Versão" value={version || '—'} />
                 <InfoRow label="Descrição" value="Ferramenta de gestão de firewall Linux para servidores Debian com múltiplos links de internet" />
                 <InfoRow label="Tecnologias" value="Go, React, SQLite, nftables, iproute2" />
                 <InfoRow label="Licença" value="MIT" />
