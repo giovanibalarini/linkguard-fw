@@ -102,7 +102,7 @@ jobs:
             Maintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>
             Section: net
             Priority: optional
-            Depends: nftables, iproute2, iptables, wireguard-tools, iputils-ping
+            Depends: nftables, iproute2, iptables, iputils-ping
             Recommends: kea-dhcp4-server, unbound, smartmontools, chrony
             Homepage: https://github.com/giovanibalarini/linkguard-fw
             Description: Linux Firewall Management Tool

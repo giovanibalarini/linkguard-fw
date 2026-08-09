@@ -20,7 +20,7 @@ import (
 const PassphraseSecretName = "backup_passphrase"
 
 // BackupData is the portable snapshot of the panel's configuration. Settings
-// carry the bulk of it (balancer, port forwards, VPN, notifications, DHCP/DNS,
+// carry the bulk of it (balancer, port forwards, notifications, DHCP/DNS,
 // 2FA), plus the LAN-facing reservation/blocklist lists. Links are exported for
 // reference but not auto-restored (they tie into live routing/table IDs).
 type BackupData struct {

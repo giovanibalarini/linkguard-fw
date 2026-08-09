@@ -128,7 +128,7 @@ export default function BackupRestore() {
 
   return (
     <Panel title={<span className="flex items-center gap-2"><Download className="w-5 h-5 text-blue-400" /><span className="text-white font-semibold">Backup e restauração</span><HelpTip title="Backup">
-          <>Salva num arquivo todas as suas configurações (links, firewall, DHCP/DNS, VPN, balanceamento,
+          <>Salva num arquivo todas as suas configurações (links, firewall, DHCP/DNS, balanceamento,
           notificações...). Útil antes de mexer em algo ou para migrar de máquina. O arquivo é sempre
           cifrado com a senha configurada abaixo.</>
         </HelpTip></span>}>
@@ -171,7 +171,6 @@ export default function BackupRestore() {
                   <li key={name}>
                     {name === 'github_update_token' ? 'Token do GitHub (Configurações → Atualizações)' :
                      name === 'notifications' ? 'Notificações (Configurações → Notificações)' :
-                     name === 'wireguard' ? 'VPN WireGuard (chaves do servidor e dos clientes)' :
                      name}
                   </li>
                 ))}

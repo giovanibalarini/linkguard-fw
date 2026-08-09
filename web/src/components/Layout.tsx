@@ -6,7 +6,7 @@ import { useI18n } from '../i18n';
 import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
-  Menu, X, AlertTriangle, Cable, Server, Globe, Sparkles, SlidersHorizontal, Lock,
+  Menu, X, AlertTriangle, Cable, Server, Globe, Sparkles, SlidersHorizontal,
 } from 'lucide-react';
 
 interface NavItem {
@@ -55,7 +55,6 @@ const navGroups: NavGroup[] = [
     id: 'seguranca', label: 'group.seguranca',
     items: [
       { to: '/firewall', label: 'nav.firewall', icon: Shield, perm: ['firewall.read'] },
-      { to: '/vpn', label: 'nav.vpn', icon: Lock, perm: ['vpn.read'] },
     ],
   },
   {

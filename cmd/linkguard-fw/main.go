@@ -42,7 +42,6 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 	"github.com/giovanibalarini/linkguard-fw/internal/tlscert"
 	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
-	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
 
 var version = "dev"
@@ -173,7 +172,6 @@ func run() int {
 	nftSvc := nftables.NewService(exec)
 	balancerSvc := balancer.NewService(db, exec, linkSvc, alertSvc)
 	var netSvc netsvc.Provider = keaunbound.NewService(exec)
-	vpnSvc := wireguard.NewService(exec)
 	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
 	netifSvc := netif.NewService(exec, db, linkSvc)
@@ -200,7 +198,7 @@ func run() int {
 		WebFS:   linkguardfw.WebFS,
 		PromReg: promReg,
 		Version: version,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, netSvc, vpnSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, netSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
