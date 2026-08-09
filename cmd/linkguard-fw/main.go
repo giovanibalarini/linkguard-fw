@@ -248,7 +248,22 @@ func run() int {
 		for _, l := range configuredLinks {
 			wanInterfaces = append(wanInterfaces, l.Interface)
 		}
-		nftSvc.EnsureTable(ctx, wanInterfaces)
+		if nftSvc.EnsureTable(ctx, wanInterfaces) {
+			// The table was just created empty — restore whatever was saved on
+			// the last mutation (host_wan, blocklist, user rules, host blocks,
+			// port forwards) so a from-scratch install with a restored database
+			// comes back with the same firewall it had, not a blank one. Only
+			// runs right after a bootstrap: reapplying a snapshot on every
+			// ordinary restart would risk clobbering a running firewall with
+			// stale state instead.
+			if snapshot, _ := db.GetSetting(nftables.LiveSnapshotSettingKey); snapshot != "" {
+				if _, err := nftSvc.Restore(ctx, snapshot); err != nil {
+					slog.Warn("bootstrapped nftables table but could not restore the saved elements", "err", err)
+				} else {
+					slog.Info("restored saved nftables elements after bootstrap (host_wan/blocklist/user rules/port forwards)")
+				}
+			}
+		}
 	}
 
 	// Enable conntrack byte accounting so per-host traffic (top talkers) can be

@@ -93,8 +93,11 @@ func (s *Service) UnblockHost(ctx context.Context, ip string) (string, error) {
 
 // ─── Managed view & editing (sets / map elements) ────────────────────────────
 
-// ConfPath is the persisted ruleset loaded by nftables.service at boot.
-const ConfPath = "/etc/nftables.conf"
+// ConfPath is the persisted ruleset loaded by nftables.service at boot. A var
+// (not const) so tests can point it at a temp file instead of the real
+// system path — Persist() has no other way to reach it, being the only
+// filesystem write in this package that doesn't go through the Executor.
+var ConfPath = "/etc/nftables.conf"
 
 // DefaultWanMark steers a host to the secondary WAN (sumicity).
 const DefaultWanMark = "0x12c"

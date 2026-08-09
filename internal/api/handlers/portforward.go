@@ -116,5 +116,9 @@ func (h *PortForwardHandler) apply(r *http.Request, list []nftables.PortForward)
 	if err := h.nft.ApplyPortForwards(r.Context(), list); err != nil {
 		return err
 	}
-	return h.save(list)
+	if err := h.save(list); err != nil {
+		return err
+	}
+	saveNftSnapshot(r.Context(), h.db, h.nft)
+	return nil
 }

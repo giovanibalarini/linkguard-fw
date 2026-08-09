@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -31,6 +33,24 @@ func writeInternalError(w http.ResponseWriter, err error) {
 
 func decodeJSON(r *http.Request, v interface{}) error {
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// saveNftSnapshot persists the live nftables ruleset (host_wan, blocklist,
+// user rules, port forwards — everything `table inet linkguard` currently
+// holds) so a from-scratch install can restore it automatically instead of
+// coming back with an empty firewall (see nftables.EnsureTable /
+// LiveSnapshotSettingKey). Called after every mutation that changes the live
+// ruleset. Best-effort: a failed snapshot must never fail the mutation that
+// triggered it — the live change already applied, this is just backup.
+func saveNftSnapshot(ctx context.Context, db *storage.DB, nft *nftables.Service) {
+	rs, err := nft.Ruleset(ctx)
+	if err != nil {
+		slog.Warn("could not read nftables ruleset to persist it", "err", err)
+		return
+	}
+	if err := db.SetSetting(nftables.LiveSnapshotSettingKey, rs); err != nil {
+		slog.Warn("could not persist nftables ruleset snapshot", "err", err)
+	}
 }
 
 // clampLimit parses a "limit" query-string value, falling back to def when

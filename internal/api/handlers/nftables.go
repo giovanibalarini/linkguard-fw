@@ -71,6 +71,7 @@ func (h *NftablesHandler) WanHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -100,6 +101,7 @@ func (h *NftablesHandler) Blocklist(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -162,6 +164,7 @@ func (h *NftablesHandler) CreateUserRule(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.add", "user_rules", b.Action)
+	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -185,6 +188,7 @@ func (h *NftablesHandler) UpdateUserRule(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.update", "user_rules", strconv.Itoa(b.Handle))
+	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -204,6 +208,7 @@ func (h *NftablesHandler) DeleteUserRule(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.del", "user_rules", strconv.Itoa(b.Handle))
+	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -221,6 +226,7 @@ func (h *NftablesHandler) MoveUserRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -299,5 +305,6 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditAction(h.db, r, "nft.rollback", "ruleset", target.Label)
+	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "rollback completed", "output": out})
 }

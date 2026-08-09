@@ -54,8 +54,11 @@ func (r *recordExec) IsDryRun() bool { return r.dryRun }
 func TestEnsureTableNoOpWhenTableAlreadyExists(t *testing.T) {
 	exec := &recordExec{}
 	s := NewService(exec)
-	s.EnsureTable(context.Background(), []string{"enp5s0"})
+	created := s.EnsureTable(context.Background(), []string{"enp5s0"})
 
+	if created {
+		t.Error("expected EnsureTable to report created=false when the table already exists")
+	}
 	for _, c := range exec.calls {
 		if strings.Contains(c, "-f") {
 			t.Fatalf("expected no table creation when table already exists, got calls: %v", exec.calls)
@@ -69,8 +72,11 @@ func TestEnsureTableCreatesWhenMissing(t *testing.T) {
 		rulesetOut:   "table inet linkguard {\n}\n",
 	}
 	s := NewService(exec)
-	s.EnsureTable(context.Background(), []string{"enp5s0", "enp3s0"})
+	created := s.EnsureTable(context.Background(), []string{"enp5s0", "enp3s0"})
 
+	if !created {
+		t.Error("expected EnsureTable to report created=true when it had to bootstrap the table")
+	}
 	if exec.bootstrapSrc == "" {
 		t.Fatalf("expected `nft -f` to be called with a bootstrap ruleset; calls: %v", exec.calls)
 	}
@@ -89,7 +95,10 @@ func TestEnsureTableSurvivesCreateFailure(t *testing.T) {
 	}
 	s := NewService(exec)
 	// Must not panic and must not attempt to persist a ruleset that never applied.
-	s.EnsureTable(context.Background(), []string{"enp5s0"})
+	created := s.EnsureTable(context.Background(), []string{"enp5s0"})
+	if created {
+		t.Error("expected created=false when the bootstrap nft -f itself failed")
+	}
 	for _, c := range exec.calls {
 		if strings.Contains(c, "read:nft list ruleset") {
 			t.Errorf("did not expect Persist() to run after a failed bootstrap; calls: %v", exec.calls)
@@ -114,6 +123,36 @@ func TestEnsureTableRunsCheckEvenInDryRun(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected the table-existence check to run even in dry-run")
+	}
+}
+
+// TestBootstrapThenRestoreAppliesSavedState mirrors exactly what main.go does
+// on a from-scratch install: EnsureTable creates the bare skeleton (reports
+// created=true), and the caller then restores the saved live snapshot on top
+// — this is how host_wan/blocklist/user rules/port forwards survive a
+// reinstall even though EnsureTable's own skeleton is empty.
+func TestBootstrapThenRestoreAppliesSavedState(t *testing.T) {
+	exec := &recordExec{listTableErr: fmt.Errorf("no such table")}
+	s := NewService(exec)
+
+	created := s.EnsureTable(context.Background(), []string{"enp5s0"})
+	if !created {
+		t.Fatal("expected created=true on a missing table")
+	}
+
+	saved := "table inet linkguard {\n\tmap host_wan {\n\t\telements = { 10.0.0.9 : 0x12c }\n\t}\n}\n"
+	if _, err := s.Restore(context.Background(), saved); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	found := false
+	for _, c := range exec.calls {
+		if strings.HasPrefix(c, "nft -f ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected Restore to invoke `nft -f` with the saved ruleset")
 	}
 }
 

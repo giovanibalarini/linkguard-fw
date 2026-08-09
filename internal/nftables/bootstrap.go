@@ -8,6 +8,14 @@ import (
 	"strings"
 )
 
+// LiveSnapshotSettingKey is the settings row holding the last-known-good
+// `nft list ruleset` text, refreshed on every mutation (host_wan, blocklist,
+// user rules, host blocks, port forwards) — see saveLiveSnapshot callers in
+// internal/api/handlers and internal/hosts. It's what EnsureTable's caller
+// restores on a fresh bootstrap so those elements survive a from-scratch
+// install, not just the bare table structure.
+const LiveSnapshotSettingKey = "nft_live_snapshot"
+
 // EnsureTable creates the base `table inet linkguard` (chains, sets, maps) if
 // it does not already exist, deriving the postrouting masquerade interfaces
 // from the given WAN links. LinkGuard owns this bootstrap the same way it
@@ -17,37 +25,45 @@ import (
 // install it recreates exactly the structure `internal/nftables/service.go`'s
 // other methods assume exists. Best-effort — logs and returns on failure
 // instead of blocking startup. Requires root (the daemon runs as root).
-func (s *Service) EnsureTable(ctx context.Context, wanInterfaces []string) {
+//
+// Returns true only when it actually had to create the table — the caller
+// uses this to decide whether to also restore the saved element-level state
+// (LiveSnapshotSettingKey) via Restore: doing that on every boot would risk
+// clobbering a running firewall with a stale snapshot, but doing it right
+// after a from-scratch bootstrap is exactly the disaster-recovery case this
+// exists for.
+func (s *Service) EnsureTable(ctx context.Context, wanInterfaces []string) bool {
 	if _, err := s.exec.ExecuteRead(ctx, "nft", "list", "table", Family, Table); err == nil {
-		return // already exists — nothing to do
+		return false // already exists — nothing to do
 	}
 
 	ruleset := buildBootstrapRuleset(wanInterfaces)
 	f, err := os.CreateTemp("", "linkguard-bootstrap-*.conf")
 	if err != nil {
 		slog.Warn("could not create nftables bootstrap file; firewall table was not created", "err", err)
-		return
+		return false
 	}
 	defer os.Remove(f.Name())
 	if _, err := f.WriteString(ruleset); err != nil {
 		f.Close()
 		slog.Warn("could not write nftables bootstrap file; firewall table was not created", "err", err)
-		return
+		return false
 	}
 	if err := f.Close(); err != nil {
 		slog.Warn("could not close nftables bootstrap file; firewall table was not created", "err", err)
-		return
+		return false
 	}
 
 	if out, err := s.exec.Execute(ctx, "nft", "-f", f.Name()); err != nil {
 		slog.Warn("could not bootstrap the linkguard nftables table", "err", err, "output", out)
-		return
+		return false
 	}
 	slog.Info("bootstrapped nftables table inet linkguard", "wan_interfaces", wanInterfaces)
 
 	if err := s.Persist(ctx); err != nil {
 		slog.Warn("bootstrapped nftables table but could not persist it across reboots", "err", err)
 	}
+	return true
 }
 
 // buildBootstrapRuleset renders the base linkguard table — the same

@@ -165,6 +165,13 @@ func (s *Service) SetBlocked(ctx context.Context, mac string, blocked bool) erro
 	} else {
 		_, _ = s.nft.UnblockHost(ctx, ip)
 	}
+	// Snapshot the live ruleset so a from-scratch reinstall restores this block
+	// too, not just the host_metadata flag (mirrors the handlers-package
+	// saveNftSnapshot; duplicated here rather than imported to avoid this
+	// package depending on internal/api/handlers).
+	if rs, err := s.nft.Ruleset(ctx); err == nil {
+		_ = s.db.SetSetting(nftables.LiveSnapshotSettingKey, rs)
+	}
 	return nil
 }
 
