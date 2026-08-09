@@ -103,7 +103,7 @@ jobs:
             Section: net
             Priority: optional
             Depends: nftables, iproute2, iptables, wireguard-tools, iputils-ping
-            Recommends: kea-dhcp-server, unbound, smartmontools, chrony
+            Recommends: kea-dhcp4-server, unbound, smartmontools, chrony
             Homepage: https://github.com/giovanibalarini/linkguard-fw
             Description: Linux Firewall Management Tool
              LinkGuard FW is a web-based firewall management tool for Linux
