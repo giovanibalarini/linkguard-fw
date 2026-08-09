@@ -171,7 +171,10 @@ func (s *Service) DelRoute(ctx context.Context, dest, table string) (string, err
 
 func optIPOrCIDR(s string) bool {
 	s = strings.TrimSpace(s)
-	if s == "" {
+	// "all" is a literal ip-rule keyword (matches any source — it's how the
+	// kernel's own default rule reads: "0: from all lookup local"), not an
+	// IP/CIDR. Accept it alongside "" the same way validDest accepts "default".
+	if s == "" || s == "all" {
 		return true
 	}
 	if net.ParseIP(s) != nil {
