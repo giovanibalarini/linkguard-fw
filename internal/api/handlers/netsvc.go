@@ -93,13 +93,21 @@ func (h *NetsvcHandler) scheduleApply() {
 	}
 }
 
-// lastApplyStatus returns the persisted result of the most recent apply.
-func (h *NetsvcHandler) lastApplyStatus() applyStatus {
-	var st applyStatus
-	if raw, _ := h.db.GetSetting(netsvcApplyStatusKey); raw != "" {
-		_ = json.Unmarshal([]byte(raw), &st)
+// lastApplyStatus returns the persisted result of the most recent apply, or
+// nil if nothing has been applied yet. A fresh install must not report this
+// as a failure — "never attempted" and "attempted and failed" are different
+// states, and collapsing them (via the Go zero value, OK: false) previously
+// showed a false "última aplicação falhou" banner on every new install.
+func (h *NetsvcHandler) lastApplyStatus() *applyStatus {
+	raw, _ := h.db.GetSetting(netsvcApplyStatusKey)
+	if raw == "" {
+		return nil
 	}
-	return st
+	var st applyStatus
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		return nil
+	}
+	return &st
 }
 
 func (h *NetsvcHandler) getConfig() netsvc.Config {
