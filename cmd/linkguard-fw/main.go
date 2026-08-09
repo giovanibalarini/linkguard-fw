@@ -238,6 +238,21 @@ func run() int {
 	// this; it previously came from /etc/network/linkguard-routing.sh via rc.local).
 	balancerSvc.EnsureSteerRouting(ctx)
 
+	// Bootstrap `table inet linkguard` if it doesn't exist yet — every other
+	// nftables operation (block host, port forward, custom rule) assumes the
+	// table is already there. On every install to date this table was created
+	// by hand once; this makes a fresh install self-sufficient instead of
+	// silently failing the first time an admin uses the Firewall screen.
+	if configuredLinks, err := linkSvc.List(); err != nil {
+		slog.Warn("could not load links for nftables bootstrap", "err", err)
+	} else {
+		wanInterfaces := make([]string, 0, len(configuredLinks))
+		for _, l := range configuredLinks {
+			wanInterfaces = append(wanInterfaces, l.Interface)
+		}
+		nftSvc.EnsureTable(ctx, wanInterfaces)
+	}
+
 	// Enable conntrack byte accounting so per-host traffic (top talkers) can be
 	// computed; without it /proc/net/nf_conntrack has no byte counters.
 	trafficSvc.EnsureAccounting()
