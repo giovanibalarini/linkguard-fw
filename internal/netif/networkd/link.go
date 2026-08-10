@@ -73,3 +73,20 @@ func WriteLinkFile(exec firewall.Executor, f ConfigFile) error {
 	}
 	return nil
 }
+
+// RemoveLinkFile deletes a previously-written .link file. Idempotent: a
+// missing file is treated as success, not an error — the caller may be
+// pruning a file that was already removed by a prior partial run. Same
+// "reboot-only" rule as WriteLinkFile: deliberately does NOT call
+// `networkctl reload` — removing a .link file has no live effect either,
+// only after the next reboot. A no-op in dry-run mode, same convention as
+// WriteLinkFile.
+func RemoveLinkFile(exec firewall.Executor, path string) error {
+	if exec.IsDryRun() {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remover %s: %w", path, err)
+	}
+	return nil
+}

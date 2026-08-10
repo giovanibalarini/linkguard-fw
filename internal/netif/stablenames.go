@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/netif/networkd"
@@ -57,13 +59,52 @@ func (s *Service) ApplyStableNames(ctx context.Context) ([]StableNameEntry, erro
 		return nil, err
 	}
 	var errs []error
+	desired := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		f := networkd.RenderLink(e.MAC, e.StableName, s.networkDir)
+		desired[f.Path] = true
 		if err := networkd.WriteLinkFile(s.exec, f); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Interface, err))
 		}
 	}
+	errs = append(errs, s.pruneOrphanedLinkFiles(desired)...)
 	return entries, errors.Join(errs...)
+}
+
+// pruneOrphanedLinkFiles removes previously-written, LinkGuard-managed
+// .link files that are no longer in the desired set — e.g. after a Link is
+// renamed (old stable name's file would otherwise linger and race the new
+// one for which name wins after reboot, since systemd applies whichever
+// .link file matching a MAC sorts first) or deleted entirely. Only ever
+// touches files carrying the "# managed by linkguard" header, never an
+// unrelated file that happens to match the glob. Best-effort: one removal
+// failure doesn't stop the rest.
+func (s *Service) pruneOrphanedLinkFiles(desired map[string]bool) []error {
+	dir := networkd.ResolveNetworkDir(s.networkDir)
+	matches, err := filepath.Glob(filepath.Join(dir, "10-lg-*.link"))
+	if err != nil {
+		return []error{fmt.Errorf("listar .link files em %s: %w", dir, err)}
+	}
+	var errs []error
+	for _, path := range matches {
+		if desired[path] {
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("ler %s: %w", path, err))
+			}
+			continue
+		}
+		if !strings.Contains(string(content), "# managed by linkguard") {
+			continue
+		}
+		if err := networkd.RemoveLinkFile(s.exec, path); err != nil {
+			errs = append(errs, fmt.Errorf("remover %s: %w", path, err))
+		}
+	}
+	return errs
 }
 
 func (s *Service) wanLinkNamesByInterface() (map[string]string, error) {

@@ -108,3 +108,82 @@ func TestApplyStableNamesWritesLinkFiles(t *testing.T) {
 		t.Errorf(".link file missing expected MACAddress line:\n%s", content)
 	}
 }
+
+// TestApplyStableNamesPrunesOrphanAfterRename is the regression test for the
+// final-review finding: renaming a Link ("WAN" -> "WAN VIVO") must not leave
+// the old stable name's .link file behind. Two files both matching the same
+// MACAddress with different Name= values is exactly the silent,
+// filename-ASCII-order-dependent bug this whole feature exists to prevent.
+func TestApplyStableNamesPrunesOrphanAfterRename(t *testing.T) {
+	dir := t.TempDir()
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	if err := linkSvc.Create(&storage.Link{ID: "wan1", Name: "WAN", Interface: "wlp2s0", Weight: 1}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+	svc := NewService(exec, db, linkSvc)
+	svc.networkDir = dir
+
+	if _, err := svc.ApplyStableNames(context.Background()); err != nil {
+		t.Fatalf("ApplyStableNames (before rename): %v", err)
+	}
+	oldPath := dir + "/10-lg-wan.link"
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("expected %s to exist before rename: %v", oldPath, err)
+	}
+
+	if err := linkSvc.Update(&storage.Link{ID: "wan1", Name: "WAN VIVO", Interface: "wlp2s0", Weight: 1}); err != nil {
+		t.Fatalf("rename link: %v", err)
+	}
+
+	entries, err := svc.ApplyStableNames(context.Background())
+	if err != nil {
+		t.Fatalf("ApplyStableNames (after rename): %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	newPath := dir + "/10-lg-wan-vivo.link"
+	content, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("expected new .link file at %s: %v", newPath, err)
+	}
+	if !strings.Contains(string(content), "MACAddress=f4:8c:50:1b:c3:b2") {
+		t.Errorf(".link file missing expected MACAddress line:\n%s", content)
+	}
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Errorf("expected orphaned %s to be removed after rename, stat err = %v", oldPath, err)
+	}
+}
+
+// TestApplyStableNamesLeavesUnmanagedFilesAlone proves the "# managed by
+// linkguard" header check is a real safety gate, not dead code — a file
+// that happens to match the 10-lg-*.link glob but was never written by this
+// feature must never be touched by the pruning step.
+func TestApplyStableNamesLeavesUnmanagedFilesAlone(t *testing.T) {
+	dir := t.TempDir()
+	exec := &fakeExec{linkJSON: sampleLinkJSON, addrJSON: sampleAddrJSON}
+	db := newTestDB(t)
+	linkSvc := links.NewService(db)
+	if err := linkSvc.Create(&storage.Link{ID: "wan1", Name: "WAN", Interface: "wlp2s0", Weight: 1}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+	svc := NewService(exec, db, linkSvc)
+	svc.networkDir = dir
+
+	unmanagedPath := dir + "/10-lg-something-else.link"
+	if err := os.WriteFile(unmanagedPath, []byte("[Match]\nMACAddress=de:ad:be:ef:00:00\n\n[Link]\nName=lg-something-else\n"), 0o644); err != nil {
+		t.Fatalf("seed unmanaged file: %v", err)
+	}
+
+	if _, err := svc.ApplyStableNames(context.Background()); err != nil {
+		t.Fatalf("ApplyStableNames: %v", err)
+	}
+
+	if _, err := os.Stat(unmanagedPath); err != nil {
+		t.Errorf("expected unmanaged file %s to be left untouched: %v", unmanagedPath, err)
+	}
+}

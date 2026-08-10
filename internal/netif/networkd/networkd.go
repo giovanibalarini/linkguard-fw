@@ -17,6 +17,18 @@ import (
 
 const defaultNetworkDir = "/etc/systemd/network"
 
+// ResolveNetworkDir returns dir if non-empty, otherwise the package's
+// production default. Exported so callers outside this package (e.g.
+// internal/netif's Service, which needs to glob the directory for orphaned
+// managed-file cleanup) can resolve the same effective directory Render/
+// RenderLink use internally, without duplicating the default path string.
+func ResolveNetworkDir(dir string) string {
+	if dir == "" {
+		return defaultNetworkDir
+	}
+	return dir
+}
+
 // ConfigFile is one rendered systemd-networkd unit file.
 type ConfigFile struct {
 	Path    string
