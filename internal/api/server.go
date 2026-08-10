@@ -348,6 +348,8 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/confirm", netifH.Confirm)
 		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/rollback", netifH.Rollback)
 		r.With(require(auth.PermInterfacesRead)).Get("/api/interfaces/pending", netifH.Pending)
+		r.With(require(auth.PermInterfacesRead)).Get("/api/interfaces/stable-names", netifH.StableNames)
+		r.With(require(auth.PermInterfacesWrite)).Post("/api/interfaces/stable-names/apply", netifH.ApplyStableNames)
 
 		// User & role management (RBAC administration)
 		usersH := handlers.NewUsersHandler(s.db)

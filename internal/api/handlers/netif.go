@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -154,4 +155,36 @@ func (h *NetifHandler) Pending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, pending)
+}
+
+// StableNames previews the persistent MAC-matched names Fase A would
+// assign to configured WAN interfaces — see
+// docs/superpowers/specs/2026-08-10-networkd-cutover-and-fase3-design.md §3.
+func (h *NetifHandler) StableNames(w http.ResponseWriter, r *http.Request) {
+	entries, err := h.svc.StableNames(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if entries == nil {
+		entries = []netif.StableNameEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// ApplyStableNames writes the .link files. This never takes effect until
+// the next reboot (see WriteLinkFile) — requires_reboot=true in the
+// response tells the frontend to say so explicitly instead of implying it
+// already happened.
+func (h *NetifHandler) ApplyStableNames(w http.ResponseWriter, r *http.Request) {
+	entries, err := h.svc.ApplyStableNames(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	auditAction(h.db, r, "apply", "interfaces/stable-names", fmt.Sprintf("%d", len(entries)))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries":         entries,
+		"requires_reboot": true,
+	})
 }
