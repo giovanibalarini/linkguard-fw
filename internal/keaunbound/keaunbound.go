@@ -9,6 +9,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -50,6 +51,26 @@ func NewService(exec firewall.Executor) *Service {
 
 // Backend implements netsvc.Provider.
 func (s *Service) Backend() netsvc.Backend { return netsvc.BackendKeaUnbound }
+
+// EnsureKeaDirReadable relaxes /etc/kea's directory permissions so both
+// LinkGuard's own config validation and kea-dhcp4-server's own startup can
+// actually read the config that lives there. Debian's kea-dhcp-server
+// package ships the directory owned _kea:_kea mode 0750; kea-dhcp4's
+// AppArmor profile grants path-based read access under /etc/kea/** but not
+// the dac_override/dac_read_search capabilities needed to bypass that Unix
+// DAC restriction, so even root gets "Unable to open file" despite the file
+// itself being 0644 and the AppArmor path rule allowing it — the directory
+// blocks traversal before either of those checks matter. LinkGuard owns this
+// the same way it owns nftables bootstrap/ip_forward/conntrack accounting:
+// called at every startup so it self-heals regardless of what a package
+// reinstall resets it to. Best-effort — a failure here surfaces later as a
+// real validate/reload error instead of blocking startup.
+func (s *Service) EnsureKeaDirReadable() {
+	dir := filepath.Dir(s.keaConf)
+	if err := os.Chmod(dir, 0o755); err != nil {
+		slog.Warn("could not relax kea config directory permissions; DHCP apply may fail under AppArmor", "path", dir, "err", err)
+	}
+}
 
 // GenerateConfigs renders the Kea (DHCP) and unbound (DNS) config files.
 func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string) []netsvc.ConfigFile {

@@ -171,7 +171,8 @@ func run() int {
 	}, db, exec, routeSvc, alertSvc)
 	nftSvc := nftables.NewService(exec)
 	balancerSvc := balancer.NewService(db, exec, linkSvc, alertSvc)
-	var netSvc netsvc.Provider = keaunbound.NewService(exec)
+	keaSvc := keaunbound.NewService(exec)
+	var netSvc netsvc.Provider = keaSvc
 	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
 	netifSvc := netif.NewService(exec, db, linkSvc)
@@ -273,6 +274,10 @@ func run() int {
 	// Enable NTP time sync (chrony) if it's installed — LinkGuard owns this
 	// the same way it owns the three prerequisites above.
 	timesync.EnsureEnabled(ctx, exec)
+
+	// Relax /etc/kea's directory permissions so DHCP config validation/apply
+	// doesn't fail under AppArmor (see EnsureKeaDirReadable's doc comment).
+	keaSvc.EnsureKeaDirReadable()
 
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)

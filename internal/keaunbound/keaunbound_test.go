@@ -88,6 +88,36 @@ func TestValidateKeaWritesTempFileNextToRealConfig(t *testing.T) {
 	}
 }
 
+// TestEnsureKeaDirReadableRelaxesRestrictivePermissions is the regression
+// test for a real production bug: Debian's kea-dhcp-server package ships
+// /etc/kea owned _kea:_kea mode 0750. kea-dhcp4's AppArmor profile grants
+// path-based read access under /etc/kea/** but not the dac_override/
+// dac_read_search capabilities needed to bypass that Unix DAC restriction —
+// so even root (LinkGuard, and kea-dhcp4 itself at its own startup) got
+// "Unable to open file" reading a config that both the file permissions
+// (0644) and the AppArmor path rule allowed, because the *directory* blocked
+// the traversal first. LinkGuard owns this the same way it owns nftables
+// bootstrap/ip_forward/conntrack accounting: self-heals on every start
+// regardless of what a package reinstall resets it to.
+func TestEnsureKeaDirReadableRelaxesRestrictivePermissions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatalf("Chmod setup: %v", err)
+	}
+	s := NewService(&recExec{})
+	s.keaConf = filepath.Join(dir, "kea-dhcp4.conf")
+
+	s.EnsureKeaDirReadable()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("dir mode = %o, want %o", got, 0o755)
+	}
+}
+
 func TestReloadConfigsAbortsOnInvalidKeaConfig(t *testing.T) {
 	e := &recExec{keaTestErr: assertErr2{}}
 	s := newTestSvc(t, e)
