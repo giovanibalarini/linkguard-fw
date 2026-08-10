@@ -44,6 +44,58 @@ func containsExecuted(executed []string, want string) bool {
 	return false
 }
 
+// TestEnsureEnabledCallsSystemctlWhenInstalled and the four tests below it
+// pre-date the 2026-08-10 Service addition — carried over unchanged in
+// intent (adapted to the new fakeExec's responses/executed shape) because
+// EnsureEnabled/IsSynced themselves are explicitly unchanged by this
+// feature and must keep their existing coverage.
+func TestEnsureEnabledCallsSystemctlWhenInstalled(t *testing.T) {
+	exec := &fakeExec{responses: map[string]string{
+		"systemctl list-unit-files --no-legend chrony.service": "chrony.service                       enabled         enabled",
+	}}
+	EnsureEnabled(context.Background(), exec)
+	if !containsExecuted(exec.executed, "systemctl enable --now chrony") {
+		t.Fatalf("expected systemctl enable --now chrony to be called, got %v", exec.executed)
+	}
+}
+
+func TestEnsureEnabledSkipsWhenNotInstalled(t *testing.T) {
+	exec := &fakeExec{}
+	EnsureEnabled(context.Background(), exec)
+	if containsExecuted(exec.executed, "systemctl enable --now chrony") {
+		t.Fatal("expected systemctl enable NOT to be called when chrony.service is absent")
+	}
+}
+
+func TestIsSyncedTrue(t *testing.T) {
+	exec := &fakeExec{responses: map[string]string{
+		"timedatectl show --property=NTPSynchronized --value": "yes\n",
+	}}
+	if !IsSynced(context.Background(), exec) {
+		t.Fatal("expected IsSynced=true")
+	}
+}
+
+func TestIsSyncedFalse(t *testing.T) {
+	exec := &fakeExec{responses: map[string]string{
+		"timedatectl show --property=NTPSynchronized --value": "no\n",
+	}}
+	if IsSynced(context.Background(), exec) {
+		t.Fatal("expected IsSynced=false")
+	}
+}
+
+func TestIsSyncedErrorIsFalse(t *testing.T) {
+	exec := &fakeExec{readErr: errBoom{}}
+	if IsSynced(context.Background(), exec) {
+		t.Fatal("expected IsSynced=false on exec error")
+	}
+}
+
+type errBoom struct{}
+
+func (errBoom) Error() string { return "boom" }
+
 // TestDefaultConfigServersIsEmptySliceNotNil is the regression test for the
 // same class of bug already found once this session (internal/netif's
 // stable-names GET handler): a nil slice marshals to JSON `null`, which
