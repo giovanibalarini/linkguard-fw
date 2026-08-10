@@ -182,6 +182,9 @@ func (h *NetifHandler) ApplyStableNames(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, err)
 		return
 	}
+	if entries == nil {
+		entries = []netif.StableNameEntry{}
+	}
 	auditAction(h.db, r, "apply", "interfaces/stable-names", fmt.Sprintf("%d", len(entries)))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"entries":         entries,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
@@ -54,6 +55,33 @@ func TestStableNamesReturnsEmptyListNotNull(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	if w.Body.String() == "null\n" {
+		t.Error("expected [], got null — frontend .map() would crash on this")
+	}
+}
+
+func TestApplyStableNamesReturnsEmptyListNotNull(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	linkSvc := links.NewService(db)
+	svc := netif.NewService(&fakeEmptyIfaceExec{}, db, linkSvc)
+	h := handlers.NewNetifHandler(svc, db)
+
+	r := httptest.NewRequest("POST", "/api/interfaces/stable-names/apply", nil)
+	w := httptest.NewRecorder()
+	h.ApplyStableNames(w, r)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"entries":[]`) {
+		t.Errorf("expected entries:[], got body = %s", body)
+	}
+	if strings.Contains(body, `"entries":null`) {
 		t.Error("expected [], got null — frontend .map() would crash on this")
 	}
 }
