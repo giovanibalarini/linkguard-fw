@@ -22,17 +22,19 @@ const (
 	PermDHCPRead       Permission = "dhcp.read"
 	PermDNSRead        Permission = "dns.read"
 	PermInterfacesRead Permission = "interfaces.read"
+	PermNTPRead        Permission = "ntp.read"
 
 	// Write / action access per feature area.
-	PermLinksWrite    Permission = "links.write"
-	PermRoutesWrite   Permission = "routes.write"
-	PermFirewallWrite Permission = "firewall.write"
-	PermHostsBlock    Permission = "hosts.block"
-	PermHostsAssign   Permission = "hosts.assign" // mover host/grupo para uma WAN
-	PermSystemWrite   Permission = "system.write" // settings, retenção, aliases
-	PermDHCPWrite     Permission = "dhcp.write"   // ranges, reservas, aplicar
-	PermDNSWrite      Permission = "dns.write"    // upstreams, blocklist, aplicar
+	PermLinksWrite      Permission = "links.write"
+	PermRoutesWrite     Permission = "routes.write"
+	PermFirewallWrite   Permission = "firewall.write"
+	PermHostsBlock      Permission = "hosts.block"
+	PermHostsAssign     Permission = "hosts.assign"     // mover host/grupo para uma WAN
+	PermSystemWrite     Permission = "system.write"     // settings, retenção, aliases
+	PermDHCPWrite       Permission = "dhcp.write"       // ranges, reservas, aplicar
+	PermDNSWrite        Permission = "dns.write"        // upstreams, blocklist, aplicar
 	PermInterfacesWrite Permission = "interfaces.write" // editar interface, identificar porta fisicamente
+	PermNTPWrite        Permission = "ntp.write"        // config de servidores/timezone, aplicar, instalar chrony
 
 	// Administrative.
 	PermUsersManage Permission = "users.manage" // criar/editar/remover usuários
@@ -79,6 +81,9 @@ var Catalog = []CatalogEntry{
 	{PermInterfacesRead, "Interfaces", "Ver interfaces", "Topologia de rede, estado físico e diagnóstico"},
 	{PermInterfacesWrite, "Interfaces", "Gerenciar interfaces", "Identificar porta fisicamente (piscar LED)"},
 
+	{PermNTPRead, "NTP", "Ver NTP", "Ver status de sincronização, servidores configurados e fuso horário"},
+	{PermNTPWrite, "NTP", "Gerenciar NTP", "Configurar servidores/fuso horário, aplicar e instalar o chrony"},
+
 	{PermUsersManage, "Administração", "Gerenciar usuários", "Criar, editar e remover usuários e seus papéis"},
 	{PermRolesManage, "Administração", "Gerenciar papéis", "Criar, editar e remover papéis e suas permissões"},
 }
@@ -119,7 +124,7 @@ func readOnlyPermissions() []Permission {
 		switch e.Key {
 		case PermDashboardRead, PermMonitoringRead, PermLogsRead,
 			PermLinksRead, PermRoutesRead, PermFirewallRead,
-			PermHostsRead, PermSystemRead, PermDHCPRead, PermDNSRead, PermInterfacesRead:
+			PermHostsRead, PermSystemRead, PermDHCPRead, PermDNSRead, PermInterfacesRead, PermNTPRead:
 			perms = append(perms, e.Key)
 		}
 	}
@@ -147,6 +152,7 @@ var DefaultRoles = []DefaultRole{
 			PermSystemRead,
 			PermDHCPRead, PermDHCPWrite, PermDNSRead, PermDNSWrite,
 			PermInterfacesRead, PermInterfacesWrite,
+			PermNTPRead, PermNTPWrite,
 		},
 	},
 	{

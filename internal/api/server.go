@@ -38,6 +38,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/stresstest"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
+	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 	"github.com/giovanibalarini/linkguard-fw/internal/updater"
 )
@@ -329,6 +330,14 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// DNS query log (unbound journal; opt-in via DNS log_queries)
 		dnsLogH := handlers.NewDNSLogHandler(dnslog.NewService(s.exec))
 		r.With(require(auth.PermDNSRead)).Get("/api/dns/queries", dnsLogH.Recent)
+
+		// NTP (chrony) — status, servidores customizados, timezone, instalar sob demanda
+		ntpSvc := timesync.NewService(s.exec)
+		ntpH := handlers.NewNTPHandler(s.db, ntpSvc, s.alertSvc)
+		r.With(require(auth.PermNTPRead)).Get("/api/ntp", ntpH.GetNTP)
+		r.With(require(auth.PermNTPWrite)).Put("/api/ntp/config", ntpH.UpdateNTPConfig)
+		r.With(require(auth.PermNTPWrite)).Post("/api/ntp/apply", ntpH.Apply)
+		r.With(require(auth.PermNTPWrite)).Post("/api/ntp/install-chrony", ntpH.InstallChrony)
 
 		// Host inventory
 		hostsH := handlers.NewHostsHandler(s.hostSvc, s.db)
