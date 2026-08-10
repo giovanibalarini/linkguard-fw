@@ -278,6 +278,10 @@ export interface LastApply { ok: boolean; error?: string; at: number; }
 export interface DHCPData { config: NetsvcConfig; reservations: DHCPReservation[]; leases: DHCPLease[]; backend: string; last_apply?: LastApply; }
 export interface DNSData { config: NetsvcConfig; blocklist: string[]; backend: string; last_apply?: LastApply; }
 
+export interface NTPConfig { servers: string[]; timezone: string; }
+export interface NTPStatus { installed: boolean; synced: boolean; stratum?: number; offset_secs?: number; source?: string; }
+export interface NTPData { config: NTPConfig; status: NTPStatus; timezones: string[]; last_apply?: LastApply; }
+
 export interface HostTraffic { ip: string; rx_bytes: number; tx_bytes: number; }
 
 // ─── Link stress-test ────────────────────────────────────────────────────────
