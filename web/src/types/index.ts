@@ -481,6 +481,13 @@ export interface IfaceView {
   live: IfaceLiveState;
 }
 
+export interface StableNameEntry {
+  interface: string;
+  mac: string;
+  link_name: string;
+  stable_name: string;
+}
+
 export interface IfaceEdit {
   name: string;
   addr_mode: 'static' | 'dhcp' | 'none';

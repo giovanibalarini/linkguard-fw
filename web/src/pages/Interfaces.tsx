@@ -7,7 +7,7 @@ import Panel from '../components/ui/Panel';
 import Tabs, { type TabItem } from '../components/ui/Tabs';
 import Tag, { type TagVariant } from '../components/ui/Tag';
 import IconButton from '../components/ui/IconButton';
-import type { IfaceView, PendingChange } from '../types';
+import type { IfaceView, PendingChange, StableNameEntry } from '../types';
 
 const TABS: TabItem[] = [
   { id: 'overview', label: 'Visão geral' },
@@ -48,6 +48,9 @@ export default function Interfaces() {
   const [pending, setPending] = useState<PendingChange[]>([]);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [actioning, setActioning] = useState<string | null>(null);
+  const [stableNames, setStableNames] = useState<StableNameEntry[]>([]);
+  const [applyingStable, setApplyingStable] = useState(false);
+  const [stableApplied, setStableApplied] = useState(false);
 
   const handleIdentify = async (name: string) => {
     setIdentifying(name);
@@ -80,6 +83,32 @@ export default function Interfaces() {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await client.get<StableNameEntry[]>('/api/interfaces/stable-names');
+        setStableNames(data);
+      } catch {
+        // silencioso — igual ao padrão já usado pro carregamento de `pending` acima:
+        // uma falha aqui não deve travar o resto da tela.
+      }
+    })();
+  }, []);
+
+  const applyStableNames = async () => {
+    setApplyingStable(true);
+    try {
+      await client.post('/api/interfaces/stable-names/apply');
+      setStableApplied(true);
+    } catch {
+      // erro real de escrita em disco é raro (permissão, disco cheio) — o
+      // handler já loga o detalhe real via writeInternalError; a UI só
+      // precisa não travar.
+    } finally {
+      setApplyingStable(false);
+    }
+  };
 
   const handleConfirm = async (name: string) => {
     setActioning(name);
@@ -279,6 +308,32 @@ export default function Interfaces() {
               </div>
             );
           })()}
+        </Panel>
+      )}
+
+      {tab === 'overview' && stableNames.length > 0 && (
+        <Panel title="Nomes estáveis por MAC">
+          <p className="text-gray-500 text-sm mb-3">
+            Fixa o nome de cada interface WAN pelo endereço MAC da placa, não pela
+            posição física no computador — troca de hardware não muda mais o nome.
+            Só tem efeito depois de um <b>reboot</b>.
+          </p>
+          <div className="space-y-2 mb-3">
+            {stableNames.map((e) => (
+              <div key={e.interface} className="flex items-center justify-between text-sm border-b border-gray-800/50 last:border-0 py-1.5">
+                <span className="text-gray-400">{e.link_name}</span>
+                <span className="text-gray-600 font-mono text-xs">{e.mac}</span>
+                <span className="text-white font-mono">{e.interface} → {e.stable_name}</span>
+              </div>
+            ))}
+          </div>
+          {stableApplied ? (
+            <p className="text-green-400 text-sm">Aplicado — reinicie a máquina para os nomes valerem.</p>
+          ) : (
+            <button onClick={applyStableNames} disabled={applyingStable} className="btn-primary text-sm disabled:opacity-50">
+              {applyingStable ? 'Aplicando…' : 'Aplicar (requer reboot)'}
+            </button>
+          )}
         </Panel>
       )}
 
