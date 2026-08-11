@@ -332,9 +332,13 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		dnsLogH := handlers.NewDNSLogHandler(dnslog.NewService(s.exec))
 		r.With(require(auth.PermDNSRead)).Get("/api/dns/queries", dnsLogH.Recent)
 
-		// NTP (chrony) — status, servidores customizados, timezone, instalar sob demanda
+		// NTP (chrony) — status, servidores customizados, timezone, instalar sob
+		// demanda, e (2026-08-11) servir a LAN: nftSvc protege via a chain de
+		// input, e a mudança do toggle reaplica o DHCP/DNS para anunciar (ou
+		// deixar de anunciar) a opção ntp-servers.
 		ntpSvc := timesync.NewService(s.exec)
-		ntpH := handlers.NewNTPHandler(s.db, ntpSvc, s.alertSvc)
+		ntpH := handlers.NewNTPHandler(s.db, ntpSvc, s.alertSvc, s.nftSvc)
+		handlers.WireNTPDHCPReload(ntpH, netH)
 		r.With(require(auth.PermNTPRead)).Get("/api/ntp", ntpH.GetNTP)
 		r.With(require(auth.PermNTPWrite)).Put("/api/ntp/config", ntpH.UpdateNTPConfig)
 		r.With(require(auth.PermNTPWrite)).Post("/api/ntp/apply", ntpH.Apply)

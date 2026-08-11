@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 )
@@ -27,19 +29,57 @@ func validNTPServer(s string) bool { return reNTPServer.MatchString(s) }
 // Same auto-apply-on-save pattern as NetsvcHandler (DHCP/DNS,
 // internal/api/handlers/netsvc.go) — reuses its applyStatus type and
 // autoApplier/autoApplyDelay rather than duplicating them.
+//
+// nftSvc and triggerDHCPReload exist only for the "serve NTP to the LAN"
+// toggle (2026-08-11): applying the config now also reconciles the
+// nftables input-chain protection and, when wired via SetDHCPReload, asks
+// the DHCP/DNS handler to reapply so clients pick up the ntp-servers
+// option. Both are nil-safe — a handler built without them (older tests,
+// or a future caller that doesn't need the toggle) still works exactly as
+// before.
 type NTPHandler struct {
-	db       *storage.DB
-	svc      *timesync.Service
-	alertSvc *alerts.Service
-	applier  *autoApplier
+	db                *storage.DB
+	svc               *timesync.Service
+	alertSvc          *alerts.Service
+	applier           *autoApplier
+	nftSvc            *nftables.Service
+	triggerDHCPReload func(ctx context.Context) error
 }
 
 // NewNTPHandler creates an NTPHandler. Saving config auto-applies
-// (debounced), matching NetsvcHandler's convention.
-func NewNTPHandler(db *storage.DB, svc *timesync.Service, alertSvc *alerts.Service) *NTPHandler {
-	h := &NTPHandler{db: db, svc: svc, alertSvc: alertSvc}
+// (debounced), matching NetsvcHandler's convention. nftSvc is needed to
+// reconcile the NTP-protection input chain (nil-safe: pass nil where the
+// toggle's firewall effect isn't needed, e.g. in tests unrelated to it) —
+// same precedent as LinksHandler gaining nftSvc for the NAT rule.
+func NewNTPHandler(db *storage.DB, svc *timesync.Service, alertSvc *alerts.Service, nftSvc *nftables.Service) *NTPHandler {
+	h := &NTPHandler{db: db, svc: svc, alertSvc: alertSvc, nftSvc: nftSvc}
 	h.applier = newAutoApplier(autoApplyDelay, func() { _ = h.doReload(context.Background()) })
 	return h
+}
+
+// SetDHCPReload wires this handler to trigger a DHCP/DNS reload after
+// applying — toggling ServeLAN changes the DHCP config's ntp-servers
+// option (internal/keaunbound.GenerateKeaConfig), so clients only receive
+// it once that config is regenerated and reloaded. A plain func value
+// (rather than a hard *NetsvcHandler dependency) keeps the coupling
+// between the two handlers to exactly this one call — see
+// WireNTPDHCPReload, which supplies it from server.go using
+// NetsvcHandler's existing unexported doReload (both handlers live in this
+// same package, so no export is needed just for this wiring).
+func (h *NTPHandler) SetDHCPReload(fn func(ctx context.Context) error) {
+	h.triggerDHCPReload = fn
+}
+
+// WireNTPDHCPReload connects an already-constructed NTPHandler to an
+// already-constructed NetsvcHandler's reload path, for server.go to call
+// once both exist. It exists so server.go (package api) never needs
+// NetsvcHandler.doReload exported just for this one wiring — the two
+// handlers are already in the same package, so a package-level helper here
+// can reach the unexported method directly, keeping doReload's visibility
+// unchanged and the coupling between the handlers limited to exactly this
+// call.
+func WireNTPDHCPReload(ntpH *NTPHandler, netH *NetsvcHandler) {
+	ntpH.SetDHCPReload(netH.doReload)
 }
 
 func (h *NTPHandler) getConfig() timesync.Config {
@@ -73,12 +113,28 @@ func (h *NTPHandler) lastApplyStatus() *applyStatus {
 	return &st
 }
 
-// doReload applies the current config and records the result, shared by
-// the debounced auto-apply and the manual "Aplicar agora" button.
+// doReload applies the current config (chrony + the LAN allow directive)
+// and records the result, shared by the debounced auto-apply and the
+// manual "Aplicar agora" button. It also drives the toggle's other two
+// effects (spec §3): reconciling the nftables input-chain protection, and
+// — when wired via SetDHCPReload — asking DHCP/DNS to reapply so the
+// ntp-servers option reaches clients. Both are best-effort: a failure there
+// is logged but never turns an otherwise-successful chrony apply into a
+// reported failure, matching LinksHandler.reconcileNAT's precedent for
+// this kind of secondary, self-healing reconciliation.
 func (h *NTPHandler) doReload(ctx context.Context) error {
-	// TODO(part 4): pass the real LAN CIDR (netsvc.Config.SubnetCIDR) once
-	// NTPHandler is wired to it — see docs/superpowers/specs/2026-08-11-ntp-server-for-lan-design.md §3.
-	err := h.svc.ReloadConfig(ctx, h.getConfig(), "")
+	cfg := h.getConfig()
+	netCfg := netsvcConfigFromDB(h.db)
+	err := h.svc.ReloadConfig(ctx, cfg, netCfg.SubnetCIDR)
+
+	h.reconcileFirewall(ctx, cfg.ServeLAN)
+
+	if h.triggerDHCPReload != nil {
+		if dErr := h.triggerDHCPReload(ctx); dErr != nil {
+			slog.Warn("não foi possível reaplicar DHCP/DNS após mudança de NTP", "err", dErr)
+		}
+	}
+
 	st := applyStatus{OK: err == nil, At: time.Now().Unix()}
 	if err != nil {
 		st.Error = err.Error()
@@ -90,6 +146,24 @@ func (h *NTPHandler) doReload(ctx context.Context) error {
 		_ = h.db.SetSetting(ntpApplyStatusKey, string(b))
 	}
 	return err
+}
+
+// reconcileFirewall rebuilds the NTP-protection input chain from the
+// currently enabled WAN links. Best-effort and nil-safe, same convention as
+// LinksHandler.reconcileNAT: a failure here is logged but never fails the
+// NTP apply that triggered it.
+func (h *NTPHandler) reconcileFirewall(ctx context.Context, serving bool) {
+	if h.nftSvc == nil {
+		return
+	}
+	ifaces, err := enabledWANInterfaces(h.db)
+	if err != nil {
+		slog.Warn("não foi possível carregar links para reconciliar a proteção de NTP", "err", err)
+		return
+	}
+	if err := h.nftSvc.ReconcileNTPInput(ctx, ifaces, serving); err != nil {
+		slog.Warn("não foi possível reconciliar a chain de proteção do NTP", "err", err)
+	}
 }
 
 func (h *NTPHandler) scheduleApply() {
@@ -119,6 +193,7 @@ func (h *NTPHandler) UpdateNTPConfig(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Servers  []string `json:"servers"`
 		Timezone string   `json:"timezone"`
+		ServeLAN bool     `json:"serve_lan"`
 	}
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -136,7 +211,7 @@ func (h *NTPHandler) UpdateNTPConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		servers = append(servers, srv)
 	}
-	cfg := timesync.Config{Servers: servers, Timezone: strings.TrimSpace(b.Timezone)}
+	cfg := timesync.Config{Servers: servers, Timezone: strings.TrimSpace(b.Timezone), ServeLAN: b.ServeLAN}
 	if err := h.saveConfig(cfg); err != nil {
 		writeInternalError(w, err)
 		return

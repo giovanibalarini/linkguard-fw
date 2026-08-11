@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 )
@@ -35,7 +36,7 @@ func newTestNTPHandler(t *testing.T) *NTPHandler {
 	}
 	t.Cleanup(func() { db.Close() })
 	svc := timesync.NewService(&fakeTimesyncExec{dryRun: true})
-	return NewNTPHandler(db, svc, nil)
+	return NewNTPHandler(db, svc, nil, nil)
 }
 
 func TestGetNTPReturnsEmptyServersAndTimezonesNotNull(t *testing.T) {
@@ -95,6 +96,31 @@ func TestUpdateNTPConfigPersistsAndRoundTrips(t *testing.T) {
 	}
 }
 
+// TestUpdateNTPConfigServeLANRoundTrips: the new toggle must persist and
+// round-trip through GET/PUT exactly like servers/timezone already do.
+func TestUpdateNTPConfigServeLANRoundTrips(t *testing.T) {
+	h := newTestNTPHandler(t)
+	body := `{"servers":[],"timezone":"","serve_lan":true}`
+	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.UpdateNTPConfig(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	cfg := h.getConfig()
+	if !cfg.ServeLAN {
+		t.Errorf("ServeLAN = false, want true after PUT")
+	}
+
+	rGet := httptest.NewRequest("GET", "/api/ntp", nil)
+	wGet := httptest.NewRecorder()
+	h.GetNTP(wGet, rGet)
+	if !strings.Contains(wGet.Body.String(), `"serve_lan":true`) {
+		t.Errorf("GET /api/ntp missing serve_lan:true in body: %s", wGet.Body.String())
+	}
+}
+
 func TestApplyRunsReloadAndRecordsStatus(t *testing.T) {
 	h := newTestNTPHandler(t)
 	if got := h.lastApplyStatus(); got != nil {
@@ -121,5 +147,101 @@ func TestInstallChronyReturns200OnSuccess(t *testing.T) {
 	h.InstallChrony(w, r)
 	if w.Code != 200 {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+}
+
+// ─── serve_lan effects: firewall reconcile + DHCP reload wiring ───────────
+
+// TestDoReloadReconcilesFirewallWithServingTrueWhenEnabled is Part 4's core
+// test: enabling serve_lan and applying must invoke the nftables input-chain
+// reconcile with serving=true against the box's enabled WAN links.
+func TestDoReloadReconcilesFirewallWithServingTrueWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.CreateLink(&storage.Link{ID: "l1", Name: "WAN1", Interface: "enp5s0", Weight: 1, Enabled: true}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+
+	nftExec := &reconcileSpyExec{}
+	svc := timesync.NewService(&fakeTimesyncExec{dryRun: true})
+	h := NewNTPHandler(db, svc, nil, nftables.NewService(nftExec))
+
+	if err := h.saveConfig(timesync.Config{ServeLAN: true}); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	if err := h.doReload(context.Background()); err != nil {
+		t.Fatalf("doReload: %v", err)
+	}
+
+	found := false
+	for _, c := range nftExec.executed {
+		if strings.Contains(c, "input") && strings.Contains(c, "enp5s0") && strings.Contains(c, "drop") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the input chain to be reconciled with a drop rule on enp5s0; ran: %v", nftExec.executed)
+	}
+}
+
+// TestDoReloadReconcilesFirewallWithServingFalseWhenDisabled: the default
+// (serve_lan=false) must reconcile the chain empty, never with a drop rule.
+func TestDoReloadReconcilesFirewallWithServingFalseWhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.CreateLink(&storage.Link{ID: "l1", Name: "WAN1", Interface: "enp5s0", Weight: 1, Enabled: true}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+
+	nftExec := &reconcileSpyExec{}
+	svc := timesync.NewService(&fakeTimesyncExec{dryRun: true})
+	h := NewNTPHandler(db, svc, nil, nftables.NewService(nftExec))
+
+	if err := h.doReload(context.Background()); err != nil {
+		t.Fatalf("doReload: %v", err)
+	}
+
+	for _, c := range nftExec.executed {
+		if strings.Contains(c, "drop") {
+			t.Errorf("expected no drop rule when serve_lan is off; ran: %v", nftExec.executed)
+		}
+	}
+}
+
+// TestDoReloadTriggersDHCPReloadWhenWired: applying the NTP config must ask
+// the wired DHCP/DNS reload callback to run too (spec §5 — toggling
+// serve_lan changes the DHCP config's ntp-servers option, and clients only
+// get it via a fresh reload).
+func TestDoReloadTriggersDHCPReloadWhenWired(t *testing.T) {
+	h := newTestNTPHandler(t)
+	called := false
+	h.SetDHCPReload(func(ctx context.Context) error {
+		called = true
+		return nil
+	})
+
+	if err := h.doReload(context.Background()); err != nil {
+		t.Fatalf("doReload: %v", err)
+	}
+	if !called {
+		t.Error("expected the wired DHCP reload callback to be invoked")
+	}
+}
+
+// TestDoReloadWithoutWiringDoesNotPanic: nftSvc/triggerDHCPReload are both
+// nil for a handler built without the Part 4 wiring (e.g. an older test
+// double) — doReload must degrade gracefully, not panic.
+func TestDoReloadWithoutWiringDoesNotPanic(t *testing.T) {
+	h := newTestNTPHandler(t)
+	if err := h.doReload(context.Background()); err != nil {
+		t.Fatalf("doReload: %v", err)
 	}
 }

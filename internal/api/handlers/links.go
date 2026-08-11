@@ -35,16 +35,10 @@ func (h *LinksHandler) reconcileNAT(ctx context.Context) {
 	if h.nftSvc == nil {
 		return
 	}
-	ls, err := h.db.GetLinks()
+	ifaces, err := enabledWANInterfaces(h.db)
 	if err != nil {
 		slog.Warn("não foi possível carregar links para reconciliar a regra de NAT", "err", err)
 		return
-	}
-	ifaces := make([]string, 0, len(ls))
-	for _, l := range ls {
-		if l.Enabled && l.Interface != "" {
-			ifaces = append(ifaces, l.Interface)
-		}
 	}
 	if err := h.nftSvc.ReconcileMasquerade(ctx, ifaces); err != nil {
 		slog.Warn("não foi possível reconciliar a regra de NAT após mudança de link", "err", err)

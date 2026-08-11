@@ -111,12 +111,22 @@ func (h *NetsvcHandler) lastApplyStatus() *applyStatus {
 	return &st
 }
 
-func (h *NetsvcHandler) getConfig() netsvc.Config {
+// netsvcConfigFromDB reads the persisted DHCP/DNS config, defaulting when
+// unset. Package-level (not solely a NetsvcHandler method) so NTPHandler
+// can reuse it too — e.g. to read the LAN CIDR for the chrony `allow` line
+// and the firewall's Gateway for the DHCP ntp-servers option — without
+// either handler owning the other's settings key or duplicating the
+// unmarshal logic.
+func netsvcConfigFromDB(db *storage.DB) netsvc.Config {
 	cfg := netsvc.DefaultConfig()
-	if raw, _ := h.db.GetSetting(netsvcCfgKey); raw != "" {
+	if raw, _ := db.GetSetting(netsvcCfgKey); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg)
 	}
 	return cfg
+}
+
+func (h *NetsvcHandler) getConfig() netsvc.Config {
+	return netsvcConfigFromDB(h.db)
 }
 
 func (h *NetsvcHandler) saveConfig(c netsvc.Config) error {

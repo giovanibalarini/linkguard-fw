@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -290,6 +291,23 @@ func run() int {
 		}
 		if err := nftSvc.ReconcileMasquerade(ctx, enabledWANs); err != nil {
 			slog.Warn("não foi possível reconciliar a regra de NAT no boot", "err", err)
+		}
+
+		// Reconcile the NTP-protection input chain on every boot too — same
+		// self-healing reasoning as the masquerade rule above: a box upgraded
+		// from before this feature (2026-08-11) has no input chain at all, and
+		// EnsureTable/ReconcileNTPInput being no-ops on an already-provisioned
+		// box means only an explicit reconcile keeps it in sync with the
+		// current WAN set and the serve-to-LAN toggle. Reads the toggle
+		// straight from its settings key ("ntp_config", owned by
+		// internal/api/handlers.NTPHandler) since main wires the HTTP layer
+		// after this point and has no handler instance yet.
+		var ntpCfg timesync.Config
+		if raw, _ := db.GetSetting("ntp_config"); raw != "" {
+			_ = json.Unmarshal([]byte(raw), &ntpCfg)
+		}
+		if err := nftSvc.ReconcileNTPInput(ctx, enabledWANs, ntpCfg.ServeLAN); err != nil {
+			slog.Warn("não foi possível reconciliar a chain de proteção do NTP no boot", "err", err)
 		}
 	}
 

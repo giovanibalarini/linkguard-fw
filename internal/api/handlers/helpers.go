@@ -71,6 +71,25 @@ func clampLimit(raw string, def, max int) int {
 	return n
 }
 
+// enabledWANInterfaces returns the interface names of every enabled link —
+// the shared "what does this box call its WANs" derivation used by both the
+// masquerade rule (LinksHandler.reconcileNAT) and the NTP-protection input
+// chain (NTPHandler's firewall reconcile), so the two never drift from
+// independently-written queries against the same links table.
+func enabledWANInterfaces(db *storage.DB) ([]string, error) {
+	ls, err := db.GetLinks()
+	if err != nil {
+		return nil, err
+	}
+	ifaces := make([]string, 0, len(ls))
+	for _, l := range ls {
+		if l.Enabled && l.Interface != "" {
+			ifaces = append(ifaces, l.Interface)
+		}
+	}
+	return ifaces, nil
+}
+
 // auditAction records who performed a mutating action, for the audit log.
 func auditAction(db *storage.DB, r *http.Request, action, resource, details string) {
 	user := "unknown"
