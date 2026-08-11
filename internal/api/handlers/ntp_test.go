@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
@@ -118,6 +119,212 @@ func TestUpdateNTPConfigServeLANRoundTrips(t *testing.T) {
 	h.GetNTP(wGet, rGet)
 	if !strings.Contains(wGet.Body.String(), `"serve_lan":true`) {
 		t.Errorf("GET /api/ntp missing serve_lan:true in body: %s", wGet.Body.String())
+	}
+}
+
+// ─── allowed_networks: round-trip, validation, default pre-fill ──────────
+
+// TestUpdateNTPConfigAllowedNetworksRoundTrips: the admin's chosen networks
+// persist and come back through GET exactly as saved (spec §3.1).
+func TestUpdateNTPConfigAllowedNetworksRoundTrips(t *testing.T) {
+	h := newTestNTPHandler(t)
+	body := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":["192.168.3.0/24","10.20.0.0/24"]}`
+	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.UpdateNTPConfig(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	cfg := h.getConfig()
+	if len(cfg.AllowedNetworks) != 2 || cfg.AllowedNetworks[0] != "192.168.3.0/24" || cfg.AllowedNetworks[1] != "10.20.0.0/24" {
+		t.Errorf("AllowedNetworks = %v, want [192.168.3.0/24 10.20.0.0/24]", cfg.AllowedNetworks)
+	}
+
+	rGet := httptest.NewRequest("GET", "/api/ntp", nil)
+	wGet := httptest.NewRecorder()
+	h.GetNTP(wGet, rGet)
+	if !strings.Contains(wGet.Body.String(), `"192.168.3.0/24"`) || !strings.Contains(wGet.Body.String(), `"10.20.0.0/24"`) {
+		t.Errorf("GET /api/ntp missing allowed_networks in body: %s", wGet.Body.String())
+	}
+}
+
+// TestUpdateNTPConfigRejectsInvalidCIDR: server-side validation, not just
+// the chrony/nftables layers — a bad CIDR must never even be persisted.
+func TestUpdateNTPConfigRejectsInvalidCIDR(t *testing.T) {
+	h := newTestNTPHandler(t)
+	body := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":["not-a-cidr"]}`
+	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.UpdateNTPConfig(w, r)
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestUpdateNTPConfigRejectsOpenWildcard: 0.0.0.0/0 must be rejected with a
+// message the UI can show (spec §3.1's "guarda-corpo" and §6).
+func TestUpdateNTPConfigRejectsOpenWildcard(t *testing.T) {
+	h := newTestNTPHandler(t)
+	body := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":["0.0.0.0/0"]}`
+	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.UpdateNTPConfig(w, r)
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "0.0.0.0/0") {
+		t.Errorf("expected the error message to mention the offending CIDR: %s", w.Body.String())
+	}
+}
+
+// TestUpdateNTPConfigPrefillsFromDHCPSubnetOnFirstEnable is Part 3's
+// default-prefill behavior (spec §3.1/§6): turning serve_lan on for the
+// first time with an empty allowed_networks list seeds it from the DHCP
+// LAN subnet, so the common case needs zero typing.
+func TestUpdateNTPConfigPrefillsFromDHCPSubnetOnFirstEnable(t *testing.T) {
+	h := newTestNTPHandler(t)
+	netCfg := netsvc.DefaultConfig()
+	netCfg.SubnetCIDR = "192.168.7.0/24"
+	b, err := json.Marshal(netCfg)
+	if err != nil {
+		t.Fatalf("marshal netsvc config: %v", err)
+	}
+	if err := h.db.SetSetting(netsvcCfgKey, string(b)); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	body := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":[]}`
+	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.UpdateNTPConfig(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	cfg := h.getConfig()
+	if len(cfg.AllowedNetworks) != 1 || cfg.AllowedNetworks[0] != "192.168.7.0/24" {
+		t.Errorf("AllowedNetworks = %v, want [192.168.7.0/24] (pre-filled from the DHCP subnet)", cfg.AllowedNetworks)
+	}
+}
+
+// TestUpdateNTPConfigLeavesListEmptyWhenDHCPSubnetAlsoUnconfigured: the
+// pre-fill must never invent a range — if the DHCP subnet is itself unset,
+// the list simply stays empty (spec §3.1: "não inventar uma faixa").
+func TestUpdateNTPConfigLeavesListEmptyWhenDHCPSubnetAlsoUnconfigured(t *testing.T) {
+	h := newTestNTPHandler(t)
+	netCfg := netsvc.DefaultConfig()
+	netCfg.SubnetCIDR = ""
+	b, err := json.Marshal(netCfg)
+	if err != nil {
+		t.Fatalf("marshal netsvc config: %v", err)
+	}
+	if err := h.db.SetSetting(netsvcCfgKey, string(b)); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	body := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":[]}`
+	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.UpdateNTPConfig(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	cfg := h.getConfig()
+	if len(cfg.AllowedNetworks) != 0 {
+		t.Errorf("AllowedNetworks = %v, want empty (no DHCP subnet to pre-fill from)", cfg.AllowedNetworks)
+	}
+}
+
+// TestUpdateNTPConfigDoesNotReprefillAfterAdminExplicitlyClearsTheList is
+// the regression test protecting spec §3.1's "lista vazia com o toggle
+// ligado = nada é liberado, estado explícito": the pre-fill only fires on
+// the off->on transition, not on every save. Once serving is already on, an
+// admin who explicitly empties the list gets exactly that — not a silent
+// re-fill from the DHCP subnet.
+func TestUpdateNTPConfigDoesNotReprefillAfterAdminExplicitlyClearsTheList(t *testing.T) {
+	h := newTestNTPHandler(t)
+	netCfg := netsvc.DefaultConfig()
+	netCfg.SubnetCIDR = "192.168.7.0/24"
+	b, err := json.Marshal(netCfg)
+	if err != nil {
+		t.Fatalf("marshal netsvc config: %v", err)
+	}
+	if err := h.db.SetSetting(netsvcCfgKey, string(b)); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	// First enable: pre-filled.
+	firstBody := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":[]}`
+	r1 := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(firstBody))
+	w1 := httptest.NewRecorder()
+	h.UpdateNTPConfig(w1, r1)
+	if w1.Code != 200 {
+		t.Fatalf("first PUT: status = %d, body = %s", w1.Code, w1.Body.String())
+	}
+	if got := h.getConfig().AllowedNetworks; len(got) != 1 {
+		t.Fatalf("expected the first enable to pre-fill, got %v", got)
+	}
+
+	// Admin explicitly clears the list while still serving.
+	clearBody := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":[]}`
+	r2 := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(clearBody))
+	w2 := httptest.NewRecorder()
+	h.UpdateNTPConfig(w2, r2)
+	if w2.Code != 200 {
+		t.Fatalf("second PUT: status = %d, body = %s", w2.Code, w2.Body.String())
+	}
+
+	cfg := h.getConfig()
+	if len(cfg.AllowedNetworks) != 0 {
+		t.Errorf("AllowedNetworks = %v, want empty — clearing while already serving must stick, not be re-filled", cfg.AllowedNetworks)
+	}
+}
+
+// TestGetNTPIncludesSuggestedNetworkFromDHCPConfig: GET must expose the
+// suggested default separately from config.allowed_networks, so the UI can
+// pre-fill the input on first render before any save happens (spec §6).
+func TestGetNTPIncludesSuggestedNetworkFromDHCPConfig(t *testing.T) {
+	h := newTestNTPHandler(t)
+	netCfg := netsvc.DefaultConfig()
+	netCfg.SubnetCIDR = "192.168.9.0/24"
+	b, err := json.Marshal(netCfg)
+	if err != nil {
+		t.Fatalf("marshal netsvc config: %v", err)
+	}
+	if err := h.db.SetSetting(netsvcCfgKey, string(b)); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	r := httptest.NewRequest("GET", "/api/ntp", nil)
+	w := httptest.NewRecorder()
+	h.GetNTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"suggested_network":"192.168.9.0/24"`) {
+		t.Errorf("expected suggested_network in body: %s", w.Body.String())
+	}
+}
+
+func TestGetNTPSuggestedNetworkEmptyWhenDHCPSubnetUnconfigured(t *testing.T) {
+	h := newTestNTPHandler(t)
+	netCfg := netsvc.DefaultConfig()
+	netCfg.SubnetCIDR = ""
+	b, err := json.Marshal(netCfg)
+	if err != nil {
+		t.Fatalf("marshal netsvc config: %v", err)
+	}
+	if err := h.db.SetSetting(netsvcCfgKey, string(b)); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	r := httptest.NewRequest("GET", "/api/ntp", nil)
+	w := httptest.NewRecorder()
+	h.GetNTP(w, r)
+	if !strings.Contains(w.Body.String(), `"suggested_network":""`) {
+		t.Errorf("expected empty suggested_network in body: %s", w.Body.String())
 	}
 }
 

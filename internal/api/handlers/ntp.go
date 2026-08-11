@@ -166,28 +166,53 @@ func (h *NTPHandler) scheduleApply() {
 	}
 }
 
-// GetNTP returns the current config, live status, available timezones, and
-// last-apply result in one payload.
+// suggestedNetwork returns the DHCP LAN subnet as the suggested default for
+// AllowedNetworks — the same value UpdateNTPConfig pre-fills with on first
+// enable (spec §3.1/§6). Exposed separately in GetNTP's response
+// (suggested_network) so the UI can pre-fill the "Redes autorizadas" input
+// on first render, before any save has happened. Empty when the DHCP
+// subnet itself is unconfigured — never inventing a range.
+func (h *NTPHandler) suggestedNetwork() string {
+	return netsvcConfigFromDB(h.db).SubnetCIDR
+}
+
+// GetNTP returns the current config, live status, available timezones,
+// last-apply result, and the suggested default network in one payload.
 func (h *NTPHandler) GetNTP(w http.ResponseWriter, r *http.Request) {
 	zones, err := h.svc.ListTimezones(r.Context())
 	if err != nil {
 		zones = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"config":     h.getConfig(),
-		"status":     h.svc.Status(r.Context()),
-		"timezones":  zones,
-		"last_apply": h.lastApplyStatus(),
+		"config":            h.getConfig(),
+		"status":            h.svc.Status(r.Context()),
+		"timezones":         zones,
+		"last_apply":        h.lastApplyStatus(),
+		"suggested_network": h.suggestedNetwork(),
 	})
 }
 
-// UpdateNTPConfig updates servers/timezone and schedules the debounced
-// auto-apply.
+// UpdateNTPConfig updates servers/timezone/serve_lan/allowed_networks and
+// schedules the debounced auto-apply.
+//
+// AllowedNetworks (spec §3.1) is validated server-side via
+// timesync.ValidateAllowedNetworks — an invalid CIDR or the open wildcard
+// (0.0.0.0/0, ::/0) is a 400 with a message the UI can show, never silently
+// dropped.
+//
+// Default pre-fill: turning serve_lan on for the first time (the previously
+// saved config had it off) with an empty AllowedNetworks list seeds it from
+// the DHCP LAN subnet, so the common case needs zero typing. This only
+// fires on the off->on transition — once serving is already on, an admin
+// who explicitly empties the list gets exactly that ("nothing allowed" is a
+// deliberate, explicit state per spec §3.1), not a silent re-fill on every
+// save.
 func (h *NTPHandler) UpdateNTPConfig(w http.ResponseWriter, r *http.Request) {
 	var b struct {
-		Servers  []string `json:"servers"`
-		Timezone string   `json:"timezone"`
-		ServeLAN bool     `json:"serve_lan"`
+		Servers         []string `json:"servers"`
+		Timezone        string   `json:"timezone"`
+		ServeLAN        bool     `json:"serve_lan"`
+		AllowedNetworks []string `json:"allowed_networks"`
 	}
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -205,7 +230,29 @@ func (h *NTPHandler) UpdateNTPConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		servers = append(servers, srv)
 	}
-	cfg := timesync.Config{Servers: servers, Timezone: strings.TrimSpace(b.Timezone), ServeLAN: b.ServeLAN}
+
+	networks := []string{}
+	for _, n := range b.AllowedNetworks {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		networks = append(networks, n)
+	}
+
+	firstEnable := b.ServeLAN && !h.getConfig().ServeLAN
+	if firstEnable && len(networks) == 0 {
+		if subnet := h.suggestedNetwork(); subnet != "" {
+			networks = []string{subnet}
+		}
+	}
+
+	if err := timesync.ValidateAllowedNetworks(networks); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	cfg := timesync.Config{Servers: servers, Timezone: strings.TrimSpace(b.Timezone), ServeLAN: b.ServeLAN, AllowedNetworks: networks}
 	if err := h.saveConfig(cfg); err != nil {
 		writeInternalError(w, err)
 		return
