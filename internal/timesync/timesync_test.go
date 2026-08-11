@@ -357,6 +357,59 @@ func TestValidateAllowedNetworksAcceptsAnyOtherRange(t *testing.T) {
 	}
 }
 
+// TestValidateAllowedNetworksRejectsIPv6 is the regression test for the
+// highest-impact review finding: the rule builder (nftables.ReconcileNTPInput)
+// emits `ip saddr { … }`, which in the `inet` family only ever matches IPv4 —
+// nft rejects an IPv6 prefix there. Before this fix, an IPv6 entry slipped
+// past validation, the nft accept-rule command then failed, and
+// ReconcileNTPInput returned early with the chain already flushed and no
+// drop rule added — an empty, unprotected input chain while chrony and the
+// panel both still claimed the network was served. Spec §8 puts IPv6
+// explicitly out of scope for this list; this makes that explicit at the
+// validation boundary instead of letting it fail open downstream.
+func TestValidateAllowedNetworksRejectsIPv6(t *testing.T) {
+	err := ValidateAllowedNetworks([]string{"fd00::/64"})
+	if err == nil {
+		t.Fatal("expected fd00::/64 to be rejected — IPv6 is not supported yet in this list (spec §8)")
+	}
+	if !strings.Contains(err.Error(), "IPv6") {
+		t.Errorf("expected the error to mention IPv6 so the UI message is clear, got: %v", err)
+	}
+}
+
+// TestValidateAllowedNetworksRejectsMixedIPv4AndIPv6List proves the whole
+// list is rejected atomically at the API boundary — never "apply the IPv4
+// entries, silently drop the IPv6 one", which is exactly the half-applied
+// state that left the firewall chain empty in production.
+func TestValidateAllowedNetworksRejectsMixedIPv4AndIPv6List(t *testing.T) {
+	if err := ValidateAllowedNetworks([]string{"192.168.3.0/24", "fd00::/64"}); err == nil {
+		t.Fatal("expected a mixed IPv4/IPv6 list to be rejected as a whole")
+	}
+}
+
+// ─── NormalizeAllowedNetworks ──────────────────────────────────────────
+
+// TestNormalizeAllowedNetworksMasksHostBits: net.ParseCIDR accepts a
+// non-canonical prefix like "192.168.3.5/24" (host bits set) and silently
+// returns the masked network — but the string that reached that call is
+// what gets persisted and rendered unless it is normalized first. This
+// keeps what's persisted, what chrony gets in its `allow` line, and what
+// nft stores in its saddr set all the same bytes.
+func TestNormalizeAllowedNetworksMasksHostBits(t *testing.T) {
+	got := NormalizeAllowedNetworks([]string{"192.168.3.5/24"})
+	want := []string{"192.168.3.0/24"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("NormalizeAllowedNetworks(%q) = %v, want %v", "192.168.3.5/24", got, want)
+	}
+}
+
+func TestNormalizeAllowedNetworksLeavesCanonicalUnchanged(t *testing.T) {
+	got := NormalizeAllowedNetworks([]string{"10.20.0.0/24"})
+	if len(got) != 1 || got[0] != "10.20.0.0/24" {
+		t.Errorf("NormalizeAllowedNetworks left a canonical CIDR unchanged? got %v", got)
+	}
+}
+
 // TestParseChronycTrackingRealSample uses a real `chronyc tracking` capture
 // taken from production during this session's investigation.
 func TestParseChronycTrackingRealSample(t *testing.T) {

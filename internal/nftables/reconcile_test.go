@@ -234,7 +234,12 @@ func TestReconcileNTPInputAcceptRulePrecedesDropRule(t *testing.T) {
 	}
 	acceptIdx, dropIdx := -1, -1
 	for i, c := range exec.executed {
-		if strings.Contains(c, "accept") {
+		// strings.HasSuffix(..., "accept") deliberately excludes the
+		// chain-creation command, whose declaration also ends in "policy
+		// accept ; }" — matching that too would let this test pass even if
+		// the actual accept *rule* vanished, since the chain-creation
+		// command always runs before the flush regardless.
+		if strings.HasSuffix(c, "ip saddr { 192.168.3.0/24 } accept") {
 			acceptIdx = i
 		}
 		if strings.HasSuffix(c, "udp dport 123 drop") {
@@ -378,6 +383,38 @@ func TestReconcileNTPInputNoopInDryRun(t *testing.T) {
 	}
 	if len(exec.executed) != 0 {
 		t.Errorf("expected no commands in dry-run, ran: %v", exec.executed)
+	}
+}
+
+// TestReconcileNTPInputSkipsIPv6EntriesButStillProtectsIPv4Ones is the
+// regression test for the highest-impact review finding: `ip saddr { … }`
+// only ever matches IPv4 in the `inet` family, so an IPv6 CIDR reaching this
+// function must be dropped (defense in depth — the primary gate is
+// timesync.ValidateAllowedNetworks at the API boundary, which now rejects
+// IPv6 outright), and — critically — the valid IPv4 entries in the same
+// list must still get their accept/drop protection. Before this fix an
+// IPv6 entry made the `nft add rule ... accept` command itself fail, which
+// returned early with the chain already flushed and no drop rule added:
+// an empty, unprotected chain, not a partially-correct one.
+func TestReconcileNTPInputSkipsIPv6EntriesButStillProtectsIPv4Ones(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24", "fd00::/64"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "fd00") {
+			t.Errorf("IPv6 entry reached the nft command: %q", c)
+		}
+	}
+	wantAccept := "nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } accept"
+	if !ranCommand(exec.executed, wantAccept) {
+		t.Errorf("expected the valid IPv4 entry to still be accepted; ran: %v", exec.executed)
+	}
+	wantDrop := "nft add rule inet linkguard input udp dport 123 drop"
+	if !ranCommand(exec.executed, wantDrop) {
+		t.Errorf("expected the catch-all drop rule to still be present (chain must not end up empty); ran: %v", exec.executed)
 	}
 }
 

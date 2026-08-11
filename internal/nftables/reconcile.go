@@ -94,12 +94,31 @@ const InputChain = "input"
 // argv, mirroring sanitizeInterfaces' treatment of interface names — an
 // admin-controlled string is exactly as dangerous here as an interface name
 // is elsewhere in this package. An entry is dropped (not fatal to the whole
-// reconcile) when it fails net.ParseCIDR, is a duplicate, or is the open
+// reconcile) when it fails net.ParseCIDR, is a duplicate, is the open
 // wildcard (0.0.0.0/0 or ::/0, checked by mask size so any equivalent
-// spelling is caught): the wildcard reaching this function would defeat the
-// entire point of the accept-then-drop pair (spec §3.1's "guarda-corpo"),
-// so it is rejected here too, independent of the handler-level
-// timesync.ValidateAllowedNetworks that is the primary gate.
+// spelling is caught), or is IPv6.
+//
+// IPv6 is rejected here too, independent of the handler-level
+// timesync.ValidateAllowedNetworks that is the primary gate: the rule this
+// function builds is `ip saddr { … }`, which in the `inet` family only ever
+// matches IPv4 — nft errors out on an IPv6 prefix there. Before this guard
+// existed, an IPv6 entry reaching ReconcileNTPInput made the accept-rule nft
+// command itself fail, which returned an error *after* the chain had
+// already been flushed and *before* the drop rule was added — an empty,
+// unprotected input chain, silently. Dropping the bad entry here instead
+// keeps the reconcile succeeding and every valid IPv4 entry still
+// protected, the same "one bad entry doesn't sink the good ones" contract
+// already applied to the wildcard and to plain garbage.
+//
+// A survivor is rewritten to ipnet.String() — its canonical network form —
+// rather than passed through as typed, so a non-canonical prefix like
+// "192.168.3.5/24" (host bits set, which net.ParseCIDR accepts and masks)
+// ends up in the nft saddr set as exactly the same bytes as everywhere else
+// this value is used (persisted config, chrony's `allow` line). This is
+// defense in depth: the API handler already normalizes on save (see
+// timesync.NormalizeAllowedNetworks), but this function must hold the same
+// property on its own for any value that reached it another way (an old DB
+// row saved before normalization existed, for instance).
 func sanitizeNetworks(in []string) []string {
 	seen := make(map[string]bool, len(in))
 	out := make([]string, 0, len(in))
@@ -115,8 +134,12 @@ func sanitizeNetworks(in []string) []string {
 		if ones, _ := ipnet.Mask.Size(); ones == 0 {
 			continue
 		}
+		if ipnet.IP.To4() == nil {
+			slog.Warn("rede IPv6 ignorada na chain de proteção do NTP (ainda não suportada; ip saddr só casa IPv4 na família inet)", "network", cidr)
+			continue
+		}
 		seen[cidr] = true
-		out = append(out, cidr)
+		out = append(out, ipnet.String())
 	}
 	return out
 }

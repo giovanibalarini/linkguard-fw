@@ -174,25 +174,64 @@ func GenerateChronyConf(c Config) string {
 }
 
 // ValidateAllowedNetworks checks that every entry in an admin-supplied
-// AllowedNetworks list is a valid CIDR, and rejects the open wildcard
+// AllowedNetworks list is a valid IPv4 CIDR, and rejects the open wildcard
 // (0.0.0.0/0 or ::/0) with a clear error — spec §3.1's "guarda-corpo": an
 // open NTP server is a known amplification-attack vector, and offering it
 // is almost certainly a mistake rather than an informed choice. Any other
-// range is accepted without further judgment — the admin knows their own
-// network. Meant to be called at the point a value is about to be
+// IPv4 range is accepted without further judgment — the admin knows their
+// own network. Meant to be called at the point a value is about to be
 // persisted (the API handler), so a rejected value is a 400 the UI can
 // show, not a silently-skipped line discovered later in the rendered
 // config.
+//
+// IPv6 is rejected explicitly (spec §8 puts it out of scope), not just
+// implicitly unsupported: the rule builder
+// (internal/nftables.ReconcileNTPInput) emits `ip saddr { … }`, which in
+// the `inet` family only ever matches IPv4 — nft errors out on an IPv6
+// prefix there. Left unchecked, that nft error surfaced *after* the chain
+// had already been flushed and *before* the drop rule was added, leaving
+// the input chain empty (no protection at all) while chrony's own `allow`
+// line and the panel both kept claiming the network was served. Rejecting
+// here, atomically for the whole list (one bad entry fails the entire
+// save, never a silent partial apply), makes that failure mode
+// unreachable rather than merely unlikely.
 func ValidateAllowedNetworks(networks []string) error {
 	for _, network := range networks {
-		if _, _, err := net.ParseCIDR(network); err != nil {
+		_, ipnet, err := net.ParseCIDR(network)
+		if err != nil {
 			return fmt.Errorf("rede inválida %q: precisa ser um CIDR (ex: 192.168.3.0/24)", network)
 		}
 		if isOpenCIDR(network) {
 			return fmt.Errorf("rede %q libera todo o tráfego (0.0.0.0/0 ou ::/0) — um servidor NTP aberto para a internet é um vetor de ataque conhecido; escolha uma faixa específica", network)
 		}
+		if ipnet.IP.To4() == nil {
+			return fmt.Errorf("rede %q: IPv6 ainda não é suportado nesta lista (apenas IPv4 por enquanto) — ver spec §8", network)
+		}
 	}
 	return nil
+}
+
+// NormalizeAllowedNetworks rewrites each entry to its canonical network
+// form via net.ParseCIDR + IPNet.String() — e.g. "192.168.3.5/24" (host
+// bits set, which net.ParseCIDR happily accepts) becomes "192.168.3.0/24".
+// Without this, what an admin typed, what gets persisted, what chrony's
+// `allow` line says, and what nft actually stores in its saddr set could
+// all be different (but equivalent) spellings of the same network — this
+// makes them the same bytes everywhere, so "what's applied" and "what's
+// shown" never diverge over a cosmetic difference. Call only on a list that
+// has already passed ValidateAllowedNetworks; an entry that still somehow
+// fails to parse is left unchanged rather than dropped, since this
+// function's job is normalization, not validation.
+func NormalizeAllowedNetworks(networks []string) []string {
+	out := make([]string, len(networks))
+	for i, n := range networks {
+		if _, ipnet, err := net.ParseCIDR(n); err == nil {
+			out[i] = ipnet.String()
+		} else {
+			out[i] = n
+		}
+	}
+	return out
 }
 
 // ReloadConfig applies Servers (drop-in write/remove), AllowedNetworks and
