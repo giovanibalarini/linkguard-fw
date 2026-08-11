@@ -108,7 +108,7 @@ func TestDefaultConfigServersIsEmptySliceNotNil(t *testing.T) {
 }
 
 func TestGenerateChronyConfRendersServersWithHeader(t *testing.T) {
-	content := GenerateChronyConf(Config{Servers: []string{"192.36.143.130", "c.ntp.br"}}, "")
+	content := GenerateChronyConf(Config{Servers: []string{"192.36.143.130", "c.ntp.br"}})
 	for _, want := range []string{
 		"# managed by linkguard",
 		"server 192.36.143.130 iburst",
@@ -121,41 +121,69 @@ func TestGenerateChronyConfRendersServersWithHeader(t *testing.T) {
 }
 
 // TestGenerateChronyConfEmitsAllowWhenServing is Part 1's core new behavior:
-// ServeLAN=true renders an `allow <cidr>` line for the LAN subnet.
+// ServeLAN=true renders one `allow <cidr>` line per admin-chosen network —
+// no longer implicitly the DHCP LAN subnet (spec §3.1).
 func TestGenerateChronyConfEmitsAllowWhenServing(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: true}, "192.168.3.0/24")
+	content := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}})
 	if !strings.Contains(content, "allow 192.168.3.0/24") {
-		t.Errorf("expected allow line for the LAN CIDR:\n%s", content)
+		t.Errorf("expected allow line for the configured CIDR:\n%s", content)
+	}
+}
+
+// TestGenerateChronyConfEmitsOneAllowLinePerNetwork proves the admin's
+// choice of multiple networks (VLAN, Wi-Fi, guest) all get their own allow
+// line — the whole point of replacing the single implicit LAN subnet.
+func TestGenerateChronyConfEmitsOneAllowLinePerNetwork(t *testing.T) {
+	content := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24", "10.20.0.0/24", "192.168.50.0/24"}})
+	for _, want := range []string{"allow 192.168.3.0/24", "allow 10.20.0.0/24", "allow 192.168.50.0/24"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("content missing %q:\n%s", want, content)
+		}
 	}
 }
 
 // TestGenerateChronyConfOmitsAllowWhenNotServing: ServeLAN=false must never
-// emit an allow line, even if a CIDR is passed in (defense in depth — the
-// chrony drop-in must reflect the toggle, not just its presence).
+// emit an allow line, even if networks are configured (defense in depth —
+// the chrony drop-in must reflect the toggle, not just the list's presence).
 func TestGenerateChronyConfOmitsAllowWhenNotServing(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: false}, "192.168.3.0/24")
+	content := GenerateChronyConf(Config{ServeLAN: false, AllowedNetworks: []string{"192.168.3.0/24"}})
 	if strings.Contains(content, "allow") {
 		t.Errorf("expected no allow line when ServeLAN is false:\n%s", content)
 	}
 }
 
-// TestGenerateChronyConfOmitsAllowWhenCIDREmpty: ServeLAN=true but no CIDR
-// available (DHCP/DNS never configured) must not emit a broken `allow`
-// directive with an empty argument.
-func TestGenerateChronyConfOmitsAllowWhenCIDREmpty(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: true}, "")
+// TestGenerateChronyConfOmitsAllowWhenListEmpty: ServeLAN=true but an empty
+// AllowedNetworks list is an explicit "nothing allowed" state (spec §3.1),
+// never an implicit allow-all.
+func TestGenerateChronyConfOmitsAllowWhenListEmpty(t *testing.T) {
+	content := GenerateChronyConf(Config{ServeLAN: true})
 	if strings.Contains(content, "allow") {
-		t.Errorf("expected no allow line when the LAN CIDR is empty:\n%s", content)
+		t.Errorf("expected no allow line when the network list is empty:\n%s", content)
 	}
 }
 
-// TestGenerateChronyConfRejectsInvalidCIDR: the CIDR is interpolated into a
-// config file consumed by a daemon — an invalid value (e.g. injection
-// attempt) must never reach the rendered output.
+// TestGenerateChronyConfRejectsInvalidCIDR: each entry is interpolated into
+// a config file consumed by a daemon — an invalid value (e.g. injection
+// attempt) must never reach the rendered output, even if other entries in
+// the same list are valid.
 func TestGenerateChronyConfRejectsInvalidCIDR(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: true}, "not a cidr; evil")
+	content := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"not a cidr; evil", "192.168.3.0/24"}})
+	if strings.Contains(content, "not a cidr") || strings.Contains(content, "evil") {
+		t.Errorf("invalid CIDR reached the rendered output:\n%s", content)
+	}
+	if !strings.Contains(content, "allow 192.168.3.0/24") {
+		t.Errorf("expected the valid entry to still be rendered:\n%s", content)
+	}
+}
+
+// TestGenerateChronyConfRejectsOpenWildcard: 0.0.0.0/0 and ::/0 must never
+// reach the rendered drop-in, even if an invalid value slipped past the
+// handler-level ValidateAllowedNetworks somehow (defense in depth, spec
+// §3.1's "guarda-corpo").
+func TestGenerateChronyConfRejectsOpenWildcard(t *testing.T) {
+	content := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"0.0.0.0/0", "::/0"}})
 	if strings.Contains(content, "allow") {
-		t.Errorf("expected no allow line for an invalid CIDR:\n%s", content)
+		t.Errorf("expected no allow line for open wildcards:\n%s", content)
 	}
 }
 
@@ -165,7 +193,7 @@ func TestReloadConfigWritesDropinWhenServersSet(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}}, "")
+	err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}})
 	if err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
@@ -190,7 +218,7 @@ func TestReloadConfigRemovesDropinWhenServersEmptyAndNotServing(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{}, ""); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{}); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	if _, err := os.Stat(confPath); !os.IsNotExist(err) {
@@ -212,7 +240,7 @@ func TestReloadConfigWritesDropinWhenServeLANOnlyNoCustomServers(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{ServeLAN: true}, "192.168.3.0/24"); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}}); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	got, err := os.ReadFile(confPath)
@@ -227,12 +255,34 @@ func TestReloadConfigWritesDropinWhenServeLANOnlyNoCustomServers(t *testing.T) {
 	}
 }
 
+// TestReloadConfigWritesDropinWhenServeLANOnEvenWithEmptyList: ServeLAN=true
+// with an empty AllowedNetworks list is still "something to manage" (an
+// explicit nothing-allowed state, spec §3.1) — the drop-in must be written
+// (with no allow line), not removed as if serving were fully unmanaged.
+func TestReloadConfigWritesDropinWhenServeLANOnEvenWithEmptyList(t *testing.T) {
+	dir := t.TempDir()
+	confPath := filepath.Join(dir, "linkguard.conf")
+	exec := &fakeExec{}
+	s := &Service{exec: exec, confPath: confPath}
+
+	if err := s.ReloadConfig(context.Background(), Config{ServeLAN: true}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	got, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("expected drop-in to be written when ServeLAN is on, got err=%v", err)
+	}
+	if strings.Contains(string(got), "allow") {
+		t.Errorf("expected no allow line with an empty network list:\n%s", got)
+	}
+}
+
 func TestReloadConfigRemovingAbsentDropinIsNotAnError(t *testing.T) {
 	dir := t.TempDir()
 	confPath := filepath.Join(dir, "linkguard.conf") // never created
 	s := &Service{exec: &fakeExec{}, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{}, ""); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{}); err != nil {
 		t.Fatalf("ReloadConfig on absent drop-in must be idempotent, got: %v", err)
 	}
 }
@@ -242,7 +292,7 @@ func TestReloadConfigSetsTimezoneWhenConfigured(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: filepath.Join(dir, "linkguard.conf")}
 
-	if err := s.ReloadConfig(context.Background(), Config{Timezone: "America/Sao_Paulo"}, ""); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{Timezone: "America/Sao_Paulo"}); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	if !containsExecuted(exec.executed, "timedatectl set-timezone America/Sao_Paulo") {
@@ -255,11 +305,55 @@ func TestReloadConfigNoopWriteInDryRun(t *testing.T) {
 	confPath := filepath.Join(dir, "linkguard.conf")
 	s := &Service{exec: &fakeExec{dryRun: true}, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}}, ""); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}}); err != nil {
 		t.Fatalf("ReloadConfig in dry-run: %v", err)
 	}
 	if _, err := os.Stat(confPath); !os.IsNotExist(err) {
 		t.Errorf("expected no file written in dry-run, got err=%v", err)
+	}
+}
+
+// ─── ValidateAllowedNetworks ────────────────────────────────────────────
+
+func TestValidateAllowedNetworksAcceptsValidCIDRs(t *testing.T) {
+	if err := ValidateAllowedNetworks([]string{"192.168.3.0/24", "10.20.0.0/24"}); err != nil {
+		t.Errorf("expected valid CIDRs to pass, got %v", err)
+	}
+}
+
+func TestValidateAllowedNetworksAcceptsEmptyList(t *testing.T) {
+	if err := ValidateAllowedNetworks(nil); err != nil {
+		t.Errorf("expected an empty list to pass, got %v", err)
+	}
+}
+
+func TestValidateAllowedNetworksRejectsInvalidCIDR(t *testing.T) {
+	if err := ValidateAllowedNetworks([]string{"not-a-cidr"}); err == nil {
+		t.Error("expected an error for an invalid CIDR")
+	}
+}
+
+// TestValidateAllowedNetworksRejectsOpenIPv4Wildcard is the spec §3.1
+// "guarda-corpo": 0.0.0.0/0 is almost certainly a mistake, not an informed
+// choice, and is a known NTP amplification vector.
+func TestValidateAllowedNetworksRejectsOpenIPv4Wildcard(t *testing.T) {
+	if err := ValidateAllowedNetworks([]string{"0.0.0.0/0"}); err == nil {
+		t.Error("expected 0.0.0.0/0 to be rejected")
+	}
+}
+
+func TestValidateAllowedNetworksRejectsOpenIPv6Wildcard(t *testing.T) {
+	if err := ValidateAllowedNetworks([]string{"::/0"}); err == nil {
+		t.Error("expected ::/0 to be rejected")
+	}
+}
+
+// TestValidateAllowedNetworksAcceptsAnyOtherRange proves the guard-rail is
+// narrow: any range other than the full-open wildcard is the admin's call,
+// including large ones like a /8 — no further paternalism (spec §3.1).
+func TestValidateAllowedNetworksAcceptsAnyOtherRange(t *testing.T) {
+	if err := ValidateAllowedNetworks([]string{"10.0.0.0/8"}); err != nil {
+		t.Errorf("expected a large-but-not-open range to be accepted, got %v", err)
 	}
 }
 

@@ -67,10 +67,21 @@ const chronyDropinPath = "/etc/chrony/conf.d/linkguard.conf"
 // ServeLAN defaults to false (off) — purely additive, existing installs keep
 // today's client-only behaviour until an admin opts in. See
 // docs/superpowers/specs/2026-08-11-ntp-server-for-lan-design.md.
+//
+// AllowedNetworks is the admin's own choice of which networks may use the
+// time service (§3.1 of the revised spec) — a list of CIDRs, not derived
+// from any single implicit subnet. It replaced an earlier, narrower design
+// where the allowed network was implicitly netsvc.Config.SubnetCIDR (the
+// single DHCP LAN subnet); an operator correctly pointed out that VLANs, a
+// separate Wi-Fi network or a guest network may also need access, and only
+// the admin — not the software — should decide which. An empty list with
+// ServeLAN on is an explicit "nothing allowed" state, never an implicit
+// allow-all. See GenerateChronyConf and ValidateAllowedNetworks.
 type Config struct {
-	Servers  []string `json:"servers"`
-	Timezone string   `json:"timezone"`
-	ServeLAN bool     `json:"serve_lan"`
+	Servers         []string `json:"servers"`
+	Timezone        string   `json:"timezone"`
+	ServeLAN        bool     `json:"serve_lan"`
+	AllowedNetworks []string `json:"allowed_networks"`
 }
 
 // DefaultConfig is the "unmanaged" starting state — identical to today's
@@ -78,7 +89,7 @@ type Config struct {
 // chrony with the Debian default pool). Servers is an empty slice, not nil,
 // so it marshals to JSON `[]` rather than `null`.
 func DefaultConfig() Config {
-	return Config{Servers: []string{}}
+	return Config{Servers: []string{}, AllowedNetworks: []string{}}
 }
 
 // StatusInfo is the read-only NTP status shown in the panel.
@@ -102,61 +113,116 @@ func NewService(exec firewall.Executor) *Service {
 	return &Service{exec: exec, confPath: chronyDropinPath}
 }
 
+// isOpenCIDR reports whether a CIDR is the "allow everyone" wildcard —
+// 0.0.0.0/0 or ::/0 — checked by mask size (/0) after parsing rather than
+// string comparison, so any equivalent spelling is caught the same way
+// ValidateAllowedNetworks rejects it up front. Used here as defense in
+// depth: this function must never render an open `allow` line into the
+// chrony drop-in even if an invalid value somehow reached it without going
+// through validation first (an old DB row from before this guard existed,
+// for instance).
+func isOpenCIDR(cidr string) bool {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return false
+	}
+	ones, _ := ipnet.Mask.Size()
+	return ones == 0
+}
+
 // GenerateChronyConf renders the LinkGuard-managed chrony drop-in from the
-// configured NTP servers and, when serving the LAN, an `allow <cidr>`
-// directive. Pure — no I/O. Called even when both Servers and lanCIDR/
+// configured NTP servers and, when serving the LAN, one `allow <cidr>` line
+// per network in c.AllowedNetworks — the admin's own choice of which
+// networks may use the time service (spec §3.1), not an implicit single LAN
+// subnet. Pure — no I/O. Called even when both Servers and AllowedNetworks/
 // ServeLAN are "empty" (ReloadConfig now only removes the drop-in when
 // *neither* a custom server list nor ServeLAN is configured — see its own
 // doc comment).
 //
-// lanCIDR comes from netsvc.Config.SubnetCIDR (the DHCP/DNS config) — the
-// single source of truth for the LAN subnet, deliberately not duplicated as
-// a field on this Config. It is re-validated here (not just by the caller)
-// because this is the function that interpolates it into a config file a
-// privileged daemon (chronyd) reads: an invalid or malicious value must
-// never reach the rendered `allow` line, regardless of what upstream
-// validation exists.
-func GenerateChronyConf(c Config, lanCIDR string) string {
+// Each entry is re-validated here (not just by the caller, e.g.
+// ValidateAllowedNetworks at the API boundary) because this is the function
+// that interpolates admin-supplied strings into a config file a privileged
+// daemon (chronyd) reads: an invalid, malicious, or open-wildcard value must
+// never reach a rendered `allow` line, regardless of what upstream
+// validation exists. A bad entry is skipped (with a warning), not fatal —
+// the other, valid entries in the list must still be served.
+func GenerateChronyConf(c Config) string {
 	var b strings.Builder
 	b.WriteString("# managed by linkguard\n\n")
 	for _, srv := range c.Servers {
 		fmt.Fprintf(&b, "server %s iburst\n", srv)
 	}
-	if c.ServeLAN && lanCIDR != "" {
-		if _, _, err := net.ParseCIDR(lanCIDR); err == nil {
-			fmt.Fprintf(&b, "\nallow %s\n", lanCIDR)
-		} else {
-			slog.Warn("CIDR da LAN inválido; diretiva allow do chrony omitida", "cidr", lanCIDR, "err", err)
+	if c.ServeLAN && len(c.AllowedNetworks) > 0 {
+		var allowLines strings.Builder
+		for _, network := range c.AllowedNetworks {
+			if _, _, err := net.ParseCIDR(network); err != nil {
+				slog.Warn("rede inválida; diretiva allow do chrony omitida para esta entrada", "network", network, "err", err)
+				continue
+			}
+			if isOpenCIDR(network) {
+				slog.Warn("rede aberta (0.0.0.0/0 ou ::/0) rejeitada; diretiva allow do chrony omitida", "network", network)
+				continue
+			}
+			fmt.Fprintf(&allowLines, "allow %s\n", network)
+		}
+		if allowLines.Len() > 0 {
+			b.WriteString("\n")
+			b.WriteString(allowLines.String())
 		}
 	}
 	return b.String()
 }
 
-// ReloadConfig applies Servers (drop-in write/remove) and Timezone, then
-// reloads chrony gracefully via systemd's reload-or-restart — same
-// convention as keaunbound.Service.ReloadConfigs (internal/keaunbound), not
-// a raw SIGHUP or an unconditional restart. File writes are skipped in
-// dry-run mode; Execute calls always go through (RealExecutor itself
-// handles dry-run by logging instead of running).
+// ValidateAllowedNetworks checks that every entry in an admin-supplied
+// AllowedNetworks list is a valid CIDR, and rejects the open wildcard
+// (0.0.0.0/0 or ::/0) with a clear error — spec §3.1's "guarda-corpo": an
+// open NTP server is a known amplification-attack vector, and offering it
+// is almost certainly a mistake rather than an informed choice. Any other
+// range is accepted without further judgment — the admin knows their own
+// network. Meant to be called at the point a value is about to be
+// persisted (the API handler), so a rejected value is a 400 the UI can
+// show, not a silently-skipped line discovered later in the rendered
+// config.
+func ValidateAllowedNetworks(networks []string) error {
+	for _, network := range networks {
+		if _, _, err := net.ParseCIDR(network); err != nil {
+			return fmt.Errorf("rede inválida %q: precisa ser um CIDR (ex: 192.168.3.0/24)", network)
+		}
+		if isOpenCIDR(network) {
+			return fmt.Errorf("rede %q libera todo o tráfego (0.0.0.0/0 ou ::/0) — um servidor NTP aberto para a internet é um vetor de ataque conhecido; escolha uma faixa específica", network)
+		}
+	}
+	return nil
+}
+
+// ReloadConfig applies Servers (drop-in write/remove), AllowedNetworks and
+// Timezone, then reloads chrony gracefully via systemd's reload-or-restart
+// — same convention as keaunbound.Service.ReloadConfigs
+// (internal/keaunbound), not a raw SIGHUP or an unconditional restart. File
+// writes are skipped in dry-run mode; Execute calls always go through
+// (RealExecutor itself handles dry-run by logging instead of running).
 //
-// lanCIDR is the LAN subnet (netsvc.Config.SubnetCIDR), needed only when
-// c.ServeLAN is true — passed in rather than read by this package, so
-// timesync never needs to import internal/netsvc (see GenerateChronyConf's
-// doc comment).
+// AllowedNetworks now lives directly on c (spec §3.1) — the admin's own
+// choice, no longer threaded in from netsvc.Config.SubnetCIDR the way the
+// single implicit LAN subnet used to be. The DHCP subnet is still used, but
+// only by the API handler as a one-time default pre-fill when the admin
+// first enables the toggle (see internal/api/handlers.NTPHandler), never as
+// the enforced value here.
 //
 // The drop-in is written whenever there is something to manage — a custom
-// server list, OR serving the LAN (which needs the `allow` line even with
-// zero custom servers, a very likely combination: default upstream pool,
-// serve the LAN). It is removed only when both are off, restoring today's
-// fully-unmanaged behaviour exactly.
-func (s *Service) ReloadConfig(ctx context.Context, c Config, lanCIDR string) error {
+// server list, OR serving the LAN (which needs the drop-in even with zero
+// custom servers and/or an empty AllowedNetworks list — the latter is a
+// deliberate, explicit "nothing allowed" state, not "nothing configured").
+// It is removed only when both are off, restoring today's fully-unmanaged
+// behaviour exactly.
+func (s *Service) ReloadConfig(ctx context.Context, c Config) error {
 	if !s.exec.IsDryRun() {
 		if len(c.Servers) == 0 && !c.ServeLAN {
 			if err := os.Remove(s.confPath); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("remover %s: %w", s.confPath, err)
 			}
 		} else {
-			if err := os.WriteFile(s.confPath, []byte(GenerateChronyConf(c, lanCIDR)), 0o644); err != nil {
+			if err := os.WriteFile(s.confPath, []byte(GenerateChronyConf(c)), 0o644); err != nil {
 				return fmt.Errorf("escrever %s: %w", s.confPath, err)
 			}
 		}

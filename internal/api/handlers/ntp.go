@@ -124,8 +124,7 @@ func (h *NTPHandler) lastApplyStatus() *applyStatus {
 // this kind of secondary, self-healing reconciliation.
 func (h *NTPHandler) doReload(ctx context.Context) error {
 	cfg := h.getConfig()
-	netCfg := netsvcConfigFromDB(h.db)
-	err := h.svc.ReloadConfig(ctx, cfg, netCfg.SubnetCIDR)
+	err := h.svc.ReloadConfig(ctx, cfg)
 
 	h.reconcileFirewall(ctx, cfg.ServeLAN)
 
