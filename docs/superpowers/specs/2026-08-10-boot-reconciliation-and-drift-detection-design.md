@@ -147,6 +147,40 @@ normal). Nenhum dado falso: se a informação necessária pra checar não
 estiver disponível (ex.: tabela nftables ausente), o item reporta
 degradado/desconhecido, não "ok" otimista.
 
+## 5.1 Vigia de atualizações de pacote do sistema
+
+Mesmo princípio ("o painel me conta, eu não vou no SSH") aplicado à
+manutenção do SO: um firewall com pacote vulnerável desatualizado é risco de
+segurança, e hoje nada no LinkGuard informa isso.
+
+- **`system-updates`**: reporta **quantos** pacotes têm atualização
+  pendente, **quais** (nome + versão atual → disponível), e **quantos desses
+  são de segurança** (origem `Debian-Security` — destacados à parte, porque
+  são os que importam num appliance de borda).
+- **Somente leitura, nunca instala.** O escopo pedido é notificar
+  ("pelo menos notificar que existe e quais pacotes precisam de
+  atualização"). Instalar pacote de sistema sozinho num firewall em produção
+  é decisão do operador, não do software — e um `apt upgrade` não
+  supervisionado pode reiniciar serviço de rede e derrubar o link.
+- **Como obtém os dados, sem brigar pelo lock do apt:** o Debian já
+  atualiza as listas periodicamente sozinho via `apt-daily.timer`. O
+  LinkGuard **só lê** o resultado já em cache
+  (`apt-get --just-print upgrade` / `apt list --upgradable`, ambos
+  read-only). **Não roda `apt-get update`** de dentro do processo — mesma
+  decisão consciente já tomada em `timesync.EnsureEnabled` sobre não rodar
+  gerenciador de pacote de dentro de um serviço de longa duração (contenção
+  de lock, `unattended-upgrades` concorrente).
+- **Cadência:** verificação cara pra rodar no tick de 30s do collector —
+  roda num scheduler próprio de baixa frequência (padrão: a cada 6h),
+  mesmo padrão do `JournalScheduler` já existente (`tick_interval`).
+- **Alerta:** um par ok/pendente, com severidade elevada quando houver
+  pacotes de **segurança** pendentes. Sem spam: o alerta respeita o mesmo
+  anti-flap dos demais (só dispara na transição, auto-resolve quando zera).
+- **UI:** item no painel de saúde com a contagem; a lista de pacotes fica
+  acessível via a API do próprio item (o painel mostra "12 atualizações (3
+  de segurança)" e permite expandir a lista — consistente com a preferência
+  já registrada por resumo colapsado + expandir, em vez de card gigante).
+
 ## 6. Camadas — como isso se encaixa com o que já existe
 
 | Camada | O que resolve | Estado |
@@ -170,17 +204,25 @@ central do operador.
 - **Migração ifupdown→networkd** (Fase B) — inalterada, futura.
 - **Remover a regra iptables manual de emergência** — limpeza operacional,
   não código.
+- **Instalar/aplicar atualizações de pacote automaticamente** (§5.1 é
+  read-only por decisão explícita). Um botão "atualizar agora" no painel,
+  ou integração com `unattended-upgrades`, é evolução futura — precisa de
+  design próprio sobre janela de manutenção e risco de derrubar link.
+- **Proxy HTTP/cache tipo Squid** — próxima fase pedida pelo operador,
+  spec própria, a refinar depois.
 
 ## 8. Testes e verificação
 
 - **Backend (TDD real):** `ReconcileMasquerade` reconstrói a regra a partir
   de N WANs, é idempotente, sanitiza nomes; `EnsureResolvConf` escreve
   127.0.0.1 + insere o `supersede` idempotentemente (não duplica em segunda
-  execução), no-op em dry-run; cada health-check retorna
-  ok/degradado/problema pros casos: interface existe vs não existe, regra
-  bate vs diverge, resolv.conf 127.0.0.1 vs provedor. Fakes dedicados por
-  comando (não reaproveitar `fakeNftExec` genérico — lição desta sessão:
-  parsers quebram com `""`).
+  execução), no-op em dry-run; o parser de `apt` extrai nome/versão/origem
+  de uma amostra real de saída e separa corretamente os de segurança; cada
+  health-check retorna ok/degradado/problema pros casos: interface existe vs
+  não existe, regra bate vs diverge, resolv.conf 127.0.0.1 vs provedor,
+  zero vs N atualizações pendentes. Fakes dedicados por comando (não
+  reaproveitar `fakeNftExec` genérico — lição desta sessão: parsers quebram
+  com `""`).
 - **Integração na VM de teste** (`~/linkguard-testvm/`): subir, renomear uma
   interface à força (ou apontar um Link pra interface inexistente), reiniciar
   o serviço, confirmar que (a) a reconciliação corrige/loga, e (b) o painel
