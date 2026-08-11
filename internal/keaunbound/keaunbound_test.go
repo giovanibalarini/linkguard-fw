@@ -721,3 +721,27 @@ func TestParseKeaLeases(t *testing.T) {
 		t.Errorf("lease 1 wrong: %+v", got[1])
 	}
 }
+
+// ─── I-5: o arquivo temporário de validação não pode cair no glob do unbound ──
+//
+// O unbound.conf do Debian faz `include-toplevel:
+// "/etc/unbound/unbound.conf.d/*.conf"`, e é justamente esse diretório que
+// o validador usa (mesmo sistema de arquivos que a config real). Se o
+// processo morrer entre o CreateTemp e o Remove adiado, um sufixo .conf
+// deixa para trás um segundo fragmento com `interface:`/`local-zone`
+// duplicados — o unbound o carrega no próximo start e o DNS morre no boot
+// seguinte, sem ninguém ter mexido em nada.
+func TestValidateUnboundTempFileIsNotPickedUpByTheIncludeGlob(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	if e.unboundCheckPath == "" {
+		t.Fatal("unbound-checkconf nunca foi chamado")
+	}
+	if strings.HasSuffix(e.unboundCheckPath, ".conf") {
+		t.Errorf("o temporário de validação não pode casar com o glob *.conf do include-toplevel, obtive %q", e.unboundCheckPath)
+	}
+}

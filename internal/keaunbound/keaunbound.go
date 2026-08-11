@@ -320,7 +320,17 @@ func (s *Service) validateKea(ctx context.Context, content string) error {
 // binary is logged and treated as "validation not possible here, proceed",
 // never as a validation failure.
 func (s *Service) validateUnbound(ctx context.Context, content string) error {
-	f, err := os.CreateTemp(filepath.Dir(s.unboundConf), "unbound-validate-*.conf")
+	// I-5: the suffix must NOT be ".conf". This temp file is created inside
+	// /etc/unbound/unbound.conf.d (see above), and Debian's unbound.conf
+	// pulls in that whole directory with `include-toplevel:
+	// "/etc/unbound/unbound.conf.d/*.conf"`. Kill this process between the
+	// CreateTemp and the deferred Remove — a crash, an OOM kill, a package
+	// upgrade restarting the service — and a leftover fragment with a
+	// duplicate `interface:`/`local-zone` stays behind for unbound to load
+	// at the next start: DNS dead at the next boot, with nobody having
+	// touched anything. ".tmp" keeps the file on the same filesystem (the
+	// reason it is here at all) while staying outside the glob.
+	f, err := os.CreateTemp(filepath.Dir(s.unboundConf), "unbound-validate-*.tmp")
 	if err != nil {
 		return err
 	}
