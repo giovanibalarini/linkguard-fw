@@ -233,3 +233,25 @@ func TestParseTableRulesetPopulatesOwnershipAndDescription(t *testing.T) {
 		}
 	}
 }
+
+// As regras de saddr e daddr dos conjuntos de bloqueio são um par legítimo,
+// uma para cada sentido — não a duplicação de chain do incidente que motivou
+// esta tela (spec §1). Descrever as duas com o mesmo texto faz o par honesto
+// se passar pelo defeito, na página cujo propósito é justamente deixar esse
+// defeito visível. Cada sentido precisa de texto próprio.
+func TestDescribeRuleDistinguishesBlockDirection(t *testing.T) {
+	pairs := [][2]string{
+		{"ip saddr @blocked_hosts counter drop", "ip daddr @blocked_hosts counter drop"},
+		{"ip saddr @blocklist counter drop", "ip daddr @blocklist counter drop"},
+	}
+	for _, p := range pairs {
+		from := describeRule(ForwardChain, p[0])
+		to := describeRule(ForwardChain, p[1])
+		if from == "" || to == "" {
+			t.Fatalf("descrição vazia para %q / %q", p[0], p[1])
+		}
+		if from == to {
+			t.Errorf("origem e destino descritos igual (%q): o par vira duplicata aparente na tela", from)
+		}
+	}
+}

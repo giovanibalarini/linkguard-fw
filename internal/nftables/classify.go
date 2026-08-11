@@ -115,10 +115,21 @@ func describeRule(chain, expr string) string {
 		switch {
 		case expr == "jump user_rules":
 			return "Avalia as regras personalizadas do admin antes dos bloqueios"
+		// saddr e daddr são regras distintas (uma para cada sentido), e
+		// precisam de textos distintos: descrever as duas igual faz o par
+		// legítimo parecer a duplicação de chain que motivou esta tela
+		// (spec §1) — justamente o defeito que ela existe para o admin
+		// conseguir enxergar.
 		case strings.Contains(expr, "@blocked_hosts"):
-			return "Descarta tráfego de/para hosts bloqueados"
+			if strings.Contains(expr, "ip daddr") {
+				return "Descarta tráfego indo para hosts bloqueados"
+			}
+			return "Descarta tráfego vindo de hosts bloqueados"
 		case strings.Contains(expr, "@blocklist"):
-			return "Descarta tráfego de/para destinos bloqueados"
+			if strings.Contains(expr, "ip daddr") {
+				return "Descarta tráfego indo para destinos bloqueados"
+			}
+			return "Descarta tráfego vindo de destinos bloqueados"
 		}
 
 	case MarkHostsChain:
