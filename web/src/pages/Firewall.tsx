@@ -9,9 +9,10 @@ import Modal from '../components/ui/Modal';
 import IconButton from '../components/ui/IconButton';
 import { useAuth } from '../context/AuthContext';
 import PortForwarding from '../components/PortForwarding';
-import type { IptablesBackup, NftManaged, NftUserRule, SystemMetrics } from '../types';
+import FirewallOverview from '../components/FirewallOverview';
+import type { IptablesBackup, NftChainInfo, NftManaged, NftUserRule, SystemMetrics } from '../types';
 
-type Tab = 'rules' | 'portforward' | 'ruleset' | 'backups';
+type Tab = 'overview' | 'rules' | 'portforward' | 'ruleset' | 'backups';
 type Action = 'accept' | 'drop' | 'reject';
 
 const ACTIONS: Record<Action, { label: string; color: string; ring: string; Icon: typeof Check }> = {
@@ -54,11 +55,12 @@ export default function Firewall() {
   const canWrite = can('firewall.write');
   const [managed, setManaged] = useState<NftManaged>({ wan_hosts: [], blocklist: [], blocked_hosts: [] });
   const [rules, setRules] = useState<NftUserRule[]>([]);
+  const [overview, setOverview] = useState<NftChainInfo[]>([]);
   const [ifaces, setIfaces] = useState<string[]>([]);
   const [ruleset, setRuleset] = useState('');
   const [backups, setBackups] = useState<IptablesBackup[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>('rules');
+  const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [newWan, setNewWan] = useState('');
@@ -68,15 +70,17 @@ export default function Firewall() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [mg, rl, rs, bk, sys] = await Promise.all([
+      const [mg, rl, ov, rs, bk, sys] = await Promise.all([
         client.get<NftManaged>('/api/nftables/managed'),
         client.get<NftUserRule[]>('/api/nftables/rules'),
+        client.get<NftChainInfo[]>('/api/nftables/overview'),
         client.get<{ ruleset: string }>('/api/nftables/ruleset'),
         client.get<IptablesBackup[]>('/api/nftables/backups'),
         client.get<SystemMetrics>('/api/system/status'),
       ]);
       setManaged(mg.data ?? { wan_hosts: [], blocklist: [], blocked_hosts: [] });
       setRules(rl.data ?? []);
+      setOverview(ov.data ?? []);
       setRuleset(rs.data?.ruleset ?? '');
       setBackups(bk.data ?? []);
       setIfaces((sys.data?.interfaces ?? []).map((i) => i.name).filter((n) => n && n !== 'lo'));
@@ -147,14 +151,20 @@ export default function Firewall() {
         <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>
       )}
 
-      <div className="flex gap-2 border-b border-gray-800">
-        {([['rules', 'Regras'], ['portforward', 'Encaminhamento'], ['ruleset', 'Ruleset'], ['backups', `Snapshots (${backups.length})`]] as [Tab, string][]).map(([id, label]) => (
-          <button key={id} onClick={() => setActiveTab(id)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === id ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{label}</button>
+      <div className="flex gap-2 border-b border-gray-800 overflow-x-auto">
+        {([['overview', 'Visão geral'], ['rules', 'Regras'], ['portforward', 'Encaminhamento'], ['ruleset', 'Ruleset'], ['backups', `Snapshots (${backups.length})`]] as [Tab, string][]).map(([id, label]) => (
+          <button key={id} onClick={() => setActiveTab(id)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap shrink-0 ${activeTab === id ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{label}</button>
         ))}
       </div>
 
       {loading ? (
         <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
+      ) : activeTab === 'overview' ? (
+        <FirewallOverview
+          chains={overview}
+          onOpenRulesTab={() => setActiveTab('rules')}
+          onOpenPortForwardTab={() => setActiveTab('portforward')}
+        />
       ) : activeTab === 'rules' ? (
         <div className="space-y-4">
           {/* Custom rules (ordered) */}

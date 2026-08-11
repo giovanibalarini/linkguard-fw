@@ -248,6 +248,34 @@ export interface NftUserRule {
   dport: string;
 }
 
+// ─── Firewall overview (GET /api/nftables/overview) ───────────────────────
+
+export interface NftRuleOwner {
+  key?: string;
+  label: string;
+}
+
+export interface NftChainRule {
+  chain: string;
+  handle: number;
+  expression: string;
+  has_counter: boolean;
+  packets: number;
+  bytes: number;
+  managed: boolean;
+  owner: NftRuleOwner;
+  description: string;
+}
+
+export interface NftChainInfo {
+  name: string;
+  type?: string;
+  hook?: string;
+  priority?: string;
+  policy?: string;
+  rules: NftChainRule[];
+}
+
 export interface PortForward {
   id: string;
   name: string;
