@@ -560,3 +560,53 @@ func TestSendNowUsesScheduler(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// ─── Críticos 2 e 3: estado local da máquina não viaja no backup ────────────
+//
+// nft_live_snapshot é lido no bootstrap (cmd/linkguard-fw/main.go) e
+// entregue a `nft -f` como root, com um "flush ruleset" antes — restaurar
+// um backup significaria deixar um arquivo controlar o firewall inteiro da
+// máquina de destino. firewall_rules_imported é a trava da importação
+// única: gravada no destino sem trazer regra nenhuma (BackupData não tem
+// campo para regras de firewall), faz o próximo boot pular o ImportOnce e
+// o Reconcile esvaziar a chain user_rules viva contra um banco vazio.
+// Nenhuma das duas é configuração: são estado daquela máquina.
+func TestRestoreSkipsMachineLocalStateKeys(t *testing.T) {
+	h, sec := newBackupTestHandler(t)
+	if err := sec.Set(backup.PassphraseSecretName, testPassphrase); err != nil {
+		t.Fatalf("sec.Set: %v", err)
+	}
+
+	data := backup.BackupData{Version: "test-version", Kind: "linkguard-fw-backup",
+		Settings: map[string]string{
+			"netsvc_config":           validNetsvcConfigJSON,
+			"nft_live_snapshot":       "flush ruleset\ntable inet evil { chain c { type filter hook input priority 0; policy accept; } }\n",
+			"firewall_rules_imported": "true",
+			"firewall_rules_apply":    `{"ok":true,"at":1}`,
+			"netsvc_last_apply":       `{"ok":true,"at":1}`,
+		}}
+	rw := doRestore(t, h, data, testPassphrase)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("restore: esperava 200, obtive %d: %s", rw.Code, rw.Body.String())
+	}
+
+	after := snapshotDB(t, h, testPassphrase)
+	for _, k := range []string{"nft_live_snapshot", "firewall_rules_imported", "firewall_rules_apply", "netsvc_last_apply"} {
+		if v, ok := after.Settings[k]; ok {
+			t.Errorf("%q é estado local da máquina e não pode ser restaurado, mas foi gravado: %q", k, v)
+		}
+	}
+	if after.Settings["netsvc_config"] != validNetsvcConfigJSON {
+		t.Errorf("a configuração de verdade tinha que ser restaurada normalmente, obtive %q", after.Settings["netsvc_config"])
+	}
+
+	var res struct {
+		Settings int `json:"settings"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal resposta: %v", err)
+	}
+	if res.Settings != 1 {
+		t.Errorf("a contagem de settings restauradas não pode incluir as chaves puladas, obtive %d", res.Settings)
+	}
+}

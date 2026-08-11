@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
+	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
@@ -113,6 +116,39 @@ var knownSettingsValidators = map[string]func(raw string) error{
 	netsvcCfgKey:          validateNetsvcConfigRestore,
 	ntpCfgKey:             validateNTPConfigRestore,
 	monitoringSettingsKey: validateMonitoringConfigRestore,
+}
+
+// machineLocalSettingKeys are the settings rows that describe the state of
+// *this* machine rather than the operator's configuration, and therefore
+// must never be written by a restore — a backup file is a configuration
+// document, not a snapshot of another box's runtime.
+//
+// They are skipped silently (counted and logged, not rejected): a backup
+// legitimately produced by Export always carries them — ExportSettings
+// dumps the whole settings table — so refusing the file would make every
+// real backup unrestorable. "This doesn't travel" is the right semantics,
+// not "this is invalid".
+//
+//   - nft_live_snapshot: read at bootstrap (cmd/linkguard-fw/main.go) and
+//     handed to `nft -f` as root with a "flush ruleset" prepended. Restoring
+//     it would let a backup file redefine the destination firewall in full,
+//     including on a fresh install — the documented restore scenario, where
+//     EnsureTable reports a new table and the snapshot IS loaded (C-2).
+//   - firewall_rules_imported: the one-time-import latch. BackupData has no
+//     field for the firewall rules themselves, so restoring the latch writes
+//     "already imported" onto a machine that received no rules: the next
+//     boot skips ImportOnce and ReconcileUserRules empties the live
+//     user_rules chain against an empty table (C-3).
+//     TODO: firewall_rules ainda não é exportado no backup; incluí-las é
+//     feature à parte (ver Crítico 3 da revisão final).
+//   - firewall_rules_apply / netsvc_last_apply: results of an apply that
+//     happened on the source machine. Restored, the panel would report a
+//     success (or failure) that never took place here.
+var machineLocalSettingKeys = map[string]bool{
+	nftables.LiveSnapshotSettingKey:  true,
+	firewallrules.ImportedSettingKey: true,
+	firewallrules.ApplyStatusKey:     true,
+	netsvcApplyStatusKey:             true,
 }
 
 // monitoringSettingsKey mirrors internal/monitoring's own unexported
@@ -358,10 +394,22 @@ func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var res restoreResult
+	skippedLocal := 0
 	for k, v := range data.Settings {
+		if machineLocalSettingKeys[k] {
+			// Machine state, not configuration — see
+			// machineLocalSettingKeys for what each one would do to this
+			// box if it were restored.
+			skippedLocal++
+			continue
+		}
 		if err := h.db.SetSetting(k, v); err == nil {
 			res.Settings++
 		}
+	}
+	if skippedLocal > 0 {
+		slog.Info("restore de backup: chaves de estado local da máquina ignoradas",
+			"ignoradas", skippedLocal, "restauradas", res.Settings)
 	}
 	for _, rsv := range normalizedReservations {
 		if err := h.db.UpsertDHCPReservation(rsv.MAC, rsv.IP, rsv.Hostname); err == nil {
