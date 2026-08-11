@@ -196,17 +196,53 @@ func (s *Service) DelBlocklist(ctx context.Context, cidr string) (string, error)
 	return out, s.Persist(ctx)
 }
 
-// Persist writes the live ruleset to ConfPath so element edits survive a reboot
-// (nftables.service reloads ConfPath at boot). Skipped in dry-run.
+// Persist writes ConfPath — reloaded by nftables.service at boot — so element
+// edits (host_wan, blocklist, user rules, port forwards, ...) survive a
+// reboot. Skipped in dry-run.
+//
+// Two hard-won constraints, both from a production incident (see
+// docs/incidents or ask before "simplifying" this):
+//
+//  1. It serializes ONLY `table Family Table` (the table LinkGuard owns) via
+//     `nft list table <family> <table>`, never `nft list ruleset` (the whole
+//     kernel ruleset). During an incident an operator manually added a
+//     blanket `iptables -t nat -A POSTROUTING -j MASQUERADE`, which lives in
+//     `table ip nat` — a table LinkGuard does not own. A prior version of
+//     this function dumped the entire ruleset into ConfPath, so it captured
+//     that foreign rule and nftables.service recreated it on every boot, even
+//     after it was deleted from the live ruleset. That rule had no interface
+//     filter, so it masqueraded loopback traffic too: the box's own DNS
+//     queries to 127.0.0.1 arrived at unbound with the WAN's source address
+//     and were refused, chrony then had no working DNS to resolve its NTP
+//     pool, and the clock silently drifted unsynchronized. LAN clients kept
+//     working throughout, so the panel looked healthy — the failure was
+//     invisible until directly investigated. Scoping to `table Family Table`
+//     means a foreign table can never be captured here again.
+//  2. The written file leads with the standard nft idempotent-reload
+//     preamble — a bare `table <family> <table>` (creates it if absent, so
+//     this line can never fail) followed by `delete table <family> <table>`
+//     (now safe to delete, since it's guaranteed to exist) — before the full
+//     table definition. Without this, `nft -f` on a box where the table
+//     already exists in the kernel *appends* the definition instead of
+//     replacing it, which is exactly how the same production box ended up
+//     with two `oifname { ... } masquerade` rules in the postrouting chain,
+//     one of them referencing an interface that no longer existed. This is
+//     deliberately NOT `flush ruleset`: that would delete every foreign
+//     table (including whatever else the box's operator or another tool set
+//     up) on every boot, which is the opposite of what this fix is about —
+//     LinkGuard resets only the table it owns.
 func (s *Service) Persist(ctx context.Context) error {
 	if s.exec.IsDryRun() {
 		return nil
 	}
-	rs, err := s.Ruleset(ctx)
+	tbl, err := s.exec.ExecuteRead(ctx, "nft", "list", "table", Family, Table)
 	if err != nil {
 		return err
 	}
-	body := "#!/usr/sbin/nft -f\n\nflush ruleset\n\n" + rs + "\n"
+	body := fmt.Sprintf(
+		"#!/usr/sbin/nft -f\n\ntable %s %s\ndelete table %s %s\n\n%s\n",
+		Family, Table, Family, Table, tbl,
+	)
 	return os.WriteFile(ConfPath, []byte(body), 0o644)
 }
 

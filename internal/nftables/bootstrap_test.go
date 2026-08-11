@@ -16,6 +16,7 @@ type recordExec struct {
 	listTableErr error
 	execErr      error
 	rulesetOut   string
+	tableOut     string // response to `nft list table <family> <table>`; defaults below if empty
 	dryRun       bool
 
 	calls        []string
@@ -40,6 +41,9 @@ func (r *recordExec) ExecuteRead(_ context.Context, cmd string, args ...string) 
 	if cmd == "nft" && len(args) >= 2 && args[0] == "list" && args[1] == "table" {
 		if r.listTableErr != nil {
 			return "", r.listTableErr
+		}
+		if r.tableOut != "" {
+			return r.tableOut, nil
 		}
 		return "table inet linkguard {\n}\n", nil
 	}
