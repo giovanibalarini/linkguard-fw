@@ -82,16 +82,28 @@ func (u *UpdatesScheduler) RunOnce(ctx context.Context) {
 
 	u.col.setLastUpdatesReport(rep)
 
-	tr := u.col.observe("system:updates", rep.Total == 0, u.col.nowFn())
+	// Panel: down for ANY pending update, so the operator sees it just by
+	// looking at the dashboard.
+	u.col.observe("system:updates", rep.Total == 0, u.col.nowFn())
 	u.col.ensureMeta("system:updates", "system-updates", "resource")
 
-	if rep.Security > 0 {
-		if tr == transDown {
-			_ = u.col.alertSvc.SecurityUpdatesPending(describeUpdates(rep))
-		}
-		return
-	}
-	if tr == transUp {
+	// Notification: driven by its OWN security-scoped transition, deliberately
+	// NOT by the panel's transition above. The panel's transition is derived
+	// from rep.Total, so tying the alert to it meant (a) the alert could never
+	// clear while any routine package stayed pending, and (b) a newly-appeared
+	// security update raised no alert at all if the panel was already down for
+	// an unrelated package. On a live Debian box, routine updates are pending
+	// most of the time, so both were the common case rather than edge cases.
+	//
+	// No anti-flap debounce here on purpose: this reads apt's cached state
+	// every few hours, and that state does not flap like a network probe.
+	securityNow := rep.Security > 0
+	wasPending, known := u.col.securityUpdatesState()
+	u.col.setSecurityUpdatesState(securityNow)
+	switch {
+	case securityNow && (!known || !wasPending):
+		_ = u.col.alertSvc.SecurityUpdatesPending(describeUpdates(rep))
+	case !securityNow && known && wasPending:
 		_ = u.col.alertSvc.SecurityUpdatesNone()
 	}
 }

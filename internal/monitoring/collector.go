@@ -36,6 +36,9 @@ type Collector struct {
 	resolvConfPath string            // overridable in tests; empty means defaultResolvConfPath
 
 	lastUpdates sysupdates.Report // last pending-updates report, for the UI
+
+	securityPending      bool // last observed "security updates are pending" state
+	securityPendingKnown bool // false until the first successful check
 }
 
 // NewCollector creates a monitoring Collector. rec receives every measurement
@@ -158,4 +161,20 @@ func (c *Collector) LastUpdatesReport() sysupdates.Report {
 	c.healthMu.Lock()
 	defer c.healthMu.Unlock()
 	return c.lastUpdates
+}
+
+// securityUpdatesState returns the last observed security-pending state and
+// whether any successful check has recorded one yet.
+func (c *Collector) securityUpdatesState() (pending, known bool) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	return c.securityPending, c.securityPendingKnown
+}
+
+// setSecurityUpdatesState records the security-pending state observed by the
+// most recent successful check.
+func (c *Collector) setSecurityUpdatesState(pending bool) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	c.securityPending, c.securityPendingKnown = pending, true
 }
