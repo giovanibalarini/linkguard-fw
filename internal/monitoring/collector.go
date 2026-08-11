@@ -12,6 +12,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
+	"github.com/giovanibalarini/linkguard-fw/internal/sysupdates"
 	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 )
 
@@ -33,6 +34,8 @@ type Collector struct {
 
 	ifaceExists    func(string) bool // overridable in tests; nil means the real /sys/class/net check
 	resolvConfPath string            // overridable in tests; empty means defaultResolvConfPath
+
+	lastUpdates sysupdates.Report // last pending-updates report, for the UI
 }
 
 // NewCollector creates a monitoring Collector. rec receives every measurement
@@ -140,4 +143,19 @@ func (c *Collector) collect() {
 	if cfg.Enabled {
 		c.trackLinks()
 	}
+}
+
+// setLastUpdatesReport caches the most recent pending-updates report so the
+// UI can list packages without paying for an apt call per page load.
+func (c *Collector) setLastUpdatesReport(rep sysupdates.Report) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	c.lastUpdates = rep
+}
+
+// LastUpdatesReport returns the cached pending-updates report.
+func (c *Collector) LastUpdatesReport() sysupdates.Report {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	return c.lastUpdates
 }

@@ -18,6 +18,7 @@ type Config struct {
 	SMARTTempThresholdC       int      `json:"smart_temp_threshold_c"`
 	BootTimeThresholdSec      int      `json:"boot_time_threshold_sec"`
 	JournalVerifyIntervalDays int      `json:"journal_verify_interval_days"`
+	UpdatesCheckIntervalHours int      `json:"updates_check_interval_hours"`
 }
 
 func defaults() Config {
@@ -29,6 +30,7 @@ func defaults() Config {
 		SMARTTempThresholdC:       55,
 		BootTimeThresholdSec:      180,
 		JournalVerifyIntervalDays: 7,
+		UpdatesCheckIntervalHours: 6,
 	}
 }
 
@@ -53,6 +55,9 @@ func LoadConfig(db *storage.DB) Config {
 	}
 	if c.JournalVerifyIntervalDays <= 0 {
 		c.JournalVerifyIntervalDays = 7
+	}
+	if c.UpdatesCheckIntervalHours <= 0 {
+		c.UpdatesCheckIntervalHours = 1
 	}
 	// SMARTReallocatedThreshold is intentionally NOT clamped: 0 is its
 	// meaningful default (alert on any reallocated sector at all), not a

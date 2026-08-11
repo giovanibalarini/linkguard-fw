@@ -192,6 +192,7 @@ func run() int {
 	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec, rrdSvc)
 	backupSched := backup.NewScheduler(db, secretsSvc, notifySvc, alertSvc, version)
 	journalSched := monitoring.NewJournalScheduler(metricsCollector)
+	updatesSched := monitoring.NewUpdatesScheduler(metricsCollector)
 
 	server := api.New(api.Config{
 		Addr:    cfg.Addr(),
@@ -304,6 +305,7 @@ func run() int {
 	go balancerSvc.Run(ctx)
 	go backupSched.Run(ctx)
 	go journalSched.Run(ctx)
+	go updatesSched.Run(ctx)
 	go netifSvc.RunExpirySweep(ctx, 10*time.Second)
 	go ai.RunDigest(ctx, aiClient, rrdSvc, alertSvc, db, func() []string {
 		all, _ := db.GetLinks()
