@@ -187,6 +187,24 @@ func TestGenerateChronyConfRejectsOpenWildcard(t *testing.T) {
 	}
 }
 
+// TestGenerateChronyConfSkipsInvalidServer closes the asymmetry the
+// input-validation audit flagged inside this very function: AllowedNetworks
+// is re-validated at render time (TestGenerateChronyConfRejectsInvalidCIDR
+// above), but Servers was rendered via straight string interpolation with
+// no check at all — a value with a newline injects an arbitrary directive
+// into the chrony drop-in a privileged daemon reads. A bad server is
+// skipped (with a loud log), not fatal, matching every other "one bad
+// entry doesn't sink the good ones" render-time guard in this codebase.
+func TestGenerateChronyConfSkipsInvalidServer(t *testing.T) {
+	content := GenerateChronyConf(Config{Servers: []string{"c.ntp.br", "evil\nallow 0.0.0.0/0"}})
+	if strings.Contains(content, "allow 0.0.0.0/0") {
+		t.Errorf("injected directive via a malicious server entry reached the rendered chrony drop-in:\n%s", content)
+	}
+	if !strings.Contains(content, "server c.ntp.br iburst") {
+		t.Errorf("valid server must still be rendered even though a sibling entry was bad:\n%s", content)
+	}
+}
+
 func TestReloadConfigWritesDropinWhenServersSet(t *testing.T) {
 	dir := t.TempDir()
 	confPath := filepath.Join(dir, "linkguard.conf")

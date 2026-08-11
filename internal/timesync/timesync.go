@@ -17,11 +17,24 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
+
+// reChronyServer guards values rendered into the chrony drop-in via string
+// formatting — hostname or IP, no spaces/quotes/control characters.
+// Mirrors internal/api/handlers's own reNTPServer/validNTPServer (identical
+// charset), duplicated here rather than imported: internal/api/handlers
+// already imports this package (to call ReloadConfig/GenerateChronyConf),
+// so the reverse import would be a cycle. See GenerateChronyConf's doc
+// comment for why the render boundary must re-validate independently of
+// whatever the handler already did.
+var reChronyServer = regexp.MustCompile(`^[a-zA-Z0-9.:-]{1,253}$`)
+
+func validChronyServer(s string) bool { return s != "" && reChronyServer.MatchString(s) }
 
 // EnsureEnabled turns on chrony (NTP time sync) if the systemd unit is
 // installed, so the clock stays correct without any manual step. It never
@@ -139,17 +152,25 @@ func isOpenCIDR(cidr string) bool {
 // *neither* a custom server list nor ServeLAN is configured — see its own
 // doc comment).
 //
-// Each entry is re-validated here (not just by the caller, e.g.
-// ValidateAllowedNetworks at the API boundary) because this is the function
-// that interpolates admin-supplied strings into a config file a privileged
-// daemon (chronyd) reads: an invalid, malicious, or open-wildcard value must
-// never reach a rendered `allow` line, regardless of what upstream
-// validation exists. A bad entry is skipped (with a warning), not fatal —
-// the other, valid entries in the list must still be served.
+// Each entry — both Servers and AllowedNetworks — is re-validated here (not
+// just by the caller, e.g. ValidateAllowedNetworks at the API boundary)
+// because this is the function that interpolates admin-supplied strings
+// into a config file a privileged daemon (chronyd) reads: an invalid,
+// malicious, or open-wildcard value must never reach a rendered `server`/
+// `allow` line, regardless of what upstream validation exists. A bad entry
+// is skipped (with a warning), not fatal — the other, valid entries in the
+// list must still be served. Servers used to be the one exception to this
+// (input-validation-audit.md finding, "the same GenerateChronyConf" note):
+// AllowedNetworks was already re-validated at render time and Servers was
+// not, even though both are interpolated the same way into the same file.
 func GenerateChronyConf(c Config) string {
 	var b strings.Builder
 	b.WriteString("# managed by linkguard\n\n")
 	for _, srv := range c.Servers {
+		if !validChronyServer(srv) {
+			slog.Warn("servidor NTP inválido; linha 'server' omitida do drop-in do chrony", "server", srv)
+			continue
+		}
 		fmt.Fprintf(&b, "server %s iburst\n", srv)
 	}
 	if c.ServeLAN && len(c.AllowedNetworks) > 0 {
