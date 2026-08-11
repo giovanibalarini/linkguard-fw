@@ -294,6 +294,10 @@ func run() int {
 	// doesn't fail under AppArmor (see EnsureKeaDirReadable's doc comment).
 	keaSvc.EnsureKeaDirReadable()
 
+	// Point /etc/resolv.conf at the local unbound and stop dhclient from
+	// undoing it on lease renewal (see EnsureResolvConf's doc comment).
+	keaSvc.EnsureResolvConf()
+
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)
 	go rrdSvc.Run(ctx)

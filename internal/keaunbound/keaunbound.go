@@ -21,9 +21,11 @@ import (
 )
 
 const (
-	KeaConfPath     = "/etc/kea/kea-dhcp4.conf"
-	UnboundConfPath = "/etc/unbound/unbound.conf.d/linkguard.conf"
-	KeaLeasesPath   = "/var/lib/kea/kea-leases4.csv"
+	KeaConfPath      = "/etc/kea/kea-dhcp4.conf"
+	UnboundConfPath  = "/etc/unbound/unbound.conf.d/linkguard.conf"
+	KeaLeasesPath    = "/var/lib/kea/kea-leases4.csv"
+	ResolvConfPath   = "/etc/resolv.conf"
+	DhclientConfPath = "/etc/dhcp/dhclient.conf"
 
 	keaService     = "kea-dhcp4-server"
 	unboundService = "unbound"
@@ -33,19 +35,23 @@ const (
 // Service is the Kea+unbound Provider. Config paths and the Kea binary are
 // fields (defaulted to the system paths) so tests can point them at a temp dir.
 type Service struct {
-	exec        firewall.Executor
-	keaConf     string
-	unboundConf string
-	keaBin      string
+	exec         firewall.Executor
+	keaConf      string
+	unboundConf  string
+	keaBin       string
+	resolvConf   string
+	dhclientConf string
 }
 
 // NewService creates the provider.
 func NewService(exec firewall.Executor) *Service {
 	return &Service{
-		exec:        exec,
-		keaConf:     KeaConfPath,
-		unboundConf: UnboundConfPath,
-		keaBin:      keaBinDefault,
+		exec:         exec,
+		keaConf:      KeaConfPath,
+		unboundConf:  UnboundConfPath,
+		keaBin:       keaBinDefault,
+		resolvConf:   ResolvConfPath,
+		dhclientConf: DhclientConfPath,
 	}
 }
 
@@ -69,6 +75,48 @@ func (s *Service) EnsureKeaDirReadable() {
 	dir := filepath.Dir(s.keaConf)
 	if err := os.Chmod(dir, 0o755); err != nil {
 		slog.Warn("could not relax kea config directory permissions; DHCP apply may fail under AppArmor", "path", dir, "err", err)
+	}
+}
+
+// EnsureResolvConf makes the box actually use its own resolver (unbound on
+// 127.0.0.1) instead of whatever nameservers the WAN's DHCP lease proposes.
+//
+// Found in production on 2026-08-10: /etc/resolv.conf pointed at the ISP,
+// and nothing in this codebase managed that file — so the appliance was
+// silently bypassing its own DNS, losing the blocklist and the query
+// visibility unbound provides. Rewriting resolv.conf alone would not hold:
+// dhclient rewrites it on every lease renewal, which is why this also adds
+// a `supersede domain-name-servers` directive so dhclient stops proposing
+// the ISP's servers in the first place (working with dhclient rather than
+// fighting it).
+//
+// Self-heals on every start, like the other Ensure* calls. Best-effort: a
+// failure is logged and surfaced by the dns-resolver health check rather
+// than blocking startup.
+func (s *Service) EnsureResolvConf() {
+	const body = "# managed by linkguard\nnameserver 127.0.0.1\n"
+	if err := os.WriteFile(s.resolvConf, []byte(body), 0o644); err != nil {
+		slog.Warn("não foi possível apontar o resolv.conf para o resolver local", "path", s.resolvConf, "err", err)
+	} else {
+		slog.Info("resolv.conf apontando para o resolver local (unbound)", "path", s.resolvConf)
+	}
+
+	const directive = "supersede domain-name-servers 127.0.0.1;"
+	current, err := os.ReadFile(s.dhclientConf)
+	if err != nil && !os.IsNotExist(err) {
+		slog.Warn("não foi possível ler a config do dhclient; o DNS do provedor pode voltar na renovação do lease", "path", s.dhclientConf, "err", err)
+		return
+	}
+	if strings.Contains(string(current), directive) {
+		return // already in place — this runs on every boot
+	}
+	updated := string(current)
+	if updated != "" && !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	updated += "\n# managed by linkguard — mantém o resolver local mesmo após renovação de lease\n" + directive + "\n"
+	if err := os.WriteFile(s.dhclientConf, []byte(updated), 0o644); err != nil {
+		slog.Warn("não foi possível fixar o DNS local na config do dhclient", "path", s.dhclientConf, "err", err)
 	}
 }
 

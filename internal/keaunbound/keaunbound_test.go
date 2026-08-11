@@ -206,6 +206,86 @@ func TestGenerateUnboundConfigForwarding(t *testing.T) {
 	}
 }
 
+// TestEnsureResolvConfPointsAtLocalUnbound is the regression test for a real
+// production finding on 2026-08-10: /etc/resolv.conf pointed at the ISP's
+// nameservers instead of the local unbound. Nothing in the codebase managed
+// that file at all — the WAN's dhclient rewrites it on every lease renewal —
+// so the appliance silently stopped using its own resolver (losing the DNS
+// blocklist and query visibility that unbound provides).
+func TestEnsureResolvConfPointsAtLocalUnbound(t *testing.T) {
+	dir := t.TempDir()
+	resolv := filepath.Join(dir, "resolv.conf")
+	if err := os.WriteFile(resolv, []byte("nameserver 189.40.0.1\nnameserver 189.40.0.2\n"), 0o644); err != nil {
+		t.Fatalf("seed resolv.conf: %v", err)
+	}
+	s := NewService(&recExec{})
+	s.resolvConf = resolv
+	s.dhclientConf = filepath.Join(dir, "dhclient.conf")
+
+	s.EnsureResolvConf()
+
+	got, err := os.ReadFile(resolv)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(got), "nameserver 127.0.0.1") {
+		t.Errorf("resolv.conf does not point at the local resolver:\n%s", got)
+	}
+	if strings.Contains(string(got), "189.40.0.1") {
+		t.Errorf("ISP nameserver survived:\n%s", got)
+	}
+	if !strings.Contains(string(got), "# managed by linkguard") {
+		t.Errorf("missing the managed-by header:\n%s", got)
+	}
+}
+
+// TestEnsureResolvConfSupersedesDhclient: rewriting resolv.conf alone is not
+// enough — the next DHCP lease renewal would overwrite it again. The fix has
+// to tell dhclient itself to stop proposing the ISP's servers.
+func TestEnsureResolvConfSupersedesDhclient(t *testing.T) {
+	dir := t.TempDir()
+	dhclient := filepath.Join(dir, "dhclient.conf")
+	if err := os.WriteFile(dhclient, []byte("send host-name = gethostname();\n"), 0o644); err != nil {
+		t.Fatalf("seed dhclient.conf: %v", err)
+	}
+	s := NewService(&recExec{})
+	s.resolvConf = filepath.Join(dir, "resolv.conf")
+	s.dhclientConf = dhclient
+
+	s.EnsureResolvConf()
+
+	got, err := os.ReadFile(dhclient)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(got), "supersede domain-name-servers 127.0.0.1;") {
+		t.Errorf("dhclient.conf missing the supersede directive:\n%s", got)
+	}
+	if !strings.Contains(string(got), "send host-name = gethostname();") {
+		t.Errorf("pre-existing dhclient config was destroyed:\n%s", got)
+	}
+}
+
+// TestEnsureResolvConfDoesNotDuplicateSupersede: it runs on every boot, so a
+// second run must not keep appending the same line.
+func TestEnsureResolvConfDoesNotDuplicateSupersede(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(&recExec{})
+	s.resolvConf = filepath.Join(dir, "resolv.conf")
+	s.dhclientConf = filepath.Join(dir, "dhclient.conf")
+
+	s.EnsureResolvConf()
+	s.EnsureResolvConf()
+
+	got, err := os.ReadFile(s.dhclientConf)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if n := strings.Count(string(got), "supersede domain-name-servers"); n != 1 {
+		t.Errorf("supersede directive appears %d times, want 1:\n%s", n, got)
+	}
+}
+
 func TestParseKeaLeases(t *testing.T) {
 	sample := `address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context,pool_id
 192.168.3.50,aa:bb:cc:dd:ee:ff,,43200,1782500000,1,0,0,pc-joao,0,,0

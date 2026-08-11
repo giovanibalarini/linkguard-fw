@@ -29,9 +29,10 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 # Writable paths so the app can persist generated configs: nftables (firewall),
 # Kea (DHCP), unbound (DNS), the conntrack-accounting sysctl drop-in, the
-# stable-interface-name .link files (Fase A: nomes estáveis por MAC), and the
-# NTP (chrony) drop-in.
-ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/kea /etc/unbound /etc/sysctl.d /etc/systemd/network /etc/chrony/conf.d
+# stable-interface-name .link files (Fase A: nomes estáveis por MAC), the
+# NTP (chrony) drop-in, and the resolver/dhclient files that keep DNS pointed
+# at the local unbound.
+ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/kea /etc/unbound /etc/sysctl.d /etc/systemd/network /etc/chrony/conf.d /etc/resolv.conf /etc/dhcp
 ProtectHome=yes
 PrivateTmp=yes
 
