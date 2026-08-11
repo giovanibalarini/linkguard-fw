@@ -53,10 +53,8 @@ Um único controle na tela de NTP — "Servir horário para a rede local" —
 que, quando ligado, faz três coisas de forma coordenada:
 
 1. **chrony passa a servir**: o drop-in gerado
-   (`/etc/chrony/conf.d/linkguard.conf`) ganha `allow <cidr-da-LAN>`. A
-   sub-rede vem da config de DHCP/DNS já existente (`netsvc.Config.SubnetCIDR`),
-   fonte de verdade única — não um campo novo para o operador manter em dois
-   lugares.
+   (`/etc/chrony/conf.d/linkguard.conf`) ganha uma linha `allow <cidr>` por
+   rede autorizada (§3.1).
 2. **firewall protege**: regras específicas na nova chain de input (§4).
 3. **DHCP anuncia**: o Kea passa a entregar a opção 42 (`ntp-servers`)
    apontando para o IP do firewall na LAN.
@@ -65,6 +63,31 @@ Desligado, o comportamento volta exatamente ao de hoje: sem `allow`, sem
 regra de firewall, sem opção no DHCP. Padrão de fábrica: **desligado**
 (aditivo, não muda o comportamento de instalações existentes).
 
+### 3.1 Quem pode acessar é escolha do admin (não do software)
+
+O operador pode ter VLANs, uma rede Wi-Fi separada, uma rede de convidados —
+e decidir quais delas podem usar o serviço de horário. Amarrar a liberação
+na sub-rede única do DHCP seria o software decidindo por ele.
+
+Portanto: `Config.AllowedNetworks []string` — uma lista de CIDRs, editável no
+painel. Cada entrada vira uma linha `allow` no chrony e entra no conjunto
+aceito pela regra de firewall.
+
+- **Padrão inteligente, não imposição**: ao ligar o toggle pela primeira vez,
+  a lista é pré-preenchida com a sub-rede da LAN (`netsvc.Config.SubnetCIDR`)
+  — o caso comum funciona sem digitar nada, mas o campo continua editável.
+- **CIDR cobre os casos citados**: VLAN e Wi-Fi com sub-rede própria entram
+  como entradas adicionais; Wi-Fi em bridge na mesma LAN já está coberto pela
+  entrada existente.
+- **Validação**: cada entrada precisa ser um CIDR válido (`net.ParseCIDR`) —
+  vai para um arquivo de config de daemon e para o `nft`.
+- **Guarda-corpo**: `0.0.0.0/0` e `::/0` são **rejeitados** com erro claro.
+  Servidor NTP aberto para a internet é vetor conhecido de ataque de
+  amplificação, e isso quase certamente seria engano — não uma escolha
+  informada. Qualquer outra faixa é aceita: o admin conhece a rede dele.
+- Lista vazia com o toggle ligado = nada é liberado (nem chrony, nem
+  firewall). Estado explícito, não um "libera tudo" implícito.
+
 ## 4. Regras de firewall
 
 Nova chain `input` em `table inet linkguard`:
@@ -72,24 +95,26 @@ Nova chain `input` em `table inet linkguard`:
 ```
 chain input {
     type filter hook input priority filter; policy accept;
-    iifname { "<wan1>", "<wan2>" } udp dport 123 drop
+    udp dport 123 ip saddr { <redes autorizadas> } accept
+    udp dport 123 drop
 }
 ```
 
-- A negação é por **interface de entrada (WAN)**, não por endereço de
-  origem — mais robusto contra spoofing e independente de qual IP a WAN
-  tenha no momento (que, como esta sessão provou, muda).
-- O tráfego da LAN é aceito pela política `accept`, sem regra explícita. Uma
-  regra `accept` para a LAN seria redundante e daria falsa sensação de que a
-  política é restritiva.
-- **Por que isso importa mesmo com o `allow` do chrony:** um servidor NTP
-  aberto para a internet é vetor clássico de ataque de amplificação. O
-  `allow` do chrony é controle de aplicação; a regra de firewall é a
-  segunda camada, que continua valendo se a config do chrony for
-  sobrescrita por uma atualização de pacote. Defesa em profundidade foi
-  exatamente o que o operador pediu.
-- As interfaces WAN vêm dos `Link`s habilitados no banco — mesma fonte de
-  verdade que a regra de masquerade, e reconciliada do mesmo jeito.
+- **Libera quem o admin escolheu, nega todo o resto.** Duas regras, nessa
+  ordem: a primeira aceita NTP vindo das redes autorizadas (§3.1); a segunda
+  descarta qualquer outro NTP destinado a esta máquina.
+- Esse par é **mais preciso do que negar só as WANs**: cobre também uma VLAN
+  ou rede de convidados que exista na máquina e que o admin *não* autorizou —
+  caso que a regra por interface deixaria passar silenciosamente.
+- O escopo é cirúrgico: as duas regras casam **apenas `udp dport 123`**.
+  Nenhum outro tráfego destinado ao firewall é tocado, e a política da chain
+  continua `accept` (§2).
+- **Por que isso importa mesmo com o `allow` do chrony:** o `allow` é
+  controle na aplicação; a regra de firewall é a segunda camada, que
+  continua valendo se a config do chrony for sobrescrita por uma atualização
+  de pacote. Defesa em profundidade foi exatamente o que o operador pediu.
+- Com o toggle desligado (ou lista vazia), a chain fica vazia — sem a regra
+  de accept e sem a de drop, voltando ao comportamento atual.
 
 ### Reconciliação
 A chain é reconstruída (flush do chain + regra) no boot e a cada mudança
@@ -122,31 +147,41 @@ opção na próxima renovação de lease.
 
 ## 6. Interface
 
-Na página de NTP já existente, um switch "Servir horário para a rede local",
-com texto explicando o efeito em uma linha (as máquinas da LAN passam a
-sincronizar com o firewall, e o DHCP passa a indicá-lo automaticamente).
-Gated por `ntp.write`, como o resto da tela.
+Na página de NTP já existente, gated por `ntp.write` como o resto da tela:
 
-Quando ligado, mostrar de forma discreta o que foi aplicado — servindo para
-`<cidr>`, anunciado via DHCP, bloqueado nas WANs — para que o operador veja
-as três consequências sem precisar do SSH, coerente com o princípio desta
-sessão.
+- Um switch **"Servir horário para a rede local"**.
+- Quando ligado, um campo editável **"Redes autorizadas"** (lista de CIDRs,
+  separados por vírgula, no mesmo padrão do campo de servidores NTP e do de
+  upstreams de DNS que já existem). Pré-preenchido com a sub-rede da LAN na
+  primeira vez, e livremente editável — é aqui que o admin acrescenta VLAN,
+  Wi-Fi ou rede de convidados.
+- Erro de validação vindo da API (CIDR inválido, `0.0.0.0/0`) exibido no
+  mesmo padrão de mensagem já usado na tela.
+
+Quando ligado, mostrar de forma discreta o que passou a valer — servindo
+para as redes listadas, anunciado via DHCP, NTP negado para o resto — para
+que o operador veja as três consequências sem precisar do SSH.
+
+Isso satisfaz a regra de entrega do projeto (`FEATURES.md`): o recurso é
+ligável, desligável e ajustável inteiramente pelo painel, e o painel mostra
+o efeito real — não é backend com tela decorativa.
 
 ## 7. Testes
 
-- **chrony**: `allow` presente quando ligado e ausente quando desligado;
-  idempotente entre execuções; a sub-rede vem da config de DHCP.
-- **firewall**: a regra nega 123/udp nas WANs e não nega na LAN; flush
+- **chrony**: uma linha `allow` por rede autorizada quando ligado, nenhuma quando desligado ou com lista vazia;
+  idempotente entre execuções; CIDR inválido e `0.0.0.0/0` rejeitados.
+- **firewall**: NTP das redes autorizadas é aceito e de qualquer outra
+  origem é negado; nenhuma regra casa porta diferente de 123/udp; flush
   apenas do chain próprio (nunca tabela/ruleset — mesmo teste de segurança
   do masquerade); chain vazia quando desligado; nomes de interface
   sanitizados; no-op em dry-run.
 - **Kea**: opção `ntp-servers` presente com o IP correto quando ligado,
   ausente quando desligado; JSON continua válido.
-- **VM**: com o toggle ligado, um cliente da LAN sincroniza de fato com o
-  firewall (`chronyc sources` do lado do cliente, ou consulta NTP direta ao
-  192.168.3.3), a consulta NTP vinda da WAN é bloqueada, e o lease do DHCP
-  entrega a opção 42. Com o toggle desligado, os três voltam ao estado
-  anterior.
+- **VM**: com o toggle ligado, uma consulta NTP vinda de uma rede autorizada
+  é respondida e uma vinda de fora da lista é bloqueada; o lease do DHCP
+  entrega a opção 42. Acrescentar uma segunda rede pelo painel passa a
+  liberá-la sem tocar em arquivo nenhum — é a prova de que a escolha é do
+  admin. Com o toggle desligado, tudo volta ao estado anterior.
 
 ## 8. Fora de escopo (explicitamente)
 
