@@ -138,19 +138,28 @@ func (h *NetsvcHandler) saveConfig(c netsvc.Config) error {
 }
 
 // ntpServerOption returns the firewall's LAN IP to advertise as DHCP
-// option 42 (ntp-servers) when "serve NTP to the LAN" is on, or "" when it
-// is off — the exact input keaunbound.GenerateKeaConfig expects. Reads
+// option 42 (ntp-servers) when "serve NTP to the LAN" is genuinely in
+// effect — ServeLAN on AND at least one network actually allowed — or ""
+// otherwise. The exact input keaunbound.GenerateKeaConfig expects. Reads
 // internal/timesync's persisted config directly (same package as ntp.go,
 // which owns ntpCfgKey) rather than either package importing the other's
 // Config type: the generator stays a pure function of its inputs, and
 // neither handler owns the other's settings key — see
 // docs/superpowers/specs/2026-08-11-ntp-server-for-lan-design.md §5.
+//
+// Checking AllowedNetworks too (not just ServeLAN) matters: the spec's
+// explicit "serving on, allowed list empty" state means chrony's own
+// `allow` directives are empty and chronyd refuses every client. Handing
+// that dead address to a DHCP client via option 42 is worse than not
+// advertising at all — a client that feeds it straight to
+// systemd-timesyncd (which, unlike chrony, has no separate pool fallback)
+// ends up with exactly one permanently unreachable time source.
 func (h *NetsvcHandler) ntpServerOption() string {
 	var ntpCfg timesync.Config
 	if raw, _ := h.db.GetSetting(ntpCfgKey); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &ntpCfg)
 	}
-	if !ntpCfg.ServeLAN {
+	if !ntpCfg.ServeLAN || len(ntpCfg.AllowedNetworks) == 0 {
 		return ""
 	}
 	return h.getConfig().Gateway

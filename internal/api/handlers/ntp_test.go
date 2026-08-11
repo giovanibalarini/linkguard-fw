@@ -180,8 +180,10 @@ func TestUpdateNTPConfigRejectsOpenWildcard(t *testing.T) {
 
 // TestUpdateNTPConfigPrefillsFromDHCPSubnetOnFirstEnable is Part 3's
 // default-prefill behavior (spec §3.1/§6): turning serve_lan on for the
-// first time with an empty allowed_networks list seeds it from the DHCP
-// LAN subnet, so the common case needs zero typing.
+// first time with the allowed_networks key entirely ABSENT from the body
+// (not present-but-empty — see Fix 6 in the tests below) seeds it from the
+// DHCP LAN subnet, so a caller that never sends the field still gets the
+// common case populated for free.
 func TestUpdateNTPConfigPrefillsFromDHCPSubnetOnFirstEnable(t *testing.T) {
 	h := newTestNTPHandler(t)
 	netCfg := netsvc.DefaultConfig()
@@ -194,7 +196,7 @@ func TestUpdateNTPConfigPrefillsFromDHCPSubnetOnFirstEnable(t *testing.T) {
 		t.Fatalf("SetSetting: %v", err)
 	}
 
-	body := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":[]}`
+	body := `{"servers":[],"timezone":"","serve_lan":true}`
 	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	h.UpdateNTPConfig(w, r)
@@ -223,7 +225,7 @@ func TestUpdateNTPConfigLeavesListEmptyWhenDHCPSubnetAlsoUnconfigured(t *testing
 		t.Fatalf("SetSetting: %v", err)
 	}
 
-	body := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":[]}`
+	body := `{"servers":[],"timezone":"","serve_lan":true}`
 	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	h.UpdateNTPConfig(w, r)
@@ -237,10 +239,48 @@ func TestUpdateNTPConfigLeavesListEmptyWhenDHCPSubnetAlsoUnconfigured(t *testing
 	}
 }
 
+// TestUpdateNTPConfigDoesNotPrefillWhenListExplicitlyEmptyOnFirstEnable is
+// the regression test for review Fix 6: the client already pre-fills
+// "Redes autorizadas" visibly the moment the admin flips the toggle, so by
+// the time a save reaches the server the field is either populated or the
+// admin cleared it on purpose — either way the request always carries an
+// explicit (if empty) allowed_networks array from the real UI, never an
+// absent key. Before this fix the server couldn't tell "the client didn't
+// send this" from "the client sent an empty list on purpose", so an admin
+// who enabled serving, cleared the auto-filled network, and saved got it
+// silently restored on this very first save — the field's own help text
+// says empty means nothing is allowed, but that state was unreachable.
+func TestUpdateNTPConfigDoesNotPrefillWhenListExplicitlyEmptyOnFirstEnable(t *testing.T) {
+	h := newTestNTPHandler(t)
+	netCfg := netsvc.DefaultConfig()
+	netCfg.SubnetCIDR = "192.168.7.0/24"
+	b, err := json.Marshal(netCfg)
+	if err != nil {
+		t.Fatalf("marshal netsvc config: %v", err)
+	}
+	if err := h.db.SetSetting(netsvcCfgKey, string(b)); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+
+	body := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":[]}`
+	r := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.UpdateNTPConfig(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	cfg := h.getConfig()
+	if len(cfg.AllowedNetworks) != 0 {
+		t.Errorf("AllowedNetworks = %v, want empty — an explicit [] on first enable must never be silently pre-filled", cfg.AllowedNetworks)
+	}
+}
+
 // TestUpdateNTPConfigDoesNotReprefillAfterAdminExplicitlyClearsTheList is
 // the regression test protecting spec §3.1's "lista vazia com o toggle
-// ligado = nada é liberado, estado explícito": the pre-fill only fires on
-// the off->on transition, not on every save. Once serving is already on, an
+// ligado = nada é liberado, estado explícito": the pre-fill only fires when
+// the allowed_networks key is entirely absent on the off->on transition,
+// never when it is present (even empty). Once serving is already on, an
 // admin who explicitly empties the list gets exactly that — not a silent
 // re-fill from the DHCP subnet.
 func TestUpdateNTPConfigDoesNotReprefillAfterAdminExplicitlyClearsTheList(t *testing.T) {
@@ -255,8 +295,8 @@ func TestUpdateNTPConfigDoesNotReprefillAfterAdminExplicitlyClearsTheList(t *tes
 		t.Fatalf("SetSetting: %v", err)
 	}
 
-	// First enable: pre-filled.
-	firstBody := `{"servers":[],"timezone":"","serve_lan":true,"allowed_networks":[]}`
+	// First enable: allowed_networks key absent -> pre-filled.
+	firstBody := `{"servers":[],"timezone":"","serve_lan":true}`
 	r1 := httptest.NewRequest("PUT", "/api/ntp/config", strings.NewReader(firstBody))
 	w1 := httptest.NewRecorder()
 	h.UpdateNTPConfig(w1, r1)
@@ -449,3 +489,94 @@ func TestDoReloadWithoutWiringDoesNotPanic(t *testing.T) {
 		t.Fatalf("doReload: %v", err)
 	}
 }
+
+// ─── firewall reconcile outcome must reach the panel (review Fix 2) ──────
+//
+// Before this fix, reconcileFirewall logged and swallowed every nft
+// failure, and GET /api/ntp had no field for the outcome at all — so the
+// one state where NTP protection is genuinely absent (the reconcile
+// failed) was invisible to the admin, directly violating FEATURES.md's
+// delivery rule ("configured ≠ working" must be distinguishable from the
+// panel). Follows NetsvcHandler's existing applyStatus/last_apply pattern.
+
+// TestDoReloadRecordsFirewallApplyFailure: an nft failure during
+// ReconcileNTPInput must leave a non-OK status behind for the API to
+// return, not just a log line.
+func TestDoReloadRecordsFirewallApplyFailure(t *testing.T) {
+	db := newTestDB(t)
+	nftExec := &reconcileSpyExec{execErr: errBoomExec{}}
+	svc := timesync.NewService(&fakeTimesyncExec{dryRun: true})
+	h := NewNTPHandler(db, svc, nil, nftables.NewService(nftExec))
+
+	if err := h.saveConfig(timesync.Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}}); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	if err := h.doReload(context.Background()); err != nil {
+		// reconcileFirewall failures are best-effort and must never turn an
+		// otherwise-successful chrony apply into a reported doReload error
+		// (same convention as LinksHandler.reconcileNAT) — the failure must
+		// surface through firewall_apply instead.
+		t.Fatalf("doReload must not itself fail from a firewall reconcile error: %v", err)
+	}
+
+	got := h.lastFirewallApplyStatus()
+	if got == nil {
+		t.Fatal("expected a firewall_apply status to be recorded")
+	}
+	if got.OK {
+		t.Error("expected firewall_apply.ok = false after an nft failure")
+	}
+	if got.Error == "" {
+		t.Error("expected firewall_apply.error to describe the nft failure")
+	}
+
+	r := httptest.NewRequest("GET", "/api/ntp", nil)
+	w := httptest.NewRecorder()
+	h.GetNTP(w, r)
+	if !strings.Contains(w.Body.String(), `"firewall_apply"`) {
+		t.Errorf("expected GET /api/ntp to include firewall_apply, body: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"ok":false`) {
+		t.Errorf("expected GET /api/ntp firewall_apply to report ok:false, body: %s", w.Body.String())
+	}
+}
+
+// TestDoReloadRecordsFirewallApplySuccess: the mirror case — a clean
+// reconcile must record ok:true, so the panel can positively confirm
+// protection is in effect, not just the absence of a failure banner.
+func TestDoReloadRecordsFirewallApplySuccess(t *testing.T) {
+	db := newTestDB(t)
+	nftExec := &reconcileSpyExec{}
+	svc := timesync.NewService(&fakeTimesyncExec{dryRun: true})
+	h := NewNTPHandler(db, svc, nil, nftables.NewService(nftExec))
+
+	if err := h.saveConfig(timesync.Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}}); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	if err := h.doReload(context.Background()); err != nil {
+		t.Fatalf("doReload: %v", err)
+	}
+
+	got := h.lastFirewallApplyStatus()
+	if got == nil || !got.OK {
+		t.Fatalf("expected firewall_apply.ok = true, got %+v", got)
+	}
+}
+
+// TestFirewallApplyStatusNilWhenNftSvcNotWired: a handler built without
+// nftSvc (nil-safe, e.g. an older caller) must report "never attempted"
+// (nil), not a false "failed" — the same never-vs-failed distinction
+// lastApplyStatus already draws for the chrony apply.
+func TestFirewallApplyStatusNilWhenNftSvcNotWired(t *testing.T) {
+	h := newTestNTPHandler(t)
+	if err := h.doReload(context.Background()); err != nil {
+		t.Fatalf("doReload: %v", err)
+	}
+	if got := h.lastFirewallApplyStatus(); got != nil {
+		t.Errorf("expected nil firewall_apply when nftSvc isn't wired, got %+v", got)
+	}
+}
+
+type errBoomExec struct{}
+
+func (errBoomExec) Error() string { return "nft: boom" }

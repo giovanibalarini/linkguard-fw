@@ -18,6 +18,7 @@ import (
 
 const ntpCfgKey = "ntp_config"
 const ntpApplyStatusKey = "ntp_last_apply"
+const ntpFirewallApplyStatusKey = "ntp_firewall_apply"
 
 // reNTPServer guards values rendered into the chrony drop-in via string
 // formatting — hostname or IP, no spaces/quotes/control characters.
@@ -150,14 +151,50 @@ func (h *NTPHandler) doReload(ctx context.Context) error {
 // reconcileFirewall rebuilds the NTP-protection input chain from the
 // admin's chosen allowed networks (spec §3.1/§4). Best-effort and nil-safe,
 // same convention as LinksHandler.reconcileNAT: a failure here is logged
-// but never fails the NTP apply that triggered it.
+// and never fails the NTP apply that triggered it — but, unlike the
+// original version, it is no longer *only* logged: the outcome is
+// persisted under ntpFirewallApplyStatusKey and surfaced by GetNTP as
+// firewall_apply, exactly mirroring applyStatus/last_apply for the chrony
+// apply. Before this, a failed reconcile left the input chain genuinely
+// unprotected while nothing in the API or the panel could tell — the one
+// state the delivery rule (FEATURES.md, "configured ≠ working") exists to
+// catch. A handler with no nftSvc wired (older callers, tests unrelated to
+// this toggle) writes nothing, so lastFirewallApplyStatus stays nil —
+// "never attempted", not a false "failed".
 func (h *NTPHandler) reconcileFirewall(ctx context.Context, allowedNetworks []string, serving bool) {
 	if h.nftSvc == nil {
 		return
 	}
-	if err := h.nftSvc.ReconcileNTPInput(ctx, allowedNetworks, serving); err != nil {
+	err := h.nftSvc.ReconcileNTPInput(ctx, allowedNetworks, serving)
+	st := applyStatus{OK: err == nil, At: time.Now().Unix()}
+	if err != nil {
+		st.Error = err.Error()
 		slog.Warn("não foi possível reconciliar a chain de proteção do NTP", "err", err)
+		if h.alertSvc != nil {
+			_ = h.alertSvc.RuleError("Falha ao aplicar a proteção de firewall do NTP: " + err.Error())
+		}
 	}
+	if b, mErr := json.Marshal(st); mErr == nil {
+		_ = h.db.SetSetting(ntpFirewallApplyStatusKey, string(b))
+	}
+}
+
+// lastFirewallApplyStatus returns the persisted result of the most recent
+// firewall (nftables input-chain) reconcile, or nil if it was never
+// attempted — same "never attempted" vs "attempted and failed" distinction
+// as lastApplyStatus, applied to the firewall layer specifically so a
+// chrony-apply success can never be mistaken for firewall protection also
+// being in effect.
+func (h *NTPHandler) lastFirewallApplyStatus() *applyStatus {
+	raw, _ := h.db.GetSetting(ntpFirewallApplyStatusKey)
+	if raw == "" {
+		return nil
+	}
+	var st applyStatus
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		return nil
+	}
+	return &st
 }
 
 func (h *NTPHandler) scheduleApply() {
@@ -188,6 +225,7 @@ func (h *NTPHandler) GetNTP(w http.ResponseWriter, r *http.Request) {
 		"status":            h.svc.Status(r.Context()),
 		"timezones":         zones,
 		"last_apply":        h.lastApplyStatus(),
+		"firewall_apply":    h.lastFirewallApplyStatus(),
 		"suggested_network": h.suggestedNetwork(),
 	})
 }
@@ -201,18 +239,23 @@ func (h *NTPHandler) GetNTP(w http.ResponseWriter, r *http.Request) {
 // dropped.
 //
 // Default pre-fill: turning serve_lan on for the first time (the previously
-// saved config had it off) with an empty AllowedNetworks list seeds it from
-// the DHCP LAN subnet, so the common case needs zero typing. This only
-// fires on the off->on transition — once serving is already on, an admin
-// who explicitly empties the list gets exactly that ("nothing allowed" is a
-// deliberate, explicit state per spec §3.1), not a silent re-fill on every
-// save.
+// saved config had it off) with the allowed_networks key entirely absent
+// from the request body seeds it from the DHCP LAN subnet, so a caller that
+// doesn't send the field at all still gets the common case populated for
+// free. AllowedNetworks is a *[]string specifically so "the key is absent"
+// and "the key is present but an empty array" are distinguishable — before
+// this, both decoded to the same empty Go slice, so an admin who enabled
+// serving, deliberately cleared the auto-filled network the UI itself
+// pre-fills client-side, and saved got it silently restored on every save,
+// even though the field's own help text says empty means nothing is
+// allowed. Pre-fill now fires only on "absent"; "present but empty" always
+// means exactly that, on the very first enable too.
 func (h *NTPHandler) UpdateNTPConfig(w http.ResponseWriter, r *http.Request) {
 	var b struct {
-		Servers         []string `json:"servers"`
-		Timezone        string   `json:"timezone"`
-		ServeLAN        bool     `json:"serve_lan"`
-		AllowedNetworks []string `json:"allowed_networks"`
+		Servers         []string  `json:"servers"`
+		Timezone        string    `json:"timezone"`
+		ServeLAN        bool      `json:"serve_lan"`
+		AllowedNetworks *[]string `json:"allowed_networks"`
 	}
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -232,16 +275,18 @@ func (h *NTPHandler) UpdateNTPConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	networks := []string{}
-	for _, n := range b.AllowedNetworks {
-		n = strings.TrimSpace(n)
-		if n == "" {
-			continue
+	if b.AllowedNetworks != nil {
+		for _, n := range *b.AllowedNetworks {
+			n = strings.TrimSpace(n)
+			if n == "" {
+				continue
+			}
+			networks = append(networks, n)
 		}
-		networks = append(networks, n)
 	}
 
 	firstEnable := b.ServeLAN && !h.getConfig().ServeLAN
-	if firstEnable && len(networks) == 0 {
+	if firstEnable && b.AllowedNetworks == nil {
 		if subnet := h.suggestedNetwork(); subnet != "" {
 			networks = []string{subnet}
 		}
@@ -251,6 +296,7 @@ func (h *NTPHandler) UpdateNTPConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	networks = timesync.NormalizeAllowedNetworks(networks)
 
 	cfg := timesync.Config{Servers: servers, Timezone: strings.TrimSpace(b.Timezone), ServeLAN: b.ServeLAN, AllowedNetworks: networks}
 	if err := h.saveConfig(cfg); err != nil {

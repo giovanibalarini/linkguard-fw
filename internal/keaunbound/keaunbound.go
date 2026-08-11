@@ -468,6 +468,20 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 // netsvc.Provider's original, pre-NTP surface — not on the auto-apply path
 // (ReloadConfigs is), so it has no NTP-toggle context of its own; it always
 // renders without the ntp-servers option.
+//
+// Verified 2026-08-11 (NTP review Fix, "Minor" list): as of this writing
+// nothing in the codebase actually calls this method — NetsvcHandler.Apply
+// (the "Aplicar agora" button) goes through doReload -> ReloadConfigs,
+// which does thread ntpServerOption() through. Left inert rather than
+// wired up: doing so would mean either duplicating ntpServerOption's
+// db-read-and-decide logic into this package (which owns neither ntpCfgKey
+// nor internal/timesync.Config) or growing this method's signature to take
+// an ntpServer string that its one remaining purpose — satisfying the
+// netsvc.Provider interface — has no caller to supply. If a future caller
+// does appear, that caller (like NetsvcHandler already does for
+// ReloadConfigs) is the right place to decide the ntpServer value and pass
+// it through the existing GenerateConfigs(..., ntpServer) parameter, not
+// this method inventing its own.
 func (s *Service) Apply(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string) (string, error) {
 	if !s.exec.IsDryRun() {
 		for _, f := range s.GenerateConfigs(c, res, blocked, "") {

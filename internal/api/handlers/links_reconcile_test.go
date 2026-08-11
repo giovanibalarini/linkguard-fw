@@ -11,12 +11,17 @@ import (
 )
 
 // reconcileSpyExec records nft invocations so the test can prove a link
-// mutation actually re-applied the NAT rule.
-type reconcileSpyExec struct{ executed []string }
+// mutation actually re-applied the NAT rule. execErr, when set, is
+// returned by every Execute call — used by ntp_test.go to simulate an nft
+// failure and prove the reconcile outcome is surfaced rather than swallowed.
+type reconcileSpyExec struct {
+	executed []string
+	execErr  error
+}
 
 func (e *reconcileSpyExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
 	e.executed = append(e.executed, strings.Join(append([]string{cmd}, args...), " "))
-	return "", nil
+	return "", e.execErr
 }
 func (e *reconcileSpyExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
 	return "", nil
