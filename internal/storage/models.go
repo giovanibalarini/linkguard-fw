@@ -242,6 +242,37 @@ type PendingInterfaceChange struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// ─── FirewallRule (Phase B: the admin's rules live in the DB) ───────────────
+
+// FirewallRule is one of the admin's own rules for the `user_rules` chain,
+// persisted here instead of existing only inside nft (design spec §4.1).
+// nftables has no notion of a disabled rule and identifies rules only by a
+// handle that changes every time the chain is rebuilt, so "disable without
+// deleting", a stable identity and an explicit order all require the DB to
+// be the source of truth and nft to be the rendered result — the same
+// reconciliation model already used for NAT, NTP and the structural chains.
+//
+// Position is an explicit integer, not the row's insertion order: it is what
+// ReconcileUserRules sorts by before rendering, and what Reorder sets
+// directly from the admin's drag-and-drop (or the up/down fallback).
+// Enabled=false means the rule is skipped when rendering into nft — it still
+// exists here, fully intact, so re-enabling it needs no reconstruction.
+type FirewallRule struct {
+	ID          string    `json:"id"`
+	Position    int       `json:"position"`
+	Enabled     bool      `json:"enabled"`
+	Action      string    `json:"action"` // accept | drop | reject
+	Iif         string    `json:"iif"`
+	Oif         string    `json:"oif"`
+	Saddr       string    `json:"saddr"`
+	Daddr       string    `json:"daddr"`
+	Proto       string    `json:"proto"`
+	Dport       string    `json:"dport"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func nullableTime(t *time.Time) sql.NullTime {

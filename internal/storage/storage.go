@@ -75,6 +75,7 @@ func (db *DB) migrate() error {
 		createManagedInterfacesTable,
 		createPendingInterfaceChangesTable,
 		createAIReportsTable,
+		createFirewallRulesTable,
 		insertDefaultAdmin,
 	}
 
@@ -469,4 +470,30 @@ CREATE TABLE IF NOT EXISTS ai_reports (
     recommendation TEXT NOT NULL,
     confidence     TEXT NOT NULL,
     created_at     DATETIME NOT NULL
+);`
+
+// ─── Firewall rules schema (Phase B: appliance-style user_rules) ───────────
+//
+// A plain CREATE TABLE IF NOT EXISTS, deliberately nothing heavier: a prior
+// migration here once hung a production boot for 50+ minutes (see
+// migrateTrafficSamplesToMetricSamples' history) by doing per-row work on
+// the startup path. This table starts empty on every box — the one-time
+// import of pre-existing nft rules (internal/firewallrules) is a separate,
+// explicitly guarded step that runs after storage.Open returns, not part of
+// this migration.
+const createFirewallRulesTable = `
+CREATE TABLE IF NOT EXISTS firewall_rules (
+    id          TEXT PRIMARY KEY,
+    position    INTEGER NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    action      TEXT NOT NULL,
+    iif         TEXT NOT NULL DEFAULT '',
+    oif         TEXT NOT NULL DEFAULT '',
+    saddr       TEXT NOT NULL DEFAULT '',
+    daddr       TEXT NOT NULL DEFAULT '',
+    proto       TEXT NOT NULL DEFAULT '',
+    dport       TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`

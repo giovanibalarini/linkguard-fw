@@ -1423,3 +1423,159 @@ func (db *DB) GetAIReport(id string) (*AIReport, error) {
 	}
 	return &r, nil
 }
+
+// ─── Firewall rules repository (Phase B) ────────────────────────────────────
+
+// ListFirewallRules returns every stored rule (enabled or not), ordered by
+// position — the order ReconcileUserRules renders them into nft and the
+// order the panel displays them in.
+func (db *DB) ListFirewallRules() ([]FirewallRule, error) {
+	rows, err := db.conn.Query(`
+		SELECT id, position, enabled, action, iif, oif, saddr, daddr, proto, dport,
+		       description, created_at, updated_at
+		FROM firewall_rules ORDER BY position`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []FirewallRule{}
+	for rows.Next() {
+		r, err := scanFirewallRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CreateFirewallRule inserts a new rule, always appended after every
+// existing rule (position = current max + 1, or 0 for the first rule) and
+// always starting enabled — a freshly created rule is never born disabled.
+func (db *DB) CreateFirewallRule(r *FirewallRule) error {
+	if r.ID == "" {
+		r.ID = uuid.NewString()
+	}
+	now := time.Now()
+	r.CreatedAt = now
+	r.UpdatedAt = now
+	r.Enabled = true
+
+	var maxPos sql.NullInt64
+	if err := db.conn.QueryRow(`SELECT MAX(position) FROM firewall_rules`).Scan(&maxPos); err != nil {
+		return err
+	}
+	r.Position = 0
+	if maxPos.Valid {
+		r.Position = int(maxPos.Int64) + 1
+	}
+
+	_, err := db.conn.Exec(`
+		INSERT INTO firewall_rules (id, position, enabled, action, iif, oif, saddr, daddr, proto, dport,
+		                            description, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Position, boolToInt(r.Enabled), r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport,
+		r.Description, r.CreatedAt, r.UpdatedAt)
+	return err
+}
+
+// UpdateFirewallRule edits a rule's content in place, by ID. It deliberately
+// never touches Position or Enabled — reordering and enabling/disabling are
+// their own dedicated operations (ReorderFirewallRules,
+// SetFirewallRuleEnabled) so an ordinary content edit can never accidentally
+// move a rule or flip it back on.
+func (db *DB) UpdateFirewallRule(r *FirewallRule) error {
+	res, err := db.conn.Exec(`
+		UPDATE firewall_rules
+		SET action=?, iif=?, oif=?, saddr=?, daddr=?, proto=?, dport=?, description=?, updated_at=?
+		WHERE id=?`,
+		r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport, r.Description, time.Now(), r.ID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("regra %q não encontrada", r.ID)
+	}
+	return nil
+}
+
+// DeleteFirewallRule removes a rule permanently by ID.
+func (db *DB) DeleteFirewallRule(id string) error {
+	_, err := db.conn.Exec(`DELETE FROM firewall_rules WHERE id = ?`, id)
+	return err
+}
+
+// SetFirewallRuleEnabled flips a rule's enabled flag without touching
+// anything else about it — the "disable without deleting" capability the
+// whole DB-backed model exists for (design spec §4.1).
+func (db *DB) SetFirewallRuleEnabled(id string, enabled bool) error {
+	res, err := db.conn.Exec(`UPDATE firewall_rules SET enabled=?, updated_at=? WHERE id=?`,
+		boolToInt(enabled), time.Now(), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("regra %q não encontrada", id)
+	}
+	return nil
+}
+
+// ReorderFirewallRules sets each rule's position to its index in ids (0-based),
+// in a single transaction — either every id in the list is a real rule and the
+// whole reorder lands, or none of it does. It does not itself check that ids
+// covers exactly the current set of rules (a partial list would silently
+// leave the missing rules stranded at their old positions, which could
+// collide with the new ones); that full-set check belongs to the caller,
+// which has both the request and the current list to compare — see the API
+// handler for the "ids missing or extra" rejection required by the design
+// spec.
+func (db *DB) ReorderFirewallRules(ids []string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
+
+	stmt, err := tx.Prepare(`UPDATE firewall_rules SET position=?, updated_at=? WHERE id=?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now()
+	for i, id := range ids {
+		res, err := stmt.Exec(i, now, id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("regra %q não encontrada", id)
+		}
+	}
+	return tx.Commit()
+}
+
+func scanFirewallRule(s interface {
+	Scan(...interface{}) error
+}) (FirewallRule, error) {
+	var r FirewallRule
+	var enabled int
+	err := s.Scan(
+		&r.ID, &r.Position, &enabled, &r.Action, &r.Iif, &r.Oif, &r.Saddr, &r.Daddr, &r.Proto, &r.Dport,
+		&r.Description, &r.CreatedAt, &r.UpdatedAt)
+	r.Enabled = enabled != 0
+	return r, err
+}
