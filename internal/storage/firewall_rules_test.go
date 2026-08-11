@@ -117,6 +117,17 @@ func TestDeleteFirewallRule(t *testing.T) {
 	}
 }
 
+// TestDeleteFirewallRuleUnknownIDErrors is the I-7 regression test:
+// DeleteFirewallRule used to ignore RowsAffected, so deleting a
+// non-existent id silently "succeeded" — unlike UpdateFirewallRule and
+// SetFirewallRuleEnabled, both of which already report not-found.
+func TestDeleteFirewallRuleUnknownIDErrors(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.DeleteFirewallRule("does-not-exist"); err == nil {
+		t.Error("expected an error for an unknown rule id")
+	}
+}
+
 func TestSetFirewallRuleEnabledTogglesWithoutDeleting(t *testing.T) {
 	db := newTestDB(t)
 
@@ -204,6 +215,88 @@ func TestReorderFirewallRulesUnknownIDErrorsAndChangesNothing(t *testing.T) {
 	}
 	if all[0].ID != r1.ID || all[1].ID != r2.ID {
 		t.Fatalf("expected original order preserved after a failed reorder, got %s,%s", all[0].ID, all[1].ID)
+	}
+}
+
+// ─── ImportFirewallRules (I-5: one-time import must be atomic) ─────────────
+//
+// Before this fix, ImportOnce inserted rows one CreateFirewallRule call at a
+// time, then set the import guard as a separate write; a crash or DB error
+// anywhere in between left the guard unset, so the next boot's ImportOnce
+// ran the whole loop again and duplicated every already-imported rule.
+// ImportFirewallRules lands every row and the guard flag in a single
+// transaction — either all of it commits, or none of it does.
+
+func TestImportFirewallRulesInsertsRowsAndSetsFlagAtomically(t *testing.T) {
+	db := newTestDB(t)
+
+	rows := []storage.FirewallRule{
+		{Enabled: true, Action: "accept", Saddr: "10.0.0.1"},
+		{Enabled: false, Action: "drop", Daddr: "203.0.113.0/24", Description: "não pôde ser importada fielmente"},
+	}
+	if err := db.ImportFirewallRules(rows, "firewall_rules_imported", "true"); err != nil {
+		t.Fatalf("ImportFirewallRules: %v", err)
+	}
+
+	all, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %+v", len(all), all)
+	}
+	if all[0].Position != 0 || all[1].Position != 1 {
+		t.Errorf("expected positions assigned by slice order, got %d, %d", all[0].Position, all[1].Position)
+	}
+	if !all[0].Enabled {
+		t.Errorf("expected row 0 enabled as given, got %+v", all[0])
+	}
+	if all[1].Enabled {
+		t.Errorf("expected row 1 disabled as given, got %+v", all[1])
+	}
+	if all[1].Description != "não pôde ser importada fielmente" {
+		t.Errorf("expected the description preserved, got %q", all[1].Description)
+	}
+	for _, r := range all {
+		if r.ID == "" {
+			t.Error("expected an ID assigned to every row")
+		}
+	}
+
+	flag, err := db.GetSetting("firewall_rules_imported")
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if flag != "true" {
+		t.Fatalf("expected the import guard set in the same transaction, got %q", flag)
+	}
+}
+
+func TestImportFirewallRulesRollsBackEverythingOnFailure(t *testing.T) {
+	db := newTestDB(t)
+
+	dupID := "duplicate-id"
+	rows := []storage.FirewallRule{
+		{ID: dupID, Enabled: true, Action: "accept"},
+		{ID: dupID, Enabled: true, Action: "drop"}, // same ID -> UNIQUE constraint failure
+	}
+	if err := db.ImportFirewallRules(rows, "firewall_rules_imported", "true"); err == nil {
+		t.Fatal("expected an error from the duplicate-ID insert")
+	}
+
+	all, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("expected the whole import rolled back (0 rows), got %d: %+v", len(all), all)
+	}
+	flag, err := db.GetSetting("firewall_rules_imported")
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if flag != "" {
+		t.Fatalf("expected the import guard NOT set when the insert failed partway, got %q", flag)
 	}
 }
 

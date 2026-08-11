@@ -1480,6 +1480,59 @@ func (db *DB) CreateFirewallRule(r *FirewallRule) error {
 	return err
 }
 
+// ImportFirewallRules bulk-inserts rows (the Phase B one-time import,
+// internal/firewallrules.Service.ImportOnce) and marks settingKey=settingValue
+// (the import guard), all inside a single transaction — either every row
+// lands and the guard flips, or neither does (I-5). Before this, the import
+// loop inserted rows one CreateFirewallRule call at a time and then set the
+// guard as an entirely separate write; a crash or DB error anywhere in
+// between left the guard unset, so the next boot's ImportOnce ran the whole
+// loop again and duplicated every already-imported rule.
+//
+// Position is assigned here as each row's index in rows (not by the
+// caller) — the same sequential-from-zero scheme CreateFirewallRule uses
+// for an ordinary create, kept consistent here so a bulk import can never
+// collide with it. Enabled is taken exactly as given (unlike
+// CreateFirewallRule, which always forces it true): C-2's round-trip check
+// needs to import a rule it could not faithfully reproduce as disabled,
+// not enabled-then-immediately-wrong.
+func (db *DB) ImportFirewallRules(rows []FirewallRule, settingKey, settingValue string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO firewall_rules (id, position, enabled, action, iif, oif, saddr, daddr, proto, dport,
+		                            description, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now()
+	for i, r := range rows {
+		if r.ID == "" {
+			r.ID = uuid.NewString()
+		}
+		if _, err := stmt.Exec(r.ID, i, boolToInt(r.Enabled), r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport,
+			r.Description, now, now); err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		settingKey, settingValue, now); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 // UpdateFirewallRule edits a rule's content in place, by ID. It deliberately
 // never touches Position or Enabled — reordering and enabling/disabling are
 // their own dedicated operations (ReorderFirewallRules,
@@ -1505,9 +1558,24 @@ func (db *DB) UpdateFirewallRule(r *FirewallRule) error {
 }
 
 // DeleteFirewallRule removes a rule permanently by ID.
+// DeleteFirewallRule removes a rule, reporting "não encontrada" when the id
+// matches nothing — same contract as UpdateFirewallRule/SetFirewallRuleEnabled.
+// Returning success for a no-op delete (the previous behaviour) hid a stale
+// client from the admin and still triggered a full chain reconcile for
+// nothing.
 func (db *DB) DeleteFirewallRule(id string) error {
-	_, err := db.conn.Exec(`DELETE FROM firewall_rules WHERE id = ?`, id)
-	return err
+	res, err := db.conn.Exec(`DELETE FROM firewall_rules WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("regra %q não encontrada", id)
+	}
+	return nil
 }
 
 // SetFirewallRuleEnabled flips a rule's enabled flag without touching
