@@ -176,3 +176,37 @@ func TestMergeUserRulesMatchedLiveEntryIsApplied(t *testing.T) {
 		t.Errorf("expected the matched live rule's handle/counter carried through, got %+v", got)
 	}
 }
+
+// A chain live exatamente como o nft a imprime (interface aspeada, /32
+// suprimido) tem que casar rule a rule com as linhas do banco que a
+// geraram. Antes da normalização de ExpressionMatches, a primeira regra já
+// dava mismatch, li não avançava, todas as seguintes davam mismatch também
+// e a chain viva inteira era anexada no fim — o painel mostrava a lista
+// duplicada, com todas as regras marcadas como "não aplicada".
+func TestMergeUserRulesPairsRealNftOutput(t *testing.T) {
+	db := []StoredRule{
+		{ID: "a", Position: 0, Enabled: true, Fields: RuleFields{Action: "accept", Iif: "enp5s0", Saddr: "10.0.0.1/32", Proto: "tcp", Dport: "22"}},
+		{ID: "b", Position: 1, Enabled: true, Fields: RuleFields{Action: "drop", Oif: "enp6s0", Daddr: "192.168.10.0/24"}},
+	}
+	live := ChainInfo{
+		Name: UserChain,
+		Rules: []ChainRule{
+			{Chain: UserChain, Handle: 21, Expression: `iifname "enp5s0" ip saddr 10.0.0.1 tcp dport 22 accept`, HasCounter: true, Packets: 7, Bytes: 700},
+			{Chain: UserChain, Handle: 22, Expression: `oifname "enp6s0" ip daddr 192.168.10.0/24 drop`, HasCounter: true},
+		},
+	}
+
+	merged := MergeUserRules(db, live)
+
+	if len(merged.Rules) != 2 {
+		t.Fatalf("esperava 2 regras (sem duplicar a chain viva), obtive %d: %+v", len(merged.Rules), merged.Rules)
+	}
+	for i, want := range []int{21, 22} {
+		if !merged.Rules[i].Applied {
+			t.Errorf("regra %d devia estar marcada como aplicada: %+v", i, merged.Rules[i])
+		}
+		if merged.Rules[i].Handle != want {
+			t.Errorf("regra %d devia carregar o handle real %d, obtive %d", i, want, merged.Rules[i].Handle)
+		}
+	}
+}

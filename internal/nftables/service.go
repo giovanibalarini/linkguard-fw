@@ -563,12 +563,84 @@ func expressionTokens(f RuleFields) (string, error) {
 //
 // A mismatch in either case must fall back to an honest "could not verify"
 // state rather than silently treating the parsed fields as equivalent.
+//
+// Both sides go through normalizeExpression first: nft does not echo back
+// the rule it was given, it re-prints its own parsed form of it, and that
+// form differs from what buildRuleTokens emits in ways that say nothing
+// about whether the two rules mean the same thing (quoted interface
+// operands, addresses re-printed in canonical form). Comparing raw text
+// made every rule carrying an interface or a /32 mismatch forever — the
+// rule got imported disabled and then reconciled away, and MergeUserRules
+// marked it Applied=false and (never advancing past the unmatched live
+// entry) dragged every rule after it into the same fate, duplicating the
+// whole live chain at the end of the panel's list.
 func ExpressionMatches(f RuleFields, live string) bool {
 	expected, err := expressionTokens(f)
 	if err != nil {
 		return false
 	}
-	return expected == strings.Join(strings.Fields(live), " ")
+	return normalizeExpression(expected) == normalizeExpression(live)
+}
+
+// normalizeExpression rewrites an nft rule expression — ours or the
+// kernel's — into the one shape both can be compared in. It is deliberately
+// narrow: it only touches the operands whose printed form nft is known,
+// empirically, to differ on, and leaves every other token byte for byte so
+// a genuinely different rule still reads as different.
+//
+//   - iifname/oifname (and the iif/oif variants parseRuleFields accepts):
+//     nft quotes the operand (`iifname "enp5s0"`), buildRuleTokens does
+//     not. The quotes are stripped here rather than emitted by
+//     buildRuleTokens — unlike dnatRule, which builds a single rule string
+//     and quotes for the same reason — because buildRuleTokens' output is
+//     also the text the panel shows for a rule nft has never seen
+//     (syntheticUserRule), and because quoting alone would not fix the
+//     address case below: a normalizer on both sides is needed regardless,
+//     so there is exactly one of them instead of two half-measures.
+//   - ip saddr/ip daddr: nft re-prints addresses canonically — a host
+//     mask is dropped (`10.0.0.1/32` → `10.0.0.1`) and any other prefix is
+//     reduced to its network address (`10.0.0.5/24` → `10.0.0.0/24`).
+//     canonicalAddr does the same to both sides.
+func normalizeExpression(expr string) string {
+	toks := strings.Fields(expr)
+	for i := 0; i < len(toks); i++ {
+		switch toks[i] {
+		case "iifname", "oifname", "iif", "oif":
+			if i+1 < len(toks) {
+				toks[i+1] = strings.Trim(toks[i+1], `"`)
+				i++
+			}
+		case "ip":
+			if i+2 < len(toks) && (toks[i+1] == "saddr" || toks[i+1] == "daddr") {
+				toks[i+2] = canonicalAddr(toks[i+2])
+				i += 2
+			}
+		}
+	}
+	return strings.Join(toks, " ")
+}
+
+// canonicalAddr renders an address operand the way nft prints it back:
+// a full-mask CIDR as the bare address, any other CIDR as its network
+// address plus prefix. Anything that is not an address literal (a set
+// reference like `@blocklist`, an anonymous set, a range) is returned
+// untouched — normalizing what we don't understand would be inventing
+// equality.
+func canonicalAddr(s string) string {
+	if strings.Contains(s, "/") {
+		ip, ipnet, err := net.ParseCIDR(s)
+		if err != nil {
+			return s
+		}
+		if ones, bits := ipnet.Mask.Size(); ones == bits {
+			return ip.String()
+		}
+		return ipnet.String()
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		return ip.String()
+	}
+	return s
 }
 
 // parseRuleFields best-effort parses our generated rule text back into fields

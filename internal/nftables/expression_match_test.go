@@ -45,3 +45,71 @@ func TestExpressionMatchesInvalidFieldsNeverMatch(t *testing.T) {
 		t.Error("expected invalid fields (which don't even build) to never match")
 	}
 }
+
+// ─── Normalização da forma de saída real do nft ─────────────────────────────
+//
+// Os fixtures acima são sintéticos: foram escritos a partir do que
+// buildRuleTokens emite, e por isso nunca exercitaram a diferença entre o
+// que se manda para o nft e o que o nft devolve. Os testes abaixo usam a
+// saída **real** do nft (Debian 13), colhida num table inerte de sondagem:
+//
+//	# comando dado:
+//	nft add rule inet lgprobe c iifname enp5s0 ip saddr 10.0.0.1/32 tcp dport 22 counter accept
+//	# `nft list table inet lgprobe` devolveu:
+//	iifname "enp5s0" ip saddr 10.0.0.1 tcp dport 22 counter packets 0 bytes 0 accept
+//
+// Duas divergências reais: o nft aspeia o operando de iifname/oifname, e
+// remove a máscara cheia de um CIDR de host (/32), canonicalizando os
+// demais para o endereço de rede.
+
+func TestExpressionMatchesRealNftOutput(t *testing.T) {
+	// Exatamente a linha devolvida pelo nft, com a cláusula de counter
+	// runtime já removida por ListUserRules/ListRuleset.
+	f := RuleFields{Action: "accept", Iif: "enp5s0", Saddr: "10.0.0.1/32", Proto: "tcp", Dport: "22"}
+	live := `iifname "enp5s0" ip saddr 10.0.0.1 tcp dport 22 accept`
+	if !ExpressionMatches(f, live) {
+		t.Errorf("a saída real do nft tem que casar com os campos que a geraram, fields=%+v live=%q", f, live)
+	}
+}
+
+func TestExpressionMatchesQuotedInterfaceOperand(t *testing.T) {
+	f := RuleFields{Action: "drop", Iif: "eth0", Oif: "eth1"}
+	live := `iifname "eth0" oifname "eth1" drop`
+	if !ExpressionMatches(f, live) {
+		t.Errorf("aspas do nft em iifname/oifname não podem causar mismatch, fields=%+v live=%q", f, live)
+	}
+}
+
+func TestExpressionMatchesHostMaskDropped(t *testing.T) {
+	// /32 na origem e no destino: o nft imprime o IP puro nos dois casos.
+	f := RuleFields{Action: "accept", Saddr: "10.0.0.1/32", Daddr: "192.168.1.10/32"}
+	live := "ip saddr 10.0.0.1 ip daddr 192.168.1.10 accept"
+	if !ExpressionMatches(f, live) {
+		t.Errorf("máscara cheia (/32) omitida pelo nft não pode causar mismatch, fields=%+v live=%q", f, live)
+	}
+}
+
+func TestExpressionMatchesCIDRCanonicalizedToNetworkAddress(t *testing.T) {
+	// O admin digita um host dentro da rede; o nft guarda (e imprime) o
+	// endereço de rede.
+	f := RuleFields{Action: "drop", Saddr: "10.0.0.5/24"}
+	live := "ip saddr 10.0.0.0/24 drop"
+	if !ExpressionMatches(f, live) {
+		t.Errorf("CIDR canonicalizado pelo nft não pode causar mismatch, fields=%+v live=%q", f, live)
+	}
+}
+
+func TestExpressionMatchesStillDetectsADifferentAddress(t *testing.T) {
+	// A normalização não pode virar uma peneira: endereços de fato
+	// diferentes continuam sendo mismatch.
+	f := RuleFields{Action: "accept", Saddr: "10.0.0.1"}
+	if ExpressionMatches(f, "ip saddr 10.0.0.2 accept") {
+		t.Error("endereços diferentes têm que continuar dando mismatch")
+	}
+	if ExpressionMatches(RuleFields{Action: "accept", Saddr: "10.0.0.0/24"}, "ip saddr 10.0.0.0/25 accept") {
+		t.Error("prefixos diferentes têm que continuar dando mismatch")
+	}
+	if ExpressionMatches(RuleFields{Action: "drop", Iif: "eth0"}, `iifname "eth1" drop`) {
+		t.Error("interfaces diferentes têm que continuar dando mismatch")
+	}
+}
