@@ -155,3 +155,137 @@ func TestReconcileMasqueradeNoopInDryRun(t *testing.T) {
 		t.Errorf("expected no commands in dry-run, ran: %v", exec.executed)
 	}
 }
+
+// ─── ReconcileNTPInput ────────────────────────────────────────────────────
+
+// TestReconcileNTPInputPolicyIsAcceptNeverDrop is the single most important
+// test in this suite (see the spec, §2): the input chain this feature
+// creates must declare `policy accept`. A `policy drop` chain would cut
+// SSH and the web panel the instant it applied to a production firewall.
+func TestReconcileNTPInputPolicyIsAcceptNeverDrop(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	joined := strings.Join(exec.executed, "\n")
+	if !strings.Contains(joined, "policy accept") {
+		t.Fatalf("expected the input chain definition to declare policy accept; ran: %v", exec.executed)
+	}
+	if strings.Contains(joined, "policy drop") {
+		t.Fatalf("input chain must NEVER declare policy drop (would lock SSH/panel out); ran: %v", exec.executed)
+	}
+}
+
+// TestReconcileNTPInputCreatesChainIdempotently: a box provisioned before
+// this feature has no input chain at all; creating it must never fail just
+// because a later reconcile finds it already there.
+func TestReconcileNTPInputCreatesChainIdempotently(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+		t.Fatalf("second (chain already exists): %v", err)
+	}
+}
+
+// TestReconcileNTPInputServingDropsUDP123OnWANs: exactly one rule, dropping
+// NTP arriving on the WAN interfaces — never on the LAN (no rule at all for
+// the LAN; the chain's own policy-accept covers it).
+func TestReconcileNTPInputServingDropsUDP123OnWANs(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0", "enp5s0"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	wantRule := `nft add rule inet linkguard input iifname { "enp2s0", "enp5s0" } udp dport 123 drop`
+	if !ranCommand(exec.executed, wantRule) {
+		t.Errorf("missing %q; ran: %v", wantRule, exec.executed)
+	}
+}
+
+// TestReconcileNTPInputNotServingLeavesChainEmpty: toggle off => chain is
+// flushed and left with no drop rule (not deleted — always explicit state).
+func TestReconcileNTPInputNotServingLeavesChainEmpty(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, false); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	wantFlush := "nft flush chain inet linkguard input"
+	if !ranCommand(exec.executed, wantFlush) {
+		t.Errorf("expected the chain to be flushed; ran: %v", exec.executed)
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "drop") {
+			t.Errorf("expected no drop rule when serving=false; ran: %v", exec.executed)
+		}
+	}
+}
+
+// TestReconcileNTPInputNeverFlushesTheWholeTable mirrors the masquerade
+// safety test: only this chain may ever be flushed.
+func TestReconcileNTPInputNeverFlushesTheWholeTable(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "flush table") || strings.Contains(c, "flush ruleset") {
+			t.Errorf("must never flush the table/ruleset, ran: %q", c)
+		}
+	}
+}
+
+// TestReconcileNTPInputSanitizesInterfaces: an invalid interface name must
+// never be interpolated into a command handed to nft.
+func TestReconcileNTPInputSanitizesInterfaces(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0", "evil; rm -rf /"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "evil") || strings.Contains(c, "rm -rf") {
+			t.Errorf("invalid interface reached the nft command: %q", c)
+		}
+	}
+}
+
+func TestReconcileNTPInputNoopInDryRun(t *testing.T) {
+	exec := &fakeReconcileExec{dryRun: true}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput in dry-run: %v", err)
+	}
+	if len(exec.executed) != 0 {
+		t.Errorf("expected no commands in dry-run, ran: %v", exec.executed)
+	}
+}
+
+func TestReconcileNTPInputIsIdempotent(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	first := append([]string(nil), exec.executed...)
+	exec.executed = nil
+	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if len(first) != len(exec.executed) {
+		t.Errorf("second run issued a different command set:\nfirst=%v\nsecond=%v", first, exec.executed)
+	}
+}

@@ -91,6 +91,15 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	b.WriteString("\t\tip daddr @blocklist drop\n")
 	b.WriteString("\t\tip saddr @blocklist drop\n")
 	b.WriteString("\t}\n\n")
+	// The first `hook input` chain in the project (2026-08-11, "serve NTP to
+	// the LAN"). Empty and policy accept on a fresh install, exactly like an
+	// upgraded box's chain after ReconcileNTPInput with serving=false — a
+	// fresh box and an upgraded box must never diverge. NEVER policy drop:
+	// see ReconcileNTPInput's doc comment (internal/nftables/reconcile.go)
+	// for why.
+	b.WriteString("\tchain input {\n")
+	b.WriteString("\t\ttype filter hook input priority filter; policy accept;\n")
+	b.WriteString("\t}\n\n")
 	b.WriteString("\tchain postrouting {\n")
 	b.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
 	if ifaces := sanitizeInterfaces(wanInterfaces); len(ifaces) > 0 {

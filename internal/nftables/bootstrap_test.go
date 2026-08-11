@@ -175,12 +175,37 @@ func TestBuildBootstrapRulesetContainsCoreStructure(t *testing.T) {
 		"jump user_rules",
 		"ip saddr @blocked_hosts",
 		"ip daddr @blocklist",
+		"chain input {",
+		"type filter hook input priority filter",
 		"chain postrouting {",
 		"type nat hook postrouting priority srcnat",
 	} {
 		if !strings.Contains(rs, want) {
 			t.Errorf("bootstrap ruleset missing %q:\n%s", want, rs)
 		}
+	}
+}
+
+// TestBuildBootstrapRulesetInputChainPolicyIsAccept: a fresh install must
+// never come up with a `policy drop` input chain — same non-negotiable as
+// ReconcileNTPInput (see its doc comment / spec §2). A fresh box and an
+// upgraded box must converge on the exact same chain.
+func TestBuildBootstrapRulesetInputChainPolicyIsAccept(t *testing.T) {
+	rs := buildBootstrapRuleset([]string{"enp5s0"})
+	i := strings.Index(rs, "chain input {")
+	if i < 0 {
+		t.Fatal("bootstrap ruleset missing chain input")
+	}
+	end := strings.Index(rs[i:], "}")
+	if end < 0 {
+		t.Fatal("could not find end of chain input block")
+	}
+	block := rs[i : i+end]
+	if !strings.Contains(block, "policy accept") {
+		t.Errorf("input chain must declare policy accept:\n%s", block)
+	}
+	if strings.Contains(block, "policy drop") {
+		t.Errorf("input chain must NEVER declare policy drop:\n%s", block)
 	}
 }
 
