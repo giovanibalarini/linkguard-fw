@@ -362,6 +362,17 @@ var (
 )
 
 // ListUserRules returns the custom rules in order, with handles and fields.
+// Read-only by design: the admin's rules are now DB-authoritative (design
+// spec §4.1) and rendered into nft by ReconcileUserRules, not edited
+// directly by handle — the handle-based AddUserRule/UpdateUserRule/
+// DeleteUserRule/MoveUserRule this function used to support were removed
+// once every caller moved to the DB (internal/firewallrules,
+// internal/api/handlers/nftables.go); keeping a handle-based mutation path
+// alongside a DB-authoritative reconcile would only invite a future caller
+// that writes straight to nft and drifts from the DB the same way the
+// pre-Phase-B code did. ListUserRules itself stays: the one-time import
+// (firewallrules.Service.ImportOnce) still needs to read the pre-existing
+// live chain.
 func (s *Service) ListUserRules(ctx context.Context) ([]UserRule, error) {
 	out, err := s.exec.ExecuteRead(ctx, "nft", "-a", "list", "chain", Family, Table, UserChain)
 	if err != nil {
@@ -386,117 +397,6 @@ func (s *Service) ListUserRules(ctx context.Context) ([]UserRule, error) {
 		rules = append(rules, UserRule{Handle: handle, Raw: clean, RuleFields: parseRuleFields(clean)})
 	}
 	return rules, nil
-}
-
-// AddUserRule appends (or inserts before beforeHandle) a custom rule.
-func (s *Service) AddUserRule(ctx context.Context, f RuleFields, beforeHandle int) (string, error) {
-	tokens, err := buildRuleTokens(f)
-	if err != nil {
-		return "", err
-	}
-	out, err := s.addRule(ctx, tokens, beforeHandle)
-	if err != nil {
-		return out, err
-	}
-	return out, s.Persist(ctx)
-}
-
-// UpdateUserRule replaces a rule (by handle) with new fields, keeping its position.
-func (s *Service) UpdateUserRule(ctx context.Context, handle int, f RuleFields) (string, error) {
-	rules, err := s.ListUserRules(ctx)
-	if err != nil {
-		return "", err
-	}
-	before := 0 // the rule that follows the one being edited (to keep position)
-	for i, r := range rules {
-		if r.Handle == handle && i+1 < len(rules) {
-			before = rules[i+1].Handle
-		}
-	}
-	tokens, err := buildRuleTokens(f)
-	if err != nil {
-		return "", err
-	}
-	if _, err := s.delRule(ctx, handle); err != nil {
-		return "", err
-	}
-	if _, err := s.addRule(ctx, tokens, before); err != nil {
-		return "", err
-	}
-	return "", s.Persist(ctx)
-}
-
-// DeleteUserRule removes a custom rule by handle.
-func (s *Service) DeleteUserRule(ctx context.Context, handle int) (string, error) {
-	if _, err := s.delRule(ctx, handle); err != nil {
-		return "", err
-	}
-	return "", s.Persist(ctx)
-}
-
-// MoveUserRule reorders a rule up or down by one position.
-func (s *Service) MoveUserRule(ctx context.Context, handle int, dir string) error {
-	rules, err := s.ListUserRules(ctx)
-	if err != nil {
-		return err
-	}
-	idx := -1
-	for i, r := range rules {
-		if r.Handle == handle {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return fmt.Errorf("rule not found")
-	}
-
-	switch dir {
-	case "up":
-		if idx == 0 {
-			return nil
-		}
-		pred := rules[idx-1]
-		moved := rules[idx]
-		tokens, _ := buildRuleTokens(moved.RuleFields)
-		if _, err := s.delRule(ctx, moved.Handle); err != nil {
-			return err
-		}
-		if _, err := s.addRule(ctx, tokens, pred.Handle); err != nil {
-			return err
-		}
-	case "down":
-		if idx >= len(rules)-1 {
-			return nil
-		}
-		// Move the successor up above this rule (reuses insert-before).
-		succ := rules[idx+1]
-		tokens, _ := buildRuleTokens(succ.RuleFields)
-		if _, err := s.delRule(ctx, succ.Handle); err != nil {
-			return err
-		}
-		if _, err := s.addRule(ctx, tokens, handle); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("invalid direction")
-	}
-	return s.Persist(ctx)
-}
-
-func (s *Service) addRule(ctx context.Context, tokens []string, beforeHandle int) (string, error) {
-	args := []string{}
-	if beforeHandle > 0 {
-		args = append(args, "insert", "rule", Family, Table, UserChain, "position", strconv.Itoa(beforeHandle))
-	} else {
-		args = append(args, "add", "rule", Family, Table, UserChain)
-	}
-	args = append(args, tokens...)
-	return s.exec.Execute(ctx, "nft", args...)
-}
-
-func (s *Service) delRule(ctx context.Context, handle int) (string, error) {
-	return s.exec.Execute(ctx, "nft", "delete", "rule", Family, Table, UserChain, "handle", strconv.Itoa(handle))
 }
 
 // buildRuleTokens turns structured fields into nft rule tokens (validated).
