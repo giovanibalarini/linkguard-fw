@@ -286,6 +286,128 @@ func TestEnsureResolvConfDoesNotDuplicateSupersede(t *testing.T) {
 	}
 }
 
+// countActiveSupersedeLines counts lines that actually take effect as a
+// `supersede domain-name-servers` dhclient directive: leading whitespace is
+// stripped, comment lines (starting with `#`) never count.
+func countActiveSupersedeLines(content string) int {
+	n := 0
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) >= 2 && fields[0] == "supersede" && fields[1] == "domain-name-servers" {
+			n++
+		}
+	}
+	return n
+}
+
+// TestEnsureResolvConfIgnoresCommentedOutSupersede is the false-positive case
+// from the review: a commented-out directive (e.g. left over from a manual
+// experiment) must NOT satisfy the idempotency check. A raw substring check
+// matches it and returns early believing DNS is pinned, silently reproducing
+// the exact production bug this feature exists to fix.
+func TestEnsureResolvConfIgnoresCommentedOutSupersede(t *testing.T) {
+	dir := t.TempDir()
+	dhclient := filepath.Join(dir, "dhclient.conf")
+	seed := "send host-name = gethostname();\n# supersede domain-name-servers 127.0.0.1;\n"
+	if err := os.WriteFile(dhclient, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed dhclient.conf: %v", err)
+	}
+	s := NewService(&recExec{})
+	s.resolvConf = filepath.Join(dir, "resolv.conf")
+	s.dhclientConf = dhclient
+
+	s.EnsureResolvConf()
+
+	got, err := os.ReadFile(dhclient)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if n := countActiveSupersedeLines(string(got)); n != 1 {
+		t.Errorf("active supersede lines = %d, want 1 (commented line must not count):\n%s", n, got)
+	}
+	if !strings.Contains(string(got), "# supersede domain-name-servers 127.0.0.1;") {
+		t.Errorf("the original comment line must survive untouched:\n%s", got)
+	}
+	if !strings.Contains(string(got), "send host-name = gethostname();") {
+		t.Errorf("pre-existing dhclient config was destroyed:\n%s", got)
+	}
+}
+
+// TestEnsureResolvConfReplacesConflictingValue is the false-negative case
+// from the review: an active directive for the same option but a different
+// value (e.g. left by the ISP's dhclient defaults, or a stale manual edit)
+// must be replaced in place, not left alongside a second, conflicting
+// `supersede domain-name-servers` statement — dhclient treats two modifier
+// statements for one option as at best last-wins, at worst a parse failure
+// that breaks DHCP on that WAN at lease renewal.
+func TestEnsureResolvConfReplacesConflictingValue(t *testing.T) {
+	dir := t.TempDir()
+	dhclient := filepath.Join(dir, "dhclient.conf")
+	seed := "send host-name = gethostname();\nsupersede domain-name-servers 8.8.8.8;\n"
+	if err := os.WriteFile(dhclient, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed dhclient.conf: %v", err)
+	}
+	s := NewService(&recExec{})
+	s.resolvConf = filepath.Join(dir, "resolv.conf")
+	s.dhclientConf = dhclient
+
+	s.EnsureResolvConf()
+
+	got, err := os.ReadFile(dhclient)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if n := countActiveSupersedeLines(string(got)); n != 1 {
+		t.Errorf("active supersede lines = %d, want exactly 1 (no duplicate/conflicting statement):\n%s", n, got)
+	}
+	if !strings.Contains(string(got), "supersede domain-name-servers 127.0.0.1;") {
+		t.Errorf("dhclient.conf missing the correct supersede directive:\n%s", got)
+	}
+	if strings.Contains(string(got), "8.8.8.8") {
+		t.Errorf("conflicting ISP value survived:\n%s", got)
+	}
+	if !strings.Contains(string(got), "send host-name = gethostname();") {
+		t.Errorf("pre-existing dhclient config was destroyed:\n%s", got)
+	}
+}
+
+// TestEnsureResolvConfReplacesIrregularSpacing covers the same false-negative
+// failure mode as above but triggered by whitespace instead of value: extra
+// spaces between tokens still make the line an active
+// `supersede domain-name-servers` statement, which a raw literal-string
+// check misses.
+func TestEnsureResolvConfReplacesIrregularSpacing(t *testing.T) {
+	dir := t.TempDir()
+	dhclient := filepath.Join(dir, "dhclient.conf")
+	seed := "send host-name = gethostname();\nsupersede  domain-name-servers   127.0.0.1;\n"
+	if err := os.WriteFile(dhclient, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed dhclient.conf: %v", err)
+	}
+	s := NewService(&recExec{})
+	s.resolvConf = filepath.Join(dir, "resolv.conf")
+	s.dhclientConf = dhclient
+
+	s.EnsureResolvConf()
+
+	got, err := os.ReadFile(dhclient)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if n := countActiveSupersedeLines(string(got)); n != 1 {
+		t.Errorf("active supersede lines = %d, want exactly 1 (no duplicate statement):\n%s", n, got)
+	}
+	if !strings.Contains(string(got), "supersede domain-name-servers 127.0.0.1;") {
+		t.Errorf("dhclient.conf missing the correctly formatted supersede directive:\n%s", got)
+	}
+	if !strings.Contains(string(got), "send host-name = gethostname();") {
+		t.Errorf("pre-existing dhclient config was destroyed:\n%s", got)
+	}
+}
+
 func TestParseKeaLeases(t *testing.T) {
 	sample := `address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context,pool_id
 192.168.3.50,aa:bb:cc:dd:ee:ff,,43200,1782500000,1,0,0,pc-joao,0,,0

@@ -91,8 +91,9 @@ func (s *Service) EnsureKeaDirReadable() {
 // fighting it).
 //
 // Self-heals on every start, like the other Ensure* calls. Best-effort: a
-// failure is logged and surfaced by the dns-resolver health check rather
-// than blocking startup.
+// failure is logged as a warning rather than blocking startup. A dedicated
+// dns-resolver health check to surface this failure in the UI is planned
+// but not implemented yet.
 func (s *Service) EnsureResolvConf() {
 	const body = "# managed by linkguard\nnameserver 127.0.0.1\n"
 	if err := os.WriteFile(s.resolvConf, []byte(body), 0o644); err != nil {
@@ -107,17 +108,76 @@ func (s *Service) EnsureResolvConf() {
 		slog.Warn("não foi possível ler a config do dhclient; o DNS do provedor pode voltar na renovação do lease", "path", s.dhclientConf, "err", err)
 		return
 	}
-	if strings.Contains(string(current), directive) {
-		return // already in place — this runs on every boot
+	updated := ensureSupersedeDirective(string(current), directive)
+	if updated == string(current) {
+		return // already in place, exactly as we want it — this runs on every boot
 	}
-	updated := string(current)
+	if err := os.WriteFile(s.dhclientConf, []byte(updated), 0o644); err != nil {
+		slog.Warn("não foi possível fixar o DNS local na config do dhclient", "path", s.dhclientConf, "err", err)
+	}
+}
+
+// ensureSupersedeDirective returns dhclient.conf content updated so exactly
+// one *active* `supersede domain-name-servers` statement is present, with
+// the given directive's value. LinkGuard owns this option outright — the
+// whole point of the feature is that the box always resolves through its
+// own unbound — so any other active statement for it is wrong and gets
+// replaced in place, not left alongside a second, conflicting one (dhclient
+// treats two modifier statements for one option as at best last-wins, at
+// worst a parse failure that breaks DHCP on that WAN at lease renewal).
+//
+// Matching is line-based, not a full dhclient.conf grammar parse: a line is
+// "active" if, after stripping leading whitespace, it does not start with
+// `#` and its whitespace-separated fields start with "supersede",
+// "domain-name-servers". This is deliberately field-based rather than a
+// literal substring match, so it isn't fooled by a commented-out leftover
+// (which must never count as "already in place") and isn't blind to a
+// pre-existing directive that merely differs in spacing or value (which
+// must be replaced, not duplicated). Everything else in the file is left
+// untouched, in order.
+func ensureSupersedeDirective(content, directive string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines)+1)
+	found := false
+	for _, line := range lines {
+		if isActiveSupersedeDomainNameServers(line) {
+			if found {
+				continue // drop a redundant duplicate active statement
+			}
+			found = true
+			if strings.TrimSpace(line) == directive {
+				out = append(out, line) // already exactly right, leave untouched
+			} else {
+				out = append(out, directive) // wrong value/spacing: replace in place
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	if found {
+		return strings.Join(out, "\n")
+	}
+
+	// No active directive found (file absent, or only commented-out
+	// occurrences) — append ours.
+	updated := strings.Join(out, "\n")
 	if updated != "" && !strings.HasSuffix(updated, "\n") {
 		updated += "\n"
 	}
 	updated += "\n# managed by linkguard — mantém o resolver local mesmo após renovação de lease\n" + directive + "\n"
-	if err := os.WriteFile(s.dhclientConf, []byte(updated), 0o644); err != nil {
-		slog.Warn("não foi possível fixar o DNS local na config do dhclient", "path", s.dhclientConf, "err", err)
+	return updated
+}
+
+// isActiveSupersedeDomainNameServers reports whether line is a live (not
+// commented-out) dhclient.conf `supersede domain-name-servers ...`
+// statement, regardless of its value or exact spacing.
+func isActiveSupersedeDomainNameServers(line string) bool {
+	trimmed := strings.TrimLeft(line, " \t")
+	if strings.HasPrefix(trimmed, "#") {
+		return false
 	}
+	fields := strings.Fields(trimmed)
+	return len(fields) >= 2 && fields[0] == "supersede" && fields[1] == "domain-name-servers"
 }
 
 // GenerateConfigs renders the Kea (DHCP) and unbound (DNS) config files.
