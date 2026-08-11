@@ -34,6 +34,15 @@ const (
 	TypeJournalCorrupt    = "journal_corrupt"
 	TypeJournalOK         = "journal_ok"
 
+	TypeFirewallNATDrift       = "firewall_nat_drift"
+	TypeFirewallNATOK          = "firewall_nat_ok"
+	TypeWANInterfaceMissing    = "wan_interface_missing"
+	TypeWANInterfaceOK         = "wan_interface_ok"
+	TypeDNSResolverDrift       = "dns_resolver_drift"
+	TypeDNSResolverOK          = "dns_resolver_ok"
+	TypeSecurityUpdatesPending = "security_updates_pending"
+	TypeSecurityUpdatesNone    = "security_updates_none"
+
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
 	SeverityCritical = "critical"
@@ -323,4 +332,67 @@ func (s *Service) JournalOK() error {
 	s.AutoResolve(TypeJournalCorrupt, "")
 	return s.createRecovery(TypeJournalOK, "Logs do sistema normalizados",
 		"journalctl --verify não encontra mais corrupção nos logs.", "")
+}
+
+// FirewallNATDrift raises a critical alert when the live masquerade rule no
+// longer matches the configured WAN links — the exact failure that took
+// WAN1's NAT down in production on 2026-08-10 with no signal on the panel.
+// Critical because, unlike a degraded disk, it means traffic is not being
+// translated right now.
+func (s *Service) FirewallNATDrift(detail string) error {
+	return s.Create(TypeFirewallNATDrift, SeverityCritical, "Regra de NAT inconsistente",
+		"A regra de NAT ativa não corresponde às WANs configuradas: "+detail, "")
+}
+
+// FirewallNATOK clears FirewallNATDrift and notifies recovery.
+func (s *Service) FirewallNATOK() error {
+	s.AutoResolve(TypeFirewallNATDrift, "")
+	return s.createRecovery(TypeFirewallNATOK, "Regra de NAT consistente",
+		"A regra de NAT voltou a corresponder às WANs configuradas.", "")
+}
+
+// WANInterfaceMissing raises a critical alert when a configured WAN link
+// points at a network interface that does not exist on the box — typically
+// after a NIC rename (PCI reshuffle), which is what happened in production.
+func (s *Service) WANInterfaceMissing(detail string) error {
+	return s.Create(TypeWANInterfaceMissing, SeverityCritical, "Interface WAN inexistente",
+		"Um link WAN aponta para uma interface que não existe: "+detail, "")
+}
+
+// WANInterfaceOK clears WANInterfaceMissing and notifies recovery.
+func (s *Service) WANInterfaceOK() error {
+	s.AutoResolve(TypeWANInterfaceMissing, "")
+	return s.createRecovery(TypeWANInterfaceOK, "Interfaces WAN consistentes",
+		"Todos os links WAN apontam para interfaces existentes.", "")
+}
+
+// DNSResolverDrift raises a warning when the box is not using its own
+// resolver — it still resolves names, so it is not an outage, but the DNS
+// blocklist and query visibility are silently bypassed.
+func (s *Service) DNSResolverDrift(detail string) error {
+	return s.Create(TypeDNSResolverDrift, SeverityWarning, "Resolver DNS externo em uso",
+		"O sistema não está usando o resolver local (unbound): "+detail, "")
+}
+
+// DNSResolverOK clears DNSResolverDrift and notifies recovery.
+func (s *Service) DNSResolverOK() error {
+	s.AutoResolve(TypeDNSResolverDrift, "")
+	return s.createRecovery(TypeDNSResolverOK, "Resolver DNS local em uso",
+		"O sistema voltou a usar o resolver local (unbound).", "")
+}
+
+// SecurityUpdatesPending raises a warning when security updates are waiting
+// to be installed. Warning, not Critical: it is a maintenance signal, and
+// crying Critical over routine patching trains the operator to ignore
+// Critical alerts.
+func (s *Service) SecurityUpdatesPending(detail string) error {
+	return s.Create(TypeSecurityUpdatesPending, SeverityWarning, "Atualizações de segurança pendentes",
+		"Há atualizações de segurança do sistema aguardando instalação: "+detail, "")
+}
+
+// SecurityUpdatesNone clears SecurityUpdatesPending and notifies recovery.
+func (s *Service) SecurityUpdatesNone() error {
+	s.AutoResolve(TypeSecurityUpdatesPending, "")
+	return s.createRecovery(TypeSecurityUpdatesNone, "Sem atualizações de segurança pendentes",
+		"Não há atualizações de segurança aguardando instalação.", "")
 }

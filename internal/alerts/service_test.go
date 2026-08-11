@@ -224,3 +224,88 @@ func TestJournalOKDeliversViaRecovery(t *testing.T) {
 		t.Errorf("expected 1 recovery notify, got %v", fn.recovery)
 	}
 }
+
+// TestConfigDriftAlertPairsResolveEachOther guards the contract every
+// paired alert in this package follows: the recovery side must auto-resolve
+// its problem counterpart, otherwise a fixed problem stays red forever on
+// the panel — which would defeat the whole point of these watchers.
+func TestConfigDriftAlertPairsResolveEachOther(t *testing.T) {
+	cases := []struct {
+		name        string
+		problemType string
+		raise       func(*Service) error
+		recover     func(*Service) error
+	}{
+		{"firewall-nat", TypeFirewallNATDrift,
+			func(s *Service) error { return s.FirewallNATDrift("enp4s0 não existe") },
+			func(s *Service) error { return s.FirewallNATOK() }},
+		{"wan-interface", TypeWANInterfaceMissing,
+			func(s *Service) error { return s.WANInterfaceMissing("WAN VIVO -> enp4s0") },
+			func(s *Service) error { return s.WANInterfaceOK() }},
+		{"dns-resolver", TypeDNSResolverDrift,
+			func(s *Service) error { return s.DNSResolverDrift("189.40.0.1") },
+			func(s *Service) error { return s.DNSResolverOK() }},
+		{"security-updates", TypeSecurityUpdatesPending,
+			func(s *Service) error { return s.SecurityUpdatesPending("2 pacotes") },
+			func(s *Service) error { return s.SecurityUpdatesNone() }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			s := NewService(db)
+
+			if err := tc.raise(s); err != nil {
+				t.Fatalf("raise: %v", err)
+			}
+			open, err := db.GetAlerts(false, 50)
+			if err != nil {
+				t.Fatalf("GetAlerts: %v", err)
+			}
+			if !hasOpenAlertOfType(open, tc.problemType) {
+				t.Fatalf("expected an open %s alert, got %+v", tc.problemType, open)
+			}
+
+			if err := tc.recover(s); err != nil {
+				t.Fatalf("recover: %v", err)
+			}
+			open, err = db.GetAlerts(false, 50)
+			if err != nil {
+				t.Fatalf("GetAlerts: %v", err)
+			}
+			if hasOpenAlertOfType(open, tc.problemType) {
+				t.Errorf("%s should have been auto-resolved by its recovery call", tc.problemType)
+			}
+		})
+	}
+}
+
+func hasOpenAlertOfType(alerts []storage.Alert, alertType string) bool {
+	for _, a := range alerts {
+		if a.Type == alertType && !a.Resolved {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSecurityUpdatesPendingIsWarningNotCritical: a pending update is a
+// maintenance signal, not an outage — raising it as Critical would train the
+// operator to ignore Critical alerts.
+func TestSecurityUpdatesPendingIsWarningNotCritical(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.SecurityUpdatesPending("2 pacotes"); err != nil {
+		t.Fatalf("SecurityUpdatesPending: %v", err)
+	}
+	open, err := db.GetAlerts(false, 50)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	for _, a := range open {
+		if a.Type == TypeSecurityUpdatesPending && a.Severity != SeverityWarning {
+			t.Errorf("severity = %q, want %q", a.Severity, SeverityWarning)
+		}
+	}
+}
