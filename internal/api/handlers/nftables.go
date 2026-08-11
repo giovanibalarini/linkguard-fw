@@ -157,7 +157,23 @@ func (h *NftablesHandler) Blocklist(w http.ResponseWriter, r *http.Request) {
 // can't be used to stuff an unbounded blob into the DB on every save.
 const maxRuleDescriptionLen = 500
 
-// ListRules returns the admin's rules, ordered by position.
+// firewallRulesResponse wraps the admin's rules with the persisted outcome
+// of the most recent user_rules reconcile (C-3, design spec §4.1) — apply
+// failures happen on the boot path too, invisible to any HTTP status code,
+// so ApplyStatus is loaded from the same setting firewallrules.Service.
+// Reconcile writes after every call, handler-triggered or not (see
+// firewallrules.Service.ApplyStatus's doc comment). ApplyStatus is nil,
+// never a synthetic "ok", when Reconcile has never run at all — "unknown"
+// must never be presented as "known good".
+type firewallRulesResponse struct {
+	Rules       []storage.FirewallRule     `json:"rules"`
+	ApplyStatus *firewallrules.ApplyStatus `json:"apply_status,omitempty"`
+}
+
+// ListRules returns the admin's rules, ordered by position, together with
+// the last reconcile's apply status — the one signal that tells the admin
+// whether what's configured is actually what's in effect (FEATURES.md's
+// delivery rule).
 func (h *NftablesHandler) ListRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.db.ListFirewallRules()
 	if err != nil {
@@ -167,7 +183,10 @@ func (h *NftablesHandler) ListRules(w http.ResponseWriter, r *http.Request) {
 	if rules == nil {
 		rules = []storage.FirewallRule{}
 	}
-	writeJSON(w, http.StatusOK, rules)
+	writeJSON(w, http.StatusOK, firewallRulesResponse{
+		Rules:       rules,
+		ApplyStatus: h.fr.LastApplyStatus(),
+	})
 }
 
 type firewallRuleBody struct {

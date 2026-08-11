@@ -57,6 +57,13 @@ func ruleBodyJSON(t *testing.T, m map[string]any) *strings.Reader {
 	return strings.NewReader(string(b))
 }
 
+// firewallRulesResponseBody mirrors the handler's unexported response
+// shape, just enough for a test to decode it.
+type firewallRulesResponseBody struct {
+	Rules       []storage.FirewallRule     `json:"rules"`
+	ApplyStatus *firewallrules.ApplyStatus `json:"apply_status,omitempty"`
+}
+
 func TestListRulesReturnsEmptySliceNotNull(t *testing.T) {
 	h, _, _ := newFirewallRulesTestHandler(t)
 	r := httptest.NewRequest("GET", "/api/nftables/rules", nil)
@@ -66,15 +73,41 @@ func TestListRulesReturnsEmptySliceNotNull(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("ListRules: status %d, body %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), "null") {
+	if strings.Contains(w.Body.String(), `"rules":null`) {
 		t.Fatalf("response must never contain a null slice: %s", w.Body.String())
 	}
-	var rules []storage.FirewallRule
-	if err := json.Unmarshal(w.Body.Bytes(), &rules); err != nil {
+	var body firewallRulesResponseBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(rules) != 0 {
-		t.Fatalf("expected 0 rules, got %d", len(rules))
+	if len(body.Rules) != 0 {
+		t.Fatalf("expected 0 rules, got %d", len(body.Rules))
+	}
+}
+
+// TestListRulesReportsApplyStatusAfterAReconcile (C-3): the endpoint that
+// feeds the panel's own "is this actually in effect" banner must expose the
+// outcome of the reconcile a mutation just triggered, not leave the admin
+// to guess from a 200 status code alone (a mutation can write to the DB
+// successfully and still fail to reconcile into nft).
+func TestListRulesReportsApplyStatusAfterAReconcile(t *testing.T) {
+	h, _, _ := newFirewallRulesTestHandler(t)
+
+	// Before anything has ever reconciled through this handler in the test
+	// (ImportOnce's own internal reconcile already ran during setup, so
+	// apply_status is expected to be present, not nil, from the start).
+	req := httptest.NewRequest("GET", "/api/nftables/rules", nil)
+	w := httptest.NewRecorder()
+	h.ListRules(w, req)
+	var body firewallRulesResponseBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ApplyStatus == nil {
+		t.Fatal("expected apply_status populated (ImportOnce's own reconcile already ran during setup)")
+	}
+	if !body.ApplyStatus.OK {
+		t.Errorf("expected a clean setup to have reconciled ok, got %+v", body.ApplyStatus)
 	}
 }
 
