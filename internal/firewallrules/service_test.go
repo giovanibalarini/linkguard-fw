@@ -514,3 +514,38 @@ func TestReconcileRendersEnabledDBRulesIntoNft(t *testing.T) {
 		}
 	}
 }
+
+// I-8: uma regra ativada que não pôde ser renderizada (campos inválidos
+// numa linha de banco antiga ou editada à mão) some do firewall sem
+// nenhum aviso: o rebuild da chain termina bem, Reconcile devolvia nil e
+// o apply_status era gravado ok:true. O painel dizia "aplicado" com a
+// regra ausente do nft. Agora o status registra não-ok, com a contagem e
+// o id da regra, para a faixa de aviso do painel poder mostrar.
+func TestReconcileRecordsNotOKWhenAnEnabledRuleCouldNotBeRendered(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	bad := &storage.FirewallRule{Action: "accept", Iif: "eth0\" ; flush ruleset #"}
+	if err := db.CreateFirewallRule(bad); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+	if err := db.CreateFirewallRule(&storage.FirewallRule{Action: "drop", Saddr: "10.0.0.5"}); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatalf("uma regra impossível de renderizar não pode abortar o reconcile das outras: %v", err)
+	}
+	st := svc.LastApplyStatus()
+	if st == nil {
+		t.Fatal("esperava um status de apply registrado")
+	}
+	if st.OK {
+		t.Errorf("apply_status não pode dizer ok com uma regra ativada fora do firewall: %+v", st)
+	}
+	if !strings.Contains(st.Error, bad.ID) {
+		t.Errorf("o status tem que identificar a regra que não foi aplicada, obtive %q", st.Error)
+	}
+}

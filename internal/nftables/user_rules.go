@@ -78,12 +78,42 @@ func (s *Service) ReconcileUserRules(ctx context.Context, rules []StoredRule) er
 	// per rejected rule, is the source of truth for how many actually
 	// landed.
 	slog.Info("chain user_rules reconciliada a partir do banco",
-		"total", len(rules), "tentadas", len(tokenSets), "puladas_por_campo_invalido", skipped, "erro_ao_aplicar", rebuildErr != nil)
+		"total", len(rules), "tentadas", len(tokenSets), "puladas_por_campo_invalido", len(skipped), "erro_ao_aplicar", rebuildErr != nil)
 
 	if err := s.Persist(ctx); err != nil {
 		slog.Warn("chain user_rules reconciliada, mas não foi possível persistir para o próximo boot", "err", err)
 	}
-	return rebuildErr
+	if rebuildErr != nil {
+		// nft's own rejection is the more urgent message and already names
+		// the rules it refused; the skipped ones ride along in the log line
+		// above.
+		return rebuildErr
+	}
+	if len(skipped) > 0 {
+		// I-8: the rebuild itself succeeded, but a rule the admin has
+		// ENABLED is not in the firewall. Returning nil here (what this did
+		// before) made recordApplyStatus write ok:true, and the panel said
+		// "applied" about a chain that is missing a configured rule — a
+		// state nobody could have found out about except by reading the
+		// journal. An unrenderable rule is a state that cannot be reported
+		// as ok, only as "these ones are out".
+		return &SkippedRulesError{IDs: skipped}
+	}
+	return nil
+}
+
+// SkippedRulesError reports that the user_rules chain was rebuilt
+// successfully but one or more ENABLED stored rules never made it into it,
+// because their fields don't render (a stale or hand-edited DB row —
+// create/update validate with the same ValidateRuleFields, so this should
+// not be reachable through the panel). It carries the rules' ids so the
+// apply status can name them instead of just admitting that something,
+// somewhere, is missing.
+type SkippedRulesError struct{ IDs []string }
+
+func (e *SkippedRulesError) Error() string {
+	return fmt.Sprintf("%d regra(s) ativada(s) não puderam ser aplicadas por campos inválidos e estão fora do firewall: %s",
+		len(e.IDs), strings.Join(e.IDs, ", "))
 }
 
 // CheckUserRules validates, with a parse-only `nft -c` dry run (CheckChain),
@@ -108,7 +138,11 @@ func (s *Service) CheckUserRules(ctx context.Context, rules []StoredRule) error 
 // skipped entry should never happen (the API layer validates with the same
 // ValidateRuleFields on create/update), but a stale or hand-edited DB row
 // must not be able to take down every other rule's enforcement or check.
-func renderEnabledUserRules(rules []StoredRule) (tokenSets [][]string, skipped int) {
+//
+// skipped returns the ids, not a count: whoever reports this to the admin
+// has to be able to say WHICH rule is not in effect (I-8) — "one of your
+// rules isn't applied" is barely better than saying nothing.
+func renderEnabledUserRules(rules []StoredRule) (tokenSets [][]string, skipped []string) {
 	sorted := make([]StoredRule, len(rules))
 	copy(sorted, rules)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
@@ -119,7 +153,7 @@ func renderEnabledUserRules(rules []StoredRule) (tokenSets [][]string, skipped i
 		}
 		tokens, err := buildRuleTokens(r.Fields)
 		if err != nil {
-			skipped++
+			skipped = append(skipped, r.ID)
 			slog.Warn("regra do usuário ignorada ao reconciliar/validar user_rules: campos inválidos",
 				"id", r.ID, "err", err)
 			continue

@@ -8,6 +8,7 @@ package firewallrules
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -213,6 +214,19 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	}
 	applyErr := s.nft.ReconcileUserRules(ctx, ToStoredRules(rows))
 	s.recordApplyStatus(applyErr)
+
+	// I-8: an enabled rule that doesn't render is recorded as a not-ok
+	// apply (above) — the panel's standing banner names it, which is the
+	// surface that actually reaches the admin — but it is NOT returned to
+	// the caller. The mutation that triggered this reconcile did land and
+	// everything renderable IS in the firewall; turning that into the
+	// handler's generic 500 ("erro interno do servidor", details only in
+	// the journal) would report the admin's own successful change as a
+	// failure while telling them less than the banner already does.
+	var skipped *nftables.SkippedRulesError
+	if errors.As(applyErr, &skipped) {
+		return nil
+	}
 	return applyErr
 }
 

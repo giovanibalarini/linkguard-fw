@@ -149,8 +149,18 @@ func TestReconcileUserRulesSkipsInvalidFieldsButKeepsTheRest(t *testing.T) {
 		{ID: "bad", Position: 0, Enabled: true, Fields: RuleFields{Action: "accept", Iif: `eth0" ; flush ruleset #`}},
 		{ID: "good", Position: 1, Enabled: true, Fields: RuleFields{Action: "drop", Saddr: "10.0.0.5"}},
 	}
-	if err := s.ReconcileUserRules(context.Background(), rules); err != nil {
-		t.Fatalf("ReconcileUserRules must not abort on one bad rule: %v", err)
+	// I-8: a regra ruim não pode derrubar a boa (ela continua sendo
+	// aplicada), mas o resultado também não pode ser "tudo certo": há uma
+	// regra ativada, configurada, que não está no firewall. O erro tipado
+	// carrega a contagem e a identificação para virar estado de apply
+	// não-ok lá em cima.
+	err := s.ReconcileUserRules(context.Background(), rules)
+	var skipped *SkippedRulesError
+	if !errors.As(err, &skipped) {
+		t.Fatalf("esperava um SkippedRulesError identificando a regra não aplicada, obtive %v", err)
+	}
+	if len(skipped.IDs) != 1 || skipped.IDs[0] != "bad" {
+		t.Errorf("o erro tem que identificar exatamente a regra pulada, obtive %+v", skipped.IDs)
 	}
 	for _, c := range exec.executed {
 		if strings.Contains(c, "flush ruleset") && !strings.HasSuffix(c, "flush chain inet linkguard user_rules") {
