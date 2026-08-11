@@ -195,7 +195,14 @@ func TestImportOnceDoesNotResurrectDeliberatelyDeletedRules(t *testing.T) {
 	}
 }
 
-func TestImportOnceSkipsUnparsableRuleButKeepsOthers(t *testing.T) {
+// I-4: uma regra que o modelo de 7 campos nem consegue validar (aqui `meta
+// mark set 0x1`, sem verbo accept/drop/reject) era pulada — nunca chegava
+// ao banco — e o Reconcile da linha seguinte a apagava do nft. Sumia da
+// máquina sem deixar rastro em lugar nenhum, contrariando o "nada é
+// perdido" da spec §4.1. Agora usa a mesma saída de emergência do caso
+// não-representável: entra DESATIVADA, com o texto bruto preservado na
+// descrição.
+func TestImportOnceImportsUnvalidatableRuleDisabledWithRawTextPreserved(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{userRulesOut: `table inet linkguard {
 	chain user_rules {
@@ -214,11 +221,18 @@ func TestImportOnceSkipsUnparsableRuleButKeepsOthers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListFirewallRules: %v", err)
 	}
-	if len(rules) != 1 {
-		t.Fatalf("expected only the valid rule imported, got %d: %+v", len(rules), rules)
+	if len(rules) != 2 {
+		t.Fatalf("as duas regras têm que chegar ao banco (nada é perdido), obtive %d: %+v", len(rules), rules)
 	}
-	if rules[0].Action != "drop" || rules[0].Saddr != "10.0.0.5" {
-		t.Errorf("expected the valid rule's fields, got %+v", rules[0])
+	unvalidatable := rules[0]
+	if unvalidatable.Enabled {
+		t.Errorf("a regra não-validável tem que entrar DESATIVADA, obtive enabled=%v: %+v", unvalidatable.Enabled, unvalidatable)
+	}
+	if !strings.Contains(unvalidatable.Description, "meta mark set 0x1") {
+		t.Errorf("o texto bruto tem que ficar na descrição para o admin poder reescrevê-la, obtive %q", unvalidatable.Description)
+	}
+	if rules[1].Action != "drop" || rules[1].Saddr != "10.0.0.5" || !rules[1].Enabled {
+		t.Errorf("a regra válida tem que ser importada normalmente, ativada e na mesma ordem, obtive %+v", rules[1])
 	}
 }
 

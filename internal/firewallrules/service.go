@@ -50,12 +50,22 @@ func NewService(db *storage.DB, nft *nftables.Service) *Service {
 // is what makes that guarantee hold regardless of what nft currently
 // contains.
 //
-// If parsing an individual nft rule's fields fails — ValidateRuleFields
-// rejects the best-effort RuleFields ListUserRules produced for it — that
-// one rule is skipped and logged loudly; the rest of the import still
-// proceeds. The guard is set (import considered "done") even when there was
-// nothing to import, or everything failed to parse: a box with zero
-// pre-existing rules must not re-attempt this on every subsequent boot.
+// No live rule is ever dropped on the floor (spec §4.1, "nada é perdido").
+// There are two ways a rule can fail to fit the 7-field model, and both take
+// the same emergency exit — imported DISABLED, with the rule's original nft
+// text preserved in Description:
+//
+//   - not validatable at all: ValidateRuleFields rejects the best-effort
+//     RuleFields ListUserRules produced (a `jump`/`log`/`return`/
+//     `masquerade`/`queue` rule has no accept/drop/reject verb to model).
+//     I-4: this used to be a plain skip, so the rule never reached the DB
+//     and the Reconcile below deleted it from the live chain — gone from the
+//     machine with nothing left to show the admin it had ever existed.
+//   - not faithfully representable: see the C-2 paragraph below.
+//
+// The guard is set (import considered "done") even when there was nothing to
+// import: a box with zero pre-existing rules must not re-attempt this on
+// every subsequent boot.
 //
 // C-2 (round-trip check): ValidateRuleFields alone only proves the
 // best-effort RuleFields are syntactically safe — it says nothing about
@@ -92,14 +102,8 @@ func (s *Service) ImportOnce(ctx context.Context) error {
 	}
 
 	var rows []storage.FirewallRule
-	imported, skippedInvalid, importedDisabled := 0, 0, 0
+	imported, importedDisabled := 0, 0
 	for _, r := range existing {
-		if verr := nftables.ValidateRuleFields(r.RuleFields); verr != nil {
-			skippedInvalid++
-			slog.Warn("regra existente do user_rules não pôde ser importada e foi ignorada",
-				"handle", r.Handle, "raw", r.Raw, "err", verr)
-			continue
-		}
 		row := storage.FirewallRule{
 			Enabled: true,
 			Action:  r.RuleFields.Action,
@@ -110,7 +114,24 @@ func (s *Service) ImportOnce(ctx context.Context) error {
 			Proto:   r.RuleFields.Proto,
 			Dport:   r.RuleFields.Dport,
 		}
-		if !nftables.ExpressionMatches(r.RuleFields, r.Raw) {
+		switch verr := nftables.ValidateRuleFields(r.RuleFields); {
+		case verr != nil:
+			// I-4: not validatable at all (`jump`, `log`, `return`,
+			// `masquerade`, `queue`, `meta mark set …` — anything without an
+			// accept/drop/reject verb). Skipping it used to mean the rule
+			// never reached the DB and the Reconcile on the very next line
+			// deleted it from the live chain: the rule vanished from the
+			// machine with no trace anywhere, which is the exact opposite of
+			// spec §4.1's "nada é perdido". Same emergency exit as the
+			// unmodellable case below — imported disabled, raw text kept —
+			// so the admin at least sees what was there and can re-author
+			// it deliberately.
+			row.Enabled = false
+			row.Description = r.Raw
+			importedDisabled++
+			slog.Warn("regra existente do user_rules não pôde ser validada pelo modelo de campos; importada DESATIVADA, com o texto original preservado na descrição para revisão manual",
+				"handle", r.Handle, "raw", r.Raw, "err", verr)
+		case !nftables.ExpressionMatches(r.RuleFields, r.Raw):
 			row.Enabled = false
 			row.Description = r.Raw
 			importedDisabled++
@@ -133,7 +154,7 @@ func (s *Service) ImportOnce(ctx context.Context) error {
 	}
 
 	slog.Info("importação única das regras existentes de user_rules para o banco concluída",
-		"importadas", imported, "puladas_invalidas", skippedInvalid,
+		"importadas", imported,
 		"importadas_desativadas_nao_modeladas", importedDisabled, "total_no_nft", len(existing))
 
 	return s.Reconcile(ctx)
