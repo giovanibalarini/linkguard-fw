@@ -30,6 +30,9 @@ type Collector struct {
 	nowFn       func() int64
 	bootChecked bool                   // guards checkBootTime (Task 5) so it fires at most once per process
 	bootIDFn    func() (string, error) // returns the kernel's current boot_id; overridable in tests
+
+	ifaceExists    func(string) bool // overridable in tests; nil means the real /sys/class/net check
+	resolvConfPath string            // overridable in tests; empty means defaultResolvConfPath
 }
 
 // NewCollector creates a monitoring Collector. rec receives every measurement
@@ -111,6 +114,9 @@ func (c *Collector) collect() {
 			c.checkResource("resource:disk", "Disco", sys.DiskPercent, cfg.DiskThresholdPct, c.alertSvc.DiskFull, c.alertSvc.DiskCleared)
 			c.checkNTP()
 			c.checkSMART(cfg)
+			c.checkWANInterfaces()
+			c.checkFirewallNAT()
+			c.checkDNSResolver()
 		}
 
 		// Boot-time is measured once per process lifetime (see
