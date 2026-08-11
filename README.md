@@ -2,6 +2,56 @@
 
 A Linux firewall management tool for Debian servers with multiple WAN links. Supports load balancing, failover, iptables management, routing, and real-time monitoring — all through a modern web interface.
 
+## ⚠️ Read before installing: LinkGuard takes over the machine
+
+**LinkGuard is an appliance, not a helper tool.** Once installed, it takes
+ownership of the host's networking stack — hardware, addressing, firewall and
+the network services it manages. It **enforces its own configuration on every
+startup**, which means manual edits to the files below are overwritten
+without warning. That is the intended behaviour: the whole point is that the
+panel is the source of truth, not a pile of hand-edited files.
+
+Do not install it on a machine that is also doing something else you care
+about, and do not expect hand-made changes to these to survive:
+
+| What it takes over | Where |
+|---|---|
+| Firewall ruleset | its own `table inet linkguard` in nftables, persisted to `/etc/nftables.conf` |
+| IP forwarding & conntrack accounting | `/proc/sys/net/ipv4/ip_forward`, `/etc/sysctl.d/99-linkguard-*.conf` |
+| Routing between WANs | the default route (multipath/failover), `ip rule` policy routing |
+| DNS resolver (unbound) | `/etc/unbound/unbound.conf.d/linkguard.conf` |
+| The host's own resolver | `/etc/resolv.conf` → `127.0.0.1`, plus a `supersede` line in `/etc/dhcp/dhclient.conf` so DHCP renewals stop reverting it |
+| DHCP server (Kea) | `/etc/kea/kea-dhcp4.conf` (owned entirely), and `/etc/kea` permissions |
+| Time sync (chrony) | `/etc/chrony/conf.d/linkguard.conf`; enables the service, and can install it on request |
+| Network interface naming | `.link` files under `/etc/systemd/network` (pins names to MAC addresses) |
+| Its own config & secrets | `/etc/linkguard-fw/` |
+
+It never edits the packages' own primary config files (`chrony.conf`,
+`unbound.conf`): it writes drop-ins alongside them, so a package upgrade
+never fights LinkGuard. `/etc/nftables.conf` is the exception — LinkGuard
+owns that file, and as of v1.0.94 writes only its own table into it.
+
+What it deliberately does **not** touch: `/etc/network/interfaces` (ifupdown
+is still hand-managed on current installs) and anything unrelated to
+networking.
+
+## Delivery rule (non-negotiable)
+
+> **Nothing here is a mock-up. Everything implemented must actually work on
+> the system, and must be manageable from the web panel — enable, disable,
+> edit and verify — without SSH.**
+
+A feature counts as delivered only when all three hold: it applies real
+system state (config files, nftables rules, service reloads) rather than just
+persisting to the database; it is fully controllable from the panel under the
+matching RBAC permission; and the panel lets the admin verify it is genuinely
+in effect (configured is not the same as working — a watcher that only reads
+a config file proves nothing).
+
+Backend without a screen is not a delivery. A screen without real effect is
+worse than nothing: it creates false confidence, which is precisely what this
+tool exists to eliminate. See `FEATURES.md` for the full statement.
+
 ## Features
 
 - **Dashboard** — Live view of system health, WAN status, latency, packet loss and bandwidth

@@ -27,6 +27,69 @@ enriquecimento (nome legível, MAC, reserva estática).
 
 ---
 
+## Premissa de instalação: o LinkGuard toma conta da máquina
+
+> **Instalar o LinkGuard é entregar a ele a máquina.** Ele não é um utilitário
+> que convive com configuração manual — é um appliance. Tudo que ele
+> gerencia e que estiver disponível na máquina, ele assume: rede, firewall,
+> roteamento, DHCP, DNS, NTP, nomeação de interface.
+
+A consequência prática, que precisa estar clara para quem instala: ele
+**reaplica a própria configuração em todo boot**. Edição feita à mão nos
+arquivos que ele gerencia é sobrescrita — de propósito. É isso que torna o
+painel a fonte de verdade em vez de um amontoado de arquivos editados na
+unha (ver "Visão").
+
+Regras de convivência que o projeto segue para que isso não vire hostilidade:
+
+- **Drop-in em vez de sequestro**: onde o pacote tem config própria
+  (`chrony.conf`, `unbound.conf`), o LinkGuard escreve um arquivo separado ao
+  lado, para que atualização de pacote nunca brigue com ele. A exceção é o
+  `/etc/nftables.conf`, que ele possui — e desde a v1.0.94 grava ali **só a
+  própria tabela**, depois de um incidente em que capturou uma regra alheia e
+  a ressuscitou em todo boot.
+- **Só o que é dele**: nunca dá flush no ruleset inteiro nem em tabela de
+  terceiros; limpa apenas os próprios chains.
+- **Não finge**: se o pré-requisito não existe (pacote ausente, serviço
+  parado), ele registra e não age — em vez de aplicar meia configuração. Ex.:
+  não assume o `resolv.conf` se o unbound não estiver instalado, porque isso
+  deixaria a máquina sem resolução alguma.
+- **Fora de escopo é fora de escopo**: hoje não mexe em
+  `/etc/network/interfaces` (ifupdown segue manual) nem em nada não
+  relacionado a rede.
+
+A lista completa e atual do que ele assume está no `README.md`, na seção de
+aviso de instalação — mantê-la honesta é parte do contrato com quem instala.
+
+---
+
+## Regra de entrega (inegociável)
+
+> **Nada é só interface visual. Tudo que é implementado tem que funcionar de
+> verdade e tem que estar no painel, para o admin habilitar, desabilitar e
+> gerenciar por inteiro — sem SSH.**
+
+Uma funcionalidade só está pronta quando as três coisas são verdade ao mesmo
+tempo:
+
+1. **Funciona de fato no sistema** — aplica o estado real (arquivo de config,
+   regra de nftables, serviço recarregado), não só grava no banco. Se depende
+   de um pré-requisito ausente (pacote não instalado, serviço parado), diz
+   isso claramente em vez de fingir sucesso.
+2. **É gerenciável pelo painel** — ligar, desligar, editar e ver o estado
+   atual, com a permissão RBAC correspondente. Um recurso que só existe por
+   arquivo de configuração ou linha de comando não conta como entregue.
+3. **É verificável pelo painel** — o admin consegue ver se está de fato
+   valendo. Config aplicada ≠ funcionando: checar o arquivo não substitui
+   provar o comportamento (ex.: o vigia de DNS faz uma consulta real, não só
+   lê o `resolv.conf`).
+
+Corolário prático: **backend sem tela não é entrega**, e **tela sem efeito
+real é pior que não ter** — cria confiança falsa, que é exatamente o que
+esta plataforma existe para eliminar.
+
+---
+
 ## Decisões transversais (fundação)
 
 ### F1 — nftables nativo, declarativo e idempotente
@@ -115,6 +178,12 @@ O servidor já roda `isc-dhcp-server` + `bind9`. Trazer pro painel.
   se resolve com rollup, não com outro banco.
 - **Não** tratar DNS como controle de acesso → burlável com DoH/DNS fixo.
 - **Não** fixar host em WAN por IP dentro de range DHCP dinâmico → use MAC/reserva.
+- **Não** entregar backend sem o controle correspondente no painel → o admin
+  fica dependente de SSH, que é justamente o que a plataforma existe para
+  eliminar (ver "Regra de entrega").
+- **Não** dar como saudável o que só foi *configurado* → verificar o arquivo
+  não prova que o serviço responde. Em 2026-08-10 o painel ficou verde com o
+  DNS do próprio firewall quebrado porque o vigia só lia o `resolv.conf`.
 
 ---
 
