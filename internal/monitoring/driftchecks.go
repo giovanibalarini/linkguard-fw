@@ -2,10 +2,14 @@ package monitoring
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 )
@@ -194,9 +198,138 @@ func (c *Collector) checkFirewallNAT() {
 	}
 }
 
-// checkDNSResolver verifies the box resolves through its own unbound rather
-// than the ISP's servers — the drift found in production, caused by
-// dhclient rewriting resolv.conf on lease renewal.
+// dnsProbeUnavailableError marks a failure to even attempt the probe (e.g.
+// the UDP socket could not be created) as distinct from a verdict about the
+// resolver's health. checkDNSResolver treats this the same as its other
+// early-returns in this file: no verdict this tick, rather than inventing
+// one. A timeout or an explicit REFUSED/SERVFAIL IS a verdict (the resolver
+// is unhealthy) and must not be wrapped in this type.
+type dnsProbeUnavailableError struct{ err error }
+
+func (e *dnsProbeUnavailableError) Error() string { return e.err.Error() }
+func (e *dnsProbeUnavailableError) Unwrap() error { return e.err }
+
+// dnsProbeTimeout bounds each probe attempt so a single stuck tick can't
+// stall the collector loop.
+const dnsProbeTimeout = 2 * time.Second
+
+// probeLocalResolver sends a real "localhost." (type A) query to
+// 127.0.0.1:53 over UDP and returns nil if the resolver answers NOERROR or
+// NXDOMAIN — i.e. it is actually answering queries — or a descriptive error
+// otherwise (REFUSED, SERVFAIL, a malformed reply, or a timeout).
+//
+// "localhost." is a deliberate choice: unbound answers it from its built-in
+// local zone, with no recursion and no DNSSEC, so this probe stays
+// meaningful even with every WAN down (that outage is the link monitor's
+// job, not this check's) while still exercising unbound's access-control
+// path — exactly what silently REFUSED the box's own queries on
+// 2026-08-11.
+//
+// This talks DNS directly over a UDP socket instead of net.Resolver /
+// LookupHost: Go's resolver can satisfy "localhost" from /etc/hosts without
+// ever touching port 53, which would make the probe prove nothing about
+// unbound at all.
+func probeLocalResolver() error {
+	conn, err := net.DialTimeout("udp", "127.0.0.1:53", dnsProbeTimeout)
+	if err != nil {
+		return &dnsProbeUnavailableError{err}
+	}
+	defer conn.Close()
+
+	query := buildDNSQuery(0xC0DE, "localhost.", 1) // qtype 1 = A
+	if err := conn.SetDeadline(time.Now().Add(dnsProbeTimeout)); err != nil {
+		return &dnsProbeUnavailableError{err}
+	}
+	if _, err := conn.Write(query); err != nil {
+		return &dnsProbeUnavailableError{err}
+	}
+
+	buf := make([]byte, 512)
+	n, err := conn.Read(buf)
+	if err != nil {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return errors.New("timeout")
+		}
+		return &dnsProbeUnavailableError{err}
+	}
+
+	rcode, ok := dnsResponseRcode(buf[:n], query)
+	if !ok {
+		return errors.New("resposta DNS malformada")
+	}
+	switch rcode {
+	case 0, 3: // NOERROR, NXDOMAIN: the resolver is answering.
+		return nil
+	default:
+		return errors.New(dnsRcodeName(rcode))
+	}
+}
+
+// buildDNSQuery builds a minimal DNS query message: a 12-byte header (one
+// question, recursion desired) followed by QNAME/QTYPE/QCLASS.
+func buildDNSQuery(id uint16, name string, qtype uint16) []byte {
+	msg := make([]byte, 12)
+	binary.BigEndian.PutUint16(msg[0:2], id)
+	binary.BigEndian.PutUint16(msg[2:4], 0x0100) // standard query, RD=1
+	binary.BigEndian.PutUint16(msg[4:6], 1)      // QDCOUNT=1
+
+	for _, label := range strings.Split(strings.TrimSuffix(name, "."), ".") {
+		msg = append(msg, byte(len(label)))
+		msg = append(msg, label...)
+	}
+	msg = append(msg, 0) // root label
+
+	qtypeBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(qtypeBytes, qtype)
+	msg = append(msg, qtypeBytes...)
+	msg = append(msg, 0, 1) // QCLASS=IN
+	return msg
+}
+
+// dnsResponseRcode extracts the response code from a DNS reply after
+// verifying it is actually a response to our query (matching transaction ID,
+// QR bit set) — anything else is a malformed/unrelated reply, not a verdict.
+func dnsResponseRcode(resp, query []byte) (rcode int, ok bool) {
+	if len(resp) < 12 || len(query) < 12 {
+		return 0, false
+	}
+	if resp[0] != query[0] || resp[1] != query[1] { // transaction ID
+		return 0, false
+	}
+	if resp[2]&0x80 == 0 { // QR bit: must be a response, not a query
+		return 0, false
+	}
+	return int(resp[3] & 0x0F), true
+}
+
+// dnsRcodeName renders a DNS response code the way an operator recognizes it.
+func dnsRcodeName(rcode int) string {
+	switch rcode {
+	case 1:
+		return "FORMERR"
+	case 2:
+		return "SERVFAIL"
+	case 4:
+		return "NOTIMP"
+	case 5:
+		return "REFUSED"
+	default:
+		return fmt.Sprintf("rcode=%d", rcode)
+	}
+}
+
+// checkDNSResolver verifies the box actually resolves through its own
+// unbound rather than the ISP's servers. Two independent halves, both
+// required for a healthy verdict:
+//
+//  1. resolv.conf points at the local resolver (the config drift originally
+//     found in production, caused by dhclient rewriting resolv.conf on
+//     lease renewal).
+//  2. the local resolver actually answers queries (added after the
+//     2026-08-11 incident: resolv.conf pointed at 127.0.0.1 the whole time
+//     while a blanket masquerade rule rewrote the source address of the
+//     box's own loopback DNS queries, so unbound correctly REFUSED them —
+//     the config-only check stayed green through the entire outage).
 func (c *Collector) checkDNSResolver() {
 	path := c.resolvConfPath
 	if path == "" {
@@ -221,12 +354,39 @@ func (c *Collector) checkDNSResolver() {
 			external = append(external, addr)
 		}
 	}
+	configOK := local && len(external) == 0
 
-	tr := c.observe("dns:resolver", local && len(external) == 0, c.nowFn())
+	probe := c.dnsProbe
+	if probe == nil {
+		probe = probeLocalResolver
+	}
+	probeErr := probe()
+	var unavailable *dnsProbeUnavailableError
+	if errors.As(probeErr, &unavailable) {
+		// The probe itself could not even run this tick (e.g. socket
+		// creation failed) — that is not a verdict about the resolver, so
+		// don't invent one. Consistent with every other early-return in
+		// this file.
+		return
+	}
+
+	var reasons []string
+	if !configOK {
+		if len(external) > 0 {
+			reasons = append(reasons, "resolv.conf aponta para "+strings.Join(external, ", "))
+		} else {
+			reasons = append(reasons, "resolv.conf não aponta para o resolvedor local (127.0.0.1)")
+		}
+	}
+	if probeErr != nil {
+		reasons = append(reasons, fmt.Sprintf("o resolvedor local não respondeu (%s)", probeErr))
+	}
+
+	tr := c.observe("dns:resolver", configOK && probeErr == nil, c.nowFn())
 	c.ensureMeta("dns:resolver", "dns-resolver", "resource")
 	switch tr {
 	case transDown:
-		_ = c.alertSvc.DNSResolverDrift(strings.Join(external, ", "))
+		_ = c.alertSvc.DNSResolverDrift(strings.Join(reasons, "; "))
 	case transUp:
 		_ = c.alertSvc.DNSResolverOK()
 	}

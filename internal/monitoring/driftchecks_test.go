@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,9 +191,14 @@ func TestCheckFirewallNATSkipsWhenNoWANsConfigured(t *testing.T) {
 	}
 }
 
+// succeedingDNSProbe stands in for a healthy resolver in tests that want to
+// isolate the resolv.conf config check from the functional probe.
+func succeedingDNSProbe() error { return nil }
+
 func TestCheckDNSResolverFlagsExternalResolver(t *testing.T) {
 	c := newDriftTestCollector(t)
 	c.resolvConfPath = writeTempFile(t, "nameserver 189.40.0.1\n")
+	c.dnsProbe = succeedingDNSProbe
 
 	c.checkDNSResolver()
 	c.checkDNSResolver()
@@ -205,11 +211,63 @@ func TestCheckDNSResolverFlagsExternalResolver(t *testing.T) {
 func TestCheckDNSResolverHealthyOnLocalResolver(t *testing.T) {
 	c := newDriftTestCollector(t)
 	c.resolvConfPath = writeTempFile(t, "# managed by linkguard\nnameserver 127.0.0.1\n")
+	c.dnsProbe = succeedingDNSProbe
 
 	c.checkDNSResolver()
 
 	if up := c.healthUp("dns:resolver"); !up {
-		t.Error("dns:resolver should be up when resolv.conf points at 127.0.0.1")
+		t.Error("dns:resolver should be up when resolv.conf points at 127.0.0.1 and the probe succeeds")
+	}
+}
+
+// TestCheckDNSResolverFlagsProbeRefused is the regression test for the
+// 2026-08-11 incident: resolv.conf pointed at 127.0.0.1 (config check green)
+// while the box's own loopback DNS queries were arriving at unbound with a
+// rewritten (WAN) source address and being correctly REFUSED by its
+// access-control. The config-only check stayed green through all of it; this
+// probe is what would have caught it.
+func TestCheckDNSResolverFlagsProbeRefused(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.resolvConfPath = writeTempFile(t, "nameserver 127.0.0.1\n")
+	c.dnsProbe = func() error { return errors.New("REFUSED") }
+
+	c.checkDNSResolver()
+	c.checkDNSResolver()
+
+	if up := c.healthUp("dns:resolver"); up {
+		t.Error("dns:resolver should be down when resolv.conf is correct but the probe is REFUSED")
+	}
+}
+
+func TestCheckDNSResolverFlagsProbeTimeout(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.resolvConfPath = writeTempFile(t, "nameserver 127.0.0.1\n")
+	c.dnsProbe = func() error { return errors.New("timeout") }
+
+	c.checkDNSResolver()
+	c.checkDNSResolver()
+
+	if up := c.healthUp("dns:resolver"); up {
+		t.Error("dns:resolver should be down when resolv.conf is correct but the probe times out")
+	}
+}
+
+// TestCheckDNSResolverDoesNotJudgeWhenProbeUnavailable verifies the
+// no-fake-data contract for the probe itself: if the probe could not even
+// attempt the query (e.g. socket creation failed), that is not a verdict
+// about the resolver's health — the item must not appear in the health map
+// at all, exactly like the file's other "unreadable this tick" early
+// returns.
+func TestCheckDNSResolverDoesNotJudgeWhenProbeUnavailable(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.resolvConfPath = writeTempFile(t, "nameserver 127.0.0.1\n")
+	c.dnsProbe = func() error { return &dnsProbeUnavailableError{errors.New("socket: too many open files")} }
+
+	c.checkDNSResolver()
+	c.checkDNSResolver()
+
+	if _, known := c.healthState("dns:resolver"); known {
+		t.Error("dns:resolver must not be reported when the probe itself could not run")
 	}
 }
 
@@ -308,6 +366,7 @@ func TestCheckDNSResolverDoesNotJudgeWhenResolvConfUnreadable(t *testing.T) {
 func TestCheckDNSResolverFlagsMixedLocalAndExternal(t *testing.T) {
 	c := newDriftTestCollector(t)
 	c.resolvConfPath = writeTempFile(t, "nameserver 127.0.0.1\nnameserver 8.8.8.8\n")
+	c.dnsProbe = succeedingDNSProbe
 
 	c.checkDNSResolver()
 	c.checkDNSResolver()
