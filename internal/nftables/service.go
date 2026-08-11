@@ -520,6 +520,56 @@ func validIPOrCIDR(s string) bool {
 	return err == nil
 }
 
+// validIPv4OrCIDR is validIPOrCIDR narrowed to what `ip saddr`/`ip daddr`
+// actually match. Those tokens are IPv4-only even inside the `inet` family
+// (IPv6 needs the separate `ip6 saddr`/`ip6 daddr` keywords, which this
+// package never emits) — but net.ParseIP/net.ParseCIDR happily accept an
+// IPv6 literal or CIDR, so validIPOrCIDR alone let one straight into the nft
+// argv (C-1). At that point nft rejects the rule outright, and — before the
+// rest of C-1's fix — that single bad row used to truncate every rule after
+// it in the chain, permanently (the same bad DB row re-renders and re-fails
+// on every subsequent boot). Rejecting here, before the value ever reaches
+// buildRuleTokens' caller, is cheaper and gives the admin an immediate,
+// specific reason instead of a a later nft failure.
+func validIPv4OrCIDR(s string) bool {
+	if ip := net.ParseIP(s); ip != nil {
+		return ip.To4() != nil
+	}
+	_, ipnet, err := net.ParseCIDR(s)
+	if err != nil {
+		return false
+	}
+	return ipnet.IP.To4() != nil
+}
+
+// validPort reports whether s is a single TCP/UDP port or a range, both
+// ends within the protocol's actual 1-65535 range, and — for a range — the
+// start no greater than the end. rePort's charset check alone accepted
+// `99999` (five digits, but out of range) and inverted ranges like
+// `8080-80`, both of which nft rejects at rule-add time; by then (before
+// this fix) the whole chain had already been flushed, so nft's rejection
+// truncated everything after that rule (C-1). Every one of these is
+// reachable with ordinary typing into the rule modal, not just a
+// hand-crafted API request.
+func validPort(s string) bool {
+	if !rePort.MatchString(s) {
+		return false
+	}
+	parts := strings.SplitN(s, "-", 2)
+	start, err := strconv.Atoi(parts[0])
+	if err != nil || start < 1 || start > 65535 {
+		return false
+	}
+	if len(parts) == 1 {
+		return true
+	}
+	end, err := strconv.Atoi(parts[1])
+	if err != nil || end < 1 || end > 65535 {
+		return false
+	}
+	return start <= end
+}
+
 func buildRuleTokens(f RuleFields) ([]string, error) {
 	action := strings.ToLower(strings.TrimSpace(f.Action))
 	if action != "accept" && action != "drop" && action != "reject" {
@@ -539,14 +589,14 @@ func buildRuleTokens(f RuleFields) ([]string, error) {
 		t = append(t, "oifname", f.Oif)
 	}
 	if f.Saddr != "" {
-		if !validIPOrCIDR(f.Saddr) {
-			return nil, fmt.Errorf("origem inválida")
+		if !validIPv4OrCIDR(f.Saddr) {
+			return nil, fmt.Errorf("origem inválida: use um IP/CIDR IPv4 (IPv6 ainda não é suportado nas regras personalizadas)")
 		}
 		t = append(t, "ip", "saddr", f.Saddr)
 	}
 	if f.Daddr != "" {
-		if !validIPOrCIDR(f.Daddr) {
-			return nil, fmt.Errorf("destino inválido")
+		if !validIPv4OrCIDR(f.Daddr) {
+			return nil, fmt.Errorf("destino inválido: use um IP/CIDR IPv4 (IPv6 ainda não é suportado nas regras personalizadas)")
 		}
 		t = append(t, "ip", "daddr", f.Daddr)
 	}
@@ -554,8 +604,8 @@ func buildRuleTokens(f RuleFields) ([]string, error) {
 	switch proto {
 	case "tcp", "udp":
 		if f.Dport != "" {
-			if !rePort.MatchString(f.Dport) {
-				return nil, fmt.Errorf("porta inválida")
+			if !validPort(f.Dport) {
+				return nil, fmt.Errorf("porta inválida: use um valor entre 1 e 65535, ou um intervalo início-fim válido (ex.: 8000-8080)")
 			}
 			t = append(t, proto, "dport", f.Dport)
 		} else {

@@ -121,6 +121,39 @@ func TestCreateRuleValidatesFieldsAndReconciles(t *testing.T) {
 	}
 }
 
+// TestCreateRuleRejectsIPv6AndBadPortBeforeTheyReachTheDB is the C-1
+// regression test: an IPv6 saddr and an out-of-range port are ordinary
+// typing mistakes (net.ParseIP happily accepts IPv6; a 5-digit port matches
+// the old charset-only regex) that nft would reject only once the rule
+// reached it — by which point (before the fix) the chain had already been
+// flushed, truncating every rule after the bad one, permanently. Both must
+// be rejected here, before any DB write.
+func TestCreateRuleRejectsIPv6AndBadPortBeforeTheyReachTheDB(t *testing.T) {
+	h, db, _ := newFirewallRulesTestHandler(t)
+
+	ipv6 := httptest.NewRequest("POST", "/api/nftables/rules", ruleBodyJSON(t, map[string]any{
+		"action": "accept", "saddr": "2001:db8::1",
+	}))
+	w := httptest.NewRecorder()
+	h.CreateRule(w, ipv6)
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for an IPv6 saddr, got %d: %s", w.Code, w.Body.String())
+	}
+
+	badPort := httptest.NewRequest("POST", "/api/nftables/rules", ruleBodyJSON(t, map[string]any{
+		"action": "accept", "proto": "tcp", "dport": "99999",
+	}))
+	w = httptest.NewRecorder()
+	h.CreateRule(w, badPort)
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for port 99999, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if all, _ := db.ListFirewallRules(); len(all) != 0 {
+		t.Fatalf("expected neither rejected request to reach the DB, got %d rows: %+v", len(all), all)
+	}
+}
+
 func TestCreateRuleRejectsOverlongDescription(t *testing.T) {
 	h, db, _ := newFirewallRulesTestHandler(t)
 	huge := strings.Repeat("a", 5000)
