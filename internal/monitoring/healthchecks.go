@@ -83,6 +83,23 @@ func (c *Collector) observe(key string, up bool, now int64) transition {
 	return transNone
 }
 
+// setHealthDirect records an item's state without observe's anti-flap
+// debounce. For signals that cannot flap — e.g. apt's cached package state,
+// read a few times a day — requiring two consecutive readings would just
+// delay the truth by a full interval (and a restart would reset the count).
+func (c *Collector) setHealthDirect(key string, up bool, now int64) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	st := c.health[key]
+	if st == nil {
+		st = &itemState{known: true, since: now}
+		c.health[key] = st
+	}
+	if st.up != up {
+		st.up, st.since = up, now
+	}
+}
+
 // Snapshot returns the current health of every tracked item (services, links,
 // resources) for the dashboard.
 func (c *Collector) Snapshot() []HealthItem {

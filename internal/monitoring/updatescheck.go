@@ -46,7 +46,16 @@ func (u *UpdatesScheduler) Run(ctx context.Context) {
 	ticker := time.NewTicker(updatesTickInterval)
 	defer ticker.Stop()
 
-	u.maybeRun(ctx) // check once at startup instead of waiting a full tick
+	// Unconditional (not maybeRun's interval-gated check) so the panel is
+	// never left blank for up to a whole interval after a restart: without
+	// this, restarting within the configured interval meant ensureMeta
+	// never ran, LastUpdatesReport() returned a zero Report, and the UI's
+	// total>0 guard hid the section entirely — indistinguishable from "no
+	// updates pending". apt-get --just-print is a lock-free, read-only
+	// simulation that takes a few hundred ms, and Run already executes in
+	// its own goroutine, so this is safe to do unconditionally on every
+	// start.
+	u.RunOnce(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,8 +92,12 @@ func (u *UpdatesScheduler) RunOnce(ctx context.Context) {
 	u.col.setLastUpdatesReport(rep)
 
 	// Panel: down for ANY pending update, so the operator sees it just by
-	// looking at the dashboard.
-	u.col.observe("system:updates", rep.Total == 0, u.col.nowFn())
+	// looking at the dashboard. This bypasses observe's anti-flap debounce
+	// (see setHealthDirect's doc comment) — apt's cached package state,
+	// read a few times a day, cannot flap, and requiring two consecutive
+	// readings before the tile turns red would just delay the truth by a
+	// full check interval (and reset on every restart).
+	u.col.setHealthDirect("system:updates", rep.Total == 0, u.col.nowFn())
 	u.col.ensureMeta("system:updates", "system-updates", "resource")
 
 	// Notification: driven by its OWN security-scoped transition, deliberately

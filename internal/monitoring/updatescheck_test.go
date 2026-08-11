@@ -23,17 +23,47 @@ const plainSample = "Inst curl [8.14.1-1] (8.14.2-1 Debian:13/stable [amd64])\n"
 
 // The panel must light up for ANY pending update — that is the operator's
 // stated need ("eu deveria só olhar para ele") — so the health item goes
-// down on a plain update too.
+// down on a plain update too. A SINGLE RunOnce must be enough: apt's cached
+// package state cannot flap the way a network probe can, so requiring a
+// second confirming reading (observe's normal anti-flap debounce) would just
+// delay the truth by a full check interval — and, worse, a restart within
+// that interval would reset the count and delay it again.
 func TestUpdatesSchedulerPanelReflectsAnyPendingUpdate(t *testing.T) {
 	c := newDriftTestCollector(t)
 	c.exec = &updatesExec{out: plainSample}
 	u := NewUpdatesScheduler(c)
 
 	u.RunOnce(context.Background())
-	u.RunOnce(context.Background())
 
 	if up := c.healthUp("system:updates"); up {
-		t.Error("system:updates should be down while any update is pending")
+		t.Error("system:updates should be down after a single run while any update is pending")
+	}
+}
+
+// TestUpdatesSchedulerCreatesHealthItemWithZeroPendingUpdates: a box with
+// nothing pending must show an explicit "ok" health item, not the absence of
+// one — RunOnce must call ensureMeta/create the item even when rep.Total==0,
+// so the operator can tell "checked, nothing pending" apart from "never
+// checked yet" (which is what a zero-value/missing item would otherwise
+// look like in the UI).
+func TestUpdatesSchedulerCreatesHealthItemWithZeroPendingUpdates(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.exec = &updatesExec{out: ""}
+	u := NewUpdatesScheduler(c)
+
+	u.RunOnce(context.Background())
+
+	found := false
+	for _, item := range c.Snapshot() {
+		if item.Name == "system-updates" {
+			found = true
+			if !item.Up {
+				t.Error("system-updates should be up when nothing is pending")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected a system-updates health item to exist after RunOnce, even with zero pending updates")
 	}
 }
 
