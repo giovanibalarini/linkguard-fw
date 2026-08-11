@@ -263,6 +263,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		monH := handlers.NewMonitoringHandler(s.mon, s.db)
 		timelineH := handlers.NewTimelineHandler(s.rrdSvc, s.alertSvc)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/health", monH.Health)
+		r.With(require(auth.PermSystemRead)).Get("/api/system/updates", monH.Updates)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/config", monH.GetConfig)
 		r.With(require(auth.PermSystemWrite)).Put("/api/monitoring/config", monH.SetConfig)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/monitoring/timeline", timelineH.Timeline)

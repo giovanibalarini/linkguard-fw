@@ -5,6 +5,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/sysupdates"
 )
 
 // MonitoringHandler exposes the health snapshot and monitoring config.
@@ -24,6 +25,18 @@ func (h *MonitoringHandler) Health(w http.ResponseWriter, r *http.Request) {
 		items = []monitoring.HealthItem{}
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// Updates returns the most recent pending system-updates report, so the
+// panel can list exactly which packages are waiting (and which of them are
+// security updates) without shelling out to apt on every page load — the
+// scheduler refreshes this on its own cadence.
+func (h *MonitoringHandler) Updates(w http.ResponseWriter, r *http.Request) {
+	rep := h.col.LastUpdatesReport()
+	if rep.Packages == nil {
+		rep.Packages = []sysupdates.Package{}
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // GetConfig returns the monitoring config (zero-config defaults if unset).

@@ -389,6 +389,14 @@ export interface TrafficRetentionResponse {
 // ─── Monitoring (Vigia) ──────────────────────────────────────────────────────
 
 export interface HealthItem { name: string; kind: 'service' | 'link' | 'resource'; up: boolean; since: number; }
+export interface PendingPackage {
+  name: string;
+  current_version: string;
+  new_version: string;
+  origin: string;
+  security: boolean;
+}
+export interface UpdatesReport { total: number; security: number; packages: PendingPackage[]; }
 export interface MonitoringConfig {
   enabled: boolean;
   services: string[];
