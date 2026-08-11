@@ -62,7 +62,7 @@ func TestReloadConfigsValidatesWritesAndReloads(t *testing.T) {
 	e := &recExec{}
 	s := newTestSvc(t, e)
 
-	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil); err != nil {
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
 		t.Fatalf("ReloadConfigs: %v", err)
 	}
 	// Config files written.
@@ -91,7 +91,7 @@ func TestValidateKeaWritesTempFileNextToRealConfig(t *testing.T) {
 	e := &recExec{}
 	s := newTestSvc(t, e)
 
-	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil); err != nil {
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
 		t.Fatalf("ReloadConfigs: %v", err)
 	}
 	if e.keaTestPath == "" {
@@ -137,7 +137,7 @@ func TestReloadConfigsAbortsOnInvalidKeaConfig(t *testing.T) {
 	e := &recExec{keaTestErr: assertErr2{}}
 	s := newTestSvc(t, e)
 
-	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil); err == nil {
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err == nil {
 		t.Fatal("expected error when kea config test fails")
 	}
 	// No reload, and the production config file must NOT be written.
@@ -156,7 +156,7 @@ func (assertErr2) Error() string { return "kea config invalid" }
 func TestGenerateKeaConfigValidJSON(t *testing.T) {
 	cfg := netsvc.DefaultConfig()
 	res := []netsvc.Reservation{{MAC: "AA:BB:CC:DD:EE:FF", IP: "192.168.3.50", Hostname: "pc-joao"}}
-	out := GenerateKeaConfig(cfg, res)
+	out := GenerateKeaConfig(cfg, res, "")
 
 	// Strip the leading // comment line, the rest must be valid JSON.
 	jsonPart := out[strings.Index(out, "{"):]
@@ -183,6 +183,66 @@ func TestGenerateKeaConfigValidJSON(t *testing.T) {
 	}
 	if dhcp4["valid-lifetime"].(float64) != 43200 { // 12h
 		t.Errorf("wrong valid-lifetime: %v", dhcp4["valid-lifetime"])
+	}
+}
+
+// optionData extracts the option-data list of the first subnet, for
+// asserting on individual DHCP options by name.
+func optionData(t *testing.T, out string) []map[string]any {
+	t.Helper()
+	jsonPart := out[strings.Index(out, "{"):]
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(jsonPart), &parsed); err != nil {
+		t.Fatalf("kea config is not valid JSON: %v\n%s", err, out)
+	}
+	dhcp4 := parsed["Dhcp4"].(map[string]any)
+	sn := dhcp4["subnet4"].([]any)[0].(map[string]any)
+	opts := sn["option-data"].([]any)
+	out2 := make([]map[string]any, len(opts))
+	for i, o := range opts {
+		out2[i] = o.(map[string]any)
+	}
+	return out2
+}
+
+// TestGenerateKeaConfigEmitsNTPServersOptionWhenSet: passing the firewall's
+// LAN IP as ntpServer must render DHCP option 42 (ntp-servers) pointing at
+// it, alongside the existing routers/domain-name-servers options — spec §5.
+func TestGenerateKeaConfigEmitsNTPServersOptionWhenSet(t *testing.T) {
+	cfg := netsvc.DefaultConfig() // Gateway: 192.168.3.3
+	out := GenerateKeaConfig(cfg, nil, "192.168.3.3")
+
+	found := false
+	for _, o := range optionData(t, out) {
+		if o["name"] == "ntp-servers" {
+			found = true
+			if o["data"] != "192.168.3.3" {
+				t.Errorf("ntp-servers data = %v, want 192.168.3.3", o["data"])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected an ntp-servers option; got options: %v\n%s", optionData(t, out), out)
+	}
+}
+
+// TestGenerateKeaConfigOmitsNTPServersOptionWhenEmpty: the empty string is
+// "not serving" — no ntp-servers option at all, matching today's behaviour
+// exactly (additive feature, off by default).
+func TestGenerateKeaConfigOmitsNTPServersOptionWhenEmpty(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	out := GenerateKeaConfig(cfg, nil, "")
+
+	for _, o := range optionData(t, out) {
+		if o["name"] == "ntp-servers" {
+			t.Errorf("expected no ntp-servers option when ntpServer is empty; got: %v", o)
+		}
+	}
+	// Still valid JSON (same pattern as TestGenerateKeaConfigValidJSON).
+	jsonPart := out[strings.Index(out, "{"):]
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(jsonPart), &parsed); err != nil {
+		t.Fatalf("kea config is not valid JSON: %v\n%s", err, out)
 	}
 }
 

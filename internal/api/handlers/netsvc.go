@@ -13,6 +13,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 )
 
 // Strict validators for values rendered into unbound/Kea configs.
@@ -71,7 +72,7 @@ type applyStatus struct {
 // "Aplicar agora" button.
 func (h *NetsvcHandler) doReload(ctx context.Context) error {
 	bl, _ := h.db.ListDNSBlocklist()
-	out, err := h.provider.ReloadConfigs(ctx, h.getConfig(), h.reservationsForProvider(), bl)
+	out, err := h.provider.ReloadConfigs(ctx, h.getConfig(), h.reservationsForProvider(), bl, h.ntpServerOption())
 	st := applyStatus{OK: err == nil, At: time.Now().Unix()}
 	if err != nil {
 		st.Error = err.Error()
@@ -124,6 +125,25 @@ func (h *NetsvcHandler) saveConfig(c netsvc.Config) error {
 		return err
 	}
 	return h.db.SetSetting(netsvcCfgKey, string(b))
+}
+
+// ntpServerOption returns the firewall's LAN IP to advertise as DHCP
+// option 42 (ntp-servers) when "serve NTP to the LAN" is on, or "" when it
+// is off — the exact input keaunbound.GenerateKeaConfig expects. Reads
+// internal/timesync's persisted config directly (same package as ntp.go,
+// which owns ntpCfgKey) rather than either package importing the other's
+// Config type: the generator stays a pure function of its inputs, and
+// neither handler owns the other's settings key — see
+// docs/superpowers/specs/2026-08-11-ntp-server-for-lan-design.md §5.
+func (h *NetsvcHandler) ntpServerOption() string {
+	var ntpCfg timesync.Config
+	if raw, _ := h.db.GetSetting(ntpCfgKey); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &ntpCfg)
+	}
+	if !ntpCfg.ServeLAN {
+		return ""
+	}
+	return h.getConfig().Gateway
 }
 
 func (h *NetsvcHandler) reservationsForProvider() []netsvc.Reservation {
@@ -368,7 +388,7 @@ func (h *NetsvcHandler) blocklist(w http.ResponseWriter, r *http.Request, add bo
 // Preview returns the rendered backend config files (without applying).
 func (h *NetsvcHandler) Preview(w http.ResponseWriter, r *http.Request) {
 	bl, _ := h.db.ListDNSBlocklist()
-	files := h.provider.GenerateConfigs(h.getConfig(), h.reservationsForProvider(), bl)
+	files := h.provider.GenerateConfigs(h.getConfig(), h.reservationsForProvider(), bl, h.ntpServerOption())
 	writeJSON(w, http.StatusOK, files)
 }
 

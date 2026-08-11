@@ -25,13 +25,13 @@ func (f *fakeExec) IsDryRun() bool { return false }
 type fakeNetProvider struct{}
 
 func (fakeNetProvider) Backend() netsvc.Backend { return netsvc.BackendKeaUnbound }
-func (fakeNetProvider) GenerateConfigs(netsvc.Config, []netsvc.Reservation, []string) []netsvc.ConfigFile {
+func (fakeNetProvider) GenerateConfigs(netsvc.Config, []netsvc.Reservation, []string, string) []netsvc.ConfigFile {
 	return nil
 }
 func (fakeNetProvider) Apply(context.Context, netsvc.Config, []netsvc.Reservation, []string) (string, error) {
 	return "", nil
 }
-func (fakeNetProvider) ReloadConfigs(context.Context, netsvc.Config, []netsvc.Reservation, []string) (string, error) {
+func (fakeNetProvider) ReloadConfigs(context.Context, netsvc.Config, []netsvc.Reservation, []string, string) (string, error) {
 	return "", nil
 }
 func (fakeNetProvider) Leases(context.Context) ([]netsvc.Lease, error) { return nil, nil }

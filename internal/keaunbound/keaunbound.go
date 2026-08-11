@@ -202,9 +202,11 @@ func isActiveSupersedeDomainNameServers(line string) bool {
 }
 
 // GenerateConfigs renders the Kea (DHCP) and unbound (DNS) config files.
-func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string) []netsvc.ConfigFile {
+// ntpServer is threaded straight through to GenerateKeaConfig — see its doc
+// comment and netsvc.Provider.GenerateConfigs.
+func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) []netsvc.ConfigFile {
 	return []netsvc.ConfigFile{
-		{Path: s.keaConf, Content: GenerateKeaConfig(c, res)},
+		{Path: s.keaConf, Content: GenerateKeaConfig(c, res, ntpServer)},
 		{Path: s.unboundConf, Content: GenerateUnboundConfig(c, blocked)},
 	}
 }
@@ -216,8 +218,8 @@ func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blo
 // first (kea-dhcp4 -t) — critical, since a restart with a broken config would
 // take DHCP down. If validation fails, nothing is written or reloaded and the
 // running config is left intact.
-func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string) (string, error) {
-	files := s.GenerateConfigs(c, res, blocked)
+func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) (string, error) {
+	files := s.GenerateConfigs(c, res, blocked, ntpServer)
 
 	// Validate the Kea config before touching anything in production.
 	var keaContent string
@@ -314,8 +316,16 @@ type keaReservation struct {
 	Hostname  string `json:"hostname,omitempty"`
 }
 
-// GenerateKeaConfig renders kea-dhcp4.conf (pure function, JSON).
-func GenerateKeaConfig(c netsvc.Config, reservations []netsvc.Reservation) string {
+// GenerateKeaConfig renders kea-dhcp4.conf (pure function, JSON). ntpServer,
+// when non-empty, adds a DHCP option 42 (ntp-servers) pointing clients at
+// it — normally the firewall's own LAN IP (netsvc.Config.Gateway), the same
+// address already used for the routers option, passed in by the caller
+// rather than read from the DB here (see docs/superpowers/specs/
+// 2026-08-11-ntp-server-for-lan-design.md §5: the NTP toggle lives in
+// internal/timesync, a package this one must not import, to avoid either
+// package reaching into the other's config). An empty string omits the
+// option entirely, matching today's behaviour exactly.
+func GenerateKeaConfig(c netsvc.Config, reservations []netsvc.Reservation, ntpServer string) string {
 	lease := c.LeaseHours
 	if lease <= 0 {
 		lease = 12
@@ -329,6 +339,9 @@ func GenerateKeaConfig(c netsvc.Config, reservations []netsvc.Reservation) strin
 	}
 	if c.DomainSuffix != "" {
 		opts = append(opts, keaOption{Name: "domain-name", Data: c.DomainSuffix})
+	}
+	if ntpServer != "" {
+		opts = append(opts, keaOption{Name: "ntp-servers", Data: ntpServer})
 	}
 
 	rs := append([]netsvc.Reservation(nil), reservations...)
@@ -451,10 +464,13 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 
 // ─── Provider apply / leases ─────────────────────────────────────────────────
 
-// Apply writes both config files and restarts kea-dhcp4 + unbound.
+// Apply writes both config files and restarts kea-dhcp4 + unbound. Part of
+// netsvc.Provider's original, pre-NTP surface — not on the auto-apply path
+// (ReloadConfigs is), so it has no NTP-toggle context of its own; it always
+// renders without the ntp-servers option.
 func (s *Service) Apply(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string) (string, error) {
 	if !s.exec.IsDryRun() {
-		for _, f := range s.GenerateConfigs(c, res, blocked) {
+		for _, f := range s.GenerateConfigs(c, res, blocked, "") {
 			if err := os.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
 				return "", fmt.Errorf("write %s: %w", f.Path, err)
 			}

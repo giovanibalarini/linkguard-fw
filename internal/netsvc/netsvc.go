@@ -78,13 +78,18 @@ type Provider interface {
 	// Backend reports which engine this provider drives.
 	Backend() Backend
 	// GenerateConfigs renders the backend config files (pure, for UI preview
-	// before applying).
-	GenerateConfigs(c Config, reservations []Reservation, blockedDomains []string) []ConfigFile
+	// before applying). ntpServer is the firewall's LAN IP to advertise as
+	// DHCP option 42 (ntp-servers) when NTP-serve-the-LAN is enabled, or ""
+	// when it is not — passed in by the caller (internal/timesync's config
+	// lives in a different package) rather than read from the DB here, so
+	// this stays a pure function of its inputs.
+	GenerateConfigs(c Config, reservations []Reservation, blockedDomains []string, ntpServer string) []ConfigFile
 	// Apply writes the configs and restarts the services.
 	Apply(ctx context.Context, c Config, reservations []Reservation, blockedDomains []string) (string, error)
 	// ReloadConfigs writes the configs and reloads the services gracefully
-	// (validate + SIGHUP, no restart), used by the auto-apply flow.
-	ReloadConfigs(ctx context.Context, c Config, reservations []Reservation, blockedDomains []string) (string, error)
+	// (validate + SIGHUP, no restart), used by the auto-apply flow. ntpServer
+	// is the same DHCP option 42 input as GenerateConfigs.
+	ReloadConfigs(ctx context.Context, c Config, reservations []Reservation, blockedDomains []string, ntpServer string) (string, error)
 	// Leases returns the active DHCP leases.
 	Leases(ctx context.Context) ([]Lease, error)
 }

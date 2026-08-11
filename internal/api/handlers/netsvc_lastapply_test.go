@@ -12,13 +12,13 @@ import (
 type fakeNetsvcProvider struct{}
 
 func (fakeNetsvcProvider) Backend() netsvc.Backend { return netsvc.BackendKeaUnbound }
-func (fakeNetsvcProvider) GenerateConfigs(netsvc.Config, []netsvc.Reservation, []string) []netsvc.ConfigFile {
+func (fakeNetsvcProvider) GenerateConfigs(netsvc.Config, []netsvc.Reservation, []string, string) []netsvc.ConfigFile {
 	return nil
 }
 func (fakeNetsvcProvider) Apply(context.Context, netsvc.Config, []netsvc.Reservation, []string) (string, error) {
 	return "", nil
 }
-func (fakeNetsvcProvider) ReloadConfigs(context.Context, netsvc.Config, []netsvc.Reservation, []string) (string, error) {
+func (fakeNetsvcProvider) ReloadConfigs(context.Context, netsvc.Config, []netsvc.Reservation, []string, string) (string, error) {
 	return "", nil
 }
 func (fakeNetsvcProvider) Leases(context.Context) ([]netsvc.Lease, error) { return nil, nil }
