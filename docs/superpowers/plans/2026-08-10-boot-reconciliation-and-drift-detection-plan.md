@@ -1065,23 +1065,979 @@ git commit -m "feat(sysupdates): report pending package updates, flagging securi
 
 ---
 
-## Tarefas restantes (a detalhar antes de executar)
+### Task 5a: Pares de alerta novos em `internal/alerts`
 
-Escopo já fechado; serão detalhadas com código completo, no mesmo padrão das
-Tasks 1–4, antes de irem para execução:
+**Files:**
+- Modify: `internal/alerts/service.go`
+- Modify: `internal/alerts/service_test.go`
 
-- **Task 5 — vigias em `internal/monitoring`**: `checkFirewallNAT` (regra
-  viva bate com as WANs configuradas e todas existem em `/sys/class/net`),
-  `checkWANInterfaces` (todo link habilitado aponta para interface
-  existente), `checkDNSResolver` (`resolv.conf` = 127.0.0.1) no tick de 30s;
-  `UpdatesScheduler` (padrão `JournalScheduler`, intervalo 6h) consumindo
-  `sysupdates.Check` (Task 4). Quatro pares de alerta novos em
-  `internal/alerts`. Painel acende com qualquer pendência; alerta só é
-  **empurrado** quando houver atualização de **segurança** (evita spam sem
-  perder visibilidade).
-- **Task 6 — frontend**: rótulos em `SystemHealth.tsx` (`firewall-nat`
+**Interfaces:**
+- Consumes: `Service.Create`/`AutoResolve`/`createRecovery` (já existentes, `service.go:87`).
+- Produces: `FirewallNATDrift(detail string) error`/`FirewallNATOK() error`; `WANInterfaceMissing(detail string) error`/`WANInterfaceOK() error`; `DNSResolverDrift(detail string) error`/`DNSResolverOK() error`; `SecurityUpdatesPending(detail string) error`/`SecurityUpdatesNone() error` — consumidos pela Task 5b.
+
+- [ ] **Step 1: Escrever o teste que falha**
+
+Adicionar ao final de `internal/alerts/service_test.go` (conferir antes o
+helper de DB de teste já usado no arquivo e reaproveitá-lo — não criar outro):
+
+```go
+// TestConfigDriftAlertPairsResolveEachOther guards the contract every
+// paired alert in this package follows: the recovery side must auto-resolve
+// its problem counterpart, otherwise a fixed problem stays red forever on
+// the panel — which would defeat the whole point of these watchers.
+func TestConfigDriftAlertPairsResolveEachOther(t *testing.T) {
+	cases := []struct {
+		name        string
+		problemType string
+		raise       func(*Service) error
+		recover     func(*Service) error
+	}{
+		{"firewall-nat", TypeFirewallNATDrift,
+			func(s *Service) error { return s.FirewallNATDrift("enp4s0 não existe") },
+			func(s *Service) error { return s.FirewallNATOK() }},
+		{"wan-interface", TypeWANInterfaceMissing,
+			func(s *Service) error { return s.WANInterfaceMissing("WAN VIVO -> enp4s0") },
+			func(s *Service) error { return s.WANInterfaceOK() }},
+		{"dns-resolver", TypeDNSResolverDrift,
+			func(s *Service) error { return s.DNSResolverDrift("189.40.0.1") },
+			func(s *Service) error { return s.DNSResolverOK() }},
+		{"security-updates", TypeSecurityUpdatesPending,
+			func(s *Service) error { return s.SecurityUpdatesPending("2 pacotes") },
+			func(s *Service) error { return s.SecurityUpdatesNone() }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newAlertTestDB(t)
+			s := NewService(db)
+
+			if err := tc.raise(s); err != nil {
+				t.Fatalf("raise: %v", err)
+			}
+			open, err := db.ListAlerts(false, 50)
+			if err != nil {
+				t.Fatalf("ListAlerts: %v", err)
+			}
+			if !hasOpenAlertOfType(open, tc.problemType) {
+				t.Fatalf("expected an open %s alert, got %+v", tc.problemType, open)
+			}
+
+			if err := tc.recover(s); err != nil {
+				t.Fatalf("recover: %v", err)
+			}
+			open, err = db.ListAlerts(false, 50)
+			if err != nil {
+				t.Fatalf("ListAlerts: %v", err)
+			}
+			if hasOpenAlertOfType(open, tc.problemType) {
+				t.Errorf("%s should have been auto-resolved by its recovery call", tc.problemType)
+			}
+		})
+	}
+}
+
+func hasOpenAlertOfType(alerts []storage.Alert, alertType string) bool {
+	for _, a := range alerts {
+		if a.Type == alertType && !a.Resolved {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSecurityUpdatesPendingIsWarningNotCritical: a pending update is a
+// maintenance signal, not an outage — raising it as Critical would train the
+// operator to ignore Critical alerts.
+func TestSecurityUpdatesPendingIsWarningNotCritical(t *testing.T) {
+	db := newAlertTestDB(t)
+	s := NewService(db)
+
+	if err := s.SecurityUpdatesPending("2 pacotes"); err != nil {
+		t.Fatalf("SecurityUpdatesPending: %v", err)
+	}
+	open, err := db.ListAlerts(false, 50)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	for _, a := range open {
+		if a.Type == TypeSecurityUpdatesPending && a.Severity != SeverityWarning {
+			t.Errorf("severity = %q, want %q", a.Severity, SeverityWarning)
+		}
+	}
+}
+```
+
+Antes de rodar: conferir a assinatura real de `db.ListAlerts` e o nome do
+helper de DB de teste já existente no arquivo
+(`grep -n "func newAlertTestDB\|func.*testDB\|storage.Open" internal/alerts/service_test.go`)
+e ajustar as duas chamadas acima para os nomes reais. Se o helper tiver outro
+nome, usar o existente em vez de criar `newAlertTestDB`.
+
+- [ ] **Step 2: Rodar e confirmar que falha**
+
+```bash
+go test ./internal/alerts/... -run 'TestConfigDrift|TestSecurityUpdates' -v
+```
+
+Esperado: `FAIL` — `undefined: TypeFirewallNATDrift` e os oito métodos novos.
+
+- [ ] **Step 3: Implementar**
+
+Em `internal/alerts/service.go`, adicionar ao bloco de constantes de tipo
+(logo depois de `TypeJournalOK`):
+
+```go
+	TypeFirewallNATDrift       = "firewall_nat_drift"
+	TypeFirewallNATOK          = "firewall_nat_ok"
+	TypeWANInterfaceMissing    = "wan_interface_missing"
+	TypeWANInterfaceOK         = "wan_interface_ok"
+	TypeDNSResolverDrift       = "dns_resolver_drift"
+	TypeDNSResolverOK          = "dns_resolver_ok"
+	TypeSecurityUpdatesPending = "security_updates_pending"
+	TypeSecurityUpdatesNone    = "security_updates_none"
+```
+
+E os oito métodos, junto dos demais pares (depois de `JournalOK`):
+
+```go
+// FirewallNATDrift raises a critical alert when the live masquerade rule no
+// longer matches the configured WAN links — the exact failure that took
+// WAN1's NAT down in production on 2026-08-10 with no signal on the panel.
+// Critical because, unlike a degraded disk, it means traffic is not being
+// translated right now.
+func (s *Service) FirewallNATDrift(detail string) error {
+	return s.Create(TypeFirewallNATDrift, SeverityCritical, "Regra de NAT inconsistente",
+		"A regra de NAT ativa não corresponde às WANs configuradas: "+detail, "")
+}
+
+// FirewallNATOK clears FirewallNATDrift and notifies recovery.
+func (s *Service) FirewallNATOK() error {
+	s.AutoResolve(TypeFirewallNATDrift, "")
+	return s.createRecovery(TypeFirewallNATOK, "Regra de NAT consistente",
+		"A regra de NAT voltou a corresponder às WANs configuradas.", "")
+}
+
+// WANInterfaceMissing raises a critical alert when a configured WAN link
+// points at a network interface that does not exist on the box — typically
+// after a NIC rename (PCI reshuffle), which is what happened in production.
+func (s *Service) WANInterfaceMissing(detail string) error {
+	return s.Create(TypeWANInterfaceMissing, SeverityCritical, "Interface WAN inexistente",
+		"Um link WAN aponta para uma interface que não existe: "+detail, "")
+}
+
+// WANInterfaceOK clears WANInterfaceMissing and notifies recovery.
+func (s *Service) WANInterfaceOK() error {
+	s.AutoResolve(TypeWANInterfaceMissing, "")
+	return s.createRecovery(TypeWANInterfaceOK, "Interfaces WAN consistentes",
+		"Todos os links WAN apontam para interfaces existentes.", "")
+}
+
+// DNSResolverDrift raises a warning when the box is not using its own
+// resolver — it still resolves names, so it is not an outage, but the DNS
+// blocklist and query visibility are silently bypassed.
+func (s *Service) DNSResolverDrift(detail string) error {
+	return s.Create(TypeDNSResolverDrift, SeverityWarning, "Resolver DNS externo em uso",
+		"O sistema não está usando o resolver local (unbound): "+detail, "")
+}
+
+// DNSResolverOK clears DNSResolverDrift and notifies recovery.
+func (s *Service) DNSResolverOK() error {
+	s.AutoResolve(TypeDNSResolverDrift, "")
+	return s.createRecovery(TypeDNSResolverOK, "Resolver DNS local em uso",
+		"O sistema voltou a usar o resolver local (unbound).", "")
+}
+
+// SecurityUpdatesPending raises a warning when security updates are waiting
+// to be installed. Warning, not Critical: it is a maintenance signal, and
+// crying Critical over routine patching trains the operator to ignore
+// Critical alerts.
+func (s *Service) SecurityUpdatesPending(detail string) error {
+	return s.Create(TypeSecurityUpdatesPending, SeverityWarning, "Atualizações de segurança pendentes",
+		"Há atualizações de segurança do sistema aguardando instalação: "+detail, "")
+}
+
+// SecurityUpdatesNone clears SecurityUpdatesPending and notifies recovery.
+func (s *Service) SecurityUpdatesNone() error {
+	s.AutoResolve(TypeSecurityUpdatesPending, "")
+	return s.createRecovery(TypeSecurityUpdatesNone, "Sem atualizações de segurança pendentes",
+		"Não há atualizações de segurança aguardando instalação.", "")
+}
+```
+
+- [ ] **Step 4: Rodar e confirmar que passa**
+
+```bash
+gofmt -l internal/alerts/
+go test ./internal/alerts/... -v
+```
+
+Esperado: `PASS` em tudo.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/alerts/service.go internal/alerts/service_test.go
+git commit -m "feat(alerts): add config-drift and pending-security-update alert pairs"
+```
+
+---
+
+### Task 5b: Vigias de deriva no `internal/monitoring`
+
+**Files:**
+- Create: `internal/monitoring/driftchecks.go`
+- Create: `internal/monitoring/driftchecks_test.go`
+- Modify: `internal/monitoring/collector.go`
+
+**Interfaces:**
+- Consumes: `Collector` (campos `db`, `exec`, `alertSvc`, `nowFn`, `health`, `healthMu`); `observe`/`ensureMeta`/`transDown`/`transUp` (`healthchecks.go`); os pares de alerta da Task 5a; `db.GetLinks()`; `nftables.Family`/`Table` (`internal/nftables`).
+- Produces: `func (c *Collector) checkWANInterfaces()`, `func (c *Collector) checkFirewallNAT()`, `func (c *Collector) checkDNSResolver()` — chamados no tick do `Run`.
+
+- [ ] **Step 1: Escrever o teste que falha**
+
+Criar `internal/monitoring/driftchecks_test.go`:
+
+```go
+package monitoring
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// driftExec answers the specific read commands the drift checks issue,
+// keyed by the full command line, and reports which interfaces "exist".
+type driftExec struct {
+	responses map[string]string
+	err       error
+}
+
+func (e *driftExec) Execute(_ context.Context, _ string, _ ...string) (string, error) {
+	return "", nil
+}
+func (e *driftExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if e.err != nil {
+		return "", e.err
+	}
+	return e.responses[strings.Join(append([]string{cmd}, args...), " ")], nil
+}
+func (e *driftExec) IsDryRun() bool { return false }
+
+// TestCheckWANInterfacesFlagsMissingInterface is the regression test for the
+// 2026-08-10 incident: a WAN link kept pointing at enp4s0 after the NIC was
+// renamed to enp5s0, and nothing on the panel said so. This watcher is what
+// would have caught it at boot.
+func TestCheckWANInterfacesFlagsMissingInterface(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp4s0", true)
+	c.ifaceExists = func(name string) bool { return name == "enp5s0" }
+
+	c.checkWANInterfaces()
+	c.checkWANInterfaces() // downConfirm=2: the outage is declared on the confirming tick
+
+	if up := c.healthUp("wan:interface"); up {
+		t.Error("wan:interface should be down when a link points at a missing interface")
+	}
+}
+
+func TestCheckWANInterfacesHealthyWhenAllPresent(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+	c.ifaceExists = func(name string) bool { return name == "enp5s0" }
+
+	c.checkWANInterfaces()
+
+	if up := c.healthUp("wan:interface"); !up {
+		t.Error("wan:interface should be up when every link's interface exists")
+	}
+}
+
+// A disabled link is not a live WAN — it must not raise an alert.
+func TestCheckWANInterfacesIgnoresDisabledLinks(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VELHA", "enp9s0", false)
+	c.ifaceExists = func(name string) bool { return false }
+
+	c.checkWANInterfaces()
+	c.checkWANInterfaces()
+
+	if up := c.healthUp("wan:interface"); !up {
+		t.Error("a disabled link must not mark wan:interface as down")
+	}
+}
+
+// TestCheckFirewallNATFlagsStaleRule: the live rule still references the old
+// interface while the configured link moved on — precisely the state
+// production was left in.
+func TestCheckFirewallNATFlagsStaleRule(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+	c.exec = &driftExec{responses: map[string]string{
+		"nft list chain inet linkguard postrouting": `table inet linkguard {
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname { "enp2s0", "enp4s0" } masquerade
+	}
+}`,
+	}}
+
+	c.checkFirewallNAT()
+	c.checkFirewallNAT()
+
+	if up := c.healthUp("firewall:nat"); up {
+		t.Error("firewall:nat should be down when the live rule omits a configured WAN")
+	}
+}
+
+func TestCheckFirewallNATHealthyWhenRuleMatches(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+	c.exec = &driftExec{responses: map[string]string{
+		"nft list chain inet linkguard postrouting": `		oifname { "enp5s0" } masquerade`,
+	}}
+
+	c.checkFirewallNAT()
+
+	if up := c.healthUp("firewall:nat"); !up {
+		t.Error("firewall:nat should be up when the live rule covers every configured WAN")
+	}
+}
+
+// No configured WANs means there is nothing to verify — the watcher must not
+// invent a problem (and must not claim health either; it simply stays out of
+// the way).
+func TestCheckFirewallNATSkipsWhenNoWANsConfigured(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.exec = &driftExec{responses: map[string]string{}}
+
+	c.checkFirewallNAT()
+
+	if _, known := c.healthState("firewall:nat"); known {
+		t.Error("firewall:nat must not be reported at all when no WAN is configured")
+	}
+}
+
+func TestCheckDNSResolverFlagsExternalResolver(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.resolvConfPath = writeTempFile(t, "nameserver 189.40.0.1\n")
+
+	c.checkDNSResolver()
+	c.checkDNSResolver()
+
+	if up := c.healthUp("dns:resolver"); up {
+		t.Error("dns:resolver should be down when resolv.conf points at an external server")
+	}
+}
+
+func TestCheckDNSResolverHealthyOnLocalResolver(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.resolvConfPath = writeTempFile(t, "# managed by linkguard\nnameserver 127.0.0.1\n")
+
+	c.checkDNSResolver()
+
+	if up := c.healthUp("dns:resolver"); !up {
+		t.Error("dns:resolver should be up when resolv.conf points at 127.0.0.1")
+	}
+}
+
+func writeTempFile(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return p
+}
+```
+
+Os helpers `newDriftTestCollector`, `seedLink`, `healthUp` e `healthState`
+precisam existir. Antes de escrevê-los, procurar equivalentes já no pacote
+(`grep -rn "func newTestCollector\|func.*Collector(t \*testing.T)" internal/monitoring/*_test.go`)
+e **reaproveitar** o que houver, adaptando só o que faltar. Se não houver,
+adicionar ao mesmo arquivo:
+
+```go
+func newDriftTestCollector(t *testing.T) *Collector {
+	t.Helper()
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	c := NewCollector(db, nil, alerts.NewService(db), &driftExec{responses: map[string]string{}}, nil)
+	c.nowFn = func() int64 { return 1 }
+	return c
+}
+
+func seedLink(t *testing.T, c *Collector, name, iface string, enabled bool) {
+	t.Helper()
+	if err := c.db.CreateLink(&storage.Link{ID: name, Name: name, Interface: iface, Weight: 1, Enabled: enabled}); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+}
+
+// healthUp reports the item's current up/down state; healthState also
+// reports whether the item exists at all.
+func (c *Collector) healthUp(key string) bool {
+	up, _ := c.healthState(key)
+	return up
+}
+
+func (c *Collector) healthState(key string) (up, known bool) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	st := c.health[key]
+	if st == nil {
+		return false, false
+	}
+	return st.up, true
+}
+```
+
+(`healthUp`/`healthState` são helpers só-de-teste — devem ficar no arquivo
+`_test.go`, nunca no código de produção.)
+
+- [ ] **Step 2: Rodar e confirmar que falha**
+
+```bash
+go test ./internal/monitoring/... -run 'TestCheckWANInterfaces|TestCheckFirewallNAT|TestCheckDNSResolver' -v
+```
+
+Esperado: `FAIL` — `c.ifaceExists`, `c.resolvConfPath` e os três métodos não existem.
+
+- [ ] **Step 3: Implementar**
+
+Criar `internal/monitoring/driftchecks.go`:
+
+```go
+package monitoring
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+)
+
+// Config drift watchers.
+//
+// Why this file exists: on 2026-08-10 a NIC rename left a WAN link pointing
+// at an interface that no longer existed and the firewall's masquerade rule
+// stranded on the old name. Every existing health check stayed green —
+// `systemctl is-active nftables` was perfectly happy serving a stale rule —
+// so the operator only found it by SSHing in. These checks close that blind
+// spot: they compare what LinkGuard APPLIED against what the system
+// actually LOOKS LIKE, which no other check in this package does.
+//
+// All three are read-only and cheap enough for the 30s collector tick.
+
+// defaultResolvConfPath is the file checkDNSResolver reads; overridden in tests.
+const defaultResolvConfPath = "/etc/resolv.conf"
+
+// enabledWANInterfaces returns the interfaces of every enabled WAN link —
+// the source of truth both checkWANInterfaces and checkFirewallNAT compare
+// reality against.
+func (c *Collector) enabledWANInterfaces() []string {
+	ls, err := c.db.GetLinks()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(ls))
+	for _, l := range ls {
+		if l.Enabled && l.Interface != "" {
+			out = append(out, l.Interface)
+		}
+	}
+	return out
+}
+
+// interfaceExists reports whether the kernel currently has this interface.
+// Uses /sys/class/net directly (no exec) — a rename shows up immediately.
+func interfaceExists(name string) bool {
+	_, err := os.Stat("/sys/class/net/" + name)
+	return err == nil
+}
+
+// checkWANInterfaces verifies every enabled WAN link points at an interface
+// the kernel actually has. This is the watcher that would have caught the
+// 2026-08-10 incident the moment the box came up.
+func (c *Collector) checkWANInterfaces() {
+	ls, err := c.db.GetLinks()
+	if err != nil {
+		return // cannot evaluate this tick; don't invent a verdict
+	}
+	exists := c.ifaceExists
+	if exists == nil {
+		exists = interfaceExists
+	}
+
+	var missing []string
+	for _, l := range ls {
+		if !l.Enabled || l.Interface == "" {
+			continue
+		}
+		if !exists(l.Interface) {
+			missing = append(missing, fmt.Sprintf("%s -> %s", l.Name, l.Interface))
+		}
+	}
+
+	tr := c.observe("wan:interface", len(missing) == 0, c.nowFn())
+	c.ensureMeta("wan:interface", "wan-interface", "resource")
+	switch tr {
+	case transDown:
+		_ = c.alertSvc.WANInterfaceMissing(strings.Join(missing, ", "))
+	case transUp:
+		_ = c.alertSvc.WANInterfaceOK()
+	}
+}
+
+// checkFirewallNAT verifies the LIVE masquerade rule covers exactly the
+// configured WAN interfaces. `systemctl is-active nftables` cannot see this:
+// the service is happily active while the rule inside it is stale.
+func (c *Collector) checkFirewallNAT() {
+	wans := c.enabledWANInterfaces()
+	if len(wans) == 0 {
+		return // nothing configured to verify against
+	}
+	out, err := c.exec.ExecuteRead(context.Background(), "nft", "list", "chain",
+		nftables.Family, nftables.Table, "postrouting")
+	if err != nil {
+		return // table/chain unreadable this tick — no verdict rather than a false one
+	}
+
+	var missing []string
+	for _, iface := range wans {
+		if !strings.Contains(out, `"`+iface+`"`) {
+			missing = append(missing, iface)
+		}
+	}
+	detail := ""
+	if len(missing) > 0 {
+		detail = "faltando na regra: " + strings.Join(missing, ", ")
+	}
+
+	tr := c.observe("firewall:nat", len(missing) == 0, c.nowFn())
+	c.ensureMeta("firewall:nat", "firewall-nat", "resource")
+	switch tr {
+	case transDown:
+		_ = c.alertSvc.FirewallNATDrift(detail)
+	case transUp:
+		_ = c.alertSvc.FirewallNATOK()
+	}
+}
+
+// checkDNSResolver verifies the box resolves through its own unbound rather
+// than the ISP's servers — the drift found in production, caused by
+// dhclient rewriting resolv.conf on lease renewal.
+func (c *Collector) checkDNSResolver() {
+	path := c.resolvConfPath
+	if path == "" {
+		path = defaultResolvConfPath
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return // unreadable this tick; no verdict
+	}
+
+	local := false
+	var external []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "nameserver ") {
+			continue
+		}
+		addr := strings.TrimSpace(strings.TrimPrefix(line, "nameserver "))
+		if addr == "127.0.0.1" || addr == "::1" {
+			local = true
+		} else if addr != "" {
+			external = append(external, addr)
+		}
+	}
+
+	tr := c.observe("dns:resolver", local && len(external) == 0, c.nowFn())
+	c.ensureMeta("dns:resolver", "dns-resolver", "resource")
+	switch tr {
+	case transDown:
+		_ = c.alertSvc.DNSResolverDrift(strings.Join(external, ", "))
+	case transUp:
+		_ = c.alertSvc.DNSResolverOK()
+	}
+}
+```
+
+Em `internal/monitoring/collector.go`, adicionar dois campos à struct
+`Collector` (junto de `bootIDFn`, que já segue esse padrão de override em teste):
+
+```go
+	ifaceExists    func(string) bool // overridable in tests; nil means the real /sys/class/net check
+	resolvConfPath string            // overridable in tests; empty means defaultResolvConfPath
+```
+
+E chamar os três checks dentro do bloco `if cfg.Enabled { ... }` do `Run`,
+logo depois de `c.checkSMART(cfg)`:
+
+```go
+			c.checkWANInterfaces()
+			c.checkFirewallNAT()
+			c.checkDNSResolver()
+```
+
+- [ ] **Step 4: Rodar e confirmar que passa**
+
+```bash
+gofmt -l internal/monitoring/
+go test ./internal/monitoring/... -v
+go build ./...
+go vet ./...
+```
+
+Esperado: `PASS` em tudo (novos e pré-existentes); build e vet limpos.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/monitoring/driftchecks.go internal/monitoring/driftchecks_test.go internal/monitoring/collector.go
+git commit -m "feat(monitoring): watch for NAT/WAN-interface/DNS-resolver config drift"
+```
+
+---
+
+### Task 5c: `UpdatesScheduler` — vigia de atualizações pendentes
+
+**Files:**
+- Create: `internal/monitoring/updatescheck.go`
+- Create: `internal/monitoring/updatescheck_test.go`
+- Modify: `internal/monitoring/config.go`
+- Modify: `cmd/linkguard-fw/main.go`
+
+**Interfaces:**
+- Consumes: `sysupdates.Check`/`Report` (Task 4); `Collector` (`db`, `exec`, `alertSvc`, `nowFn`, `observe`, `ensureMeta`); `alerts.SecurityUpdatesPending`/`SecurityUpdatesNone` (Task 5a); padrão de `JournalScheduler` (`internal/monitoring/journalcheck.go`).
+- Produces: `type UpdatesScheduler struct{...}`; `func NewUpdatesScheduler(col *Collector) *UpdatesScheduler`; `func (u *UpdatesScheduler) Run(ctx context.Context)`; `func (u *UpdatesScheduler) RunOnce(ctx context.Context)`; `func (c *Collector) LastUpdatesReport() sysupdates.Report` — consumido pelo endpoint da Task 6.
+
+- [ ] **Step 1: Escrever o teste que falha**
+
+Criar `internal/monitoring/updatescheck_test.go`:
+
+```go
+package monitoring
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+type updatesExec struct{ out string }
+
+func (e *updatesExec) Execute(_ context.Context, _ string, _ ...string) (string, error) {
+	return "", nil
+}
+func (e *updatesExec) ExecuteRead(_ context.Context, _ string, _ ...string) (string, error) {
+	return e.out, nil
+}
+func (e *updatesExec) IsDryRun() bool { return false }
+
+const securitySample = "Inst linux-image-amd64 [6.12.94-1] (6.12.101-1 Debian-Security:13/stable-security [amd64])\n"
+const plainSample = "Inst curl [8.14.1-1] (8.14.2-1 Debian:13/stable [amd64])\n"
+
+// The panel must light up for ANY pending update — that is the operator's
+// stated need ("eu deveria só olhar para ele") — so the health item goes
+// down on a plain update too.
+func TestUpdatesSchedulerPanelReflectsAnyPendingUpdate(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.exec = &updatesExec{out: plainSample}
+	u := NewUpdatesScheduler(c)
+
+	u.RunOnce(context.Background())
+	u.RunOnce(context.Background())
+
+	if up := c.healthUp("system:updates"); up {
+		t.Error("system:updates should be down while any update is pending")
+	}
+}
+
+// But a push notification only fires for SECURITY updates — routine
+// packages would spam the operator into ignoring the channel.
+func TestUpdatesSchedulerAlertsOnlyForSecurityUpdates(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.exec = &updatesExec{out: plainSample}
+	u := NewUpdatesScheduler(c)
+
+	u.RunOnce(context.Background())
+	u.RunOnce(context.Background())
+
+	open, err := c.db.ListAlerts(false, 50)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	for _, a := range open {
+		if a.Type == alerts.TypeSecurityUpdatesPending {
+			t.Error("a non-security update must not raise the security alert")
+		}
+	}
+}
+
+func TestUpdatesSchedulerAlertsOnSecurityUpdate(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.exec = &updatesExec{out: securitySample}
+	u := NewUpdatesScheduler(c)
+
+	u.RunOnce(context.Background())
+	u.RunOnce(context.Background())
+
+	open, err := c.db.ListAlerts(false, 50)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	found := false
+	for _, a := range open {
+		if a.Type == alerts.TypeSecurityUpdatesPending {
+			found = true
+			if !strings.Contains(a.Message, "linux-image-amd64") {
+				t.Errorf("alert should name the pending package, got: %q", a.Message)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected a pending-security-update alert")
+	}
+}
+
+// The last report is cached so the UI can list the packages without paying
+// for an apt call on every page load.
+func TestUpdatesSchedulerCachesTheReportForTheUI(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.exec = &updatesExec{out: securitySample}
+	u := NewUpdatesScheduler(c)
+
+	u.RunOnce(context.Background())
+
+	rep := c.LastUpdatesReport()
+	if rep.Total != 1 || rep.Security != 1 {
+		t.Fatalf("cached report = %+v, want Total=1 Security=1", rep)
+	}
+	if len(rep.Packages) != 1 || rep.Packages[0].Name != "linux-image-amd64" {
+		t.Errorf("cached packages = %+v", rep.Packages)
+	}
+}
+```
+
+Adicionar `"github.com/giovanibalarini/linkguard-fw/internal/alerts"` ao import do arquivo.
+
+- [ ] **Step 2: Rodar e confirmar que falha**
+
+```bash
+go test ./internal/monitoring/... -run TestUpdatesScheduler -v
+```
+
+Esperado: `FAIL` — `NewUpdatesScheduler`/`LastUpdatesReport` não existem.
+
+- [ ] **Step 3: Implementar**
+
+Criar `internal/monitoring/updatescheck.go`:
+
+```go
+package monitoring
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/sysupdates"
+)
+
+// updatesLastRunSettingKey persists the unix timestamp of the last check so
+// the interval survives restarts (mirrors journalLastVerifySettingKey).
+const updatesLastRunSettingKey = "sysupdates_last_run"
+
+// updatesTickInterval is how often the scheduler wakes to decide whether it
+// is time to check for real — coarse, like JournalScheduler's.
+const updatesTickInterval = 1 * time.Hour
+
+// UpdatesScheduler periodically reports pending system package updates.
+//
+// It runs on its own ticker rather than inside the Collector's 30s loop
+// because shelling out to apt is comparatively slow, and pending updates
+// change on the order of days — not seconds.
+//
+// Deliberate split between panel and notification: the health item goes down
+// for ANY pending update (so the operator sees it just by looking at the
+// dashboard, which is the whole point), but a push alert only fires for
+// SECURITY updates — routine package churn would train the operator to
+// ignore the notification channel.
+type UpdatesScheduler struct {
+	col *Collector
+}
+
+// NewUpdatesScheduler creates a scheduler bound to an existing Collector
+// (reuses its db/exec/alertSvc/health bookkeeping).
+func NewUpdatesScheduler(col *Collector) *UpdatesScheduler {
+	return &UpdatesScheduler{col: col}
+}
+
+// Run starts the scheduler loop and blocks until ctx is done.
+func (u *UpdatesScheduler) Run(ctx context.Context) {
+	slog.Info("system updates scheduler started", "tick_interval", updatesTickInterval)
+	ticker := time.NewTicker(updatesTickInterval)
+	defer ticker.Stop()
+
+	u.maybeRun(ctx) // check once at startup instead of waiting a full tick
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			u.maybeRun(ctx)
+		}
+	}
+}
+
+func (u *UpdatesScheduler) maybeRun(ctx context.Context) {
+	cfg := LoadConfig(u.col.db)
+	if !cfg.Enabled {
+		return
+	}
+	interval := time.Duration(cfg.UpdatesCheckIntervalHours) * time.Hour
+	last := u.lastRun()
+	if last != 0 && time.Since(time.Unix(last, 0)) < interval {
+		return
+	}
+	u.RunOnce(ctx)
+}
+
+// RunOnce checks for pending updates immediately and updates the health item
+// and (for security updates) the alert.
+func (u *UpdatesScheduler) RunOnce(ctx context.Context) {
+	rep, err := sysupdates.Check(ctx, u.col.exec)
+	_ = u.col.db.SetSetting(updatesLastRunSettingKey, strconv.FormatInt(time.Now().Unix(), 10))
+	if err != nil {
+		slog.Warn("não foi possível verificar atualizações do sistema", "err", err)
+		return // no verdict rather than a false "up to date"
+	}
+
+	u.col.setLastUpdatesReport(rep)
+
+	tr := u.col.observe("system:updates", rep.Total == 0, u.col.nowFn())
+	u.col.ensureMeta("system:updates", "system-updates", "resource")
+
+	if rep.Security > 0 {
+		if tr == transDown {
+			_ = u.col.alertSvc.SecurityUpdatesPending(describeUpdates(rep))
+		}
+		return
+	}
+	if tr == transUp {
+		_ = u.col.alertSvc.SecurityUpdatesNone()
+	}
+}
+
+// describeUpdates renders a short, operator-readable summary naming the
+// security packages (capped so a large backlog doesn't produce a wall of
+// text in a Telegram/e-mail notification).
+func describeUpdates(rep sysupdates.Report) string {
+	const maxNamed = 5
+	names := make([]string, 0, maxNamed)
+	for _, p := range rep.Packages {
+		if !p.Security {
+			continue
+		}
+		if len(names) == maxNamed {
+			names = append(names, "…")
+			break
+		}
+		names = append(names, p.Name)
+	}
+	return fmt.Sprintf("%d de segurança (de %d no total): %s",
+		rep.Security, rep.Total, strings.Join(names, ", "))
+}
+
+func (u *UpdatesScheduler) lastRun() int64 {
+	raw, _ := u.col.db.GetSetting(updatesLastRunSettingKey)
+	v, _ := strconv.ParseInt(raw, 10, 64)
+	return v
+}
+```
+
+Adicionar ao `Collector` (em `collector.go`) o cache do último relatório,
+protegido pelo mutex já existente:
+
+```go
+	lastUpdates sysupdates.Report // last pending-updates report, for the UI
+```
+
+e os dois acessores (no mesmo arquivo, junto dos outros métodos do Collector):
+
+```go
+// setLastUpdatesReport caches the most recent pending-updates report so the
+// UI can list packages without paying for an apt call per page load.
+func (c *Collector) setLastUpdatesReport(rep sysupdates.Report) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	c.lastUpdates = rep
+}
+
+// LastUpdatesReport returns the cached pending-updates report.
+func (c *Collector) LastUpdatesReport() sysupdates.Report {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	return c.lastUpdates
+}
+```
+
+Em `internal/monitoring/config.go`, adicionar o campo à `Config` e seu default
+em `LoadConfig` (seguir exatamente o padrão de clamp dos campos existentes,
+ex.: `JournalVerifyIntervalDays`):
+
+```go
+	UpdatesCheckIntervalHours int `json:"updates_check_interval_hours"`
+```
+
+com default `6` e clamp mínimo de `1` (um intervalo zero faria a checagem
+rodar a cada tick de uma hora sem necessidade).
+
+Em `cmd/linkguard-fw/main.go`, junto do `journalSched` (linhas ~194 e ~287):
+
+```go
+	updatesSched := monitoring.NewUpdatesScheduler(metricsCollector)
+```
+```go
+	go updatesSched.Run(ctx)
+```
+
+- [ ] **Step 4: Rodar e confirmar que passa**
+
+```bash
+gofmt -l internal/monitoring/ cmd/
+go test ./internal/monitoring/... -v
+go build ./...
+go vet ./...
+```
+
+Esperado: `PASS` em tudo; build e vet limpos.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/monitoring/updatescheck.go internal/monitoring/updatescheck_test.go internal/monitoring/collector.go internal/monitoring/config.go cmd/linkguard-fw/main.go
+git commit -m "feat(monitoring): watch pending system updates, alerting on security ones"
+```
+
+---
+
+## Task 6 (a detalhar antes de executar)
+
+- **Frontend + endpoint**: rótulos em `SystemHealth.tsx` (`firewall-nat`
   "Regra de NAT", `wan-interface` "Interfaces WAN", `dns-resolver`
-  "Resolver DNS", `system-updates` "Atualizações do sistema") e a lista
-  expansível de pacotes pendentes via novo endpoint
-  `GET /api/system/updates` (permissão `PermSystemRead`), seguindo a
-  preferência já registrada por resumo colapsado + expandir.
+  "Resolver DNS", `system-updates` "Atualizações do sistema"); novo endpoint
+  `GET /api/system/updates` (permissão `PermSystemRead`) servindo
+  `Collector.LastUpdatesReport()`; lista expansível de pacotes pendentes na
+  UI, seguindo a preferência já registrada por resumo colapsado + expandir.
