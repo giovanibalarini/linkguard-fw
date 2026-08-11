@@ -34,6 +34,23 @@ func (h *NftablesHandler) Ruleset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"ruleset": rs})
 }
 
+// Overview returns every chain of `table inet linkguard` and its rules —
+// handle, raw expression, counters (when present), and origin
+// classification (managed vs. the admin's own, plus which control owns a
+// managed rule) — the structured view behind the unified Firewall overview
+// page (design spec §3). Read-only.
+func (h *NftablesHandler) Overview(w http.ResponseWriter, r *http.Request) {
+	chains, err := h.svc.ListRuleset(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if chains == nil {
+		chains = []nftables.ChainInfo{}
+	}
+	writeJSON(w, http.StatusOK, chains)
+}
+
 // Managed returns the editable element-level view (host_wan map + sets).
 func (h *NftablesHandler) Managed(w http.ResponseWriter, r *http.Request) {
 	m, err := h.svc.Managed(r.Context())

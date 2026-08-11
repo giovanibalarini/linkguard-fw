@@ -215,6 +215,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// nftables (native firewall management — replaces iptables)
 		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db)
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/overview", nftH.Overview)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/ruleset", nftH.Ruleset)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/managed", nftH.Managed)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/backups", nftH.ListBackups)
