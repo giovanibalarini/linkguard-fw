@@ -57,6 +57,22 @@ type ChainRule struct {
 	// disable state at all.
 	ID      string `json:"id,omitempty"`
 	Enabled *bool  `json:"enabled,omitempty"`
+
+	// Applied is C-3's distinct third state: "configured (Enabled=true) but
+	// not actually in effect in nft" — never conflated with Enabled=true
+	// meaning "in effect", which was the bug (MergeUserRules used to stamp
+	// Enabled=true on a DB rule with no live counterpart at all, so the
+	// panel — the only surface an admin has to verify what the firewall
+	// really does — asserted a rule was active when nft never accepted it).
+	// Populated true for every rule actually read from the live table
+	// (parseChainRuleLine) and for a user_rules entry MergeUserRules paired
+	// to a live rule by identity (I-4); left false for a disabled rule
+	// (by design — it was never sent to nft) and for an enabled DB rule
+	// MergeUserRules could not find a matching live counterpart for.
+	// Meaningful only where Enabled is non-nil (user_rules); irrelevant
+	// elsewhere, where it defaults true along with every other rule read
+	// straight off the live table.
+	Applied bool `json:"applied"`
 }
 
 var (
@@ -155,7 +171,11 @@ func parseTableRuleset(out string) []ChainInfo {
 // parseChainRuleLine turns one rule line (handle comment and counter clause
 // stripped out along the way) into a ChainRule.
 func parseChainRuleLine(chainName, line string) ChainRule {
-	rule := ChainRule{Chain: chainName}
+	// Applied: true — this rule was read straight off the live table, so by
+	// definition it is in effect. MergeUserRules is the only place that
+	// ever overrides this to false, for a user_rules row it could not
+	// verify (see ChainRule.Applied's doc comment).
+	rule := ChainRule{Chain: chainName, Applied: true}
 	clean := line
 
 	if hm := reHandle.FindStringSubmatch(clean); hm != nil {

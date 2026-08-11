@@ -622,6 +622,55 @@ func buildRuleTokens(f RuleFields) ([]string, error) {
 	return t, nil
 }
 
+// expressionTokens renders f into the exact token sequence buildRuleTokens
+// would hand to nft, minus the literal "counter" keyword. Every rule this
+// package builds always carries it, so on its own it carries no identifying
+// information — and ListUserRules/ListRuleset strip the whole "counter
+// packets N bytes M" runtime clause, keyword included, out of a live rule's
+// text (packet/byte counts are instance state, not part of what the rule
+// means). Stripping it here the same way lets the two be compared, word for
+// word, as the identical rule they claim to be.
+func expressionTokens(f RuleFields) (string, error) {
+	tokens, err := buildRuleTokens(f)
+	if err != nil {
+		return "", err
+	}
+	out := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		if tok == "counter" {
+			continue
+		}
+		out = append(out, tok)
+	}
+	return strings.Join(out, " "), nil
+}
+
+// ExpressionMatches reports whether f, once rendered and normalized exactly
+// like a live rule's own text already is (see expressionTokens), equals
+// live word for word. This is the single building block behind two
+// independent honesty checks that both boil down to the same question —
+// "does this structured RuleFields really mean what this raw nft text
+// says" — and where a false positive was a documented production risk:
+//
+//   - C-2 (internal/firewallrules.ImportOnce's round-trip check): a rule
+//     richer than the 7-field model (e.g. `ct state established,related
+//     counter accept`) best-effort-parses into whatever survived (here,
+//     just {Action: accept}) — which then silently means "accept
+//     everything" once re-rendered, not what the live rule actually said.
+//   - I-4 (MergeUserRules' live-rule identity check): pairing a DB row to
+//     a live nft rule by position alone attributes one rule's handle and
+//     counters to a different rule the moment the two lists diverge.
+//
+// A mismatch in either case must fall back to an honest "could not verify"
+// state rather than silently treating the parsed fields as equivalent.
+func ExpressionMatches(f RuleFields, live string) bool {
+	expected, err := expressionTokens(f)
+	if err != nil {
+		return false
+	}
+	return expected == strings.Join(strings.Fields(live), " ")
+}
+
 // parseRuleFields best-effort parses our generated rule text back into fields
 // (so the edit modal can pre-fill). Unknown tokens are ignored.
 func parseRuleFields(clean string) RuleFields {

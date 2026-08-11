@@ -134,17 +134,34 @@ func renderEnabledUserRules(rules []StoredRule) (tokenSets [][]string, skipped i
 // position order, whether or not it made it into nft. It assumes
 // ReconcileUserRules has already run against the same dbRules — so
 // nftChain.Rules is exactly the enabled subset, in the same relative order —
-// and walks both lists in lockstep: an enabled rule consumes the next live
-// nft rule (carrying its real handle and counters), a disabled rule gets a
-// synthetic entry with no handle and HasCounter=false ("not measured", never
-// a fake zero — it was never sent to nft at all, see ChainRule's doc
-// comment). Any live rules left over past the last DB rule (should not
+// and walks both lists in lockstep: an enabled rule claims the next live
+// nft rule (carrying its real handle and counters) ONLY when that live
+// rule's expression actually matches what this DB row would render
+// (ExpressionMatches, I-4); anything else — a disabled rule, or an enabled
+// one with no matching live counterpart — gets a synthetic entry with no
+// handle, HasCounter=false ("not measured", never a fake zero — see
+// ChainRule's doc comment) and Applied=false (C-3: "configured but not
+// actually in effect", never confused with Enabled=true meaning "in
+// effect"). Any live rules left over past the last DB rule (should not
 // happen if the reconcile ran, but never silently dropped) are appended
-// as-is, marked enabled.
+// as-is, marked enabled and applied.
+//
+// I-4: before this fix, an enabled DB rule always consumed the next live
+// entry by position alone, with no check that the two actually agreed on
+// what the rule says. The moment the two lists diverged even slightly (a
+// reconcile that failed partway — the exact scenario C-1 used to cause — or
+// any other transient mismatch), every DB row from that point on was paired
+// with the wrong live rule: a handle and counters attributed to a rule that
+// doesn't own them, and the overview's click-through editing a different
+// rule than the one shown. Comparing the rendered expression before
+// consuming a live entry, and falling back to "not applied" on a mismatch
+// (without advancing past that live entry, so a later DB row still gets a
+// chance to match it), makes a wrong attribution impossible: a rule is only
+// ever shown as applied when it demonstrably is.
 func MergeUserRules(dbRules []StoredRule, nftChain ChainInfo) ChainInfo {
 	sorted := make([]StoredRule, len(dbRules))
 	copy(sorted, dbRules)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
 
 	merged := ChainInfo{
 		Name: nftChain.Name, Type: nftChain.Type, Hook: nftChain.Hook,
@@ -158,13 +175,17 @@ func MergeUserRules(dbRules []StoredRule, nftChain ChainInfo) ChainInfo {
 	for _, r := range sorted {
 		if r.Enabled {
 			var rule ChainRule
-			if li < len(live) {
+			if li < len(live) && ExpressionMatches(r.Fields, live[li].Expression) {
 				rule = live[li]
+				rule.Applied = true
 				li++
 			} else {
-				// Defensive fallback: nft has fewer rules than expected (a
-				// reconcile hasn't run yet, or failed partway). Render what we
-				// know from the DB rather than dropping the row silently.
+				// No live entry left, or the next one belongs to some other
+				// rule entirely (a divergence between the DB and the live
+				// chain) — render what we know from the DB instead of
+				// misattributing a handle/counters that aren't this rule's.
+				// li is deliberately NOT advanced: that live entry stays
+				// available for a later DB row to match.
 				rule = syntheticUserRule(r)
 			}
 			rule.ID = r.ID
@@ -182,6 +203,7 @@ func MergeUserRules(dbRules []StoredRule, nftChain ChainInfo) ChainInfo {
 	for ; li < len(live); li++ {
 		rule := live[li]
 		rule.Enabled = &trueVal
+		rule.Applied = true
 		merged.Rules = append(merged.Rules, rule)
 	}
 
