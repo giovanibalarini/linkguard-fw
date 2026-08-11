@@ -1,0 +1,286 @@
+package firewallrules_test
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+)
+
+// fakeExec is a minimal firewall.Executor: it answers ListUserRules'
+// `nft -a list chain ... user_rules` with a configurable fixture and records
+// every mutating command so ReconcileUserRules' output can be asserted.
+type fakeExec struct {
+	userRulesOut string
+	dryRun       bool
+	executed     []string
+}
+
+func (f *fakeExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	f.executed = append(f.executed, cmd+" "+strings.Join(args, " "))
+	return "", nil
+}
+
+func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "-a list chain") && strings.Contains(joined, "user_rules") {
+		return f.userRulesOut, nil
+	}
+	return "table inet linkguard {\n}\n", nil // Persist's `nft list table` read
+}
+
+func (f *fakeExec) IsDryRun() bool { return f.dryRun }
+
+func newTestDB(t *testing.T) *storage.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// twoRulesFixture mirrors real `nft -a list chain inet linkguard user_rules`
+// output: two rules, each carrying the `# handle N` comment ListUserRules
+// relies on, in the order nft prints them (evaluation order).
+const twoRulesFixture = `table inet linkguard {
+	chain user_rules {
+		ip saddr 192.168.3.50 tcp dport 22 counter packets 10 bytes 600 accept # handle 5
+		ip daddr 203.0.113.5 counter packets 0 bytes 0 drop # handle 7
+	}
+}
+`
+
+func TestImportOnceImportsExistingRulesPreservingOrder(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{userRulesOut: twoRulesFixture}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	if err := svc.ImportOnce(context.Background()); err != nil {
+		t.Fatalf("ImportOnce: %v", err)
+	}
+
+	rules, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 imported rules, got %d: %+v", len(rules), rules)
+	}
+	if rules[0].Action != "accept" || rules[0].Saddr != "192.168.3.50" || rules[0].Proto != "tcp" || rules[0].Dport != "22" {
+		t.Errorf("expected rule 0 to match the first nft rule, got %+v", rules[0])
+	}
+	if rules[1].Action != "drop" || rules[1].Daddr != "203.0.113.5" {
+		t.Errorf("expected rule 1 to match the second nft rule, got %+v", rules[1])
+	}
+	if rules[0].Position >= rules[1].Position {
+		t.Errorf("expected order preserved (position 0 before 1), got %d, %d", rules[0].Position, rules[1].Position)
+	}
+	if !rules[0].Enabled || !rules[1].Enabled {
+		t.Errorf("expected imported rules to start enabled, got %+v", rules)
+	}
+
+	flag, err := db.GetSetting(firewallrules.ImportedSettingKey)
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if flag == "" {
+		t.Error("expected the import guard to be set after ImportOnce")
+	}
+}
+
+func TestImportOnceRunsOnlyOnce(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{userRulesOut: twoRulesFixture}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	if err := svc.ImportOnce(context.Background()); err != nil {
+		t.Fatalf("first ImportOnce: %v", err)
+	}
+
+	// Simulate the nft chain gaining a rule between boots (should never be
+	// picked up by a second ImportOnce — the guard already tripped).
+	exec.userRulesOut = twoRulesFixture + "" // unchanged is fine; add a third below
+	exec.userRulesOut = `table inet linkguard {
+	chain user_rules {
+		ip saddr 192.168.3.50 tcp dport 22 counter packets 10 bytes 600 accept # handle 5
+		ip daddr 203.0.113.5 counter packets 0 bytes 0 drop # handle 7
+		ip saddr 10.0.0.9 counter packets 0 bytes 0 drop # handle 9
+	}
+}
+`
+	if err := svc.ImportOnce(context.Background()); err != nil {
+		t.Fatalf("second ImportOnce: %v", err)
+	}
+
+	rules, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("expected the second ImportOnce to be a no-op (still 2 rules), got %d: %+v", len(rules), rules)
+	}
+}
+
+// TestImportOnceDoesNotResurrectDeliberatelyDeletedRules is the regression
+// test for the exact failure mode the design spec calls out: guarding the
+// import on "has it ever run" (a settings flag) rather than "is the table
+// empty" — otherwise an admin who legitimately deletes every rule would see
+// them come back from nft on the very next boot, since nft's user_rules
+// chain (rebuilt by ReconcileUserRules from the now-empty DB) would also be
+// empty by then... but a NAIVE "table empty -> import" guard would instead
+// re-read whatever ListUserRules still reports from the live nft chain
+// before any reconcile has run post-boot. This test proves the settings-flag
+// guard makes that impossible: once the import has run, a fully emptied DB
+// stays empty no matter what ImportOnce is called again with.
+func TestImportOnceDoesNotResurrectDeliberatelyDeletedRules(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{userRulesOut: twoRulesFixture}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	if err := svc.ImportOnce(context.Background()); err != nil {
+		t.Fatalf("first ImportOnce: %v", err)
+	}
+	rules, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 rules after the import, got %d", len(rules))
+	}
+
+	// The admin deliberately deletes every rule via the API/DB.
+	for _, r := range rules {
+		if err := db.DeleteFirewallRule(r.ID); err != nil {
+			t.Fatalf("DeleteFirewallRule: %v", err)
+		}
+	}
+	empty, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 rules after deleting all, got %d", len(empty))
+	}
+
+	// Simulate a reboot: ImportOnce runs again with the OLD nft fixture (as
+	// if ReconcileUserRules had not yet had a chance to flush the live
+	// chain down to empty). A naive "table empty -> import" guard would
+	// resurrect both rules here. The settings-flag guard must not.
+	if err := svc.ImportOnce(context.Background()); err != nil {
+		t.Fatalf("ImportOnce after delete-all: %v", err)
+	}
+	after, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("deliberately deleted rules must never be resurrected by ImportOnce, got %d rules back: %+v", len(after), after)
+	}
+}
+
+func TestImportOnceSkipsUnparsableRuleButKeepsOthers(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{userRulesOut: `table inet linkguard {
+	chain user_rules {
+		meta mark set 0x1 # handle 3
+		ip saddr 10.0.0.5 counter packets 0 bytes 0 drop # handle 4
+	}
+}
+`}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	if err := svc.ImportOnce(context.Background()); err != nil {
+		t.Fatalf("ImportOnce must not abort on one unparsable rule: %v", err)
+	}
+	rules, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected only the valid rule imported, got %d: %+v", len(rules), rules)
+	}
+	if rules[0].Action != "drop" || rules[0].Saddr != "10.0.0.5" {
+		t.Errorf("expected the valid rule's fields, got %+v", rules[0])
+	}
+}
+
+func TestImportOnceWithNoExistingRulesStillSetsGuard(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{userRulesOut: "table inet linkguard {\n\tchain user_rules {\n\t}\n}\n"}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	if err := svc.ImportOnce(context.Background()); err != nil {
+		t.Fatalf("ImportOnce: %v", err)
+	}
+	rules, _ := db.ListFirewallRules()
+	if len(rules) != 0 {
+		t.Fatalf("expected 0 rules, got %d", len(rules))
+	}
+	flag, err := db.GetSetting(firewallrules.ImportedSettingKey)
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if flag == "" {
+		t.Error("expected the import guard set even with nothing to import")
+	}
+}
+
+func TestReconcileRendersEnabledDBRulesIntoNft(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	enabled := &storage.FirewallRule{Action: "accept", Saddr: "10.0.0.1"}
+	if err := db.CreateFirewallRule(enabled); err != nil {
+		t.Fatalf("CreateFirewallRule enabled: %v", err)
+	}
+	disabled := &storage.FirewallRule{Action: "drop", Saddr: "10.0.0.2"}
+	if err := db.CreateFirewallRule(disabled); err != nil {
+		t.Fatalf("CreateFirewallRule disabled: %v", err)
+	}
+	if err := db.SetFirewallRuleEnabled(disabled.ID, false); err != nil {
+		t.Fatalf("SetFirewallRuleEnabled: %v", err)
+	}
+
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var adds []string
+	flushed := false
+	for _, c := range exec.executed {
+		if c == "nft flush chain inet linkguard user_rules" {
+			flushed = true
+		}
+		if strings.HasPrefix(c, "nft add rule inet linkguard user_rules") {
+			adds = append(adds, c)
+		}
+	}
+	if !flushed {
+		t.Errorf("expected user_rules to be flushed, ran: %v", exec.executed)
+	}
+	if len(adds) != 1 {
+		t.Fatalf("expected exactly 1 add-rule command (the enabled one), got %d: %v", len(adds), adds)
+	}
+	if !strings.Contains(adds[0], "10.0.0.1") {
+		t.Errorf("expected the enabled rule's saddr rendered, got %q", adds[0])
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "10.0.0.2") {
+			t.Errorf("the disabled rule must never be rendered into nft, ran: %q", c)
+		}
+	}
+}

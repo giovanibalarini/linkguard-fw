@@ -9,9 +9,9 @@ import (
 // Metrics holds all Prometheus metric collectors.
 type Metrics struct {
 	// Link metrics
-	LinkStatus    *prometheus.GaugeVec
-	LinkLatency   *prometheus.GaugeVec
-	LinkLoss      *prometheus.GaugeVec
+	LinkStatus  *prometheus.GaugeVec
+	LinkLatency *prometheus.GaugeVec
+	LinkLoss    *prometheus.GaugeVec
 
 	// Interface traffic
 	InterfaceRxBytes *prometheus.GaugeVec

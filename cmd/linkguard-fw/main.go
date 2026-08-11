@@ -25,6 +25,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
@@ -181,6 +182,7 @@ func run() int {
 		CooldownSecs:     cfg.FailoverCooldownSecs,
 	}, db, exec, routeSvc, alertSvc)
 	nftSvc := nftables.NewService(exec)
+	frSvc := firewallrules.NewService(db, nftSvc)
 	balancerSvc := balancer.NewService(db, exec, linkSvc, alertSvc)
 	keaSvc := keaunbound.NewService(exec)
 	var netSvc netsvc.Provider = keaSvc
@@ -322,6 +324,23 @@ func run() int {
 		// them again. See ReconcileStructuralChains' doc comment.
 		if err := nftSvc.ReconcileStructuralChains(ctx); err != nil {
 			slog.Warn("não foi possível reconciliar as chains estruturais (forward, mark_hosts) no boot", "err", err)
+		}
+
+		// Phase B (firewall page redesign spec §4.1): the admin's own rules
+		// now live in the DB, not just inside nft. On a box upgrading from
+		// Phase A, ImportOnce brings whatever is in the live user_rules chain
+		// into the DB exactly once (guarded by a settings flag, never by "is
+		// the table empty" — see its doc comment for why that distinction
+		// matters), preserving order; a fresh install has nothing to import
+		// and just sets the guard. Reconcile then runs unconditionally on
+		// every boot, same as the other reconciles above, so user_rules
+		// always matches the DB — including a box where ImportOnce already
+		// ran on a prior boot.
+		if err := frSvc.ImportOnce(ctx); err != nil {
+			slog.Warn("não foi possível importar as regras existentes de user_rules para o banco", "err", err)
+		}
+		if err := frSvc.Reconcile(ctx); err != nil {
+			slog.Warn("não foi possível reconciliar a chain user_rules a partir do banco no boot", "err", err)
 		}
 	}
 
