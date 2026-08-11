@@ -194,3 +194,77 @@ func (c *Collector) healthState(key string) (up, known bool) {
 	}
 	return st.up, true
 }
+
+// TestCheckFirewallNATDoesNotJudgeWhenNftUnreadable verifies the no-fake-data
+// contract: when the drift watcher cannot read the live firewall state, it must
+// not emit a verdict at all (neither "ok" nor "problem"), because a false "ok"
+// would give the operator false confidence in their firewall. The item must not
+// appear in the health map at all.
+func TestCheckFirewallNATDoesNotJudgeWhenNftUnreadable(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+	c.exec = &driftExec{err: context.DeadlineExceeded} // ExecuteRead will fail
+
+	c.checkFirewallNAT()
+	c.checkFirewallNAT() // call twice to ensure repeated failures never produce a verdict
+
+	if _, known := c.healthState("firewall:nat"); known {
+		t.Error("firewall:nat must not be reported when nft list chain fails")
+	}
+}
+
+// TestCheckDNSResolverDoesNotJudgeWhenResolvConfUnreadable verifies the
+// no-fake-data contract: when the drift watcher cannot read resolv.conf, it
+// must not emit a verdict (not a false "ok", not a false "problem"). The item
+// must not appear in the health map at all, so the operator knows the check
+// could not run, not that resolution is healthy.
+func TestCheckDNSResolverDoesNotJudgeWhenResolvConfUnreadable(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.resolvConfPath = filepath.Join(t.TempDir(), "nonexistent.conf")
+
+	c.checkDNSResolver()
+	c.checkDNSResolver() // call twice to ensure repeated failures never produce a verdict
+
+	if _, known := c.healthState("dns:resolver"); known {
+		t.Error("dns:resolver must not be reported when resolv.conf is unreadable")
+	}
+}
+
+// TestCheckDNSResolverFlagsMixedLocalAndExternal verifies that a lingering
+// external fallback is flagged as down. The configured state is local-only
+// resolution via unbound, but if an external nameserver is still listed in
+// resolv.conf (even alongside 127.0.0.1), a leak is possible: a client query
+// to 127.0.0.1 could fail and the OS resolver could silently fall back to the
+// external server, bypassing the local policy engine entirely. This is the
+// exact silent bypass the drift watchers exist to catch, so mixed local+external
+// must be reported as down, not healthy.
+func TestCheckDNSResolverFlagsMixedLocalAndExternal(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.resolvConfPath = writeTempFile(t, "nameserver 127.0.0.1\nnameserver 8.8.8.8\n")
+
+	c.checkDNSResolver()
+	c.checkDNSResolver()
+
+	if up := c.healthUp("dns:resolver"); up {
+		t.Error("dns:resolver should be down when resolv.conf contains both local and external resolvers")
+	}
+}
+
+// TestCheckWANInterfacesDoesNotJudgeWhenLinksUnreadable verifies the
+// no-fake-data contract: when the drift watcher cannot read the configured WAN
+// links from the database, it must not emit a verdict. The item must not appear
+// in the health map at all, so the operator knows the check could not run.
+func TestCheckWANInterfacesDoesNotJudgeWhenLinksUnreadable(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+
+	// Close the database connection to make GetLinks() fail on the next query.
+	c.db.Close()
+
+	c.checkWANInterfaces()
+	c.checkWANInterfaces() // call twice to ensure repeated failures never produce a verdict
+
+	if _, known := c.healthState("wan:interface"); known {
+		t.Error("wan:interface must not be reported when GetLinks() fails")
+	}
+}
