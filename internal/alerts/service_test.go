@@ -461,3 +461,98 @@ func TestSecurityUpdatesPendingIsWarningNotCritical(t *testing.T) {
 		}
 	}
 }
+
+// TestRuleErrorKeepsDistinctFailuresVisible is the regression guard for the
+// rule_error catch-all: rule_error is raised from seven unrelated call sites
+// (failover, NTP apply, DHCP/DNS apply, and four in the balancer) and has no
+// recovery counterpart, so under the plain (type, linkID) dedupe the first
+// failure ever recorded opens a row that never resolves — and every
+// subsequent, completely unrelated Critical failure from any other
+// subsystem is silently swallowed forever. Two failures with different
+// messages must both surface as separate unresolved rows.
+func TestRuleErrorKeepsDistinctFailuresVisible(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.RuleError("Falha ao aplicar DHCP/DNS: X"); err != nil {
+		t.Fatalf("RuleError (1st): %v", err)
+	}
+	if err := s.RuleError("Failover for WAN VIVO failed: Y"); err != nil {
+		t.Fatalf("RuleError (2nd): %v", err)
+	}
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	n := 0
+	for _, a := range open {
+		if a.Type == TypeRuleError {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("expected 2 unresolved rule_error alerts (distinct failures), got %d (%+v)", n, open)
+	}
+}
+
+// TestRuleErrorStillCollapsesIdenticalRepeats confirms the message-keyed
+// exception for rule_error doesn't throw away dedupe entirely: the exact
+// same failure repeated (e.g. on every service restart, same as the
+// (type, linkID) case) must still collapse into a single open row.
+func TestRuleErrorStillCollapsesIdenticalRepeats(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	for i := 0; i < 3; i++ {
+		if err := s.RuleError("Falha ao aplicar DHCP/DNS: X"); err != nil {
+			t.Fatalf("RuleError (%d): %v", i, err)
+		}
+	}
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	n := 0
+	for _, a := range open {
+		if a.Type == TypeRuleError {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("expected exactly 1 unresolved rule_error alert for 3 identical repeats, got %d (%+v)", n, open)
+	}
+}
+
+// TestHighCPUDedupeIgnoresPercentVariance guards the default (type, linkID)
+// path against the message-variance leaking in: HighCPU embeds the live
+// percentage in its message, so if dedupe ever keyed on message by default,
+// every restart-driven re-raise with a slightly different reading would
+// duplicate the alert again — exactly the pileup the (type, linkID) dedupe
+// was introduced to fix.
+func TestHighCPUDedupeIgnoresPercentVariance(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.HighCPU(91.2); err != nil {
+		t.Fatalf("HighCPU (1st): %v", err)
+	}
+	if err := s.HighCPU(93.5); err != nil {
+		t.Fatalf("HighCPU (2nd): %v", err)
+	}
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	n := 0
+	for _, a := range open {
+		if a.Type == TypeHighCPU {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("expected exactly 1 unresolved high_cpu alert despite differing percentages, got %d (%+v)", n, open)
+	}
+}

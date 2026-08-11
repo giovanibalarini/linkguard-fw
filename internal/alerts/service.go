@@ -86,6 +86,21 @@ func (s *Service) SetNotifier(n Notifier) {
 // new. Once the earlier alert is resolved, though, the condition returning
 // is genuinely new and must open a fresh row — so the check only looks at
 // currently-unresolved alerts.
+//
+// TypeRuleError is the one deliberate exception to that identity, and is
+// keyed by (type, linkID, message) instead. Every other type here has a
+// recovery counterpart: it represents a *state* that opens and is later
+// explicitly closed (AutoResolve / createRecovery), so (type, linkID) alone
+// is a sound identity for it — there's exactly one open condition of that
+// kind at a time. rule_error has no recovery path: it's a catch-all raised
+// from seven unrelated call sites (failover, NTP apply, DHCP/DNS apply, and
+// four in the balancer) with nothing to ever resolve it. Deduping it by type
+// alone would mean the first rule_error ever recorded opens a row that never
+// closes, permanently masking every later, unrelated Critical failure from
+// any other subsystem — strictly worse than the pileup this dedupe exists to
+// prevent. Keying it by message instead keeps the same restart-safety
+// property (an identical repeated failure still collapses to one row) while
+// letting a genuinely different failure stay visible.
 func (s *Service) Create(alertType, severity, title, message, linkID string) error {
 	alerts, err := s.db.GetAlerts(true, 0)
 	if err != nil {
@@ -93,10 +108,14 @@ func (s *Service) Create(alertType, severity, title, message, linkID string) err
 		return err
 	}
 	for _, a := range alerts {
-		if a.Type == alertType && a.LinkID == linkID {
-			slog.Debug("alert suppressed: already open", "type", alertType, "linkID", linkID)
-			return nil
+		if a.Type != alertType || a.LinkID != linkID {
+			continue
 		}
+		if alertType == TypeRuleError && a.Message != message {
+			continue
+		}
+		slog.Debug("alert suppressed: already open", "type", alertType, "linkID", linkID)
+		return nil
 	}
 
 	a := &storage.Alert{
