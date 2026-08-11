@@ -735,30 +735,350 @@ git commit -m "feat(dns): own /etc/resolv.conf so the box always uses the local 
 
 ---
 
+### Task 4: `internal/sysupdates` — pacotes pendentes de atualização
+
+**Files:**
+- Create: `internal/sysupdates/sysupdates.go`
+- Create: `internal/sysupdates/sysupdates_test.go`
+
+**Interfaces:**
+- Consumes: `firewall.Executor` (já existente).
+- Produces: `type Package struct{ Name, CurrentVersion, NewVersion, Origin string; Security bool }`; `type Report struct{ Total, Security int; Packages []Package }`; `func Check(ctx context.Context, exec firewall.Executor) (Report, error)`; `func parseAptOutput(out string) Report` — usados pela Task 5 (health-check) e Task 6 (endpoint da lista).
+
+- [ ] **Step 1: Escrever o teste que falha**
+
+Criar `internal/sysupdates/sysupdates_test.go`:
+
+```go
+package sysupdates
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+// fakeExec answers the one command this package runs. Dedicated to this
+// package on purpose: a generic fake that returns "" for everything would
+// make "no updates" and "apt failed" indistinguishable, which is exactly
+// the distinction these tests exist to protect.
+type fakeExec struct {
+	out     string
+	err     error
+	lastCmd string
+}
+
+func (e *fakeExec) Execute(_ context.Context, _ string, _ ...string) (string, error) {
+	return "", nil
+}
+func (e *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	e.lastCmd = strings.Join(append([]string{cmd}, args...), " ")
+	return e.out, e.err
+}
+func (e *fakeExec) IsDryRun() bool { return false }
+
+// realProductionSample is the verbatim output captured from the production
+// firewall on 2026-08-10, which had a pending kernel SECURITY update. Using
+// the real bytes (not an invented string) is deliberate: two separate
+// production-only parsing traps were found this way — see the assertions in
+// TestCheckForcesCLocaleAndDistUpgrade.
+const realProductionSample = `Inst linux-image-6.12.101+deb13-amd64 (6.12.101-1 Debian-Security:13/stable-security [amd64])
+Inst linux-image-amd64 [6.12.94-1] (6.12.101-1 Debian-Security:13/stable-security [amd64])
+Conf linux-image-6.12.101+deb13-amd64 (6.12.101-1 Debian-Security:13/stable-security [amd64])
+Conf linux-image-amd64 (6.12.101-1 Debian-Security:13/stable-security [amd64])
+`
+
+func TestParseAptOutputRealSecurityUpdate(t *testing.T) {
+	rep := parseAptOutput(realProductionSample)
+
+	if rep.Total != 2 {
+		t.Errorf("Total = %d, want 2 (only the Inst lines, never Conf)", rep.Total)
+	}
+	if rep.Security != 2 {
+		t.Errorf("Security = %d, want 2 (both from Debian-Security)", rep.Security)
+	}
+	var upgraded *Package
+	for i := range rep.Packages {
+		if rep.Packages[i].Name == "linux-image-amd64" {
+			upgraded = &rep.Packages[i]
+		}
+	}
+	if upgraded == nil {
+		t.Fatalf("linux-image-amd64 missing from %+v", rep.Packages)
+	}
+	if upgraded.CurrentVersion != "6.12.94-1" {
+		t.Errorf("CurrentVersion = %q, want %q", upgraded.CurrentVersion, "6.12.94-1")
+	}
+	if upgraded.NewVersion != "6.12.101-1" {
+		t.Errorf("NewVersion = %q, want %q", upgraded.NewVersion, "6.12.101-1")
+	}
+	if !upgraded.Security {
+		t.Errorf("expected Security=true for a Debian-Security origin: %+v", upgraded)
+	}
+}
+
+// A brand-new package (no [current] bracket) must still parse — that is the
+// shape of the kernel's companion package in the real sample above.
+func TestParseAptOutputNewPackageHasNoCurrentVersion(t *testing.T) {
+	rep := parseAptOutput(realProductionSample)
+	for _, p := range rep.Packages {
+		if p.Name == "linux-image-6.12.101+deb13-amd64" {
+			if p.CurrentVersion != "" {
+				t.Errorf("CurrentVersion = %q, want empty for a newly installed package", p.CurrentVersion)
+			}
+			if p.NewVersion != "6.12.101-1" {
+				t.Errorf("NewVersion = %q, want %q", p.NewVersion, "6.12.101-1")
+			}
+			return
+		}
+	}
+	t.Fatalf("new package missing from %+v", rep.Packages)
+}
+
+func TestParseAptOutputNonSecurityUpdate(t *testing.T) {
+	sample := "Inst curl [8.14.1-1] (8.14.2-1 Debian:13/stable [amd64])\n"
+	rep := parseAptOutput(sample)
+
+	if rep.Total != 1 {
+		t.Fatalf("Total = %d, want 1", rep.Total)
+	}
+	if rep.Security != 0 {
+		t.Errorf("Security = %d, want 0 for a plain Debian origin", rep.Security)
+	}
+	if rep.Packages[0].Security {
+		t.Errorf("expected Security=false: %+v", rep.Packages[0])
+	}
+}
+
+func TestParseAptOutputNothingPending(t *testing.T) {
+	rep := parseAptOutput("")
+
+	if rep.Total != 0 || rep.Security != 0 {
+		t.Errorf("expected an empty report, got %+v", rep)
+	}
+	if rep.Packages == nil {
+		t.Error("Packages is nil — would marshal as JSON null instead of []")
+	}
+}
+
+// TestCheckForcesCLocaleAndDistUpgrade guards the two production-only traps
+// found while designing this: (1) apt's output is localized — on the real
+// box it came back in Portuguese ("atualizável de:"), so the parser must
+// force LC_ALL=C; (2) `apt-get --just-print upgrade` reported ZERO for the
+// pending kernel security update (kernel upgrades pull in a new package),
+// while dist-upgrade reported it correctly. Using the wrong verb would have
+// silently under-reported exactly the updates that matter most.
+func TestCheckForcesCLocaleAndDistUpgrade(t *testing.T) {
+	e := &fakeExec{out: realProductionSample}
+
+	if _, err := Check(context.Background(), e); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !strings.Contains(e.lastCmd, "LC_ALL=C") {
+		t.Errorf("command must force the C locale, got: %q", e.lastCmd)
+	}
+	if !strings.Contains(e.lastCmd, "dist-upgrade") {
+		t.Errorf("command must use dist-upgrade, got: %q", e.lastCmd)
+	}
+	if strings.Contains(e.lastCmd, "update") {
+		t.Errorf("must never run `apt-get update` from inside the service, got: %q", e.lastCmd)
+	}
+}
+
+// A failing apt must surface as an error, never as a cheerful "0 updates" —
+// no fake data in the panel.
+func TestCheckReportsErrorInsteadOfFakingZero(t *testing.T) {
+	e := &fakeExec{err: errBoom{}}
+
+	if _, err := Check(context.Background(), e); err == nil {
+		t.Fatal("expected an error when apt fails, got nil (would show a false 'up to date')")
+	}
+}
+
+type errBoom struct{}
+
+func (errBoom) Error() string { return "boom" }
+```
+
+- [ ] **Step 2: Rodar e confirmar que falha**
+
+```bash
+cd /home/gov/Documentos/Projetos/gbtech/repos/linkguard-fw
+export PATH=$HOME/sdk/go1.25.0/bin:$PATH
+go test ./internal/sysupdates/... -v
+```
+
+Esperado: `FAIL` — o pacote não existe ainda (`no Go files` / `undefined: Check`).
+
+- [ ] **Step 3: Implementar**
+
+Criar `internal/sysupdates/sysupdates.go`:
+
+```go
+// Package sysupdates reports which system packages have pending updates,
+// highlighting security ones — so an operator sees "this firewall is
+// missing a kernel security update" on the panel instead of discovering it
+// over SSH.
+//
+// Read-only by design: it never runs `apt-get update`, `install` or
+// `upgrade`. Refreshing the package lists is left to Debian's own
+// apt-daily.timer, and applying updates is an operator decision — an
+// unattended upgrade on a border firewall can restart networking and drop
+// the link. This mirrors the same call made in timesync.EnsureEnabled about
+// not driving a package manager from inside a long-running service.
+package sysupdates
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+)
+
+// securityOrigin is the APT origin marker Debian stamps on security
+// updates, e.g. "Debian-Security:13/stable-security".
+const securityOrigin = "Debian-Security"
+
+// Package is one pending package update.
+type Package struct {
+	Name           string `json:"name"`
+	CurrentVersion string `json:"current_version"` // empty when the package is newly pulled in
+	NewVersion     string `json:"new_version"`
+	Origin         string `json:"origin"`
+	Security       bool   `json:"security"`
+}
+
+// Report summarises the pending updates.
+type Report struct {
+	Total    int       `json:"total"`
+	Security int       `json:"security"`
+	Packages []Package `json:"packages"`
+}
+
+// Check enumerates pending updates from apt's already-cached package lists.
+//
+// Two production-verified details are load-bearing here. LC_ALL=C: apt's
+// output is localized, and on the real box it came back in Portuguese, which
+// silently defeats any English-keyed parsing. dist-upgrade (not upgrade):
+// `apt-get --just-print upgrade` reported zero pending changes for a real
+// pending kernel security update, because kernel upgrades pull in a new
+// package; dist-upgrade reports it. Using `upgrade` would under-report
+// precisely the updates that matter most on a firewall.
+func Check(ctx context.Context, exec firewall.Executor) (Report, error) {
+	out, err := exec.ExecuteRead(ctx, "env", "LC_ALL=C", "apt-get", "--just-print", "dist-upgrade")
+	if err != nil {
+		return Report{}, fmt.Errorf("consultar atualizações pendentes: %w", err)
+	}
+	return parseAptOutput(out), nil
+}
+
+// parseAptOutput extracts the pending packages from apt's simulation
+// output. Only `Inst` lines count — `Conf` lines describe the configuration
+// step of the very same packages and would double every count.
+//
+// Line shapes handled (both real, from the production capture):
+//
+//	Inst linux-image-amd64 [6.12.94-1] (6.12.101-1 Debian-Security:13/stable-security [amd64])
+//	Inst linux-image-6.12.101+deb13-amd64 (6.12.101-1 Debian-Security:13/stable-security [amd64])
+//
+// The second has no `[current]` bracket because the package is new, not
+// upgraded. Anything it cannot parse is skipped rather than guessed at.
+func parseAptOutput(out string) Report {
+	rep := Report{Packages: []Package{}}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Inst ") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "Inst "))
+
+		name, rest, ok := strings.Cut(rest, " ")
+		if !ok || name == "" {
+			continue
+		}
+		pkg := Package{Name: name}
+
+		// Optional "[current-version]" before the parenthesised part.
+		if strings.HasPrefix(rest, "[") {
+			if cur, tail, found := strings.Cut(strings.TrimPrefix(rest, "["), "]"); found {
+				pkg.CurrentVersion = strings.TrimSpace(cur)
+				rest = strings.TrimSpace(tail)
+			}
+		}
+
+		// "(new-version Origin:suite/pocket [arch])"
+		inner, _, found := strings.Cut(strings.TrimPrefix(rest, "("), ")")
+		if !found {
+			continue
+		}
+		fields := strings.Fields(inner)
+		if len(fields) == 0 {
+			continue
+		}
+		pkg.NewVersion = fields[0]
+		if len(fields) > 1 {
+			pkg.Origin = fields[1]
+		}
+		pkg.Security = strings.Contains(pkg.Origin, securityOrigin)
+
+		rep.Packages = append(rep.Packages, pkg)
+		rep.Total++
+		if pkg.Security {
+			rep.Security++
+		}
+	}
+	return rep
+}
+```
+
+- [ ] **Step 4: Rodar e confirmar que passa**
+
+```bash
+gofmt -l internal/sysupdates/
+go test ./internal/sysupdates/... -v
+go build ./...
+go vet ./...
+```
+
+Esperado: `gofmt -l` sem saída; `PASS` em todos os testes; build e vet limpos.
+
+- [ ] **Step 5: Validar o parser contra a produção real**
+
+Confirmar que o parser concorda com a máquina de verdade (o mesmo comando que o código roda):
+
+```bash
+ssh gov@192.168.3.3 "su -c 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; env LC_ALL=C apt-get --just-print dist-upgrade | grep \"^Inst\"'"
+```
+
+Esperado hoje: duas linhas `Inst` referentes ao kernel, ambas com origem
+`Debian-Security` — exatamente a amostra usada no teste. Se a saída divergir
+em formato, ajustar o parser **e** o teste com a saída real (nunca inventar
+o formato).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/sysupdates/
+git commit -m "feat(sysupdates): report pending package updates, flagging security ones"
+```
+
+---
+
 ## Tarefas restantes (a detalhar antes de executar)
 
-As três tarefas abaixo dependem apenas do que já está especificado acima e
-serão detalhadas com código completo antes de irem para execução — o mesmo
-padrão de rigor das Tasks 1–3. Resumo do escopo já fechado:
+Escopo já fechado; serão detalhadas com código completo, no mesmo padrão das
+Tasks 1–4, antes de irem para execução:
 
-- **Task 4 — `internal/sysupdates`**: novo pacote (espelha
-  `internal/disksmart`) com `Check(ctx, exec) (Report, error)` rodando
-  `LC_ALL=C apt-get --just-print dist-upgrade`, parser extraindo
-  nome/versão-atual/versão-nova/origem de cada linha `^Inst`, e
-  `Report{Total int; Security int; Packages []Package}`. Amostra real de
-  produção para o teste (kernel security update pendente hoje):
-  `Inst linux-image-amd64 [6.12.94-1] (6.12.101-1 Debian-Security:13/stable-security [amd64])`.
-  Testes cobrem: zero pendências, pendência comum, pendência de segurança
-  (origem contendo `Debian-Security`), e saída vazia/erro (reporta erro, não
-  "tudo ok").
 - **Task 5 — vigias em `internal/monitoring`**: `checkFirewallNAT` (regra
-  viva bate com WANs configuradas e todas existem em `/sys/class/net`),
+  viva bate com as WANs configuradas e todas existem em `/sys/class/net`),
   `checkWANInterfaces` (todo link habilitado aponta para interface
   existente), `checkDNSResolver` (`resolv.conf` = 127.0.0.1) no tick de 30s;
-  `UpdatesScheduler` (padrão `JournalScheduler`, intervalo 6h) para
-  `system-updates`. Quatro pares de alerta novos em `internal/alerts`.
-  Painel acende com qualquer pendência; alerta só é **empurrado** quando
-  houver atualização de **segurança** (evita spam, mantém visibilidade).
+  `UpdatesScheduler` (padrão `JournalScheduler`, intervalo 6h) consumindo
+  `sysupdates.Check` (Task 4). Quatro pares de alerta novos em
+  `internal/alerts`. Painel acende com qualquer pendência; alerta só é
+  **empurrado** quando houver atualização de **segurança** (evita spam sem
+  perder visibilidade).
 - **Task 6 — frontend**: rótulos em `SystemHealth.tsx` (`firewall-nat`
   "Regra de NAT", `wan-interface` "Interfaces WAN", `dns-resolver`
   "Resolver DNS", `system-updates` "Atualizações do sistema") e a lista
