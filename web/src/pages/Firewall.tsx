@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import type { DragEvent } from 'react';
 import {
   RefreshCw, Database, Download, RotateCcw, Terminal, Plus, X, Network, Ban,
   ShieldOff, ArrowUp, ArrowDown, Pencil, Trash2, Check, Slash, ListChecks,
+  GripVertical, Power, PowerOff,
 } from 'lucide-react';
 import client from '../api/client';
 import Panel from '../components/ui/Panel';
@@ -10,7 +12,7 @@ import IconButton from '../components/ui/IconButton';
 import { useAuth } from '../context/AuthContext';
 import PortForwarding from '../components/PortForwarding';
 import FirewallOverview from '../components/FirewallOverview';
-import type { IptablesBackup, NftChainInfo, NftManaged, NftUserRule, SystemMetrics } from '../types';
+import type { FirewallRule, IptablesBackup, NftChainInfo, NftManaged, SystemMetrics } from '../types';
 
 type Tab = 'overview' | 'rules' | 'portforward' | 'ruleset' | 'backups';
 type Action = 'accept' | 'drop' | 'reject';
@@ -22,11 +24,17 @@ const ACTIONS: Record<Action, { label: string; color: string; ring: string; Icon
 };
 
 const emptyModal = {
-  open: false, handle: 0, action: 'drop' as Action,
-  iif: '', oif: '', saddr: '', daddr: '', proto: '', dport: '',
+  open: false, id: '', action: 'drop' as Action,
+  iif: '', oif: '', saddr: '', daddr: '', proto: '', dport: '', description: '',
 };
 
-function describe(r: NftUserRule): string {
+// RuleLike is only the fields that decide the plain-language description —
+// a Pick, not the full FirewallRule/modal shape, so both a stored rule and
+// the in-progress modal state (which carries extra fields like id/open) can
+// be passed straight through without a throwaway cast at every call site.
+type RuleLike = Pick<FirewallRule, 'iif' | 'oif' | 'saddr' | 'daddr' | 'proto' | 'dport'>;
+
+function describe(r: RuleLike): string {
   const parts: string[] = [];
   if (r.iif) parts.push(`entrada ${r.iif}`);
   if (r.oif) parts.push(`saída ${r.oif}`);
@@ -34,6 +42,17 @@ function describe(r: NftUserRule): string {
   if (r.daddr) parts.push(`destino ${r.daddr}`);
   if (r.proto) parts.push(r.proto.toUpperCase() + (r.dport ? `:${r.dport}` : ''));
   return parts.length ? parts.join(' · ') : 'qualquer tráfego';
+}
+
+// moveItem returns a copy of arr with the element at `from` relocated to
+// `to` — shared by drag-and-drop and the up/down button fallback so both
+// paths compute the exact same new order before sending it to the reorder
+// endpoint.
+function moveItem<T>(arr: T[], from: number, to: number): T[] {
+  const next = arr.slice();
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
 }
 
 function previewNft(m: typeof emptyModal): string {
@@ -54,7 +73,8 @@ export default function Firewall() {
   const { can } = useAuth();
   const canWrite = can('firewall.write');
   const [managed, setManaged] = useState<NftManaged>({ wan_hosts: [], blocklist: [], blocked_hosts: [] });
-  const [rules, setRules] = useState<NftUserRule[]>([]);
+  const [rules, setRules] = useState<FirewallRule[]>([]);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overview, setOverview] = useState<NftChainInfo[]>([]);
   const [ifaces, setIfaces] = useState<string[]>([]);
   const [ruleset, setRuleset] = useState('');
@@ -72,7 +92,7 @@ export default function Firewall() {
     try {
       const [mg, rl, ov, rs, bk, sys] = await Promise.all([
         client.get<NftManaged>('/api/nftables/managed'),
-        client.get<NftUserRule[]>('/api/nftables/rules'),
+        client.get<FirewallRule[]>('/api/nftables/rules'),
         client.get<NftChainInfo[]>('/api/nftables/overview'),
         client.get<{ ruleset: string }>('/api/nftables/ruleset'),
         client.get<IptablesBackup[]>('/api/nftables/backups'),
@@ -115,15 +135,39 @@ export default function Firewall() {
 
   // Custom rules
   const openCreate = () => setModal({ ...emptyModal, open: true });
-  const openEdit = (r: NftUserRule) => setModal({ open: true, handle: r.handle, action: (r.action as Action) || 'drop', iif: r.iif, oif: r.oif, saddr: r.saddr, daddr: r.daddr, proto: r.proto, dport: r.dport });
+  const openEdit = (r: FirewallRule) => setModal({ open: true, id: r.id, action: (r.action as Action) || 'drop', iif: r.iif, oif: r.oif, saddr: r.saddr, daddr: r.daddr, proto: r.proto, dport: r.dport, description: r.description });
   const closeModal = () => setModal((m) => ({ ...m, open: false }));
   const saveRule = () => {
-    const payload = { action: modal.action, iif: modal.iif, oif: modal.oif, saddr: modal.saddr, daddr: modal.daddr, proto: modal.proto, dport: modal.dport };
-    const req = modal.handle > 0 ? client.put('/api/nftables/rules', { handle: modal.handle, ...payload }) : client.post('/api/nftables/rules', payload);
-    run(() => req, modal.handle > 0 ? 'Regra atualizada.' : 'Regra criada.').then(closeModal);
+    const payload = {
+      action: modal.action, iif: modal.iif, oif: modal.oif, saddr: modal.saddr, daddr: modal.daddr,
+      proto: modal.proto, dport: modal.dport, description: modal.description,
+    };
+    const req = modal.id ? client.put('/api/nftables/rules', { id: modal.id, ...payload }) : client.post('/api/nftables/rules', payload);
+    run(() => req, modal.id ? 'Regra atualizada.' : 'Regra criada.').then(closeModal);
   };
-  const delRule = (r: NftUserRule) => confirm(`Remover esta regra? (${ACTIONS[r.action as Action]?.label || r.action}: ${describe(r)})`) && run(() => client.delete('/api/nftables/rules', { data: { handle: r.handle } }), 'Regra removida.');
-  const moveRule = (handle: number, dir: 'up' | 'down') => run(() => client.post('/api/nftables/rules/move', { handle, dir }), '');
+  const delRule = (r: FirewallRule) => confirm(`Remover esta regra? (${ACTIONS[r.action as Action]?.label || r.action}: ${describe(r)})`) && run(() => client.delete('/api/nftables/rules', { data: { id: r.id } }), 'Regra removida.');
+  const toggleRule = (r: FirewallRule) => run(() => client.post('/api/nftables/rules/toggle', { id: r.id, enabled: !r.enabled }), r.enabled ? 'Regra desativada.' : 'Regra ativada.');
+
+  // Reordering: drag-and-drop (native HTML5 DnD — no library) with an
+  // up/down button fallback for keyboard/accessibility, both funnelling
+  // into the same reorder call so they can never disagree about the result.
+  const reorderTo = (newOrder: FirewallRule[]) => {
+    setRules(newOrder); // optimistic: the drag/click feels instant, fetchData below reconciles with the server
+    run(() => client.post('/api/nftables/rules/reorder', { ids: newOrder.map((r) => r.id) }), '');
+  };
+  const moveRule = (index: number, dir: 'up' | 'down') => {
+    const to = dir === 'up' ? index - 1 : index + 1;
+    if (to < 0 || to >= rules.length) return;
+    reorderTo(moveItem(rules, index, to));
+  };
+  const onDragStart = (index: number) => canWrite && setDragIndex(index);
+  const onDragOver = (e: DragEvent) => { if (dragIndex !== null) e.preventDefault(); };
+  const onDrop = (index: number) => {
+    if (dragIndex === null || dragIndex === index) { setDragIndex(null); return; }
+    reorderTo(moveItem(rules, dragIndex, index));
+    setDragIndex(null);
+  };
+  const onDragEnd = () => setDragIndex(null);
 
   const handleBackup = () => run(() => client.post('/api/nftables/backup', { label: '' }), 'Snapshot criado.');
   const handleRollback = (b: IptablesBackup) => confirm(`Restaurar o ruleset do snapshot "${b.label}"?`) && run(() => client.post('/api/nftables/rollback', { backup_id: b.id }), 'Ruleset restaurado.');
@@ -172,22 +216,35 @@ export default function Firewall() {
             title={<span className="flex items-center gap-2"><ListChecks className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Regras personalizadas</span></span>}
             action={canWrite ? <button onClick={openCreate} className="btn-primary flex items-center gap-2 justify-center"><Plus className="w-4 h-4" /> Nova regra</button> : undefined}
           >
-            <p className="text-gray-500 text-xs mb-3">Avaliadas de cima para baixo, antes dos bloqueios. A primeira que casar decide.</p>
+            <p className="text-gray-500 text-xs mb-3">
+              Avaliadas de cima para baixo, antes dos bloqueios. A primeira que casar decide.
+              {canWrite && rules.length > 1 && <> Arraste pelo <GripVertical className="w-3 h-3 inline -mt-0.5" /> para reordenar.</>}
+            </p>
             {rules.length === 0 ? (
               <p className="text-gray-600 text-sm py-2">Nenhuma regra personalizada. Clique em "Nova regra".</p>
             ) : (
               <div className="space-y-2">
                 {rules.map((r, i) => {
                   const a = ACTIONS[r.action as Action] || ACTIONS.drop;
+                  const disabled = !r.enabled;
                   return (
-                    <div key={r.handle} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 flex-wrap bg-gray-800/60 rounded-lg px-3 py-2">
+                    <div
+                      key={r.id}
+                      draggable={canWrite && !busy}
+                      onDragStart={() => onDragStart(i)}
+                      onDragOver={onDragOver}
+                      onDrop={() => onDrop(i)}
+                      onDragEnd={onDragEnd}
+                      className={`flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 flex-wrap bg-gray-800/60 rounded-lg px-3 py-2 transition-opacity ${disabled ? 'opacity-50' : ''} ${dragIndex === i ? 'opacity-30' : ''} ${canWrite ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                    >
                       <div className="flex items-center gap-3 min-w-0 flex-1">
+                        {canWrite && <GripVertical className="w-4 h-4 text-gray-600 shrink-0" aria-hidden="true" />}
                         <span className="text-gray-600 text-xs w-5 text-right select-none shrink-0">{i + 1}</span>
                         {canWrite && (
                           <div className="flex flex-col shrink-0">
                             <IconButton
                               icon={ArrowUp}
-                              onClick={() => moveRule(r.handle, 'up')}
+                              onClick={() => moveRule(i, 'up')}
                               disabled={i === 0 || busy}
                               label="Mover regra para cima"
                               variant="custom"
@@ -195,7 +252,7 @@ export default function Firewall() {
                             />
                             <IconButton
                               icon={ArrowDown}
-                              onClick={() => moveRule(r.handle, 'down')}
+                              onClick={() => moveRule(i, 'down')}
                               disabled={i === rules.length - 1 || busy}
                               label="Mover regra para baixo"
                               variant="custom"
@@ -204,10 +261,27 @@ export default function Firewall() {
                           </div>
                         )}
                         <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium border shrink-0 ${a.ring} ${a.color}`}><a.Icon className="w-3 h-3" />{a.label}</span>
-                        <span className="text-gray-300 text-sm flex-1 min-w-0 truncate">{describe(r)}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-300 text-sm truncate">{describe(r)}</span>
+                            {disabled && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border border-gray-600 bg-gray-700/40 text-gray-400 shrink-0">
+                                Desativada
+                              </span>
+                            )}
+                          </div>
+                          {r.description && <p className="text-gray-500 text-xs truncate">{r.description}</p>}
+                        </div>
                       </div>
                       {canWrite && (
                         <div className="flex justify-end gap-1 sm:justify-start shrink-0">
+                          <IconButton
+                            icon={r.enabled ? Power : PowerOff}
+                            onClick={() => toggleRule(r)}
+                            label={r.enabled ? 'Desativar regra' : 'Ativar regra'}
+                            variant={r.enabled ? 'default' : 'custom'}
+                            className={r.enabled ? '' : 'text-yellow-500 hover:text-yellow-400'}
+                          />
                           <IconButton icon={Pencil} onClick={() => openEdit(r)} label="Editar regra" />
                           <IconButton icon={Trash2} onClick={() => delRule(r)} label="Excluir regra" variant="danger" />
                         </div>
@@ -337,7 +411,7 @@ export default function Firewall() {
       <Modal
         open={modal.open}
         onClose={closeModal}
-        title={modal.handle > 0 ? 'Editar regra' : 'Nova regra'}
+        title={modal.id ? 'Editar regra' : 'Nova regra'}
         size="md"
         className="rounded-xl border border-gray-700 bg-gray-900 shadow-2xl flex flex-col"
       >
@@ -398,10 +472,21 @@ export default function Firewall() {
                 )}
               </div>
 
+              <div>
+                <label className="label">Descrição (por que essa regra existe)</label>
+                <input
+                  className="input w-full"
+                  placeholder="ex.: libera VPN do parceiro X"
+                  maxLength={500}
+                  value={modal.description}
+                  onChange={(e) => setModal({ ...modal, description: e.target.value })}
+                />
+              </div>
+
               <div className="rounded-lg border border-gray-700 bg-gray-950/60 p-3">
                 <p className="text-xs text-gray-400 mb-1">
                   <span className={ACTIONS[modal.action].color}>{ACTIONS[modal.action].label}</span>{' '}
-                  {describe({ ...modal, handle: 0, raw: '' } as NftUserRule)}
+                  {describe(modal)}
                 </p>
                 <p className="font-mono text-[11px] text-gray-500 break-all">{previewNft(modal)}</p>
               </div>

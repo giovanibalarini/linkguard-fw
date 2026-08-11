@@ -236,9 +236,16 @@ export interface NftManaged {
   blocked_hosts: string[];
 }
 
-export interface NftUserRule {
-  handle: number;
-  raw: string;
+// FirewallRule is one of the admin's own rules (Phase B, design spec §4.1):
+// it now lives in the DB, identified by a stable id, with an explicit
+// position (order) and an enabled flag ("disable without deleting" —
+// nftables itself has no such concept, so this is DB-only state) plus a
+// free-text description. GET/POST/PUT/DELETE /api/nftables/rules,
+// POST /api/nftables/rules/reorder and /rules/toggle.
+export interface FirewallRule {
+  id: string;
+  position: number;
+  enabled: boolean;
   action: 'accept' | 'drop' | 'reject' | string;
   iif: string;
   oif: string;
@@ -246,6 +253,9 @@ export interface NftUserRule {
   daddr: string;
   proto: string;
   dport: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // ─── Firewall overview (GET /api/nftables/overview) ───────────────────────
@@ -265,6 +275,14 @@ export interface NftChainRule {
   managed: boolean;
   owner: NftRuleOwner;
   description: string;
+  // id/enabled are only ever populated for the user_rules chain (Phase B,
+  // design spec §4.1): id is the rule's stable DB id (never nft's volatile
+  // handle); enabled is undefined for every other chain, and explicitly
+  // true/false for a user_rules entry — a disabled rule exists in the DB
+  // but never reached nft, so it also has has_counter=false ("not
+  // measured", not a fake zero).
+  id?: string;
+  enabled?: boolean;
 }
 
 export interface NftChainInfo {

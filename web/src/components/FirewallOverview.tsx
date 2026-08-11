@@ -86,9 +86,13 @@ function RuleRow({
   // and host-block rules, each pointing somewhere different).
   const link = rule.owner.key ? OWNER_LINKS[rule.owner.key] : undefined;
   const openTab = link?.tab === 'rules' ? onOpenRulesTab : link?.tab === 'portforward' ? onOpenPortForwardTab : undefined;
+  // A disabled admin rule exists in the DB but was never sent to nft
+  // (Phase B, design spec §4.1) — shown here, not hidden, but visibly
+  // dimmed and labelled so it can never be mistaken for an active rule.
+  const disabled = rule.enabled === false;
 
   return (
-    <div className="rounded-lg bg-gray-800/60 px-3 py-2">
+    <div className={`rounded-lg bg-gray-800/60 px-3 py-2 ${disabled ? 'opacity-50' : ''}`}>
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={onToggle} className="text-gray-500 hover:text-gray-300 shrink-0" aria-label="Mostrar/ocultar expressão nft" title="Mostrar/ocultar expressão nft">
           {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
@@ -97,6 +101,11 @@ function RuleRow({
           <v.Icon className="w-3 h-3" />{v.label}
         </span>
         <span className="text-gray-300 text-sm flex-1 min-w-0">{rule.description}</span>
+        {disabled && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-400 shrink-0">
+            Desativada
+          </span>
+        )}
 
         {rule.managed ? (
           <span className="inline-flex items-center gap-1.5 shrink-0 text-xs">
@@ -225,7 +234,10 @@ export default function FirewallOverview({ chains, onOpenRulesTab, onOpenPortFor
                 ) : (
                   <div className="space-y-1.5">
                     {chain.rules.map((r) => {
-                      const key = `${chain.name}-${r.handle}`;
+                      // A disabled admin rule has no nft handle (it was
+                      // never sent to nft), so r.id — its stable DB id — is
+                      // what keeps the key unique among several of them.
+                      const key = `${chain.name}-${r.id || r.handle}`;
                       return (
                         <RuleRow
                           key={key}
