@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -63,9 +64,13 @@ const chronyDropinPath = "/etc/chrony/conf.d/linkguard.conf"
 // Config holds the admin-editable NTP settings. Empty fields mean
 // "unmanaged" — Servers empty falls back to the Debian package's own pool
 // default; Timezone empty leaves the OS's already-configured zone alone.
+// ServeLAN defaults to false (off) — purely additive, existing installs keep
+// today's client-only behaviour until an admin opts in. See
+// docs/superpowers/specs/2026-08-11-ntp-server-for-lan-design.md.
 type Config struct {
 	Servers  []string `json:"servers"`
 	Timezone string   `json:"timezone"`
+	ServeLAN bool     `json:"serve_lan"`
 }
 
 // DefaultConfig is the "unmanaged" starting state — identical to today's
@@ -98,15 +103,31 @@ func NewService(exec firewall.Executor) *Service {
 }
 
 // GenerateChronyConf renders the LinkGuard-managed chrony drop-in from the
-// configured NTP servers. Pure — no I/O. Only meaningful when
-// len(c.Servers) > 0 — ReloadConfig removes the drop-in entirely instead of
-// calling this when Servers is empty, so chronyd falls back to the Debian
-// package's own default pool untouched.
-func GenerateChronyConf(c Config) string {
+// configured NTP servers and, when serving the LAN, an `allow <cidr>`
+// directive. Pure — no I/O. Called even when both Servers and lanCIDR/
+// ServeLAN are "empty" (ReloadConfig now only removes the drop-in when
+// *neither* a custom server list nor ServeLAN is configured — see its own
+// doc comment).
+//
+// lanCIDR comes from netsvc.Config.SubnetCIDR (the DHCP/DNS config) — the
+// single source of truth for the LAN subnet, deliberately not duplicated as
+// a field on this Config. It is re-validated here (not just by the caller)
+// because this is the function that interpolates it into a config file a
+// privileged daemon (chronyd) reads: an invalid or malicious value must
+// never reach the rendered `allow` line, regardless of what upstream
+// validation exists.
+func GenerateChronyConf(c Config, lanCIDR string) string {
 	var b strings.Builder
 	b.WriteString("# managed by linkguard\n\n")
 	for _, srv := range c.Servers {
 		fmt.Fprintf(&b, "server %s iburst\n", srv)
+	}
+	if c.ServeLAN && lanCIDR != "" {
+		if _, _, err := net.ParseCIDR(lanCIDR); err == nil {
+			fmt.Fprintf(&b, "\nallow %s\n", lanCIDR)
+		} else {
+			slog.Warn("CIDR da LAN inválido; diretiva allow do chrony omitida", "cidr", lanCIDR, "err", err)
+		}
 	}
 	return b.String()
 }
@@ -117,14 +138,25 @@ func GenerateChronyConf(c Config) string {
 // a raw SIGHUP or an unconditional restart. File writes are skipped in
 // dry-run mode; Execute calls always go through (RealExecutor itself
 // handles dry-run by logging instead of running).
-func (s *Service) ReloadConfig(ctx context.Context, c Config) error {
+//
+// lanCIDR is the LAN subnet (netsvc.Config.SubnetCIDR), needed only when
+// c.ServeLAN is true — passed in rather than read by this package, so
+// timesync never needs to import internal/netsvc (see GenerateChronyConf's
+// doc comment).
+//
+// The drop-in is written whenever there is something to manage — a custom
+// server list, OR serving the LAN (which needs the `allow` line even with
+// zero custom servers, a very likely combination: default upstream pool,
+// serve the LAN). It is removed only when both are off, restoring today's
+// fully-unmanaged behaviour exactly.
+func (s *Service) ReloadConfig(ctx context.Context, c Config, lanCIDR string) error {
 	if !s.exec.IsDryRun() {
-		if len(c.Servers) == 0 {
+		if len(c.Servers) == 0 && !c.ServeLAN {
 			if err := os.Remove(s.confPath); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("remover %s: %w", s.confPath, err)
 			}
 		} else {
-			if err := os.WriteFile(s.confPath, []byte(GenerateChronyConf(c)), 0o644); err != nil {
+			if err := os.WriteFile(s.confPath, []byte(GenerateChronyConf(c, lanCIDR)), 0o644); err != nil {
 				return fmt.Errorf("escrever %s: %w", s.confPath, err)
 			}
 		}

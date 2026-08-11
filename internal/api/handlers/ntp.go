@@ -76,7 +76,9 @@ func (h *NTPHandler) lastApplyStatus() *applyStatus {
 // doReload applies the current config and records the result, shared by
 // the debounced auto-apply and the manual "Aplicar agora" button.
 func (h *NTPHandler) doReload(ctx context.Context) error {
-	err := h.svc.ReloadConfig(ctx, h.getConfig())
+	// TODO(part 4): pass the real LAN CIDR (netsvc.Config.SubnetCIDR) once
+	// NTPHandler is wired to it — see docs/superpowers/specs/2026-08-11-ntp-server-for-lan-design.md §3.
+	err := h.svc.ReloadConfig(ctx, h.getConfig(), "")
 	st := applyStatus{OK: err == nil, At: time.Now().Unix()}
 	if err != nil {
 		st.Error = err.Error()

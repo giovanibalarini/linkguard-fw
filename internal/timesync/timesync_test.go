@@ -108,7 +108,7 @@ func TestDefaultConfigServersIsEmptySliceNotNil(t *testing.T) {
 }
 
 func TestGenerateChronyConfRendersServersWithHeader(t *testing.T) {
-	content := GenerateChronyConf(Config{Servers: []string{"192.36.143.130", "c.ntp.br"}})
+	content := GenerateChronyConf(Config{Servers: []string{"192.36.143.130", "c.ntp.br"}}, "")
 	for _, want := range []string{
 		"# managed by linkguard",
 		"server 192.36.143.130 iburst",
@@ -120,13 +120,52 @@ func TestGenerateChronyConfRendersServersWithHeader(t *testing.T) {
 	}
 }
 
+// TestGenerateChronyConfEmitsAllowWhenServing is Part 1's core new behavior:
+// ServeLAN=true renders an `allow <cidr>` line for the LAN subnet.
+func TestGenerateChronyConfEmitsAllowWhenServing(t *testing.T) {
+	content := GenerateChronyConf(Config{ServeLAN: true}, "192.168.3.0/24")
+	if !strings.Contains(content, "allow 192.168.3.0/24") {
+		t.Errorf("expected allow line for the LAN CIDR:\n%s", content)
+	}
+}
+
+// TestGenerateChronyConfOmitsAllowWhenNotServing: ServeLAN=false must never
+// emit an allow line, even if a CIDR is passed in (defense in depth — the
+// chrony drop-in must reflect the toggle, not just its presence).
+func TestGenerateChronyConfOmitsAllowWhenNotServing(t *testing.T) {
+	content := GenerateChronyConf(Config{ServeLAN: false}, "192.168.3.0/24")
+	if strings.Contains(content, "allow") {
+		t.Errorf("expected no allow line when ServeLAN is false:\n%s", content)
+	}
+}
+
+// TestGenerateChronyConfOmitsAllowWhenCIDREmpty: ServeLAN=true but no CIDR
+// available (DHCP/DNS never configured) must not emit a broken `allow`
+// directive with an empty argument.
+func TestGenerateChronyConfOmitsAllowWhenCIDREmpty(t *testing.T) {
+	content := GenerateChronyConf(Config{ServeLAN: true}, "")
+	if strings.Contains(content, "allow") {
+		t.Errorf("expected no allow line when the LAN CIDR is empty:\n%s", content)
+	}
+}
+
+// TestGenerateChronyConfRejectsInvalidCIDR: the CIDR is interpolated into a
+// config file consumed by a daemon — an invalid value (e.g. injection
+// attempt) must never reach the rendered output.
+func TestGenerateChronyConfRejectsInvalidCIDR(t *testing.T) {
+	content := GenerateChronyConf(Config{ServeLAN: true}, "not a cidr; evil")
+	if strings.Contains(content, "allow") {
+		t.Errorf("expected no allow line for an invalid CIDR:\n%s", content)
+	}
+}
+
 func TestReloadConfigWritesDropinWhenServersSet(t *testing.T) {
 	dir := t.TempDir()
 	confPath := filepath.Join(dir, "linkguard.conf")
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}})
+	err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}}, "")
 	if err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
@@ -142,7 +181,7 @@ func TestReloadConfigWritesDropinWhenServersSet(t *testing.T) {
 	}
 }
 
-func TestReloadConfigRemovesDropinWhenServersEmpty(t *testing.T) {
+func TestReloadConfigRemovesDropinWhenServersEmptyAndNotServing(t *testing.T) {
 	dir := t.TempDir()
 	confPath := filepath.Join(dir, "linkguard.conf")
 	if err := os.WriteFile(confPath, []byte("# managed by linkguard\nserver old.example iburst\n"), 0o644); err != nil {
@@ -151,14 +190,40 @@ func TestReloadConfigRemovesDropinWhenServersEmpty(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{}); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{}, ""); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	if _, err := os.Stat(confPath); !os.IsNotExist(err) {
-		t.Errorf("expected drop-in removed when Servers is empty, got err=%v", err)
+		t.Errorf("expected drop-in removed when Servers is empty and ServeLAN is off, got err=%v", err)
 	}
 	if !containsExecuted(exec.executed, "systemctl reload-or-restart chrony") {
 		t.Errorf("expected reload-or-restart chrony even when removing, got %v", exec.executed)
+	}
+}
+
+// TestReloadConfigWritesDropinWhenServeLANOnlyNoCustomServers is the
+// regression test for the easiest thing to get wrong here: ServeLAN=true
+// with an empty (default-pool) Servers list is a very likely real
+// combination, and the drop-in must still be written (for the `allow`
+// line) instead of being removed as if nothing were configured.
+func TestReloadConfigWritesDropinWhenServeLANOnlyNoCustomServers(t *testing.T) {
+	dir := t.TempDir()
+	confPath := filepath.Join(dir, "linkguard.conf")
+	exec := &fakeExec{}
+	s := &Service{exec: exec, confPath: confPath}
+
+	if err := s.ReloadConfig(context.Background(), Config{ServeLAN: true}, "192.168.3.0/24"); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	got, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("expected drop-in to be written when ServeLAN is on even with no custom servers, got err=%v", err)
+	}
+	if !strings.Contains(string(got), "allow 192.168.3.0/24") {
+		t.Errorf("drop-in missing allow line:\n%s", got)
+	}
+	if strings.Contains(string(got), "server ") {
+		t.Errorf("drop-in should have no server lines (default pool unmanaged):\n%s", got)
 	}
 }
 
@@ -167,7 +232,7 @@ func TestReloadConfigRemovingAbsentDropinIsNotAnError(t *testing.T) {
 	confPath := filepath.Join(dir, "linkguard.conf") // never created
 	s := &Service{exec: &fakeExec{}, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{}); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{}, ""); err != nil {
 		t.Fatalf("ReloadConfig on absent drop-in must be idempotent, got: %v", err)
 	}
 }
@@ -177,7 +242,7 @@ func TestReloadConfigSetsTimezoneWhenConfigured(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: filepath.Join(dir, "linkguard.conf")}
 
-	if err := s.ReloadConfig(context.Background(), Config{Timezone: "America/Sao_Paulo"}); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{Timezone: "America/Sao_Paulo"}, ""); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	if !containsExecuted(exec.executed, "timedatectl set-timezone America/Sao_Paulo") {
@@ -190,7 +255,7 @@ func TestReloadConfigNoopWriteInDryRun(t *testing.T) {
 	confPath := filepath.Join(dir, "linkguard.conf")
 	s := &Service{exec: &fakeExec{dryRun: true}, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}}); err != nil {
+	if err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}}, ""); err != nil {
 		t.Fatalf("ReloadConfig in dry-run: %v", err)
 	}
 	if _, err := os.Stat(confPath); !os.IsNotExist(err) {
