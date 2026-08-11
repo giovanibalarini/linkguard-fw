@@ -1108,15 +1108,15 @@ func TestConfigDriftAlertPairsResolveEachOther(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			db := newAlertTestDB(t)
+			db := openTestDB(t)
 			s := NewService(db)
 
 			if err := tc.raise(s); err != nil {
 				t.Fatalf("raise: %v", err)
 			}
-			open, err := db.ListAlerts(false, 50)
+			open, err := db.GetAlerts(false, 50)
 			if err != nil {
-				t.Fatalf("ListAlerts: %v", err)
+				t.Fatalf("GetAlerts: %v", err)
 			}
 			if !hasOpenAlertOfType(open, tc.problemType) {
 				t.Fatalf("expected an open %s alert, got %+v", tc.problemType, open)
@@ -1125,9 +1125,9 @@ func TestConfigDriftAlertPairsResolveEachOther(t *testing.T) {
 			if err := tc.recover(s); err != nil {
 				t.Fatalf("recover: %v", err)
 			}
-			open, err = db.ListAlerts(false, 50)
+			open, err = db.GetAlerts(false, 50)
 			if err != nil {
-				t.Fatalf("ListAlerts: %v", err)
+				t.Fatalf("GetAlerts: %v", err)
 			}
 			if hasOpenAlertOfType(open, tc.problemType) {
 				t.Errorf("%s should have been auto-resolved by its recovery call", tc.problemType)
@@ -1149,15 +1149,15 @@ func hasOpenAlertOfType(alerts []storage.Alert, alertType string) bool {
 // maintenance signal, not an outage — raising it as Critical would train the
 // operator to ignore Critical alerts.
 func TestSecurityUpdatesPendingIsWarningNotCritical(t *testing.T) {
-	db := newAlertTestDB(t)
+	db := openTestDB(t)
 	s := NewService(db)
 
 	if err := s.SecurityUpdatesPending("2 pacotes"); err != nil {
 		t.Fatalf("SecurityUpdatesPending: %v", err)
 	}
-	open, err := db.ListAlerts(false, 50)
+	open, err := db.GetAlerts(false, 50)
 	if err != nil {
-		t.Fatalf("ListAlerts: %v", err)
+		t.Fatalf("GetAlerts: %v", err)
 	}
 	for _, a := range open {
 		if a.Type == TypeSecurityUpdatesPending && a.Severity != SeverityWarning {
@@ -1167,11 +1167,11 @@ func TestSecurityUpdatesPendingIsWarningNotCritical(t *testing.T) {
 }
 ```
 
-Antes de rodar: conferir a assinatura real de `db.ListAlerts` e o nome do
-helper de DB de teste já existente no arquivo
-(`grep -n "func newAlertTestDB\|func.*testDB\|storage.Open" internal/alerts/service_test.go`)
-e ajustar as duas chamadas acima para os nomes reais. Se o helper tiver outro
-nome, usar o existente em vez de criar `newAlertTestDB`.
+Os nomes acima já foram conferidos contra o código real: o helper de DB é
+`openTestDB(t)` (`internal/alerts/service_test.go:11`) e a listagem é
+`db.GetAlerts(unresolvedOnly bool, limit int) ([]storage.Alert, error)`
+(`internal/storage/repository.go:113`). Usar exatamente esses — não criar
+helper novo.
 
 - [ ] **Step 2: Rodar e confirmar que falha**
 
@@ -1771,9 +1771,9 @@ func TestUpdatesSchedulerAlertsOnlyForSecurityUpdates(t *testing.T) {
 	u.RunOnce(context.Background())
 	u.RunOnce(context.Background())
 
-	open, err := c.db.ListAlerts(false, 50)
+	open, err := c.db.GetAlerts(false, 50)
 	if err != nil {
-		t.Fatalf("ListAlerts: %v", err)
+		t.Fatalf("GetAlerts: %v", err)
 	}
 	for _, a := range open {
 		if a.Type == alerts.TypeSecurityUpdatesPending {
@@ -1790,9 +1790,9 @@ func TestUpdatesSchedulerAlertsOnSecurityUpdate(t *testing.T) {
 	u.RunOnce(context.Background())
 	u.RunOnce(context.Background())
 
-	open, err := c.db.ListAlerts(false, 50)
+	open, err := c.db.GetAlerts(false, 50)
 	if err != nil {
-		t.Fatalf("ListAlerts: %v", err)
+		t.Fatalf("GetAlerts: %v", err)
 	}
 	found := false
 	for _, a := range open {
@@ -2033,11 +2033,234 @@ git commit -m "feat(monitoring): watch pending system updates, alerting on secur
 
 ---
 
-## Task 6 (a detalhar antes de executar)
+### Task 6: Endpoint da lista de atualizações + rótulos no painel
 
-- **Frontend + endpoint**: rótulos em `SystemHealth.tsx` (`firewall-nat`
-  "Regra de NAT", `wan-interface` "Interfaces WAN", `dns-resolver`
-  "Resolver DNS", `system-updates` "Atualizações do sistema"); novo endpoint
-  `GET /api/system/updates` (permissão `PermSystemRead`) servindo
-  `Collector.LastUpdatesReport()`; lista expansível de pacotes pendentes na
-  UI, seguindo a preferência já registrada por resumo colapsado + expandir.
+**Files:**
+- Modify: `internal/api/handlers/monitoring.go`
+- Create: `internal/api/handlers/monitoring_updates_test.go`
+- Modify: `internal/api/server.go`
+- Modify: `web/src/types/index.ts`
+- Modify: `web/src/components/SystemHealth.tsx`
+
+**Interfaces:**
+- Consumes: `MonitoringHandler` (já existente, `internal/api/handlers/monitoring.go:11` — já carrega `col *monitoring.Collector`, nenhum wiring novo é necessário); `Collector.LastUpdatesReport()` (Task 5c); `auth.PermSystemRead`; `writeJSON`.
+- Produces: `GET /api/system/updates`; tipos TS `PendingPackage`/`UpdatesReport`.
+
+- [ ] **Step 1: Escrever o teste que falha**
+
+Criar `internal/api/handlers/monitoring_updates_test.go`:
+
+```go
+package handlers
+
+import (
+	"encoding/json"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
+	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+)
+
+// TestUpdatesReturnsEmptyPackagesNotNull guards the same JSON contract the
+// rest of this codebase follows: a nil slice marshals to `null` and breaks
+// the frontend's .map(). A fresh box that has never run the check must
+// return an empty list, not null.
+func TestUpdatesReturnsEmptyPackagesNotNull(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	col := monitoring.NewCollector(db, nil, alerts.NewService(db), &fakeEmptyIfaceExec{}, nil)
+	h := NewMonitoringHandler(col, db)
+
+	r := httptest.NewRequest("GET", "/api/system/updates", nil)
+	w := httptest.NewRecorder()
+	h.Updates(w, r)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Total    int  `json:"total"`
+		Security int  `json:"security"`
+		Packages []any `json:"packages"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v — body: %s", err, w.Body.String())
+	}
+	if got.Packages == nil {
+		t.Errorf("packages is null; expected [] — body: %s", w.Body.String())
+	}
+}
+```
+
+`fakeEmptyIfaceExec` já existe em `internal/api/handlers/netif_test.go` (mesmo
+pacote) e serve aqui — confirmar com
+`grep -rn "fakeEmptyIfaceExec" internal/api/handlers/` antes de usar; se não
+existir mais, criar um fake local mínimo em vez de reaproveitar `fakeNftExec`.
+
+- [ ] **Step 2: Rodar e confirmar que falha**
+
+```bash
+go test ./internal/api/handlers/... -run TestUpdatesReturnsEmpty -v
+```
+
+Esperado: `FAIL` — `h.Updates` não existe.
+
+- [ ] **Step 3: Implementar**
+
+Em `internal/api/handlers/monitoring.go`, adicionar logo depois de `Health`:
+
+```go
+// Updates returns the most recent pending system-updates report, so the
+// panel can list exactly which packages are waiting (and which of them are
+// security updates) without shelling out to apt on every page load — the
+// scheduler refreshes this on its own cadence.
+func (h *MonitoringHandler) Updates(w http.ResponseWriter, r *http.Request) {
+	rep := h.col.LastUpdatesReport()
+	if rep.Packages == nil {
+		rep.Packages = []sysupdates.Package{}
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+```
+
+Adicionar `"github.com/giovanibalarini/linkguard-fw/internal/sysupdates"` ao
+bloco de import do arquivo.
+
+Em `internal/api/server.go`, logo depois da rota de health já existente
+(linha ~265):
+
+```go
+		r.With(require(auth.PermSystemRead)).Get("/api/system/updates", monH.Updates)
+```
+
+Em `web/src/types/index.ts`, junto dos tipos de monitoramento (perto de
+`HealthItem`):
+
+```ts
+export interface PendingPackage {
+  name: string;
+  current_version: string;
+  new_version: string;
+  origin: string;
+  security: boolean;
+}
+export interface UpdatesReport { total: number; security: number; packages: PendingPackage[]; }
+```
+
+Em `web/src/components/SystemHealth.tsx`, acrescentar os quatro rótulos ao
+mapa `LABEL` existente:
+
+```tsx
+  'firewall-nat': 'Regra de NAT',
+  'wan-interface': 'Interfaces WAN',
+  'dns-resolver': 'Resolver DNS',
+  'system-updates': 'Atualizações do sistema',
+```
+
+E, no mesmo componente, uma seção colapsada que só aparece quando há
+atualizações pendentes (padrão "resumo + expandir" já preferido no projeto,
+em vez de um card grande sempre visível). Adicionar ao topo do componente:
+
+```tsx
+  const [updates, setUpdates] = useState<UpdatesReport | null>(null);
+  const [showUpdates, setShowUpdates] = useState(false);
+```
+
+Carregar junto do health, dentro do mesmo `useEffect`/`load` já existente
+(logo após o `setItems`):
+
+```tsx
+      try { const { data } = await client.get<UpdatesReport>('/api/system/updates'); if (alive) setUpdates(data); }
+      catch { /* best-effort, igual ao health */ }
+```
+
+E renderizar, logo depois do grid de itens, antes de fechar o `<Panel>`:
+
+```tsx
+      {updates && updates.total > 0 && (
+        <div className="mt-3 pt-3 border-t border-gray-800/50">
+          <button onClick={() => setShowUpdates(!showUpdates)} className="text-sm text-gray-400 hover:text-white">
+            {updates.total} atualização(ões) pendente(s)
+            {updates.security > 0 && <span className="text-amber-400"> — {updates.security} de segurança</span>}
+            <span className="text-gray-600"> {showUpdates ? '▲' : '▼'}</span>
+          </button>
+          {showUpdates && (
+            <div className="mt-2 space-y-1">
+              {updates.packages.map((p) => (
+                <div key={p.name} className="flex items-center justify-between text-xs">
+                  <span className={p.security ? 'text-amber-400' : 'text-gray-400'}>{p.name}</span>
+                  <span className="text-gray-600 font-mono">{p.current_version || '—'} → {p.new_version}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+```
+
+Atualizar o import de tipos do arquivo para incluir `UpdatesReport`.
+
+- [ ] **Step 4: Verificar backend e build do frontend**
+
+```bash
+gofmt -l internal/api/
+go test ./internal/api/... -v
+go build ./... && go vet ./...
+export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH
+cd web && npm run build
+```
+
+Esperado: `PASS` em tudo; build do frontend limpo (`tsc -b && vite build`).
+
+- [ ] **Step 5: Teste manual na VM de teste**
+
+Reaproveitar `~/linkguard-testvm/` (`./recreate.sh`, `./ssh.sh`,
+`./destroy.sh`). Se `make deb` falhar no `npm install` por causa do
+`web/node_modules` de dono root (problema pré-existente do repositório), usar
+o contorno já empregado nesta sessão: `cd web && npm run build` direto, depois
+`go build` e replicar os passos de empacotamento do alvo `deb:` do `Makefile`.
+
+Roteiro (o valor real desta task é provar o ciclo completo):
+1. Instalar o `.deb` na VM e logar no painel.
+2. **Provar o vigia de interface**: apontar um Link para uma interface
+   inexistente — `sqlite3 /var/lib/linkguard-fw/linkguard.db "UPDATE links SET interface='enp99s0' WHERE id=(SELECT id FROM links LIMIT 1);"` — reiniciar
+   o serviço, esperar dois ticks do coletor (~60s) e confirmar que
+   "Interfaces WAN" fica vermelho no painel e que o alerta aparece.
+3. **Provar a reconciliação de NAT**: com o Link apontando para uma interface
+   real, reiniciar o serviço e confirmar via
+   `nft list chain inet linkguard postrouting` que existe **exatamente uma**
+   regra de masquerade, com as interfaces corretas (é o teste real da correção
+   da duplicação).
+4. **Provar o resolver**: escrever `nameserver 8.8.8.8` em `/etc/resolv.conf`,
+   reiniciar o serviço e confirmar que o arquivo volta para `127.0.0.1`, que
+   `/etc/dhcp/dhclient.conf` ganhou o `supersede` (uma vez só) e que o item
+   "Resolver DNS" fica verde.
+5. **Provar o vigia de updates**: confirmar que "Atualizações do sistema"
+   aparece e que a lista expande com os pacotes reais da VM.
+6. `./destroy.sh`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/api/handlers/monitoring.go internal/api/handlers/monitoring_updates_test.go internal/api/server.go web/src/types/index.ts web/src/components/SystemHealth.tsx
+git commit -m "feat(ui): surface config drift and pending updates on the health panel"
+```
+
+---
+
+## Depois deste plano
+
+Fora de escopo (documentado na spec §7): aplicar atualizações
+automaticamente, auto-curar `links.interface` por MAC, migração
+ifupdown→networkd (Fase B) e o proxy tipo Squid pedido como próxima fase.
+
+Ação operacional recomendada, separada deste plano: aplicar a nomeação
+estável por MAC (Fase A, já implementada) em produção e reiniciar — estanca
+na fonte a causa mais comum de deriva de interface, enquanto os vigias desta
+entrega cobrem o resto.
