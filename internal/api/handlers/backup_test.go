@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
+	"github.com/giovanibalarini/linkguard-fw/internal/backupcrypt"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -62,6 +64,186 @@ func multipartRestoreBody(t *testing.T, encrypted []byte, passphrase string) (*b
 		t.Fatalf("Close multipart writer: %v", err)
 	}
 	return &buf, mw.FormDataContentType()
+}
+
+// ─── Finding 2 (S1): restoring a backup must validate every settings blob it
+// recognizes through the same checks the live API applies before an admin's
+// edit ever reaches the DB, and must write nothing at all when any of them
+// fails — a crafted or corrupted backup must not be able to reach
+// unbound.conf/kea-dhcp4.conf with unvalidated content by going around the
+// handlers entirely. Regression tests for
+// .superpowers/sdd/input-validation-audit.md finding #1.
+
+// encryptBackupData encrypts an arbitrary BackupData under passphrase, the
+// same on-disk shape Restore expects — but built directly (not via
+// h.Export), so a test can craft settings/blocklist content Export would
+// never produce from a clean DB.
+func encryptBackupData(t *testing.T, data backup.BackupData, passphrase string) []byte {
+	t.Helper()
+	plaintext, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal BackupData: %v", err)
+	}
+	encrypted, err := backupcrypt.Encrypt(plaintext, passphrase)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	return encrypted
+}
+
+// doRestore posts data (encrypted under passphrase) to h.Restore and returns
+// the response.
+func doRestore(t *testing.T, h *handlers.BackupHandler, data backup.BackupData, passphrase string) *httptest.ResponseRecorder {
+	t.Helper()
+	encrypted := encryptBackupData(t, data, passphrase)
+	body, contentType := multipartRestoreBody(t, encrypted, passphrase)
+	rreq := httptest.NewRequest(http.MethodPost, "/api/backup/restore", body)
+	rreq.Header.Set("Content-Type", contentType)
+	rreq = rreq.WithContext(auth.ContextWithClaims(rreq.Context(), &auth.Claims{UserID: "u1", Username: "tester"}))
+	rw := httptest.NewRecorder()
+	h.Restore(rw, rreq)
+	return rw
+}
+
+// snapshotDB exports the handler's live DB (via the same h.Export path a
+// real download uses) and decrypts it back into a BackupData, so a test can
+// assert on exactly what ended up persisted — including "nothing changed"
+// after a restore that should have been rejected.
+func snapshotDB(t *testing.T, h *handlers.BackupHandler, passphrase string) backup.BackupData {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/backup", nil)
+	w := httptest.NewRecorder()
+	h.Export(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Export: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	data, err := backup.DecryptRestore(w.Body.Bytes(), passphrase)
+	if err != nil {
+		t.Fatalf("DecryptRestore: %v", err)
+	}
+	return data
+}
+
+const testPassphrase = "senha-de-teste-123456"
+
+// validNetsvcConfigJSON is a clean, fully-valid netsvc_config settings blob
+// — the baseline every "rejected restore must write nothing" test restores
+// first, so there's known-good state to prove survives untouched.
+const validNetsvcConfigJSON = `{"backend":"kea-unbound","interface":"br10","subnet_cidr":"192.168.3.0/24","range_start":"192.168.3.10","range_end":"192.168.3.100","gateway":"192.168.3.3","lease_hours":12,"dns_to_clients":["192.168.3.3"],"upstreams":[],"log_queries":false,"domain_suffix":"lan"}`
+
+func TestRestoreRejectsInvalidCIDRInNetsvcConfigAndWritesNothing(t *testing.T) {
+	h, sec := newBackupTestHandler(t)
+	if err := sec.Set(backup.PassphraseSecretName, testPassphrase); err != nil {
+		t.Fatalf("sec.Set: %v", err)
+	}
+
+	baseline := backup.BackupData{Version: "test-version", Kind: "linkguard-fw-backup",
+		Settings: map[string]string{"netsvc_config": validNetsvcConfigJSON}}
+	if rw := doRestore(t, h, baseline, testPassphrase); rw.Code != http.StatusOK {
+		t.Fatalf("baseline restore: expected 200, got %d: %s", rw.Code, rw.Body.String())
+	}
+	before := snapshotDB(t, h, testPassphrase)
+
+	malicious := baseline
+	malicious.Settings = map[string]string{
+		"netsvc_config": `{"backend":"kea-unbound","interface":"br10","subnet_cidr":"not-a-cidr","range_start":"192.168.3.10","range_end":"192.168.3.100","gateway":"192.168.3.3"}`,
+	}
+	rw := doRestore(t, h, malicious, testPassphrase)
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid subnet_cidr in a restored backup, got %d: %s", rw.Code, rw.Body.String())
+	}
+
+	after := snapshotDB(t, h, testPassphrase)
+	if !reflect.DeepEqual(before.Settings, after.Settings) {
+		t.Fatalf("settings changed after a restore that should have been rejected:\nbefore=%v\nafter=%v", before.Settings, after.Settings)
+	}
+}
+
+func TestRestoreRejectsInvalidInterfaceInNetsvcConfigAndWritesNothing(t *testing.T) {
+	h, sec := newBackupTestHandler(t)
+	if err := sec.Set(backup.PassphraseSecretName, testPassphrase); err != nil {
+		t.Fatalf("sec.Set: %v", err)
+	}
+
+	baseline := backup.BackupData{Version: "test-version", Kind: "linkguard-fw-backup",
+		Settings: map[string]string{"netsvc_config": validNetsvcConfigJSON}}
+	if rw := doRestore(t, h, baseline, testPassphrase); rw.Code != http.StatusOK {
+		t.Fatalf("baseline restore: expected 200, got %d: %s", rw.Code, rw.Body.String())
+	}
+	before := snapshotDB(t, h, testPassphrase)
+
+	malicious := baseline
+	malicious.Settings = map[string]string{
+		// A newline in "interface" would land in kea-dhcp4.conf's
+		// interfaces-config by string concatenation elsewhere in the config
+		// pipeline; an interface name this long/invalid is also outright
+		// rejected by validIface.
+		"netsvc_config": `{"backend":"kea-unbound","interface":"this-interface-name-is-way-too-long-for-linux","subnet_cidr":"192.168.3.0/24","range_start":"192.168.3.10","range_end":"192.168.3.100","gateway":"192.168.3.3"}`,
+	}
+	rw := doRestore(t, h, malicious, testPassphrase)
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid interface in a restored backup, got %d: %s", rw.Code, rw.Body.String())
+	}
+
+	after := snapshotDB(t, h, testPassphrase)
+	if !reflect.DeepEqual(before.Settings, after.Settings) {
+		t.Fatalf("settings changed after a restore that should have been rejected:\nbefore=%v\nafter=%v", before.Settings, after.Settings)
+	}
+}
+
+func TestRestoreRejectsInjectedBlocklistEntryAndWritesNothing(t *testing.T) {
+	h, sec := newBackupTestHandler(t)
+	if err := sec.Set(backup.PassphraseSecretName, testPassphrase); err != nil {
+		t.Fatalf("sec.Set: %v", err)
+	}
+
+	baseline := backup.BackupData{Version: "test-version", Kind: "linkguard-fw-backup",
+		Blocklist: []string{"good.example.com"}}
+	if rw := doRestore(t, h, baseline, testPassphrase); rw.Code != http.StatusOK {
+		t.Fatalf("baseline restore: expected 200, got %d: %s", rw.Code, rw.Body.String())
+	}
+	before := snapshotDB(t, h, testPassphrase)
+
+	malicious := backup.BackupData{Version: "test-version", Kind: "linkguard-fw-backup",
+		Blocklist: []string{"good.example.com", "evil.com\ninclude: \"/etc/passwd"}}
+	rw := doRestore(t, h, malicious, testPassphrase)
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an injected blocklist entry in a restored backup, got %d: %s", rw.Code, rw.Body.String())
+	}
+
+	after := snapshotDB(t, h, testPassphrase)
+	if !reflect.DeepEqual(before.Blocklist, after.Blocklist) {
+		t.Fatalf("blocklist changed after a restore that should have been rejected:\nbefore=%v\nafter=%v", before.Blocklist, after.Blocklist)
+	}
+}
+
+// TestRestoreCleanBackupWithNetsvcConfigRestoresUnchanged proves the new
+// validation doesn't reject legitimate content: a fully-valid netsvc_config
+// blob and a fully-valid blocklist restore exactly as given.
+func TestRestoreCleanBackupWithNetsvcConfigRestoresUnchanged(t *testing.T) {
+	h, sec := newBackupTestHandler(t)
+	if err := sec.Set(backup.PassphraseSecretName, testPassphrase); err != nil {
+		t.Fatalf("sec.Set: %v", err)
+	}
+
+	clean := backup.BackupData{
+		Version:   "test-version",
+		Kind:      "linkguard-fw-backup",
+		Settings:  map[string]string{"netsvc_config": validNetsvcConfigJSON},
+		Blocklist: []string{"ads.example.com", "tracker.example.net"},
+	}
+	rw := doRestore(t, h, clean, testPassphrase)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a clean backup, got %d: %s", rw.Code, rw.Body.String())
+	}
+
+	after := snapshotDB(t, h, testPassphrase)
+	if after.Settings["netsvc_config"] != validNetsvcConfigJSON {
+		t.Errorf("netsvc_config changed on a clean restore:\nwant=%s\ngot=%s", validNetsvcConfigJSON, after.Settings["netsvc_config"])
+	}
+	if !reflect.DeepEqual(after.Blocklist, clean.Blocklist) {
+		t.Errorf("blocklist changed on a clean restore:\nwant=%v\ngot=%v", clean.Blocklist, after.Blocklist)
+	}
 }
 
 func TestExportRequiresPassphrase(t *testing.T) {
