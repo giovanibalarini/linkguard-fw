@@ -36,6 +36,16 @@ type ChainRule struct {
 	HasCounter bool   `json:"has_counter"`
 	Packets    uint64 `json:"packets"`
 	Bytes      uint64 `json:"bytes"`
+
+	// Managed and Owner classify the rule's origin (design spec §2): a rule
+	// is either managed by LinkGuard (derived from a higher-level control,
+	// reconciled, not hand-editable here) or the admin's own (chain
+	// user_rules — the only chain classifyRule ever calls unmanaged).
+	// Description is a plain-Portuguese rendering of Expression for the UI.
+	// All three are populated by classifyRule/describeRule in classify.go.
+	Managed     bool      `json:"managed"`
+	Owner       RuleOwner `json:"owner"`
+	Description string    `json:"description"`
 }
 
 var (
@@ -148,5 +158,7 @@ func parseChainRuleLine(chainName, line string) ChainRule {
 		clean = reCounterCapture.ReplaceAllString(clean, "")
 	}
 	rule.Expression = strings.Join(strings.Fields(clean), " ")
+	rule.Managed, rule.Owner = classifyRule(chainName, rule.Expression)
+	rule.Description = describeRule(chainName, rule.Expression)
 	return rule
 }
