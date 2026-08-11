@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -320,6 +321,21 @@ func (s *Service) validateKea(ctx context.Context, content string) error {
 // binary is logged and treated as "validation not possible here, proceed",
 // never as a validation failure.
 func (s *Service) validateUnbound(ctx context.Context, content string) error {
+	// I-6: "the checker isn't installed" is decided HERE, by looking for the
+	// binary, before it is ever run — not afterwards by pattern-matching the
+	// error text. firewall.RealExecutor folds the command's stderr into the
+	// error string, and plenty of genuine unbound-checkconf rejections name
+	// a file that is missing ("… /var/lib/unbound/root.key: no such file or
+	// directory"), which the old substring match read as "tool absent,
+	// proceed". That turned a validation whose entire purpose is to fail
+	// closed into one that failed open on exactly the configs it exists to
+	// stop. After this point every error from the checker is a real
+	// rejection and aborts the apply.
+	if err := binaryInstalled(s.unboundCheckBin); err != nil {
+		slog.Warn("unbound-checkconf não encontrado; pulando validação pré-apply do unbound.conf (o pacote unbound é Recommends:, não Depends:, deste projeto)", "bin", s.unboundCheckBin, "err", err)
+		return nil
+	}
+
 	// I-5: the suffix must NOT be ".conf". This temp file is created inside
 	// /etc/unbound/unbound.conf.d (see above), and Debian's unbound.conf
 	// pulls in that whole directory with `include-toplevel:
@@ -342,29 +358,20 @@ func (s *Service) validateUnbound(ctx context.Context, content string) error {
 	f.Close()
 
 	_, err = s.exec.ExecuteRead(ctx, s.unboundCheckBin, f.Name())
-	if err != nil && isMissingBinary(err) {
-		slog.Warn("unbound-checkconf não encontrado; pulando validação pré-apply do unbound.conf (o pacote unbound é Recommends:, não Depends:, deste projeto)", "bin", s.unboundCheckBin, "err", err)
-		return nil
-	}
 	return err
 }
 
-// isMissingBinary reports whether err looks like the executor failed to
-// even start the target binary (not found), as opposed to the binary
-// running and reporting a real validation failure. Go's os/exec surfaces a
-// missing binary as a fixed, English, locale-independent message —
-// "executable file not found in $PATH" via LookPath for a bare command
-// name, or "no such file or directory" via fork/exec for an absolute path
-// like unboundCheckBinDefault — so matching on those substrings reliably
-// distinguishes "the tool isn't installed" from "the tool ran and rejected
-// the config", without needing firewall.Executor to grow a dedicated
-// not-found signal just for this one caller.
-func isMissingBinary(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "executable file not found") || strings.Contains(msg, "no such file or directory")
+// binaryInstalled reports (as an error) whether bin can actually be run.
+// exec.LookPath answers exactly that question for both spellings — a path
+// (checked for existence and the execute bit) and a bare command name
+// (searched in $PATH) — which is the same resolution os/exec itself would
+// perform a moment later. This is the only honest way to tell "the tool
+// isn't installed here" from "the tool ran and rejected the config": the
+// executor reports both as a plain error string, and only the first may be
+// treated as "validation not possible, proceed".
+func binaryInstalled(bin string) error {
+	_, err := exec.LookPath(bin)
+	return err
 }
 
 // ─── Kea (DHCP) ──────────────────────────────────────────────────────────────

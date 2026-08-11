@@ -25,13 +25,13 @@ type recExec struct {
 	unboundEnabled bool
 
 	// unboundCheckErr, when set, is returned by `unbound-checkconf <file>`.
-	// unboundCheckMissing simulates the checker binary not being installed
-	// (Debian ships unbound as Recommends:, so unbound-checkconf may be
-	// absent even when this project is). unboundCheckPath records the file
-	// path validateUnbound passed to the checker.
-	unboundCheckErr     error
-	unboundCheckMissing bool
-	unboundCheckPath    string
+	// unboundCheckPath records the file path validateUnbound passed to the
+	// checker (empty when the checker was never run — which is how a test
+	// tells "skipped because absent" from "ran and passed"). A missing
+	// checker is no longer simulated here: it is a property of the binary
+	// path the Service holds, not of what the executor answers (I-6).
+	unboundCheckErr  error
+	unboundCheckPath string
 }
 
 func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -50,11 +50,6 @@ func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (st
 	if strings.Contains(cmd, "unbound-checkconf") {
 		if len(args) > 0 {
 			e.unboundCheckPath = args[0]
-		}
-		if e.unboundCheckMissing {
-			// Mirrors firewall.RealExecutor's wrapping of a LookPath/fork-exec
-			// failure for a binary that doesn't exist — see isMissingBinary.
-			return "", fmt.Errorf("command %q failed: exec: %q: executable file not found in $PATH", cmd+" "+strings.Join(args, " "), cmd)
 		}
 		if e.unboundCheckErr != nil {
 			return "config error", e.unboundCheckErr
@@ -78,6 +73,15 @@ func newTestSvc(t *testing.T, e *recExec) *Service {
 	s := NewService(e)
 	s.keaConf = filepath.Join(dir, "kea-dhcp4.conf")
 	s.unboundConf = filepath.Join(dir, "unbound.conf")
+	// O checker é resolvido no sistema de arquivos antes de rodar (I-6),
+	// então um serviço de teste precisa apontar para um arquivo que existe
+	// de verdade: "instalado" e "ausente" viraram estados distintos, não
+	// mais um palpite sobre o texto do erro. A máquina que roda o teste não
+	// precisa ter o unbound instalado.
+	s.unboundCheckBin = filepath.Join(dir, "unbound-checkconf")
+	if err := os.WriteFile(s.unboundCheckBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("criar checker falso: %v", err)
+	}
 	return s
 }
 
@@ -231,10 +235,14 @@ func TestValidateUnboundWritesTempFileNextToRealConfig(t *testing.T) {
 // TestReloadConfigsProceedsWhenUnboundCheckconfMissing: unbound-checkconf
 // not being installed must not block DHCP/DNS apply — Debian's unbound
 // package (and its checker) is a Recommends:, not a Depends:, of this
-// project.
+// project. The absence is now established by resolving the binary (I-6),
+// not by reading the error text of a command that did run, so the test
+// points the service at a path that does not exist instead of asking the
+// fake executor to imitate a "not found" message.
 func TestReloadConfigsProceedsWhenUnboundCheckconfMissing(t *testing.T) {
-	e := &recExec{unboundCheckMissing: true}
+	e := &recExec{}
 	s := newTestSvc(t, e)
+	s.unboundCheckBin = filepath.Join(t.TempDir(), "unbound-checkconf") // nunca criado
 
 	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
 		t.Fatalf("ReloadConfigs should proceed when unbound-checkconf is missing: %v", err)
@@ -743,5 +751,47 @@ func TestValidateUnboundTempFileIsNotPickedUpByTheIncludeGlob(t *testing.T) {
 	}
 	if strings.HasSuffix(e.unboundCheckPath, ".conf") {
 		t.Errorf("o temporário de validação não pode casar com o glob *.conf do include-toplevel, obtive %q", e.unboundCheckPath)
+	}
+}
+
+// ─── I-6: uma rejeição real do checker não pode virar "checker ausente" ──────
+//
+// firewall.RealExecutor enfia o stderr do comando na string do erro, e
+// muita mensagem legítima do unbound-checkconf cita um arquivo que falta
+// ("... /var/lib/unbound/root.key: no such file or directory"). Casar essa
+// substring em qualquer lugar do erro transformava a rejeição em "o
+// checker não existe, siga em frente": fail-open numa validação cujo
+// propósito inteiro é fail-closed.
+func TestReloadConfigsFailsClosedWhenCheckerRejectsWithAMissingFileMessage(t *testing.T) {
+	e := &recExec{unboundCheckErr: fmt.Errorf(`[1234:0] fatal error: /var/lib/unbound/root.key: no such file or directory`)}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err == nil {
+		t.Fatal("uma rejeição do unbound-checkconf tem que abortar o apply, mesmo citando arquivo ausente")
+	}
+	if _, err := os.Stat(s.unboundConf); err == nil {
+		t.Error("nada pode ser escrito quando a validação reprova")
+	}
+	if strings.Contains(strings.Join(e.writes, "\n"), "reload-or-restart") {
+		t.Error("nada pode ser recarregado quando a validação reprova")
+	}
+}
+
+// O outro lado da mesma moeda: com o checker de fato ausente (o pacote
+// unbound é Recommends:, não Depends:), a validação é pulada e o apply
+// segue — e o checker nem chega a ser executado.
+func TestReloadConfigsSkipsValidationWhenCheckerIsReallyAbsent(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	s.unboundCheckBin = filepath.Join(t.TempDir(), "nao-existe", "unbound-checkconf")
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
+		t.Fatalf("checker ausente não pode bloquear o apply: %v", err)
+	}
+	if e.unboundCheckPath != "" {
+		t.Errorf("um checker inexistente não devia nem ser executado, mas recebeu %q", e.unboundCheckPath)
+	}
+	if _, err := os.Stat(s.unboundConf); err != nil {
+		t.Error("a config devia ser escrita mesmo sem validação possível")
 	}
 }
