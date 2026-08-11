@@ -23,6 +23,15 @@ type recExec struct {
 	// package, so on a box without it (or where it failed to start) taking
 	// over resolv.conf would knock out the box's own name resolution.
 	unboundEnabled bool
+
+	// unboundCheckErr, when set, is returned by `unbound-checkconf <file>`.
+	// unboundCheckMissing simulates the checker binary not being installed
+	// (Debian ships unbound as Recommends:, so unbound-checkconf may be
+	// absent even when this project is). unboundCheckPath records the file
+	// path validateUnbound passed to the checker.
+	unboundCheckErr     error
+	unboundCheckMissing bool
+	unboundCheckPath    string
 }
 
 func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -37,6 +46,20 @@ func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (st
 		// mirrors systemctl's real behaviour: non-zero exit, "disabled" (or
 		// a "no such unit" error) on stdout/stderr either way.
 		return "disabled\n", fmt.Errorf("unit unbound.service is not enabled")
+	}
+	if strings.Contains(cmd, "unbound-checkconf") {
+		if len(args) > 0 {
+			e.unboundCheckPath = args[0]
+		}
+		if e.unboundCheckMissing {
+			// Mirrors firewall.RealExecutor's wrapping of a LookPath/fork-exec
+			// failure for a binary that doesn't exist — see isMissingBinary.
+			return "", fmt.Errorf("command %q failed: exec: %q: executable file not found in $PATH", cmd+" "+strings.Join(args, " "), cmd)
+		}
+		if e.unboundCheckErr != nil {
+			return "config error", e.unboundCheckErr
+		}
+		return "ok", nil
 	}
 	if len(args) >= 2 && args[0] == "-t" { // kea-dhcp4 -t <file>
 		e.keaTestPath = args[1]
@@ -152,6 +175,78 @@ func TestReloadConfigsAbortsOnInvalidKeaConfig(t *testing.T) {
 type assertErr2 struct{}
 
 func (assertErr2) Error() string { return "kea config invalid" }
+
+// ─── Finding 3 (S1): ReloadConfigs must validate the unbound candidate with
+// unbound-checkconf before writing it, mirroring validateKea exactly —
+// nothing written or reloaded on failure, same temp-file-next-to-the-real-
+// config placement, and a missing checker must not block the DHCP/DNS
+// apply. Regression tests for .superpowers/sdd/input-validation-audit.md
+// finding #3.
+
+// TestReloadConfigsAbortsOnInvalidUnboundConfig is the unbound-side sibling
+// of TestReloadConfigsAbortsOnInvalidKeaConfig: an unbound config that fails
+// unbound-checkconf must abort the whole reload with NEITHER file written
+// and no service reloaded — a broken unbound.conf must never land on disk,
+// since it would survive the next reboot and take DNS down (see this
+// finding's motivating incident in the task brief).
+func TestReloadConfigsAbortsOnInvalidUnboundConfig(t *testing.T) {
+	e := &recExec{unboundCheckErr: fmt.Errorf("unbound config invalid")}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err == nil {
+		t.Fatal("expected error when unbound config test fails")
+	}
+	if strings.Contains(strings.Join(e.writes, "\n"), "reload-or-restart") {
+		t.Error("must not reload when unbound config validation fails")
+	}
+	if _, err := os.Stat(s.unboundConf); err == nil {
+		t.Error("must not write unbound config when validation fails")
+	}
+	if _, err := os.Stat(s.keaConf); err == nil {
+		t.Error("must not write kea config either — nothing is applied when any candidate is invalid")
+	}
+}
+
+// TestValidateUnboundWritesTempFileNextToRealConfig mirrors
+// TestValidateKeaWritesTempFileNextToRealConfig: the temp file must live in
+// the same directory as the real unbound config, matching validateKea's
+// AppArmor-driven placement so both validators behave identically even
+// though unbound-checkconf itself has no comparable confinement on Debian.
+func TestValidateUnboundWritesTempFileNextToRealConfig(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	if e.unboundCheckPath == "" {
+		t.Fatal("unbound-checkconf was never called")
+	}
+	wantDir := filepath.Dir(s.unboundConf)
+	if gotDir := filepath.Dir(e.unboundCheckPath); gotDir != wantDir {
+		t.Errorf("validate temp file dir = %q, want %q (same dir as the real unbound config)", gotDir, wantDir)
+	}
+}
+
+// TestReloadConfigsProceedsWhenUnboundCheckconfMissing: unbound-checkconf
+// not being installed must not block DHCP/DNS apply — Debian's unbound
+// package (and its checker) is a Recommends:, not a Depends:, of this
+// project.
+func TestReloadConfigsProceedsWhenUnboundCheckconfMissing(t *testing.T) {
+	e := &recExec{unboundCheckMissing: true}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
+		t.Fatalf("ReloadConfigs should proceed when unbound-checkconf is missing: %v", err)
+	}
+	if _, err := os.Stat(s.unboundConf); err != nil {
+		t.Error("unbound config should still be written when the checker is merely absent")
+	}
+	joined := strings.Join(e.writes, "\n")
+	if !strings.Contains(joined, "systemctl reload-or-restart unbound") {
+		t.Errorf("unbound should still be reloaded when the checker is merely absent; writes:\n%s", joined)
+	}
+}
 
 func TestGenerateKeaConfigValidJSON(t *testing.T) {
 	cfg := netsvc.DefaultConfig()

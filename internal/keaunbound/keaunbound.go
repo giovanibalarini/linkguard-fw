@@ -27,31 +27,34 @@ const (
 	ResolvConfPath   = "/etc/resolv.conf"
 	DhclientConfPath = "/etc/dhcp/dhclient.conf"
 
-	keaService     = "kea-dhcp4-server"
-	unboundService = "unbound"
-	keaBinDefault  = "/usr/sbin/kea-dhcp4"
+	keaService             = "kea-dhcp4-server"
+	unboundService         = "unbound"
+	keaBinDefault          = "/usr/sbin/kea-dhcp4"
+	unboundCheckBinDefault = "/usr/sbin/unbound-checkconf"
 )
 
 // Service is the Kea+unbound Provider. Config paths and the Kea binary are
 // fields (defaulted to the system paths) so tests can point them at a temp dir.
 type Service struct {
-	exec         firewall.Executor
-	keaConf      string
-	unboundConf  string
-	keaBin       string
-	resolvConf   string
-	dhclientConf string
+	exec            firewall.Executor
+	keaConf         string
+	unboundConf     string
+	keaBin          string
+	unboundCheckBin string
+	resolvConf      string
+	dhclientConf    string
 }
 
 // NewService creates the provider.
 func NewService(exec firewall.Executor) *Service {
 	return &Service{
-		exec:         exec,
-		keaConf:      KeaConfPath,
-		unboundConf:  UnboundConfPath,
-		keaBin:       keaBinDefault,
-		resolvConf:   ResolvConfPath,
-		dhclientConf: DhclientConfPath,
+		exec:            exec,
+		keaConf:         KeaConfPath,
+		unboundConf:     UnboundConfPath,
+		keaBin:          keaBinDefault,
+		unboundCheckBin: unboundCheckBinDefault,
+		resolvConf:      ResolvConfPath,
+		dhclientConf:    DhclientConfPath,
 	}
 }
 
@@ -221,15 +224,26 @@ func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blo
 func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) (string, error) {
 	files := s.GenerateConfigs(c, res, blocked, ntpServer)
 
-	// Validate the Kea config before touching anything in production.
-	var keaContent string
+	// Validate both candidates before touching anything in production —
+	// neither is written, nor is anything reloaded, unless both pass. This
+	// used to only validate Kea; the unbound side landed on disk with no
+	// pre-apply check at all (finding #3 in the input-validation audit), so
+	// a broken unbound.conf could sit there and survive a reboot, taking DNS
+	// down at the next boot with no admin action in between.
+	var keaContent, unboundContent string
 	for _, f := range files {
-		if f.Path == s.keaConf {
+		switch f.Path {
+		case s.keaConf:
 			keaContent = f.Content
+		case s.unboundConf:
+			unboundContent = f.Content
 		}
 	}
 	if err := s.validateKea(ctx, keaContent); err != nil {
 		return "", fmt.Errorf("config do Kea inválida (nada aplicado): %w", err)
+	}
+	if err := s.validateUnbound(ctx, unboundContent); err != nil {
+		return "", fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
 	}
 
 	if !s.exec.IsDryRun() {
@@ -275,6 +289,70 @@ func (s *Service) validateKea(ctx context.Context, content string) error {
 	f.Close()
 	_, err = s.exec.ExecuteRead(ctx, s.keaBin, "-t", f.Name())
 	return err
+}
+
+// validateUnbound writes the candidate unbound config to a temp file and
+// runs unbound-checkconf against it — the unbound-side sibling of
+// validateKea, added because ReloadConfigs used to write unbound.conf with
+// no pre-apply check at all (finding #3, input-validation-audit.md): a
+// broken config landed on disk and survived a reboot, taking DNS down at
+// the next boot with no admin action in between (confirmed as a real
+// production incident, not a hypothetical, in the session that produced the
+// audit).
+//
+// The temp file is created next to the real unbound config for the same
+// reason validateKea's is created next to the real Kea config — see that
+// function's doc comment. unbound-checkconf has no AppArmor profile
+// confining it on Debian the way kea-dhcp4 does, so this placement isn't
+// strictly required for unbound-checkconf itself, but keeping both
+// validators structurally identical is worth more than the marginal
+// freedom to use the system temp dir here, and it costs nothing.
+//
+// unbound-checkconf is optional at runtime: Debian's unbound package is a
+// Recommends:, not a Depends:, of this project (see EnsureResolvConf's doc
+// comment for why that guard exists elsewhere too) — a box can legitimately
+// run without unbound installed, or with unbound installed but its checker
+// missing (a minimal/manually-trimmed install). Treating a missing checker
+// as a hard failure would block every DHCP/DNS apply on such a box, which
+// is strictly worse than the gap this validation closes — so a missing
+// binary is logged and treated as "validation not possible here, proceed",
+// never as a validation failure.
+func (s *Service) validateUnbound(ctx context.Context, content string) error {
+	f, err := os.CreateTemp(filepath.Dir(s.unboundConf), "unbound-validate-*.conf")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+
+	_, err = s.exec.ExecuteRead(ctx, s.unboundCheckBin, f.Name())
+	if err != nil && isMissingBinary(err) {
+		slog.Warn("unbound-checkconf não encontrado; pulando validação pré-apply do unbound.conf (o pacote unbound é Recommends:, não Depends:, deste projeto)", "bin", s.unboundCheckBin, "err", err)
+		return nil
+	}
+	return err
+}
+
+// isMissingBinary reports whether err looks like the executor failed to
+// even start the target binary (not found), as opposed to the binary
+// running and reporting a real validation failure. Go's os/exec surfaces a
+// missing binary as a fixed, English, locale-independent message —
+// "executable file not found in $PATH" via LookPath for a bare command
+// name, or "no such file or directory" via fork/exec for an absolute path
+// like unboundCheckBinDefault — so matching on those substrings reliably
+// distinguishes "the tool isn't installed" from "the tool ran and rejected
+// the config", without needing firewall.Executor to grow a dedicated
+// not-found signal just for this one caller.
+func isMissingBinary(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "executable file not found") || strings.Contains(msg, "no such file or directory")
 }
 
 // ─── Kea (DHCP) ──────────────────────────────────────────────────────────────
