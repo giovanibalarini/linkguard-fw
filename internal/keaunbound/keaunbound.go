@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -491,9 +493,46 @@ func ParseKeaLeases(content string) []netsvc.Lease {
 	return out
 }
 
+// reUnboundDomain mirrors internal/api/handlers's own reDNSDomain (same
+// charset, same rationale): single-label names ("lan", "localhost") and
+// underscore labels ("_dmarc.example.com") are legitimate, but anything
+// outside [a-z0-9._-] — quotes, spaces, ';', and critically a newline — must
+// be rejected, because the value is concatenated straight into a
+// local-zone/access-control/interface directive in unbound.conf. Duplicated
+// here rather than imported: this package (internal/keaunbound) is the
+// generic Provider implementation imported from cmd/, and
+// internal/api/handlers already imports internal/netsvc (this package's
+// interface) — importing the handlers package back from here would invert
+// that dependency for the sake of one shared regex. See GenerateUnboundConfig
+// for why this check has to live here too, independent of whatever the
+// handler already did.
+var reUnboundDomain = regexp.MustCompile(`^[a-z0-9_]([a-z0-9._-]*[a-z0-9_])?$`)
+
+func validRenderDomain(d string) bool {
+	return d != "" && len(d) <= 253 && reUnboundDomain.MatchString(d)
+}
+
 // ─── unbound (DNS) ───────────────────────────────────────────────────────────
 
-// GenerateUnboundConfig renders the unbound config fragment (pure function).
+// GenerateUnboundConfig renders the unbound config fragment (pure function,
+// aside from the slog.Warn calls below, which — like
+// nftables.sanitizeNetworks and timesync.GenerateChronyConf — are the only
+// side effect and never influence the return value).
+//
+// Every value this function interpolates by string concatenation is
+// re-validated here, not just trusted from the caller: internal/api/handlers
+// validates at the point an admin saves a value (validDomain, validIface,
+// net.ParseIP/ParseCIDR — see netsvc.go), but this function is the last
+// place before a root daemon (unbound) reads the result, and it has callers
+// that skip the handler entirely — most concretely, a restored backup
+// (internal/api/handlers/backup.go), whose settings/blocklist entries went
+// straight to the DB with no validator in front of them before this fix,
+// and any row written under an older, laxer rule (validDomain's own doc
+// comment already flagged this history for the blocklist). A bad value is
+// skipped with a loud log, never rendered — the same "one bad entry must
+// not sink the good ones" contract nftables.sanitizeNetworks and
+// timesync.GenerateChronyConf already apply to their own lists — so a
+// single corrupted row degrades one directive, not the whole DNS service.
 func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 	var b strings.Builder
 	w := func(s string) { b.WriteString(s); b.WriteString("\n") }
@@ -501,12 +540,20 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 	w("# Managed by LinkGuard FW — do not edit by hand.")
 	w("server:")
 	if c.Gateway != "" {
-		w("  interface: " + c.Gateway) // bind on the firewall LAN IP
+		if net.ParseIP(c.Gateway) != nil {
+			w("  interface: " + c.Gateway) // bind on the firewall LAN IP
+		} else {
+			slog.Warn("gateway inválido descartado na renderização do unbound.conf", "gateway", c.Gateway)
+		}
 	}
 	w("  interface: 127.0.0.1")
 	w("  access-control: 127.0.0.0/8 allow")
 	if c.SubnetCIDR != "" {
-		w("  access-control: " + c.SubnetCIDR + " allow")
+		if _, _, err := net.ParseCIDR(c.SubnetCIDR); err == nil {
+			w("  access-control: " + c.SubnetCIDR + " allow")
+		} else {
+			slog.Warn("subnet_cidr inválida descartada na renderização do unbound.conf", "subnet_cidr", c.SubnetCIDR, "err", err)
+		}
 	}
 	w("  hide-identity: yes")
 	w("  hide-version: yes")
@@ -518,23 +565,46 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 		w("  log-queries: yes")
 	}
 	if c.DomainSuffix != "" {
-		w("  local-zone: \"" + c.DomainSuffix + ".\" transparent")
+		if validRenderDomain(c.DomainSuffix) {
+			w("  local-zone: \"" + c.DomainSuffix + ".\" transparent")
+		} else {
+			slog.Warn("domain_suffix inválido descartado na renderização do unbound.conf", "domain_suffix", c.DomainSuffix)
+		}
 	}
 
 	if len(blocked) > 0 {
-		w("  # DNS filtering (blocklist) — NXDOMAIN")
-		bd := append([]string(nil), blocked...)
-		sort.Strings(bd)
-		for _, d := range bd {
-			w("  local-zone: \"" + d + ".\" always_nxdomain")
+		var validBlocked []string
+		for _, d := range blocked {
+			if !validRenderDomain(d) {
+				slog.Warn("domínio inválido descartado na renderização do unbound.conf (blocklist)", "domain", d)
+				continue
+			}
+			validBlocked = append(validBlocked, d)
+		}
+		if len(validBlocked) > 0 {
+			w("  # DNS filtering (blocklist) — NXDOMAIN")
+			sort.Strings(validBlocked)
+			for _, d := range validBlocked {
+				w("  local-zone: \"" + d + ".\" always_nxdomain")
+			}
 		}
 	}
 
 	if len(c.Upstreams) > 0 {
-		w("forward-zone:")
-		w("  name: \".\"")
+		var validUpstreams []string
 		for _, up := range c.Upstreams {
-			w("  forward-addr: " + up)
+			if net.ParseIP(up) == nil {
+				slog.Warn("upstream DNS inválido descartado na renderização do unbound.conf", "upstream", up)
+				continue
+			}
+			validUpstreams = append(validUpstreams, up)
+		}
+		if len(validUpstreams) > 0 {
+			w("forward-zone:")
+			w("  name: \".\"")
+			for _, up := range validUpstreams {
+				w("  forward-addr: " + up)
+			}
 		}
 	}
 	return b.String()

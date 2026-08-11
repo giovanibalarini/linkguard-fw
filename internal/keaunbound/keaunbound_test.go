@@ -376,6 +376,91 @@ func TestGenerateUnboundConfigForwarding(t *testing.T) {
 	}
 }
 
+// ─── Finding 1 (S1): GenerateUnboundConfig must revalidate every DB-sourced
+// value at render time, not trust that the handler-level validator already
+// ran (a restored backup, or a row written under an older/laxer rule,
+// reaches this function with no handler in between). Regression tests for
+// .superpowers/sdd/input-validation-audit.md finding #2/#3 (systemic
+// pattern #4).
+
+// TestGenerateUnboundConfigSkipsInjectedBlocklistEntry: a blocklist entry
+// carrying a newline plus a directive must never reach unbound.conf — it
+// must be dropped (not crash the render, not take down the other, valid
+// entries), exactly like nftables.sanitizeNetworks and
+// timesync.GenerateChronyConf already do for their own admin-supplied
+// lists.
+func TestGenerateUnboundConfigSkipsInjectedBlocklistEntry(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	malicious := "evil.com.\"\ninclude: \"/etc/passwd"
+	out := GenerateUnboundConfig(cfg, []string{"good.example.com", malicious})
+
+	if strings.Contains(out, "include:") {
+		t.Errorf("injected directive reached unbound.conf:\n%s", out)
+	}
+	if strings.Contains(out, malicious) {
+		t.Errorf("malicious blocklist entry was rendered verbatim:\n%s", out)
+	}
+	if !strings.Contains(out, `local-zone: "good.example.com." always_nxdomain`) {
+		t.Errorf("valid blocklist entry must still be rendered even though a sibling entry was bad:\n%s", out)
+	}
+}
+
+// TestGenerateUnboundConfigSkipsInvalidDomainSuffix: domain_suffix is
+// concatenated straight into a local-zone directive too — a value with a
+// newline must be dropped rather than injected.
+func TestGenerateUnboundConfigSkipsInvalidDomainSuffix(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	cfg.DomainSuffix = "lan\"\ninclude: \"/etc/passwd"
+	out := GenerateUnboundConfig(cfg, nil)
+
+	if strings.Contains(out, "include:") {
+		t.Errorf("injected directive via domain_suffix reached unbound.conf:\n%s", out)
+	}
+}
+
+// TestGenerateUnboundConfigSkipsInvalidGateway: Gateway feeds the
+// `interface:` directive by string concatenation.
+func TestGenerateUnboundConfigSkipsInvalidGateway(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	cfg.Gateway = "192.168.3.3\ninterface: 0.0.0.0"
+	out := GenerateUnboundConfig(cfg, nil)
+
+	if strings.Contains(out, "interface: 0.0.0.0") {
+		t.Errorf("injected interface directive via gateway reached unbound.conf:\n%s", out)
+	}
+	// The always-present loopback interface line must still be there.
+	if !strings.Contains(out, "interface: 127.0.0.1") {
+		t.Errorf("loopback interface line missing:\n%s", out)
+	}
+}
+
+// TestGenerateUnboundConfigSkipsInvalidSubnetCIDR: SubnetCIDR feeds the
+// `access-control:` directive by string concatenation.
+func TestGenerateUnboundConfigSkipsInvalidSubnetCIDR(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	cfg.SubnetCIDR = "192.168.3.0/24 allow\naccess-control: 0.0.0.0/0"
+	out := GenerateUnboundConfig(cfg, nil)
+
+	if strings.Contains(out, "access-control: 0.0.0.0/0") {
+		t.Errorf("injected access-control directive via subnet_cidr reached unbound.conf:\n%s", out)
+	}
+}
+
+// TestGenerateUnboundConfigSkipsInvalidUpstream: Upstreams feed
+// `forward-addr:` lines by string concatenation.
+func TestGenerateUnboundConfigSkipsInvalidUpstream(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	cfg.Upstreams = []string{"1.1.1.1", "evil\nforward-addr: 6.6.6.6"}
+	out := GenerateUnboundConfig(cfg, nil)
+
+	if strings.Contains(out, "6.6.6.6") {
+		t.Errorf("injected forward-addr via upstreams reached unbound.conf:\n%s", out)
+	}
+	if !strings.Contains(out, "forward-addr: 1.1.1.1") {
+		t.Errorf("valid upstream must still be rendered even though a sibling entry was bad:\n%s", out)
+	}
+}
+
 // TestEnsureResolvConfLeavesResolverAloneWhenUnboundNotEnabled: unbound is
 // only `Recommends:` in the package, never `Depends:` — on a box without it
 // installed (or where it failed to start), EnsureResolvConf must not touch
