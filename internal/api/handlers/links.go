@@ -1,23 +1,54 @@
 package handlers
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 // LinksHandler handles WAN link CRUD requests.
 type LinksHandler struct {
-	svc *links.Service
-	db  *storage.DB
+	svc    *links.Service
+	db     *storage.DB
+	nftSvc *nftables.Service
 }
 
-// NewLinksHandler creates a LinksHandler.
-func NewLinksHandler(svc *links.Service, db *storage.DB) *LinksHandler {
-	return &LinksHandler{svc: svc, db: db}
+// NewLinksHandler creates the handler. nftSvc is needed because changing a
+// link's interface must also rebuild the firewall's NAT rule — before
+// 2026-08-10 nothing did, so an edited link left the masquerade rule
+// pointing at the previous interface.
+func NewLinksHandler(svc *links.Service, db *storage.DB, nftSvc *nftables.Service) *LinksHandler {
+	return &LinksHandler{svc: svc, db: db, nftSvc: nftSvc}
+}
+
+// reconcileNAT rebuilds the masquerade rule from the currently enabled WAN
+// links. Best-effort: a failure here is logged (and surfaced by the
+// firewall-nat health check) but never fails the link operation the admin
+// just performed.
+func (h *LinksHandler) reconcileNAT(ctx context.Context) {
+	if h.nftSvc == nil {
+		return
+	}
+	ls, err := h.db.GetLinks()
+	if err != nil {
+		slog.Warn("não foi possível carregar links para reconciliar a regra de NAT", "err", err)
+		return
+	}
+	ifaces := make([]string, 0, len(ls))
+	for _, l := range ls {
+		if l.Enabled && l.Interface != "" {
+			ifaces = append(ifaces, l.Interface)
+		}
+	}
+	if err := h.nftSvc.ReconcileMasquerade(ctx, ifaces); err != nil {
+		slog.Warn("não foi possível reconciliar a regra de NAT após mudança de link", "err", err)
+	}
 }
 
 // List returns all links.
@@ -55,6 +86,7 @@ func (h *LinksHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.reconcileNAT(r.Context())
 	writeJSON(w, http.StatusCreated, l)
 }
 
@@ -79,6 +111,7 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.reconcileNAT(r.Context())
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -93,6 +126,7 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	h.reconcileNAT(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -103,5 +137,6 @@ func (h *LinksHandler) AutoDetect(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	h.reconcileNAT(r.Context())
 	writeJSON(w, http.StatusOK, res)
 }

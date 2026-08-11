@@ -265,6 +265,21 @@ func run() int {
 				}
 			}
 		}
+
+		// Reconcile the masquerade rule on EVERY boot, not just when the table
+		// had to be created. EnsureTable is a no-op on an already-provisioned
+		// box, so before this the NAT rule kept whatever interface names it was
+		// born with — in production a renamed NIC (enp4s0 -> enp5s0) silently
+		// took WAN1's NAT down until an operator intervened by hand.
+		enabledWANs := make([]string, 0, len(configuredLinks))
+		for _, l := range configuredLinks {
+			if l.Enabled && l.Interface != "" {
+				enabledWANs = append(enabledWANs, l.Interface)
+			}
+		}
+		if err := nftSvc.ReconcileMasquerade(ctx, enabledWANs); err != nil {
+			slog.Warn("não foi possível reconciliar a regra de NAT no boot", "err", err)
+		}
 	}
 
 	// Enable conntrack byte accounting so per-host traffic (top talkers) can be
