@@ -90,9 +90,18 @@ function RuleRow({
   // (Phase B, design spec §4.1) — shown here, not hidden, but visibly
   // dimmed and labelled so it can never be mistaken for an active rule.
   const disabled = rule.enabled === false;
+  // C-3: a rule the admin left enabled but that the backend could not find
+  // live in nft (a reconcile that failed partway, or hasn't caught up yet)
+  // is a DISTINCT failure state from "Desativada" — that one is a
+  // deliberate admin choice, this one is the firewall not actually doing
+  // what's configured, which is exactly the state FEATURES.md's delivery
+  // rule ("configured ≠ working") exists to surface, not hide behind a
+  // green "Sua regra" badge that looks identical to a rule that really is
+  // in effect.
+  const configuredNotApplied = rule.enabled === true && rule.applied === false;
 
   return (
-    <div className={`rounded-lg bg-gray-800/60 px-3 py-2 ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`rounded-lg bg-gray-800/60 px-3 py-2 ${disabled ? 'opacity-50' : ''} ${configuredNotApplied ? 'ring-1 ring-yellow-500/40' : ''}`}>
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={onToggle} className="text-gray-500 hover:text-gray-300 shrink-0" aria-label="Mostrar/ocultar expressão nft" title="Mostrar/ocultar expressão nft">
           {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
@@ -104,6 +113,14 @@ function RuleRow({
         {disabled && (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-400 shrink-0">
             Desativada
+          </span>
+        )}
+        {configuredNotApplied && (
+          <span
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-yellow-500/40 bg-yellow-500/10 text-yellow-400 shrink-0"
+            title="Está ativada aqui, mas o firewall não confirma que ela está em vigor — pode ser um erro ao aplicar; confira o aviso no topo da aba Regras."
+          >
+            Configurada, não aplicada
           </span>
         )}
 

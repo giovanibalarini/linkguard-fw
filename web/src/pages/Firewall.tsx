@@ -12,7 +12,7 @@ import IconButton from '../components/ui/IconButton';
 import { useAuth } from '../context/AuthContext';
 import PortForwarding from '../components/PortForwarding';
 import FirewallOverview from '../components/FirewallOverview';
-import type { FirewallRule, IptablesBackup, NftChainInfo, NftManaged, SystemMetrics } from '../types';
+import type { FirewallRule, FirewallRulesData, IptablesBackup, LastApply, NftChainInfo, NftManaged, SystemMetrics } from '../types';
 
 type Tab = 'overview' | 'rules' | 'portforward' | 'ruleset' | 'backups';
 type Action = 'accept' | 'drop' | 'reject';
@@ -74,6 +74,11 @@ export default function Firewall() {
   const canWrite = can('firewall.write');
   const [managed, setManaged] = useState<NftManaged>({ wan_hosts: [], blocklist: [], blocked_hosts: [] });
   const [rules, setRules] = useState<FirewallRule[]>([]);
+  // rulesApplyStatus (C-3): the outcome of the last user_rules reconcile —
+  // handler-triggered or boot-time, both persisted server-side under the
+  // same key — so a DB write that failed to actually apply into nft shows
+  // up here instead of only in a 200 the admin already dismissed.
+  const [rulesApplyStatus, setRulesApplyStatus] = useState<LastApply | undefined>(undefined);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overview, setOverview] = useState<NftChainInfo[]>([]);
   const [ifaces, setIfaces] = useState<string[]>([]);
@@ -92,14 +97,15 @@ export default function Firewall() {
     try {
       const [mg, rl, ov, rs, bk, sys] = await Promise.all([
         client.get<NftManaged>('/api/nftables/managed'),
-        client.get<FirewallRule[]>('/api/nftables/rules'),
+        client.get<FirewallRulesData>('/api/nftables/rules'),
         client.get<NftChainInfo[]>('/api/nftables/overview'),
         client.get<{ ruleset: string }>('/api/nftables/ruleset'),
         client.get<IptablesBackup[]>('/api/nftables/backups'),
         client.get<SystemMetrics>('/api/system/status'),
       ]);
       setManaged(mg.data ?? { wan_hosts: [], blocklist: [], blocked_hosts: [] });
-      setRules(rl.data ?? []);
+      setRules(rl.data?.rules ?? []);
+      setRulesApplyStatus(rl.data?.apply_status);
       setOverview(ov.data ?? []);
       setRuleset(rs.data?.ruleset ?? '');
       setBackups(bk.data ?? []);
@@ -151,16 +157,44 @@ export default function Firewall() {
   // Reordering: drag-and-drop (native HTML5 DnD — no library) with an
   // up/down button fallback for keyboard/accessibility, both funnelling
   // into the same reorder call so they can never disagree about the result.
+  //
+  // I-3: the optimistic setRules(newOrder) below used to have no rollback —
+  // `run`'s error path never calls fetchData, so a rejected reorder (a bad
+  // id, a race with another client) left the screen showing an order the
+  // server never accepted, on a screen where order decides which rule wins.
+  // This keeps the previous array and restores it explicitly on failure,
+  // rather than reusing `run` (which would need every other caller's error
+  // path changed just for this one case).
   const reorderTo = (newOrder: FirewallRule[]) => {
-    setRules(newOrder); // optimistic: the drag/click feels instant, fetchData below reconciles with the server
-    run(() => client.post('/api/nftables/rules/reorder', { ids: newOrder.map((r) => r.id) }), '');
+    const previous = rules;
+    setRules(newOrder); // optimistic: the drag/click feels instant
+    setBusy(true);
+    setMsg('');
+    client.post('/api/nftables/rules/reorder', { ids: newOrder.map((r) => r.id) })
+      .then(() => fetchData())
+      .catch((e: any) => {
+        setRules(previous); // roll back — the server never accepted this order
+        setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+      })
+      .finally(() => setBusy(false));
   };
   const moveRule = (index: number, dir: 'up' | 'down') => {
     const to = dir === 'up' ? index - 1 : index + 1;
     if (to < 0 || to >= rules.length) return;
     reorderTo(moveItem(rules, index, to));
   };
-  const onDragStart = (index: number) => canWrite && setDragIndex(index);
+  // I-6: Firefox requires dataTransfer to actually carry data for an HTML5
+  // drag to start at all — without this call, `dragstart` fires but the
+  // browser never enters a drag session, so `drop` (and therefore the whole
+  // reorder) silently never fires in Firefox. The value itself isn't read
+  // back (dragIndex, in closure state, is what onDrop uses); only setting
+  // it is what Firefox needs.
+  const onDragStart = (e: DragEvent, index: number) => {
+    if (!canWrite) return;
+    e.dataTransfer.setData('text/plain', String(index));
+    e.dataTransfer.effectAllowed = 'move';
+    setDragIndex(index);
+  };
   const onDragOver = (e: DragEvent) => { if (dragIndex !== null) e.preventDefault(); };
   const onDrop = (index: number) => {
     if (dragIndex === null || dragIndex === index) { setDragIndex(null); return; }
@@ -190,6 +224,17 @@ export default function Firewall() {
           </button>
         </div>
       </div>
+
+      {/* rulesApplyStatus (C-3): the last DB->nft reconcile can fail on its
+          own — a boot-time reconcile in particular has no HTTP response for
+          anyone to see — so this is a standing banner, not tied to `msg`
+          (which only ever reflects the admin's own last action in this
+          session), mirroring the NTP page's firewall_apply banner. */}
+      {rulesApplyStatus && !rulesApplyStatus.ok && (
+        <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
+          A última tentativa de aplicar suas regras personalizadas ao nftables falhou: {rulesApplyStatus.error || 'erro desconhecido'}. O que está em vigor pode não refletir o que está configurado aqui — confira a aba "Visão geral" antes de confiar nas regras abaixo.
+        </div>
+      )}
 
       {msg && (
         <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>
@@ -231,7 +276,7 @@ export default function Firewall() {
                     <div
                       key={r.id}
                       draggable={canWrite && !busy}
-                      onDragStart={() => onDragStart(i)}
+                      onDragStart={(e) => onDragStart(e, i)}
                       onDragOver={onDragOver}
                       onDrop={() => onDrop(i)}
                       onDragEnd={onDragEnd}
@@ -344,7 +389,20 @@ export default function Firewall() {
           {ruleset.trim() ? <pre className="p-4 overflow-x-auto text-xs font-mono text-gray-300 leading-relaxed whitespace-pre">{ruleset}</pre> : <p className="p-8 text-center text-gray-600 text-sm">Ruleset vazio.</p>}
         </Panel>
       ) : (
-        <Panel>
+        <>
+          {/* I-1: Restore (`nft -f`) reloads everything the snapshot
+              captured — WAN steering, bloqueios, encaminhamentos de porta,
+              as chains estruturais — but suas regras personalizadas (aba
+              "Regras") continuam vindo do banco de dados, não do snapshot:
+              logo após restaurar, elas são reaplicadas por cima de qualquer
+              coisa que o snapshot tinha em user_rules. Um "Restaurar" não
+              desfaz uma alteração feita nas suas regras desde o snapshot —
+              só nos outros elementos do firewall. */}
+          <p className="text-gray-500 text-xs">
+            Restaurar um snapshot recarrega direcionamento por WAN, destinos bloqueados, encaminhamentos de porta e as chains internas exatamente como estavam.
+            As suas regras personalizadas (aba "Regras") não fazem parte do snapshot — elas continuam vindo do banco de dados e são reaplicadas por cima logo em seguida.
+          </p>
+          <Panel>
           {backups.length === 0 ? (
             <div className="text-center py-12"><Download className="w-12 h-12 text-gray-700 mx-auto mb-3" /><p className="text-gray-400">Nenhum snapshot disponível</p></div>
           ) : (
@@ -404,7 +462,8 @@ export default function Firewall() {
               </div>
             </>
           )}
-        </Panel>
+          </Panel>
+        </>
       )}
 
       {/* Rule modal */}

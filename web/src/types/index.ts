@@ -258,6 +258,16 @@ export interface FirewallRule {
   updated_at: string;
 }
 
+// FirewallRulesData is GET /api/nftables/rules' response (C-3, design spec
+// §4.1): the rules themselves plus the persisted outcome of the most recent
+// user_rules reconcile — apply_status is undefined only when a reconcile
+// has genuinely never run yet (never a synthetic "ok" standing in for
+// "unknown"), same LastApply shape used by NTP/DHCP/DNS.
+export interface FirewallRulesData {
+  rules: FirewallRule[];
+  apply_status?: LastApply;
+}
+
 // ─── Firewall overview (GET /api/nftables/overview) ───────────────────────
 
 export interface NftRuleOwner {
@@ -283,6 +293,15 @@ export interface NftChainRule {
   // measured", not a fake zero).
   id?: string;
   enabled?: boolean;
+  // applied is C-3's honest third state: true for every rule read straight
+  // off the live table (any chain) and for a user_rules entry the backend
+  // matched to a real live rule by identity; false ONLY for a user_rules
+  // entry that is enabled=true in the DB but could not be found live — the
+  // "configurada, não aplicada" state, distinct from enabled=false
+  // ("Desativada", a deliberate admin choice). Never mix the two up: an
+  // enabled rule that isn't applied is a firewall that doesn't match what
+  // the admin configured, not a rule the admin chose to turn off.
+  applied?: boolean;
 }
 
 export interface NftChainInfo {
