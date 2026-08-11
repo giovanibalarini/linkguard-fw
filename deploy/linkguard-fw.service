@@ -32,7 +32,18 @@ ProtectSystem=strict
 # stable-interface-name .link files (Fase A: nomes estáveis por MAC), the
 # NTP (chrony) drop-in, and the resolver/dhclient files that keep DNS pointed
 # at the local unbound.
-ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/kea /etc/unbound /etc/sysctl.d /etc/systemd/network /etc/chrony/conf.d /etc/resolv.conf /etc/dhcp
+#
+# Paths whose owning package is only Recommends: (or, for /etc/dhcp, not
+# depended on at all) are prefixed with `-`: per systemd.exec(5), an
+# unprefixed ReadWritePaths= entry that does not exist at start fails
+# namespace setup and the unit dies with 226/NAMESPACE. /etc/dhcp comes from
+# isc-dhcp-client, which this package neither Depends: nor Recommends: — a
+# box with only a static WAN, or Debian 13 (where isc-dhcp is deprecated),
+# would otherwise never be able to start the firewall manager at all.
+# /var/lib/linkguard-fw, /etc/linkguard-fw, /etc/nftables.conf and
+# /etc/sysctl.d are always present (created by this package's own postinst)
+# and stay unprefixed.
+ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/sysctl.d -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp
 ProtectHome=yes
 PrivateTmp=yes
 
