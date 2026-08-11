@@ -46,6 +46,17 @@ type ChainRule struct {
 	Managed     bool      `json:"managed"`
 	Owner       RuleOwner `json:"owner"`
 	Description string    `json:"description"`
+
+	// ID and Enabled are only ever populated for the user_rules chain, by
+	// MergeUserRules (Phase B, design spec §4.1) — every other chain leaves
+	// both zero-valued (Enabled nil). ID is the stable DB id, immune to a
+	// volatile nft handle changing on every recreation; Enabled is a pointer
+	// specifically so "not applicable" (nil, any managed chain) can never be
+	// confused with "disabled" (false) — a disabled rule must never look like
+	// an active one, nor should an unrelated rule look like it has a
+	// disable state at all.
+	ID      string `json:"id,omitempty"`
+	Enabled *bool  `json:"enabled,omitempty"`
 }
 
 var (
