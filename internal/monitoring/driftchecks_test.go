@@ -98,6 +98,7 @@ func TestCheckFirewallNATFlagsStaleRule(t *testing.T) {
 func TestCheckFirewallNATHealthyWhenRuleMatches(t *testing.T) {
 	c := newDriftTestCollector(t)
 	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+	c.ifaceExists = func(name string) bool { return name == "enp5s0" }
 	c.exec = &driftExec{responses: map[string]string{
 		"nft list chain inet linkguard postrouting": `		oifname { "enp5s0" } masquerade`,
 	}}
@@ -105,7 +106,73 @@ func TestCheckFirewallNATHealthyWhenRuleMatches(t *testing.T) {
 	c.checkFirewallNAT()
 
 	if up := c.healthUp("firewall:nat"); !up {
-		t.Error("firewall:nat should be up when the live rule covers every configured WAN")
+		t.Error("firewall:nat should be up when the live rule covers exactly every configured WAN and every interface it references exists")
+	}
+}
+
+// TestCheckFirewallNATFlagsStaleExtraInterface: the live rule references
+// every configured WAN but ALSO an extra interface no longer configured
+// (e.g. a WAN that was deleted but whose masquerade entry survived a
+// partial reconcile). The old check only tested "every configured WAN is
+// present somewhere in the rule" and would have missed this.
+func TestCheckFirewallNATFlagsStaleExtraInterface(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+	c.ifaceExists = func(name string) bool { return true }
+	c.exec = &driftExec{responses: map[string]string{
+		"nft list chain inet linkguard postrouting": `oifname { "enp5s0", "enp9s0" } masquerade`,
+	}}
+
+	c.checkFirewallNAT()
+	c.checkFirewallNAT()
+
+	if up := c.healthUp("firewall:nat"); up {
+		t.Error("firewall:nat should be down when the live rule references an interface that is not a configured WAN")
+	}
+}
+
+// TestCheckFirewallNATFlagsRuleInterfaceMissingFromKernel replays the
+// 2026-08-10 incident directly: the DB still says enp4s0, reconciliation
+// faithfully wrote `oifname { "enp4s0" }`, NAT is down — and the OLD check
+// saw "enp4s0" present in the rule text and reported green, because it never
+// checked whether that interface actually exists. This is the exact
+// scenario the check exists for.
+func TestCheckFirewallNATFlagsRuleInterfaceMissingFromKernel(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp4s0", true)
+	c.ifaceExists = func(name string) bool { return name == "enp5s0" } // kernel only has enp5s0
+	c.exec = &driftExec{responses: map[string]string{
+		"nft list chain inet linkguard postrouting": `oifname { "enp4s0" } masquerade`,
+	}}
+
+	c.checkFirewallNAT()
+	c.checkFirewallNAT()
+
+	if up := c.healthUp("firewall:nat"); up {
+		t.Error("firewall:nat should be down when the rule's interface no longer exists in the kernel (2026-08-10 incident replay)")
+	}
+}
+
+// TestCheckFirewallNATFlagsMissingMasqueradeRule: no masquerade rule at all
+// is a problem state (NAT is off), not an "unknown" — unlike the
+// unreadable-chain case, we DID read the chain successfully, and it simply
+// has no masquerade rule in it.
+func TestCheckFirewallNATFlagsMissingMasqueradeRule(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+	c.exec = &driftExec{responses: map[string]string{
+		"nft list chain inet linkguard postrouting": `table inet linkguard {
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+	}
+}`,
+	}}
+
+	c.checkFirewallNAT()
+	c.checkFirewallNAT()
+
+	if up := c.healthUp("firewall:nat"); up {
+		t.Error("firewall:nat should be down when no masquerade rule exists at all")
 	}
 }
 

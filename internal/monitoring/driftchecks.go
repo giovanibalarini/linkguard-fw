@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
@@ -81,9 +82,45 @@ func (c *Collector) checkWANInterfaces() {
 	}
 }
 
-// checkFirewallNAT verifies the LIVE masquerade rule covers exactly the
-// configured WAN interfaces. `systemctl is-active nftables` cannot see this:
-// the service is happily active while the rule inside it is stale.
+// masqueradeRuleRe finds the line carrying the masquerade verdict inside
+// `nft list chain` output (the ruleset ReconcileMasquerade writes always
+// keeps `oifname { ... } masquerade` together on one line — see
+// internal/nftables/reconcile.go).
+var masqueradeRuleRe = regexp.MustCompile(`(?m)^.*\bmasquerade\b.*$`)
+
+// quotedInterfaceRe pulls interface names out of an nft `{ "a", "b" }` set
+// (also matches the unbracketed single-interface form nft can print).
+var quotedInterfaceRe = regexp.MustCompile(`"([^"]+)"`)
+
+// parseMasqueradeInterfaces extracts the interface names referenced by the
+// masquerade rule in `nft list chain` output. found is false when the chain
+// has no masquerade rule at all (NAT is off), as distinct from an empty
+// interface set.
+func parseMasqueradeInterfaces(chainText string) (ifaces []string, found bool) {
+	line := masqueradeRuleRe.FindString(chainText)
+	if line == "" {
+		return nil, false
+	}
+	for _, m := range quotedInterfaceRe.FindAllStringSubmatch(line, -1) {
+		ifaces = append(ifaces, m[1])
+	}
+	return ifaces, true
+}
+
+// checkFirewallNAT verifies the LIVE masquerade rule references EXACTLY the
+// configured WAN interfaces, and that every interface it references exists
+// in the kernel. `systemctl is-active nftables` cannot see any of this: the
+// service is happily active while the rule inside it is stale.
+//
+// Replays the 2026-08-10 incident directly: the DB still said enp4s0,
+// reconciliation faithfully wrote `oifname { "enp4s0" }`, NAT was down — and
+// a check that only tests "every configured WAN appears somewhere in the
+// rule" sees "enp4s0" present and reports green on a tile literally named
+// "Regra de NAT", during the exact scenario it exists to catch. Comparing
+// both directions (configured ⊆ rule AND rule ⊆ configured) also catches a
+// stale extra interface left behind by a partial reconcile, and checking
+// existence catches the rule referencing an interface the kernel no longer
+// has at all.
 func (c *Collector) checkFirewallNAT() {
 	wans := c.enabledWANInterfaces()
 	if len(wans) == 0 {
@@ -95,22 +132,63 @@ func (c *Collector) checkFirewallNAT() {
 		return // table/chain unreadable this tick — no verdict rather than a false one
 	}
 
-	var missing []string
-	for _, iface := range wans {
-		if !strings.Contains(out, `"`+iface+`"`) {
-			missing = append(missing, iface)
-		}
-	}
-	detail := ""
-	if len(missing) > 0 {
-		detail = "faltando na regra: " + strings.Join(missing, ", ")
+	exists := c.ifaceExists
+	if exists == nil {
+		exists = interfaceExists
 	}
 
-	tr := c.observe("firewall:nat", len(missing) == 0, c.nowFn())
+	ruleIfaces, found := parseMasqueradeInterfaces(out)
+	if !found {
+		// No masquerade rule at all is a problem state (NAT is off), not an
+		// unknown — we DID read the chain successfully.
+		tr := c.observe("firewall:nat", false, c.nowFn())
+		c.ensureMeta("firewall:nat", "firewall-nat", "resource")
+		if tr == transDown {
+			_ = c.alertSvc.FirewallNATDrift("nenhuma regra de masquerade encontrada na chain postrouting (NAT desligado)")
+		}
+		return
+	}
+
+	configured := make(map[string]bool, len(wans))
+	for _, w := range wans {
+		configured[w] = true
+	}
+	inRule := make(map[string]bool, len(ruleIfaces))
+	for _, i := range ruleIfaces {
+		inRule[i] = true
+	}
+
+	var missing, stale, absentFromKernel []string
+	for _, w := range wans {
+		if !inRule[w] {
+			missing = append(missing, w)
+		}
+	}
+	for _, i := range ruleIfaces {
+		if !configured[i] {
+			stale = append(stale, i)
+		}
+		if !exists(i) {
+			absentFromKernel = append(absentFromKernel, i)
+		}
+	}
+
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, "WAN configurada mas ausente da regra: "+strings.Join(missing, ", "))
+	}
+	if len(stale) > 0 {
+		parts = append(parts, "interface na regra que não é uma WAN configurada: "+strings.Join(stale, ", "))
+	}
+	if len(absentFromKernel) > 0 {
+		parts = append(parts, "interface na regra que não existe no kernel: "+strings.Join(absentFromKernel, ", "))
+	}
+
+	tr := c.observe("firewall:nat", len(parts) == 0, c.nowFn())
 	c.ensureMeta("firewall:nat", "firewall-nat", "resource")
 	switch tr {
 	case transDown:
-		_ = c.alertSvc.FirewallNATDrift(detail)
+		_ = c.alertSvc.FirewallNATDrift(strings.Join(parts, "; "))
 	case transUp:
 		_ = c.alertSvc.FirewallNATOK()
 	}
