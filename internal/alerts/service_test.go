@@ -289,6 +289,77 @@ func hasOpenAlertOfType(alerts []storage.Alert, alertType string) bool {
 	return false
 }
 
+// TestRecoveryAlertIsStoredResolved guards Fix A: a recovery alert announces
+// a condition that already ended, so it must land in the DB already
+// resolved — it is history, not an open item — while still notifying via the
+// recovery path.
+func TestRecoveryAlertIsStoredResolved(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.NTPSynced(); err != nil {
+		t.Fatalf("NTPSynced: %v", err)
+	}
+
+	unresolved, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts(true): %v", err)
+	}
+	for _, a := range unresolved {
+		if a.Type == TypeNTPSynced {
+			t.Errorf("recovery alert %q should not appear in unresolved list", a.Type)
+		}
+	}
+
+	all, err := db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts(false): %v", err)
+	}
+	found := false
+	for _, a := range all {
+		if a.Type == TypeNTPSynced {
+			found = true
+			if !a.Resolved {
+				t.Errorf("expected recovery alert to be stored resolved, got Resolved=false")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected the ntp_synced recovery alert to be stored in history")
+	}
+
+	if len(fn.recovery) != 1 {
+		t.Errorf("expected NotifyRecovery to fire exactly once, got %v", fn.recovery)
+	}
+}
+
+// TestRecoveryStillResolvesItsProblemCounterpart guards against Fix A
+// accidentally breaking AutoResolve: the recovery call must still clear the
+// open problem alert it pairs with.
+func TestRecoveryStillResolvesItsProblemCounterpart(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.NTPUnsynced(); err != nil {
+		t.Fatalf("NTPUnsynced: %v", err)
+	}
+	if err := s.NTPSynced(); err != nil {
+		t.Fatalf("NTPSynced: %v", err)
+	}
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	for _, a := range open {
+		if a.Type == TypeNTPUnsynced {
+			t.Errorf("expected ntp_unsynced to have been auto-resolved, but it is still open: %+v", a)
+		}
+	}
+}
+
 // TestSecurityUpdatesPendingIsWarningNotCritical: a pending update is a
 // maintenance signal, not an outage — raising it as Critical would train the
 // operator to ignore Critical alerts.

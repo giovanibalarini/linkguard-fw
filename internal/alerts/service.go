@@ -93,8 +93,18 @@ func (s *Service) Create(alertType, severity, title, message, linkID string) err
 
 // createRecovery is like Create but delivers via the recovery path (bypasses
 // the min-severity gate) so "voltou" always reaches the user.
+//
+// The alert it stores is created already Resolved: a recovery alert
+// announces a condition that has already ended ("link back online", "clock
+// resynced", ...) — it is history the moment it is written, not an open
+// condition to track. Leaving it unresolved (the pre-fix behavior) meant
+// every recovery event permanently inflated the open-alert count with
+// nothing left to ever resolve it — 114 of the 135 open alerts on the
+// production box were exactly this: link_online rows that could never leave
+// the unresolved bucket. It is still stored (so it shows in history) and
+// still delivered via NotifyRecovery — only its "open" status changes.
 func (s *Service) createRecovery(alertType, title, message, linkID string) error {
-	a := &storage.Alert{Type: alertType, Severity: SeverityInfo, Title: title, Message: message, LinkID: linkID}
+	a := &storage.Alert{Type: alertType, Severity: SeverityInfo, Title: title, Message: message, LinkID: linkID, Resolved: true}
 	if err := s.db.CreateAlert(a); err != nil {
 		slog.Error("create alert", "err", err)
 		return err

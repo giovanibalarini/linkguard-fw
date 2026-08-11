@@ -147,16 +147,25 @@ func (db *DB) GetAlerts(unresolvedOnly bool, limit int) ([]Alert, error) {
 	return alerts, rows.Err()
 }
 
-// CreateAlert inserts a new alert.
+// CreateAlert inserts a new alert. Honors a.Resolved: a caller building a
+// recovery/event alert (see alerts.createRecovery) may pass Resolved=true so
+// it lands already closed — mirroring the resolved/resolved_at semantics of
+// ResolveAlert — instead of hardcoding every insert to open.
 func (db *DB) CreateAlert(a *Alert) error {
 	if a.ID == "" {
 		a.ID = uuid.NewString()
 	}
 	a.CreatedAt = time.Now()
+	var resolvedAt *time.Time
+	if a.Resolved {
+		now := time.Now()
+		a.ResolvedAt = &now
+		resolvedAt = &now
+	}
 	_, err := db.conn.Exec(`
-		INSERT INTO alerts (id, type, severity, title, message, link_id, resolved, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-		a.ID, a.Type, a.Severity, a.Title, a.Message, a.LinkID, a.CreatedAt)
+		INSERT INTO alerts (id, type, severity, title, message, link_id, resolved, created_at, resolved_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.Type, a.Severity, a.Title, a.Message, a.LinkID, boolToInt(a.Resolved), a.CreatedAt, resolvedAt)
 	return err
 }
 
