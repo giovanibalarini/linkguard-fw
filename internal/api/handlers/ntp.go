@@ -126,7 +126,7 @@ func (h *NTPHandler) doReload(ctx context.Context) error {
 	cfg := h.getConfig()
 	err := h.svc.ReloadConfig(ctx, cfg)
 
-	h.reconcileFirewall(ctx, cfg.ServeLAN)
+	h.reconcileFirewall(ctx, cfg.AllowedNetworks, cfg.ServeLAN)
 
 	if h.triggerDHCPReload != nil {
 		if dErr := h.triggerDHCPReload(ctx); dErr != nil {
@@ -148,19 +148,14 @@ func (h *NTPHandler) doReload(ctx context.Context) error {
 }
 
 // reconcileFirewall rebuilds the NTP-protection input chain from the
-// currently enabled WAN links. Best-effort and nil-safe, same convention as
-// LinksHandler.reconcileNAT: a failure here is logged but never fails the
-// NTP apply that triggered it.
-func (h *NTPHandler) reconcileFirewall(ctx context.Context, serving bool) {
+// admin's chosen allowed networks (spec §3.1/§4). Best-effort and nil-safe,
+// same convention as LinksHandler.reconcileNAT: a failure here is logged
+// but never fails the NTP apply that triggered it.
+func (h *NTPHandler) reconcileFirewall(ctx context.Context, allowedNetworks []string, serving bool) {
 	if h.nftSvc == nil {
 		return
 	}
-	ifaces, err := enabledWANInterfaces(h.db)
-	if err != nil {
-		slog.Warn("não foi possível carregar links para reconciliar a proteção de NTP", "err", err)
-		return
-	}
-	if err := h.nftSvc.ReconcileNTPInput(ctx, ifaces, serving); err != nil {
+	if err := h.nftSvc.ReconcileNTPInput(ctx, allowedNetworks, serving); err != nil {
 		slog.Warn("não foi possível reconciliar a chain de proteção do NTP", "err", err)
 	}
 }

@@ -298,15 +298,18 @@ func run() int {
 		// from before this feature (2026-08-11) has no input chain at all, and
 		// EnsureTable/ReconcileNTPInput being no-ops on an already-provisioned
 		// box means only an explicit reconcile keeps it in sync with the
-		// current WAN set and the serve-to-LAN toggle. Reads the toggle
-		// straight from its settings key ("ntp_config", owned by
+		// admin's chosen networks and the serve-to-LAN toggle. Reads both
+		// straight from the "ntp_config" settings key (owned by
 		// internal/api/handlers.NTPHandler) since main wires the HTTP layer
-		// after this point and has no handler instance yet.
+		// after this point and has no handler instance yet. Reshaped
+		// 2026-08-11 (spec §4): the chain is keyed on
+		// timesync.Config.AllowedNetworks, not the WAN interface set — see
+		// ReconcileNTPInput's doc comment.
 		var ntpCfg timesync.Config
 		if raw, _ := db.GetSetting("ntp_config"); raw != "" {
 			_ = json.Unmarshal([]byte(raw), &ntpCfg)
 		}
-		if err := nftSvc.ReconcileNTPInput(ctx, enabledWANs, ntpCfg.ServeLAN); err != nil {
+		if err := nftSvc.ReconcileNTPInput(ctx, ntpCfg.AllowedNetworks, ntpCfg.ServeLAN); err != nil {
 			slog.Warn("não foi possível reconciliar a chain de proteção do NTP no boot", "err", err)
 		}
 	}

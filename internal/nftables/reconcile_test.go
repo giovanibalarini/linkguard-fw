@@ -157,6 +157,14 @@ func TestReconcileMasqueradeNoopInDryRun(t *testing.T) {
 }
 
 // ─── ReconcileNTPInput ────────────────────────────────────────────────────
+//
+// Reshaped 2026-08-11 per the revised spec (§4): the chain no longer denies
+// NTP by WAN interface. It now accepts udp/123 from the admin-chosen
+// AllowedNetworks (internal/timesync.Config.AllowedNetworks, spec §3.1) and
+// drops udp/123 from everywhere else — more precise than the old
+// per-interface deny, since it also covers a VLAN or guest network that
+// exists on the box but that the admin did NOT authorize (a case the old
+// WAN-only rule let straight through).
 
 // TestReconcileNTPInputPolicyIsAcceptNeverDrop is the single most important
 // test in this suite (see the spec, §2): the input chain this feature
@@ -166,7 +174,7 @@ func TestReconcileNTPInputPolicyIsAcceptNeverDrop(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
 	joined := strings.Join(exec.executed, "\n")
@@ -185,37 +193,95 @@ func TestReconcileNTPInputCreatesChainIdempotently(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
 		t.Fatalf("second (chain already exists): %v", err)
 	}
 }
 
-// TestReconcileNTPInputServingDropsUDP123OnWANs: exactly one rule, dropping
-// NTP arriving on the WAN interfaces — never on the LAN (no rule at all for
-// the LAN; the chain's own policy-accept covers it).
-func TestReconcileNTPInputServingDropsUDP123OnWANs(t *testing.T) {
+// TestReconcileNTPInputServingAcceptsAllowedNetworksThenDropsRest is the
+// core new behavior: an accept rule scoped to the admin-chosen networks,
+// followed by a catch-all drop — both matching only udp/123.
+func TestReconcileNTPInputServingAcceptsAllowedNetworksThenDropsRest(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0", "enp5s0"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24", "10.20.0.0/24"}, true); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
-	wantRule := `nft add rule inet linkguard input iifname { "enp2s0", "enp5s0" } udp dport 123 drop`
-	if !ranCommand(exec.executed, wantRule) {
-		t.Errorf("missing %q; ran: %v", wantRule, exec.executed)
+	wantAccept := `nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } accept`
+	if !ranCommand(exec.executed, wantAccept) {
+		t.Errorf("missing %q; ran: %v", wantAccept, exec.executed)
+	}
+	wantDrop := "nft add rule inet linkguard input udp dport 123 drop"
+	if !ranCommand(exec.executed, wantDrop) {
+		t.Errorf("missing %q; ran: %v", wantDrop, exec.executed)
+	}
+}
+
+// TestReconcileNTPInputAcceptRulePrecedesDropRule: nft evaluates rules in
+// order, so the accept rule for authorized networks must be added before
+// the catch-all drop — reversed, the drop would shadow it and nothing
+// would ever be accepted.
+func TestReconcileNTPInputAcceptRulePrecedesDropRule(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	acceptIdx, dropIdx := -1, -1
+	for i, c := range exec.executed {
+		if strings.Contains(c, "accept") {
+			acceptIdx = i
+		}
+		if strings.HasSuffix(c, "udp dport 123 drop") {
+			dropIdx = i
+		}
+	}
+	if acceptIdx == -1 || dropIdx == -1 {
+		t.Fatalf("expected both an accept and a drop rule; ran: %v", exec.executed)
+	}
+	if acceptIdx > dropIdx {
+		t.Errorf("accept rule ran after drop rule (would be shadowed); ran: %v", exec.executed)
+	}
+}
+
+// TestReconcileNTPInputRulesMatchOnlyPort123: nothing else destined to the
+// firewall (SSH 22, the panel 9997, DNS 53, DHCP 67) may ever be touched by
+// this chain.
+func TestReconcileNTPInputRulesMatchOnlyPort123(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	for _, c := range exec.executed {
+		if !strings.HasPrefix(c, "nft add rule") {
+			continue
+		}
+		if !strings.Contains(c, "udp dport 123") {
+			t.Errorf("rule does not match udp dport 123: %q", c)
+		}
+		for _, forbidden := range []string{"dport 22", "dport 9997", "dport 53", "dport 67"} {
+			if strings.Contains(c, forbidden) {
+				t.Errorf("rule touches a port other than 123 (%s): %q", forbidden, c)
+			}
+		}
 	}
 }
 
 // TestReconcileNTPInputNotServingLeavesChainEmpty: toggle off => chain is
-// flushed and left with no drop rule (not deleted — always explicit state).
+// flushed and left with no accept/drop rules (not deleted — always
+// explicit state).
 func TestReconcileNTPInputNotServingLeavesChainEmpty(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, false); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, false); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
 	wantFlush := "nft flush chain inet linkguard input"
@@ -223,8 +289,26 @@ func TestReconcileNTPInputNotServingLeavesChainEmpty(t *testing.T) {
 		t.Errorf("expected the chain to be flushed; ran: %v", exec.executed)
 	}
 	for _, c := range exec.executed {
-		if strings.Contains(c, "drop") {
-			t.Errorf("expected no drop rule when serving=false; ran: %v", exec.executed)
+		if strings.HasPrefix(c, "nft add rule") {
+			t.Errorf("expected no rules when serving=false; ran: %v", exec.executed)
+		}
+	}
+}
+
+// TestReconcileNTPInputEmptyNetworksLeavesChainEmpty: serving=true but an
+// empty AllowedNetworks list is the explicit "nothing allowed" state (spec
+// §3.1) — neither the accept nor the drop rule is added (no-op, matching
+// the toggle-off case exactly, since there is nothing to protect).
+func TestReconcileNTPInputEmptyNetworksLeavesChainEmpty(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), nil, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	for _, c := range exec.executed {
+		if strings.HasPrefix(c, "nft add rule") {
+			t.Errorf("expected no rules with an empty allowed-networks list; ran: %v", exec.executed)
 		}
 	}
 }
@@ -235,7 +319,7 @@ func TestReconcileNTPInputNeverFlushesTheWholeTable(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
 	for _, c := range exec.executed {
@@ -245,18 +329,42 @@ func TestReconcileNTPInputNeverFlushesTheWholeTable(t *testing.T) {
 	}
 }
 
-// TestReconcileNTPInputSanitizesInterfaces: an invalid interface name must
-// never be interpolated into a command handed to nft.
-func TestReconcileNTPInputSanitizesInterfaces(t *testing.T) {
+// TestReconcileNTPInputSanitizesInvalidCIDR: an invalid CIDR — an injection
+// attempt, or plain garbage — must never be interpolated into a command
+// handed to nft. It is dropped from the set; other valid entries still get
+// their accept rule.
+func TestReconcileNTPInputSanitizesInvalidCIDR(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0", "evil; rm -rf /"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24", "evil; rm -rf /"}, true); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
 	for _, c := range exec.executed {
 		if strings.Contains(c, "evil") || strings.Contains(c, "rm -rf") {
-			t.Errorf("invalid interface reached the nft command: %q", c)
+			t.Errorf("invalid CIDR reached the nft command: %q", c)
+		}
+	}
+	wantAccept := "nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } accept"
+	if !ranCommand(exec.executed, wantAccept) {
+		t.Errorf("expected the valid CIDR to still be accepted; ran: %v", exec.executed)
+	}
+}
+
+// TestReconcileNTPInputRejectsOpenWildcard: 0.0.0.0/0 (or ::/0) reaching
+// this function would defeat the entire point of the accept/drop pair —
+// rejected here too, independent of the handler-level
+// timesync.ValidateAllowedNetworks that is the primary gate.
+func TestReconcileNTPInputRejectsOpenWildcard(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"0.0.0.0/0", "::/0"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	for _, c := range exec.executed {
+		if strings.HasPrefix(c, "nft add rule") {
+			t.Errorf("expected no accept/drop rules for an open wildcard; ran: %v", exec.executed)
 		}
 	}
 }
@@ -265,7 +373,7 @@ func TestReconcileNTPInputNoopInDryRun(t *testing.T) {
 	exec := &fakeReconcileExec{dryRun: true}
 	s := &Service{exec: exec}
 
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
 		t.Fatalf("ReconcileNTPInput in dry-run: %v", err)
 	}
 	if len(exec.executed) != 0 {
@@ -277,12 +385,12 @@ func TestReconcileNTPInputIsIdempotent(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	first := append([]string(nil), exec.executed...)
 	exec.executed = nil
-	if err := s.ReconcileNTPInput(context.Background(), []string{"enp2s0"}, true); err != nil {
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
 		t.Fatalf("second: %v", err)
 	}
 	if len(first) != len(exec.executed) {

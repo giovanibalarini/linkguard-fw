@@ -152,9 +152,12 @@ func TestInstallChronyReturns200OnSuccess(t *testing.T) {
 
 // ─── serve_lan effects: firewall reconcile + DHCP reload wiring ───────────
 
-// TestDoReloadReconcilesFirewallWithServingTrueWhenEnabled is Part 4's core
-// test: enabling serve_lan and applying must invoke the nftables input-chain
-// reconcile with serving=true against the box's enabled WAN links.
+// TestDoReloadReconcilesFirewallWithServingTrueWhenEnabled is Part 2/3's
+// core test: enabling serve_lan and applying must invoke the nftables
+// input-chain reconcile with serving=true against the admin's chosen
+// AllowedNetworks — reshaped 2026-08-11 (spec §4) from an earlier design
+// keyed on the box's enabled WAN links, since the accept/drop pair is now
+// keyed on the admin's own choice of networks, not WAN interfaces.
 func TestDoReloadReconcilesFirewallWithServingTrueWhenEnabled(t *testing.T) {
 	dir := t.TempDir()
 	db, err := storage.Open(filepath.Join(dir, "test.db"))
@@ -162,15 +165,12 @@ func TestDoReloadReconcilesFirewallWithServingTrueWhenEnabled(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if err := db.CreateLink(&storage.Link{ID: "l1", Name: "WAN1", Interface: "enp5s0", Weight: 1, Enabled: true}); err != nil {
-		t.Fatalf("seed link: %v", err)
-	}
 
 	nftExec := &reconcileSpyExec{}
 	svc := timesync.NewService(&fakeTimesyncExec{dryRun: true})
 	h := NewNTPHandler(db, svc, nil, nftables.NewService(nftExec))
 
-	if err := h.saveConfig(timesync.Config{ServeLAN: true}); err != nil {
+	if err := h.saveConfig(timesync.Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}}); err != nil {
 		t.Fatalf("saveConfig: %v", err)
 	}
 	if err := h.doReload(context.Background()); err != nil {
@@ -179,12 +179,12 @@ func TestDoReloadReconcilesFirewallWithServingTrueWhenEnabled(t *testing.T) {
 
 	found := false
 	for _, c := range nftExec.executed {
-		if strings.Contains(c, "input") && strings.Contains(c, "enp5s0") && strings.Contains(c, "drop") {
+		if strings.Contains(c, "input") && strings.Contains(c, "192.168.3.0/24") && strings.Contains(c, "accept") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected the input chain to be reconciled with a drop rule on enp5s0; ran: %v", nftExec.executed)
+		t.Errorf("expected the input chain to be reconciled with an accept rule for 192.168.3.0/24; ran: %v", nftExec.executed)
 	}
 }
 
@@ -197,9 +197,6 @@ func TestDoReloadReconcilesFirewallWithServingFalseWhenDisabled(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if err := db.CreateLink(&storage.Link{ID: "l1", Name: "WAN1", Interface: "enp5s0", Weight: 1, Enabled: true}); err != nil {
-		t.Fatalf("seed link: %v", err)
-	}
 
 	nftExec := &reconcileSpyExec{}
 	svc := timesync.NewService(&fakeTimesyncExec{dryRun: true})
