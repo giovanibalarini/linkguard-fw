@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, Clock, Play, Download } from 'lucide-react';
+import { RefreshCw, Clock, Play, Download, Wifi } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import Panel from '../components/ui/Panel';
@@ -31,9 +31,27 @@ export default function Ntp() {
     finally { setBusy(false); }
   };
 
-  const saveConfig = () => cfg && run(() => client.put('/api/ntp/config', { servers: cfg.servers, timezone: cfg.timezone }), 'Config de NTP salva — aplicando automaticamente.');
+  const saveConfig = () => cfg && run(() => client.put('/api/ntp/config', {
+    servers: cfg.servers,
+    timezone: cfg.timezone,
+    serve_lan: cfg.serve_lan,
+    allowed_networks: cfg.allowed_networks,
+  }), 'Config de NTP salva — aplicando automaticamente.');
   const apply = () => run(() => client.post('/api/ntp/apply'), 'Aplicado com sucesso.');
   const installChrony = () => run(() => client.post('/api/ntp/install-chrony'), 'chrony instalado.');
+
+  // Toggling serve_lan on for the first time (list still empty) pre-fills
+  // "Redes autorizadas" from the suggested DHCP subnet right away, so the
+  // admin sees the common case populated instantly instead of waiting on
+  // the auto-apply round trip — the API applies the same default on its
+  // own if this client-side prefill is ever skipped (e.g. a future caller).
+  const toggleServeLAN = (on: boolean) => {
+    if (!cfg) return;
+    const allowed = on && cfg.allowed_networks.length === 0 && data?.suggested_network
+      ? [data.suggested_network]
+      : cfg.allowed_networks;
+    setCfg({ ...cfg, serve_lan: on, allowed_networks: allowed });
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -106,6 +124,47 @@ export default function Ntp() {
                 </select>
               </div>
             </div>
+            {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">Salvar config</button></div>}
+          </Panel>
+
+          <Panel title={<span className="flex items-center gap-2"><Wifi className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Servir horário para a rede local</span></span>}>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="w-4 h-4"
+                checked={cfg.serve_lan}
+                disabled={!canWrite}
+                onChange={(e) => toggleServeLAN(e.target.checked)}
+              />
+              <span className="text-gray-300 text-sm">Este firewall também serve NTP para a rede local (via chrony, protegido por firewall)</span>
+            </label>
+
+            {cfg.serve_lan && (
+              <div className="mt-4 space-y-3">
+                <div>
+                  <label className="label">Redes autorizadas (CIDR, separadas por vírgula)</label>
+                  <input
+                    className="input w-full"
+                    placeholder={data?.suggested_network || '192.168.3.0/24'}
+                    value={cfg.allowed_networks.join(', ')}
+                    disabled={!canWrite}
+                    onChange={(e) => setCfg({ ...cfg, allowed_networks: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
+                  />
+                  <p className="text-xs text-gray-600 mt-1">
+                    Escolha quais redes podem sincronizar o horário aqui — LAN, VLANs, Wi-Fi ou rede de convidados. Vazio = nenhuma rede liberada (não é "liberar tudo").
+                  </p>
+                </div>
+
+                <div className="text-xs text-gray-500 border border-gray-800 rounded p-3 bg-gray-900/40">
+                  {cfg.allowed_networks.length > 0 ? (
+                    <>Em vigor: servindo NTP para <span className="text-gray-300 font-mono">{cfg.allowed_networks.join(', ')}</span>, anunciado via DHCP (opção 42) e negado para qualquer outra origem.</>
+                  ) : (
+                    <>Em vigor: nenhuma rede autorizada ainda — NTP negado para todo mundo até uma rede ser adicionada acima.</>
+                  )}
+                </div>
+              </div>
+            )}
+
             {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">Salvar config</button></div>}
           </Panel>
         </>
