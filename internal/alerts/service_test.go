@@ -289,6 +289,87 @@ func hasOpenAlertOfType(alerts []storage.Alert, alertType string) bool {
 	return false
 }
 
+// TestCreateDoesNotDuplicateAnAlreadyOpenAlert guards the root cause of most
+// of the 135-alert pileup on the production panel: the same (type, linkID)
+// problem re-firing (e.g. on every service restart, since the debounce state
+// is in-memory) must not open a second unresolved row or notify a second time.
+func TestCreateDoesNotDuplicateAnAlreadyOpenAlert(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.HighCPU(95); err != nil {
+		t.Fatalf("HighCPU (1st): %v", err)
+	}
+	if err := s.HighCPU(97); err != nil {
+		t.Fatalf("HighCPU (2nd): %v", err)
+	}
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	n := 0
+	for _, a := range open {
+		if a.Type == TypeHighCPU {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("expected exactly 1 unresolved high_cpu alert, got %d (%+v)", n, open)
+	}
+	if len(fn.normal) != 1 {
+		t.Errorf("expected notifier to fire exactly once, got %d: %v", len(fn.normal), fn.normal)
+	}
+}
+
+// TestCreateOpensAgainAfterTheEarlierAlertResolved guards against the dedupe
+// in Create over-suppressing a genuine recurrence: once the earlier alert for
+// the same (type, linkID) has been resolved, a fresh occurrence must open a
+// new row.
+func TestCreateOpensAgainAfterTheEarlierAlertResolved(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.HighCPU(95); err != nil {
+		t.Fatalf("HighCPU (1st): %v", err)
+	}
+	s.AutoResolve(TypeHighCPU, "")
+
+	if err := s.HighCPU(96); err != nil {
+		t.Fatalf("HighCPU (2nd): %v", err)
+	}
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	n := 0
+	for _, a := range open {
+		if a.Type == TypeHighCPU {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("expected exactly 1 unresolved high_cpu alert after resolve+re-raise, got %d (%+v)", n, open)
+	}
+
+	all, err := db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	total := 0
+	for _, a := range all {
+		if a.Type == TypeHighCPU {
+			total++
+		}
+	}
+	if total != 2 {
+		t.Errorf("expected 2 total high_cpu rows (1 resolved + 1 open), got %d (%+v)", total, all)
+	}
+}
+
 // TestRecoveryAlertIsStoredResolved guards Fix A: a recovery alert announces
 // a condition that already ended, so it must land in the DB already
 // resolved — it is history, not an open item — while still notifying via the

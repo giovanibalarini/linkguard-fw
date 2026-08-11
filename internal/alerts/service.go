@@ -71,8 +71,34 @@ func (s *Service) SetNotifier(n Notifier) {
 	s.notifier = n
 }
 
-// Create creates a new alert.
+// Create creates a new alert for an ongoing problem, unless one for the same
+// (type, linkID) is already open.
+//
+// (type, linkID) is already this package's identity for "an ongoing
+// problem" — AutoResolve resolves every unresolved row matching that pair in
+// one shot. A second unresolved row for the same pair carries no new
+// information: it tells the operator nothing they don't already know, and
+// re-notifying just trains them to ignore the channel. This is also what
+// keeps the alert list stable across restarts: the health state that gates
+// whether a condition is "new" (internal/monitoring's observe map) lives
+// only in memory, so every restart or reboot re-evaluates every still-true
+// condition from scratch and would otherwise re-fire it as if it were brand
+// new. Once the earlier alert is resolved, though, the condition returning
+// is genuinely new and must open a fresh row — so the check only looks at
+// currently-unresolved alerts.
 func (s *Service) Create(alertType, severity, title, message, linkID string) error {
+	alerts, err := s.db.GetAlerts(true, 0)
+	if err != nil {
+		slog.Error("create alert: check existing", "err", err)
+		return err
+	}
+	for _, a := range alerts {
+		if a.Type == alertType && a.LinkID == linkID {
+			slog.Debug("alert suppressed: already open", "type", alertType, "linkID", linkID)
+			return nil
+		}
+	}
+
 	a := &storage.Alert{
 		Type:     alertType,
 		Severity: severity,
