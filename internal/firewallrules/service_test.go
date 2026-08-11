@@ -2,6 +2,7 @@ package firewallrules_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,10 +15,13 @@ import (
 // fakeExec is a minimal firewall.Executor: it answers ListUserRules'
 // `nft -a list chain ... user_rules` with a configurable fixture and records
 // every mutating command so ReconcileUserRules' output can be asserted.
+// checkErr, when set, is what the `nft -c` pre-flight (ExecuteRead with a
+// "-c" argument) fails with, independent of the ListUserRules/Persist reads.
 type fakeExec struct {
 	userRulesOut string
 	dryRun       bool
 	executed     []string
+	checkErr     error
 }
 
 func (f *fakeExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -27,6 +31,9 @@ func (f *fakeExec) Execute(_ context.Context, cmd string, args ...string) (strin
 
 func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
 	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "-c") && strings.Contains(joined, "-f") {
+		return "", f.checkErr
+	}
 	if strings.Contains(joined, "-a list chain") && strings.Contains(joined, "user_rules") {
 		return f.userRulesOut, nil
 	}
@@ -234,6 +241,32 @@ func TestImportOnceWithNoExistingRulesStillSetsGuard(t *testing.T) {
 	}
 	if flag == "" {
 		t.Error("expected the import guard set even with nothing to import")
+	}
+}
+
+// ─── CheckPending (C-1 layer 2: pre-flight nft -c before any DB write) ─────
+
+func TestCheckPendingRejectsWhatNftWouldReject(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{checkErr: errors.New("nft: Error: could not process rule")}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	candidate := []storage.FirewallRule{{Enabled: true, Action: "accept", Saddr: "10.0.0.1"}}
+	if err := svc.CheckPending(context.Background(), candidate); err == nil {
+		t.Fatal("expected CheckPending to surface nft's rejection")
+	}
+}
+
+func TestCheckPendingAcceptsAWellFormedCandidate(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	candidate := []storage.FirewallRule{{Enabled: true, Action: "drop", Daddr: "203.0.113.0/24"}}
+	if err := svc.CheckPending(context.Background(), candidate); err != nil {
+		t.Fatalf("expected a well-formed candidate to pass, got: %v", err)
 	}
 }
 

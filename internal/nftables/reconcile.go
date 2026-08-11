@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 )
 
@@ -260,17 +261,85 @@ func (s *Service) ReconcileStructuralChains(ctx context.Context) error {
 
 // rebuildChain flushes exactly the named chain and re-adds each rule from
 // the given canonical token lists, in order. Shared by
-// ReconcileStructuralChains' two chains so the flush-then-rewrite sequence
-// can't drift between them.
+// ReconcileStructuralChains' two chains and ReconcileUserRules so the
+// flush-then-rewrite sequence can't drift between them.
+//
+// C-1 (fix): a flush failure still aborts immediately — nothing can safely
+// proceed without knowing the chain is actually empty first. But a failure
+// adding one specific rule no longer aborts the rest: before this fix, the
+// very first `nft add rule` error returned immediately, leaving the chain
+// flushed but only partially rebuilt — every rule after the failing one
+// silently disappeared from the live firewall, on this call and (since the
+// same bad row keeps being re-rendered) on every subsequent boot too. A
+// rule nft rejects for a reason field-level validation cannot catch (nft's
+// own semantic checks go further than buildRuleTokens' regexes) must not be
+// able to take the rest of the chain down with it: skip it, log it loudly,
+// keep going, and report every failure back to the caller as one aggregate
+// error so it can be surfaced (400 with nft's message, an alert, a boot-log
+// warning) — a partial firewall with the other rules intact is strictly
+// safer than an empty one.
 func (s *Service) rebuildChain(ctx context.Context, chain string, rules [][]string) error {
 	if _, err := s.exec.Execute(ctx, "nft", "flush", "chain", Family, Table, chain); err != nil {
 		return fmt.Errorf("limpar chain %s: %w", chain, err)
 	}
+	var failures []string
 	for _, tokens := range rules {
 		args := append([]string{"add", "rule", Family, Table, chain}, tokens...)
 		if _, err := s.exec.Execute(ctx, "nft", args...); err != nil {
-			return fmt.Errorf("aplicar regra em %s: %w", chain, err)
+			expr := strings.Join(tokens, " ")
+			slog.Error("nft rejeitou uma regra ao reconciliar a chain; as demais continuam sendo aplicadas",
+				"chain", chain, "regra", expr, "err", err)
+			failures = append(failures, fmt.Sprintf("%q: %v", expr, err))
+			continue
 		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%d regra(s) rejeitada(s) pelo nft em %s (as demais foram aplicadas normalmente): %s",
+			len(failures), chain, strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+// renderChainScript renders the exact sequence of commands rebuildChain
+// would execute against chain — flush, then each rule in tokenSets, in
+// order — as an nft script body, for CheckChain's parse-only dry run.
+func renderChainScript(chain string, tokenSets [][]string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "flush chain %s %s %s\n", Family, Table, chain)
+	for _, tokens := range tokenSets {
+		fmt.Fprintf(&b, "add rule %s %s %s %s\n", Family, Table, chain, strings.Join(tokens, " "))
+	}
+	return b.String()
+}
+
+// CheckChain performs a parse-only dry run (`nft -c -f`) of exactly the
+// script rebuildChain would execute against chain, without changing
+// anything live — nft's own `--check` flag validates syntax and semantics
+// against the current ruleset and discards the result. Deliberately generic
+// (any chain, any token sets) rather than user_rules-specific: this is the
+// mechanism C-1 introduces for the rule-editor pre-flight (see
+// internal/firewallrules.Service.CheckPending), and the design spec picks
+// the same `nft -c` approach for Phase C's own admin-facing dry run — a
+// second, chain-specific implementation there would only risk drifting from
+// this one.
+func (s *Service) CheckChain(ctx context.Context, chain string, tokenSets [][]string) error {
+	if s.exec.IsDryRun() {
+		return nil
+	}
+	f, err := os.CreateTemp("", "linkguard-nft-check-*.conf")
+	if err != nil {
+		return fmt.Errorf("criar arquivo temporário para validação: %w", err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(renderChainScript(chain, tokenSets)); err != nil {
+		f.Close()
+		return fmt.Errorf("escrever script de validação: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("fechar arquivo temporário de validação: %w", err)
+	}
+	if _, err := s.exec.ExecuteRead(ctx, "nft", "-c", "-f", f.Name()); err != nil {
+		return err
 	}
 	return nil
 }

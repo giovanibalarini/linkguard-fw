@@ -2,6 +2,7 @@ package nftables
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -57,12 +58,61 @@ func (s *Service) ReconcileUserRules(ctx context.Context, rules []StoredRule) er
 		return nil
 	}
 
+	tokenSets, skipped := renderEnabledUserRules(rules)
+
+	// Idempotently ensure the chain exists before flushing it — mirrors
+	// ReconcileNTPInput's own guard for the input chain. user_rules is
+	// normally created once at EnsureTable/bootstrap and never deleted, but
+	// a box that reaches this reconcile before that (or one recovering from
+	// an operator error) must not fail here with "no such chain" instead of
+	// self-healing. `nft add chain` with no body is a no-op when a chain by
+	// this name already exists, regardless of its declaration.
+	if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, UserChain); err != nil {
+		return fmt.Errorf("garantir a existência da chain %s: %w", UserChain, err)
+	}
+
+	rebuildErr := s.rebuildChain(ctx, UserChain, tokenSets)
+
+	// "tentadas" (not "aplicadas"): rebuildChain may have rejected some of
+	// these at nft time (C-1) — rebuildErr, logged by rebuildChain itself
+	// per rejected rule, is the source of truth for how many actually
+	// landed.
+	slog.Info("chain user_rules reconciliada a partir do banco",
+		"total", len(rules), "tentadas", len(tokenSets), "puladas_por_campo_invalido", skipped, "erro_ao_aplicar", rebuildErr != nil)
+
+	if err := s.Persist(ctx); err != nil {
+		slog.Warn("chain user_rules reconciliada, mas não foi possível persistir para o próximo boot", "err", err)
+	}
+	return rebuildErr
+}
+
+// CheckUserRules validates, with a parse-only `nft -c` dry run (CheckChain),
+// the exact user_rules chain ReconcileUserRules would render for rules —
+// same sorting, same enabled-only filter, same buildRuleTokens rendering —
+// so a rule that passes this check is guaranteed to render into exactly the
+// commands the real reconcile issues afterwards. This is C-1's second
+// layer, meant to run before a DB write commits (see
+// internal/firewallrules.Service.CheckPending): field-level validation
+// alone (ValidateRuleFields) cannot catch everything nft itself would
+// reject, and reconciling straight into the live chain on a rule nft
+// rejects used to truncate every rule after it, permanently.
+func (s *Service) CheckUserRules(ctx context.Context, rules []StoredRule) error {
+	tokenSets, _ := renderEnabledUserRules(rules)
+	return s.CheckChain(ctx, UserChain, tokenSets)
+}
+
+// renderEnabledUserRules sorts rules by position and renders every enabled
+// one into nft tokens, skipping (and counting) any with invalid fields —
+// shared by ReconcileUserRules and CheckUserRules so they can never render
+// the "resulting chain" differently from one another. In practice a
+// skipped entry should never happen (the API layer validates with the same
+// ValidateRuleFields on create/update), but a stale or hand-edited DB row
+// must not be able to take down every other rule's enforcement or check.
+func renderEnabledUserRules(rules []StoredRule) (tokenSets [][]string, skipped int) {
 	sorted := make([]StoredRule, len(rules))
 	copy(sorted, rules)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
 
-	var tokenSets [][]string
-	skipped := 0
 	for _, r := range sorted {
 		if !r.Enabled {
 			continue
@@ -70,24 +120,13 @@ func (s *Service) ReconcileUserRules(ctx context.Context, rules []StoredRule) er
 		tokens, err := buildRuleTokens(r.Fields)
 		if err != nil {
 			skipped++
-			slog.Warn("regra do usuário ignorada ao reconciliar user_rules: campos inválidos",
+			slog.Warn("regra do usuário ignorada ao reconciliar/validar user_rules: campos inválidos",
 				"id", r.ID, "err", err)
 			continue
 		}
 		tokenSets = append(tokenSets, tokens)
 	}
-
-	if err := s.rebuildChain(ctx, UserChain, tokenSets); err != nil {
-		return err
-	}
-
-	slog.Info("chain user_rules reconciliada a partir do banco",
-		"total", len(rules), "aplicadas", len(tokenSets), "puladas", skipped)
-
-	if err := s.Persist(ctx); err != nil {
-		slog.Warn("chain user_rules reconciliada, mas não foi possível persistir para o próximo boot", "err", err)
-	}
-	return nil
+	return tokenSets, skipped
 }
 
 // MergeUserRules produces the honest, unified view of the user_rules chain

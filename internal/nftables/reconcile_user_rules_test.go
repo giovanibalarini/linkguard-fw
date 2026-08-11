@@ -2,6 +2,7 @@ package nftables
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -206,6 +207,83 @@ func TestReconcileUserRulesNoopInDryRun(t *testing.T) {
 	}
 	if len(exec.executed) != 0 {
 		t.Errorf("expected no commands in dry-run, ran: %v", exec.executed)
+	}
+}
+
+// ─── C-1 layer 3: a per-rule nft failure must not truncate the chain ───────
+//
+// Before this fix, rebuildChain returned on the very first `nft add rule`
+// error, leaving the chain flushed but only partially rebuilt: every rule
+// after the failing one silently vanished from the live firewall, on this
+// request and on every subsequent boot (the same bad DB row re-renders and
+// re-fails every time). A rule nft rejects for a reason field-level
+// validation cannot catch must not be able to take the rest of the chain
+// down with it.
+
+func TestReconcileUserRulesSurvivesAPerRuleNftFailure(t *testing.T) {
+	exec := &fakeReconcileExec{
+		failOn: func(cmd string) error {
+			if strings.Contains(cmd, "203.0.113.99") {
+				return errors.New("nft: Error: could not process rule")
+			}
+			return nil
+		},
+	}
+	s := &Service{exec: exec}
+
+	rules := []StoredRule{
+		{ID: "a", Position: 0, Enabled: true, Fields: RuleFields{Action: "accept", Saddr: "10.0.0.1"}},
+		{ID: "bad", Position: 1, Enabled: true, Fields: RuleFields{Action: "drop", Saddr: "203.0.113.99"}},
+		{ID: "c", Position: 2, Enabled: true, Fields: RuleFields{Action: "accept", Saddr: "10.0.0.3"}},
+	}
+	err := s.ReconcileUserRules(context.Background(), rules)
+	if err == nil {
+		t.Fatal("expected an aggregate error surfaced to the caller when a rule fails at nft time")
+	}
+
+	var sawA, sawBad, sawC bool
+	for _, c := range exec.executed {
+		if strings.Contains(c, "10.0.0.1") {
+			sawA = true
+		}
+		if strings.Contains(c, "203.0.113.99") {
+			sawBad = true
+		}
+		if strings.Contains(c, "10.0.0.3") {
+			sawC = true
+		}
+	}
+	if !sawA || !sawC {
+		t.Errorf("the other rules must still be applied despite one nft failure, ran: %v", exec.executed)
+	}
+	_ = sawBad // the failing add-rule command is still attempted (and recorded); it's the *result* that must not abort the rest
+}
+
+func TestReconcileUserRulesEnsuresChainExistsBeforeFlushing(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	rules := []StoredRule{{ID: "a", Position: 0, Enabled: true, Fields: RuleFields{Action: "accept"}}}
+	if err := s.ReconcileUserRules(context.Background(), rules); err != nil {
+		t.Fatalf("ReconcileUserRules: %v", err)
+	}
+
+	wantEnsure := "nft add chain inet linkguard user_rules"
+	wantFlush := "nft flush chain inet linkguard user_rules"
+	ensureIdx, flushIdx := -1, -1
+	for i, c := range exec.executed {
+		if c == wantEnsure {
+			ensureIdx = i
+		}
+		if c == wantFlush {
+			flushIdx = i
+		}
+	}
+	if ensureIdx == -1 {
+		t.Errorf("expected the chain to be idempotently ensured before flushing, ran: %v", exec.executed)
+	}
+	if flushIdx == -1 || ensureIdx > flushIdx {
+		t.Errorf("chain must be ensured before it is flushed; ran: %v", exec.executed)
 	}
 }
 

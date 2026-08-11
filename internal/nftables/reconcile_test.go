@@ -14,14 +14,35 @@ type fakeReconcileExec struct {
 	dryRun   bool
 	executed []string
 	execErr  error
+	// failOn, when set, overrides execErr per command: it receives the full
+	// joined command string and decides whether that specific invocation
+	// fails, letting a test simulate nft rejecting exactly one rule (C-1)
+	// while every other command in the same reconcile still succeeds.
+	failOn func(cmd string) error
+
+	reads   []string
+	readErr error
+	// readFailOn mirrors failOn for ExecuteRead (used by the `nft -c`
+	// pre-flight, which never mutates anything but must still be able to
+	// fail in a test).
+	readFailOn func(cmd string) error
 }
 
 func (e *fakeReconcileExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
-	e.executed = append(e.executed, strings.Join(append([]string{cmd}, args...), " "))
+	full := strings.Join(append([]string{cmd}, args...), " ")
+	e.executed = append(e.executed, full)
+	if e.failOn != nil {
+		return "", e.failOn(full)
+	}
 	return "", e.execErr
 }
 func (e *fakeReconcileExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
-	return "", nil
+	full := strings.Join(append([]string{cmd}, args...), " ")
+	e.reads = append(e.reads, full)
+	if e.readFailOn != nil {
+		return "", e.readFailOn(full)
+	}
+	return "", e.readErr
 }
 func (e *fakeReconcileExec) IsDryRun() bool { return e.dryRun }
 

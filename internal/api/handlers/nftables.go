@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -204,6 +205,30 @@ func validateFirewallRuleBody(b firewallRuleBody) string {
 	return ""
 }
 
+// checkPendingRules is C-1's second layer: before any DB write, it asks nft
+// itself (via a parse-only `nft -c` dry run — see
+// firewallrules.Service.CheckPending) whether the chain that would result
+// from this mutation is actually acceptable. mutate receives the admin's
+// current rules and returns the candidate set the DB would hold right after
+// the in-progress change, without touching anything. Field-level validation
+// (validateFirewallRuleBody/ValidateRuleFields) already catches most bad
+// input, but not everything nft itself would reject — this is the same
+// mechanism the design spec picks for Phase C's own pre-flight, so nft's
+// rejection reaches the admin as a 400 with nft's own message, before the
+// DB (and the live chain) ever changes.
+func (h *NftablesHandler) checkPendingRules(w http.ResponseWriter, r *http.Request, mutate func([]storage.FirewallRule) []storage.FirewallRule) bool {
+	current, err := h.db.ListFirewallRules()
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if err := h.fr.CheckPending(r.Context(), mutate(current)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	return true
+}
+
 // reconcileRules re-renders user_rules from the DB and refreshes the live
 // snapshot, shared by every mutation below so nft never lags what the
 // panel/DB show. A reconcile failure is surfaced to the caller as an error
@@ -230,19 +255,34 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	f := b.fields()
 	row := &storage.FirewallRule{
-		Action: b.fields().Action, Iif: b.fields().Iif, Oif: b.fields().Oif,
-		Saddr: b.fields().Saddr, Daddr: b.fields().Daddr, Proto: b.fields().Proto, Dport: b.fields().Dport,
+		Action: f.Action, Iif: f.Iif, Oif: f.Oif,
+		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport,
 		Description: strings.TrimSpace(b.Description),
+	}
+	// C-1 layer 2: validate the resulting chain with nft itself before
+	// anything is written — CreateFirewallRule always appends, so the
+	// candidate is simply every current rule plus this new one, enabled.
+	candidateRow := storage.FirewallRule{Enabled: true, Action: f.Action, Iif: f.Iif, Oif: f.Oif,
+		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport}
+	ok := h.checkPendingRules(w, r, func(current []storage.FirewallRule) []storage.FirewallRule {
+		return append(append([]storage.FirewallRule{}, current...), candidateRow)
+	})
+	if !ok {
+		return
 	}
 	if err := h.db.CreateFirewallRule(row); err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	// I-2: audit the DB mutation itself, not just a successful apply — a
+	// reconcile that fails afterwards must still leave an audit trail of
+	// what was written.
+	auditAction(h.db, r, "nft.rule.add", "user_rules:"+row.ID, b.Action)
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	auditAction(h.db, r, "nft.rule.add", "user_rules:"+row.ID, b.Action)
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -268,14 +308,31 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport,
 		Description: strings.TrimSpace(b.Description),
 	}
+	// C-1 layer 2: candidate = current rules with this one's fields
+	// replaced in place (position/enabled untouched, same as the DB write
+	// UpdateFirewallRule itself performs).
+	ok := h.checkPendingRules(w, r, func(current []storage.FirewallRule) []storage.FirewallRule {
+		out := make([]storage.FirewallRule, len(current))
+		for i, c := range current {
+			if c.ID == b.ID {
+				c.Action, c.Iif, c.Oif = f.Action, f.Iif, f.Oif
+				c.Saddr, c.Daddr, c.Proto, c.Dport = f.Saddr, f.Daddr, f.Proto, f.Dport
+			}
+			out[i] = c
+		}
+		return out
+	})
+	if !ok {
+		return
+	}
 	if err := h.db.UpdateFirewallRule(row); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	auditAction(h.db, r, "nft.rule.update", "user_rules:"+b.ID, b.Action)
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	auditAction(h.db, r, "nft.rule.update", "user_rules:"+b.ID, b.Action)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -296,10 +353,10 @@ func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	auditAction(h.db, r, "nft.rule.del", "user_rules:"+b.ID, "")
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	auditAction(h.db, r, "nft.rule.del", "user_rules:"+b.ID, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -320,11 +377,29 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
+	// C-1 layer 2: re-enabling a rule can newly introduce it into the
+	// rendered chain (a disabled rule is never checked while disabled — see
+	// ValidateRuleFields at create/update time, which normally already
+	// caught anything invalid, but a stale or hand-edited row must not
+	// reach nft unchecked). Disabling never needs a check: removing a rule
+	// from the chain cannot make nft reject it.
+	if b.Enabled {
+		ok := h.checkPendingRules(w, r, func(current []storage.FirewallRule) []storage.FirewallRule {
+			out := make([]storage.FirewallRule, len(current))
+			for i, c := range current {
+				if c.ID == b.ID {
+					c.Enabled = true
+				}
+				out[i] = c
+			}
+			return out
+		})
+		if !ok {
+			return
+		}
+	}
 	if err := h.db.SetFirewallRuleEnabled(b.ID, b.Enabled); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if !h.reconcileRules(w, r) {
 		return
 	}
 	action := "nft.rule.disable"
@@ -332,6 +407,9 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 		action = "nft.rule.enable"
 	}
 	auditAction(h.db, r, action, "user_rules:"+b.ID, "")
+	if !h.reconcileRules(w, r) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -378,10 +456,10 @@ func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	auditAction(h.db, r, "nft.rule.reorder", "user_rules", fmt.Sprintf("%d regras", len(b.IDs)))
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	auditAction(h.db, r, "nft.rule.reorder", "user_rules", fmt.Sprintf("%d regras", len(b.IDs)))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -460,6 +538,25 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditAction(h.db, r, "nft.rollback", "ruleset", target.Label)
+	// I-1: Restore writes the snapshot straight into nft via `nft -f`,
+	// bypassing the DB-authoritative model entirely (design spec §4.1) — a
+	// bare rollback would leave user_rules holding whatever the snapshot
+	// happened to contain, disagreeing with the DB's own rule rows (their
+	// stable ids no longer map to any live handle) until the *next*,
+	// unrelated mutation silently re-renders over it. Reconciling here
+	// makes the DB win immediately, exactly like every other mutation.
+	//
+	// What this means for the snapshot's own user_rules content: it is
+	// discarded. A rollback restores every OTHER piece of live state the
+	// snapshot captured (host_wan, blocklist, blocked_hosts,
+	// prerouting_dnat, the structural chains) verbatim, but user_rules ends
+	// up exactly what the DB says right now, not what was in the snapshot
+	// at backup time — consistent with "the DB is the source of truth for
+	// the admin's rules", but worth knowing before relying on a rollback to
+	// also undo a rule change.
+	if err := h.fr.Reconcile(r.Context()); err != nil {
+		slog.Warn("rollback restaurou o ruleset, mas não foi possível reconciliar user_rules a partir do banco em seguida", "err", err)
+	}
 	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "rollback completed", "output": out})
 }

@@ -104,6 +104,21 @@ func (s *Service) ImportOnce(ctx context.Context) error {
 	return s.Reconcile(ctx)
 }
 
+// CheckPending validates, with a parse-only `nft -c` dry run
+// (nftables.Service.CheckUserRules), the user_rules chain that candidate —
+// the DB rows exactly as they would read immediately after the mutation the
+// caller is about to make — would render, before that mutation's DB write
+// happens (C-1, design spec §4.1/§8). candidate must reflect every rule
+// that would end up enabled in the DB, not just the one being changed:
+// `nft -c` validates the whole resulting chain, the same one Reconcile
+// renders immediately after the DB write actually lands. On failure the
+// caller must not write anything to the DB — the error carries nft's own
+// rejection message, so field-level validation (ValidateRuleFields) not
+// catching something doesn't mean nothing ever will.
+func (s *Service) CheckPending(ctx context.Context, candidate []storage.FirewallRule) error {
+	return s.nft.CheckUserRules(ctx, ToStoredRules(candidate))
+}
+
 // Reconcile loads every stored rule (enabled or not, in position order) and
 // re-renders user_rules from it — the DB is the source of truth, nft is the
 // rendered result (design spec §4.1). Safe and cheap to call on every boot
