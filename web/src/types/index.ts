@@ -339,7 +339,11 @@ export interface NetsvcConfig {
 }
 export interface DHCPReservation { mac: string; ip: string; hostname: string; created_at?: string; updated_at?: string; }
 export interface DHCPLease { expiry: number; mac: string; ip: string; hostname: string; }
-export interface LastApply { ok: boolean; error?: string; at: number; }
+// warning (I-7): o apply terminou bem, mas o backend descartou entradas
+// inválidas que a tela ainda mostra como configuradas (domínio de bloqueio,
+// upstream de DNS, servidor NTP). É um terceiro estado entre "falhou" e
+// "tudo em vigor" — nunca deve ser exibido como sucesso puro.
+export interface LastApply { ok: boolean; error?: string; warning?: string; at: number; }
 export interface DHCPData { config: NetsvcConfig; reservations: DHCPReservation[]; leases: DHCPLease[]; backend: string; last_apply?: LastApply; }
 export interface DNSData { config: NetsvcConfig; blocklist: string[]; backend: string; last_apply?: LastApply; }
 

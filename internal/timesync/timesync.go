@@ -163,35 +163,52 @@ func isOpenCIDR(cidr string) bool {
 // (input-validation-audit.md finding, "the same GenerateChronyConf" note):
 // AllowedNetworks was already re-validated at render time and Servers was
 // not, even though both are interpolated the same way into the same file.
-func GenerateChronyConf(c Config) string {
+//
+// The second return carries those skipped entries as plain-Portuguese
+// sentences (I-7). "Skip and log" is the right policy for a list, but a
+// journal line is not a report: without this, the drop-in silently lost a
+// server the panel kept showing as configured, under a green "aplicado".
+func GenerateChronyConf(c Config) (string, []string) {
+	var warnings []string
 	var b strings.Builder
 	b.WriteString("# managed by linkguard\n\n")
+	skippedServers := 0
 	for _, srv := range c.Servers {
 		if !validChronyServer(srv) {
 			slog.Warn("servidor NTP inválido; linha 'server' omitida do drop-in do chrony", "server", srv)
+			skippedServers++
 			continue
 		}
 		fmt.Fprintf(&b, "server %s iburst\n", srv)
 	}
+	if skippedServers > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d servidor(es) NTP são inválidos e não foram aplicados ao chrony", skippedServers))
+	}
 	if c.ServeLAN && len(c.AllowedNetworks) > 0 {
 		var allowLines strings.Builder
+		skippedNetworks := 0
 		for _, network := range c.AllowedNetworks {
 			if _, _, err := net.ParseCIDR(network); err != nil {
 				slog.Warn("rede inválida; diretiva allow do chrony omitida para esta entrada", "network", network, "err", err)
+				skippedNetworks++
 				continue
 			}
 			if isOpenCIDR(network) {
 				slog.Warn("rede aberta (0.0.0.0/0 ou ::/0) rejeitada; diretiva allow do chrony omitida", "network", network)
+				skippedNetworks++
 				continue
 			}
 			fmt.Fprintf(&allowLines, "allow %s\n", network)
+		}
+		if skippedNetworks > 0 {
+			warnings = append(warnings, fmt.Sprintf("%d rede(s) autorizada(s) a usar o NTP são inválidas e não foram aplicadas", skippedNetworks))
 		}
 		if allowLines.Len() > 0 {
 			b.WriteString("\n")
 			b.WriteString(allowLines.String())
 		}
 	}
-	return b.String()
+	return b.String(), warnings
 }
 
 // ValidateAllowedNetworks checks that every entry in an admin-supplied
@@ -275,27 +292,36 @@ func NormalizeAllowedNetworks(networks []string) []string {
 // deliberate, explicit "nothing allowed" state, not "nothing configured").
 // It is removed only when both are off, restoring today's fully-unmanaged
 // behaviour exactly.
-func (s *Service) ReloadConfig(ctx context.Context, c Config) error {
+//
+// The returned warnings are the entries GenerateChronyConf had to drop (an
+// invalid server, an invalid or wide-open allowed network) — the apply
+// worked, but not with everything the admin configured, and the caller is
+// expected to record that alongside the apply status rather than let the
+// panel show those values as if they were in effect (I-7).
+func (s *Service) ReloadConfig(ctx context.Context, c Config) ([]string, error) {
+	var warnings []string
 	if !s.exec.IsDryRun() {
 		if len(c.Servers) == 0 && !c.ServeLAN {
 			if err := os.Remove(s.confPath); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remover %s: %w", s.confPath, err)
+				return warnings, fmt.Errorf("remover %s: %w", s.confPath, err)
 			}
 		} else {
-			if err := os.WriteFile(s.confPath, []byte(GenerateChronyConf(c)), 0o644); err != nil {
-				return fmt.Errorf("escrever %s: %w", s.confPath, err)
+			content, w := GenerateChronyConf(c)
+			warnings = w
+			if err := os.WriteFile(s.confPath, []byte(content), 0o644); err != nil {
+				return warnings, fmt.Errorf("escrever %s: %w", s.confPath, err)
 			}
 		}
 	}
 	if c.Timezone != "" {
 		if _, err := s.exec.Execute(ctx, "timedatectl", "set-timezone", c.Timezone); err != nil {
-			return fmt.Errorf("definir fuso horário: %w", err)
+			return warnings, fmt.Errorf("definir fuso horário: %w", err)
 		}
 	}
 	if _, err := s.exec.Execute(ctx, "systemctl", "reload-or-restart", "chrony"); err != nil {
-		return fmt.Errorf("recarregar chrony: %w", err)
+		return warnings, fmt.Errorf("recarregar chrony: %w", err)
 	}
-	return nil
+	return warnings, nil
 }
 
 // ParseChronycTracking parses `chronyc tracking` output into its most

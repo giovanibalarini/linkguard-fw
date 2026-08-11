@@ -73,6 +73,21 @@ type ConfigFile struct {
 	Content string `json:"content"`
 }
 
+// ApplyResult is what an apply/reload reports back beyond "did it fail".
+//
+// Warnings exists because "the apply succeeded" and "everything you
+// configured is in effect" are different statements, and a backend that
+// drops a bad list entry (one invalid blocklist domain, one malformed
+// upstream) makes them diverge. Skipping such an entry is the right
+// behaviour — one bad entry must not sink the good ones — but doing it
+// with nothing but a journal line means the panel keeps showing a value
+// the daemon never received. Each warning is a plain-Portuguese sentence,
+// ready to be shown to the admin as-is.
+type ApplyResult struct {
+	Output   string   `json:"output,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 // Provider is implemented by each DHCP/DNS backend.
 type Provider interface {
 	// Backend reports which engine this provider drives.
@@ -83,13 +98,18 @@ type Provider interface {
 	// when it is not — passed in by the caller (internal/timesync's config
 	// lives in a different package) rather than read from the DB here, so
 	// this stays a pure function of its inputs.
-	GenerateConfigs(c Config, reservations []Reservation, blockedDomains []string, ntpServer string) []ConfigFile
+	//
+	// The error is for a config that cannot be rendered at all — a
+	// singular, non-optional value the backend would otherwise have to drop
+	// silently (see keaunbound.GenerateUnboundConfig). A preview must show
+	// that failure rather than a config the apply would refuse.
+	GenerateConfigs(c Config, reservations []Reservation, blockedDomains []string, ntpServer string) ([]ConfigFile, error)
 	// Apply writes the configs and restarts the services.
 	Apply(ctx context.Context, c Config, reservations []Reservation, blockedDomains []string) (string, error)
 	// ReloadConfigs writes the configs and reloads the services gracefully
 	// (validate + SIGHUP, no restart), used by the auto-apply flow. ntpServer
 	// is the same DHCP option 42 input as GenerateConfigs.
-	ReloadConfigs(ctx context.Context, c Config, reservations []Reservation, blockedDomains []string, ntpServer string) (string, error)
+	ReloadConfigs(ctx context.Context, c Config, reservations []Reservation, blockedDomains []string, ntpServer string) (ApplyResult, error)
 	// Leases returns the active DHCP leases.
 	Leases(ctx context.Context) ([]Lease, error)
 }

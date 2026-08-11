@@ -210,11 +210,23 @@ func isActiveSupersedeDomainNameServers(line string) bool {
 // GenerateConfigs renders the Kea (DHCP) and unbound (DNS) config files.
 // ntpServer is threaded straight through to GenerateKeaConfig — see its doc
 // comment and netsvc.Provider.GenerateConfigs.
-func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) []netsvc.ConfigFile {
+func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) ([]netsvc.ConfigFile, error) {
+	files, _, err := s.generateConfigs(c, res, blocked, ntpServer)
+	return files, err
+}
+
+// generateConfigs is GenerateConfigs plus the render warnings (list entries
+// dropped as invalid), which the Provider interface's preview signature has
+// no use for but ReloadConfigs has to report to the admin.
+func (s *Service) generateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) ([]netsvc.ConfigFile, []string, error) {
+	unbound, warnings, err := GenerateUnboundConfig(c, blocked)
+	if err != nil {
+		return nil, warnings, err
+	}
 	return []netsvc.ConfigFile{
 		{Path: s.keaConf, Content: GenerateKeaConfig(c, res, ntpServer)},
-		{Path: s.unboundConf, Content: GenerateUnboundConfig(c, blocked)},
-	}
+		{Path: s.unboundConf, Content: unbound},
+	}, warnings, nil
 }
 
 // ReloadConfigs writes the configs and reloads the services via systemd's
@@ -224,8 +236,16 @@ func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blo
 // first (kea-dhcp4 -t) — critical, since a restart with a broken config would
 // take DHCP down. If validation fails, nothing is written or reloaded and the
 // running config is left intact.
-func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) (string, error) {
-	files := s.GenerateConfigs(c, res, blocked, ntpServer)
+func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) (netsvc.ApplyResult, error) {
+	files, warnings, err := s.generateConfigs(c, res, blocked, ntpServer)
+	if err != nil {
+		// I-7: a singular field this config cannot do without (the LAN IP
+		// unbound binds to, the subnet it answers for) did not survive
+		// validation. Rendering "the rest" would produce a config that is
+		// perfectly valid to unbound-checkconf and silently useless to the
+		// office — nothing is written, nothing is reloaded.
+		return netsvc.ApplyResult{Warnings: warnings}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
+	}
 
 	// Validate both candidates before touching anything in production —
 	// neither is written, nor is anything reloaded, unless both pass. This
@@ -243,16 +263,16 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		}
 	}
 	if err := s.validateKea(ctx, keaContent); err != nil {
-		return "", fmt.Errorf("config do Kea inválida (nada aplicado): %w", err)
+		return netsvc.ApplyResult{Warnings: warnings}, fmt.Errorf("config do Kea inválida (nada aplicado): %w", err)
 	}
 	if err := s.validateUnbound(ctx, unboundContent); err != nil {
-		return "", fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
+		return netsvc.ApplyResult{Warnings: warnings}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
 	}
 
 	if !s.exec.IsDryRun() {
 		for _, f := range files {
 			if err := os.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
-				return "", fmt.Errorf("write %s: %w", f.Path, err)
+				return netsvc.ApplyResult{Warnings: warnings}, fmt.Errorf("write %s: %w", f.Path, err)
 			}
 		}
 	}
@@ -262,10 +282,10 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		o, err := s.exec.Execute(ctx, "systemctl", "reload-or-restart", svc)
 		out = append(out, svc+": "+o)
 		if err != nil {
-			return strings.Join(out, "; "), fmt.Errorf("reload %s: %w", svc, err)
+			return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings}, fmt.Errorf("reload %s: %w", svc, err)
 		}
 	}
-	return strings.Join(out, "; "), nil
+	return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings}, nil
 }
 
 // validateKea writes the candidate config to a temp file and runs the Kea
@@ -545,32 +565,43 @@ func validRenderDomain(d string) bool {
 // (internal/api/handlers/backup.go), whose settings/blocklist entries went
 // straight to the DB with no validator in front of them before this fix,
 // and any row written under an older, laxer rule (validDomain's own doc
-// comment already flagged this history for the blocklist). A bad value is
-// skipped with a loud log, never rendered — the same "one bad entry must
-// not sink the good ones" contract nftables.sanitizeNetworks and
-// timesync.GenerateChronyConf already apply to their own lists — so a
-// single corrupted row degrades one directive, not the whole DNS service.
-func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
+// comment already flagged this history for the blocklist).
+//
+// What happens to a value that fails depends on what that value IS (I-7):
+//
+//   - A singular field the service cannot do without — Gateway (the LAN
+//     address unbound binds to) and SubnetCIDR (the network it answers
+//     for) — fails the whole render, returning an error. Skipping either
+//     one produces a config unbound-checkconf happily accepts and that
+//     answers nobody on the LAN: DNS dead for the whole office, apply
+//     reporting success, panel still displaying the value that was
+//     dropped. An empty value is not a failure — it is the admin choosing
+//     not to set it — only a non-empty value that does not parse is.
+//   - A list entry (blocklist domain, upstream) is skipped and counted, the
+//     same "one bad entry must not sink the good ones" contract
+//     nftables.sanitizeNetworks and timesync.GenerateChronyConf apply to
+//     their own lists. The counts come back as warnings so the apply status
+//     can say the list shrank instead of leaving that fact in the journal.
+func GenerateUnboundConfig(c netsvc.Config, blocked []string) (string, []string, error) {
+	var warnings []string
 	var b strings.Builder
 	w := func(s string) { b.WriteString(s); b.WriteString("\n") }
 
 	w("# Managed by LinkGuard FW — do not edit by hand.")
 	w("server:")
 	if c.Gateway != "" {
-		if net.ParseIP(c.Gateway) != nil {
-			w("  interface: " + c.Gateway) // bind on the firewall LAN IP
-		} else {
-			slog.Warn("gateway inválido descartado na renderização do unbound.conf", "gateway", c.Gateway)
+		if net.ParseIP(c.Gateway) == nil {
+			return "", warnings, fmt.Errorf("gateway inválido (%q): sem ele o unbound só escutaria em 127.0.0.1 e a LAN ficaria sem DNS", c.Gateway)
 		}
+		w("  interface: " + c.Gateway) // bind on the firewall LAN IP
 	}
 	w("  interface: 127.0.0.1")
 	w("  access-control: 127.0.0.0/8 allow")
 	if c.SubnetCIDR != "" {
-		if _, _, err := net.ParseCIDR(c.SubnetCIDR); err == nil {
-			w("  access-control: " + c.SubnetCIDR + " allow")
-		} else {
-			slog.Warn("subnet_cidr inválida descartada na renderização do unbound.conf", "subnet_cidr", c.SubnetCIDR, "err", err)
+		if _, _, err := net.ParseCIDR(c.SubnetCIDR); err != nil {
+			return "", warnings, fmt.Errorf("sub-rede inválida (%q): sem o access-control correspondente o unbound recusaria as consultas da LAN: %w", c.SubnetCIDR, err)
 		}
+		w("  access-control: " + c.SubnetCIDR + " allow")
 	}
 	w("  hide-identity: yes")
 	w("  hide-version: yes")
@@ -582,21 +613,30 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 		w("  log-queries: yes")
 	}
 	if c.DomainSuffix != "" {
+		// Not a singular must-have: without it the LAN still resolves, it
+		// just loses the local suffix — so this stays skip-and-warn, but
+		// the admin is told instead of only the journal.
 		if validRenderDomain(c.DomainSuffix) {
 			w("  local-zone: \"" + c.DomainSuffix + ".\" transparent")
 		} else {
 			slog.Warn("domain_suffix inválido descartado na renderização do unbound.conf", "domain_suffix", c.DomainSuffix)
+			warnings = append(warnings, fmt.Sprintf("domínio local %q é inválido e não foi aplicado ao DNS", c.DomainSuffix))
 		}
 	}
 
 	if len(blocked) > 0 {
 		var validBlocked []string
+		skippedBlocked := 0
 		for _, d := range blocked {
 			if !validRenderDomain(d) {
 				slog.Warn("domínio inválido descartado na renderização do unbound.conf (blocklist)", "domain", d)
+				skippedBlocked++
 				continue
 			}
 			validBlocked = append(validBlocked, d)
+		}
+		if skippedBlocked > 0 {
+			warnings = append(warnings, fmt.Sprintf("%d domínio(s) da lista de bloqueio são inválidos e não foram aplicados ao DNS", skippedBlocked))
 		}
 		if len(validBlocked) > 0 {
 			w("  # DNS filtering (blocklist) — NXDOMAIN")
@@ -609,12 +649,17 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 
 	if len(c.Upstreams) > 0 {
 		var validUpstreams []string
+		skippedUpstreams := 0
 		for _, up := range c.Upstreams {
 			if net.ParseIP(up) == nil {
 				slog.Warn("upstream DNS inválido descartado na renderização do unbound.conf", "upstream", up)
+				skippedUpstreams++
 				continue
 			}
 			validUpstreams = append(validUpstreams, up)
+		}
+		if skippedUpstreams > 0 {
+			warnings = append(warnings, fmt.Sprintf("%d servidor(es) DNS de encaminhamento são inválidos e não foram aplicados", skippedUpstreams))
 		}
 		if len(validUpstreams) > 0 {
 			w("forward-zone:")
@@ -624,7 +669,7 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 			}
 		}
 	}
-	return b.String()
+	return b.String(), warnings, nil
 }
 
 // ─── Provider apply / leases ─────────────────────────────────────────────────
@@ -649,7 +694,11 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) string {
 // this method inventing its own.
 func (s *Service) Apply(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string) (string, error) {
 	if !s.exec.IsDryRun() {
-		for _, f := range s.GenerateConfigs(c, res, blocked, "") {
+		files, err := s.GenerateConfigs(c, res, blocked, "")
+		if err != nil {
+			return "", err
+		}
+		for _, f := range files {
 			if err := os.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
 				return "", fmt.Errorf("write %s: %w", f.Path, err)
 			}

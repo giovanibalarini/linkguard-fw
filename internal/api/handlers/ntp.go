@@ -125,7 +125,7 @@ func (h *NTPHandler) lastApplyStatus() *applyStatus {
 // this kind of secondary, self-healing reconciliation.
 func (h *NTPHandler) doReload(ctx context.Context) error {
 	cfg := h.getConfig()
-	err := h.svc.ReloadConfig(ctx, cfg)
+	warnings, err := h.svc.ReloadConfig(ctx, cfg)
 
 	h.reconcileFirewall(ctx, cfg.AllowedNetworks, cfg.ServeLAN)
 
@@ -136,6 +136,12 @@ func (h *NTPHandler) doReload(ctx context.Context) error {
 	}
 
 	st := applyStatus{OK: err == nil, At: time.Now().Unix()}
+	if len(warnings) > 0 {
+		// Applied, but the chrony drop-in came out without entries the
+		// panel still shows as configured — see applyStatus.Warning (I-7).
+		st.Warning = strings.Join(warnings, " ")
+		slog.Warn("NTP aplicado com entradas descartadas", "avisos", warnings)
+	}
 	if err != nil {
 		st.Error = err.Error()
 		if h.alertSvc != nil {

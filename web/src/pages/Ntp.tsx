@@ -139,6 +139,17 @@ export default function Ntp() {
         </div>
       )}
 
+      {/* I-7: o apply funcionou, mas o backend teve que descartar entradas
+          que a tela continua exibindo (domínio de bloqueio inválido,
+          upstream malformado, servidor NTP que não parseia). "Aplicado" e
+          "tudo o que você configurou está em vigor" não são a mesma
+          afirmação — esta faixa é a diferença entre as duas. */}
+      {data?.last_apply?.warning && (
+        <div className="card border border-amber-500/30 bg-amber-500/10 text-amber-400 text-sm">
+          Aplicado, mas nem tudo entrou em vigor: {data.last_apply.warning} Revise os valores marcados e salve de novo.
+        </div>
+      )}
+
       {/* firewall_apply (Fix 2): the nftables input-chain reconcile is a
           separate step from the chrony apply above and can fail on its
           own — this is the one state where NTP protection is genuinely

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
@@ -61,10 +62,18 @@ const netsvcApplyStatusKey = "netsvc_last_apply"
 
 // applyStatus is the persisted result of the most recent (auto or manual) apply,
 // surfaced in the UI so an async failure isn't silent.
+//
+// Warning is the third state between "failed" and "everything you
+// configured is in effect" (I-7): the apply itself worked, but the backend
+// had to drop list entries it could not render (an invalid blocklist
+// domain, a malformed upstream, an NTP server that doesn't parse). Keeping
+// that in the journal only meant the panel went on displaying values the
+// daemon never received, with an "ok" badge over them.
 type applyStatus struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
-	At    int64  `json:"at"` // unix seconds
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
+	Warning string `json:"warning,omitempty"`
+	At      int64  `json:"at"` // unix seconds
 }
 
 // doReload regenerates and gracefully reloads the backend, records the result,
@@ -72,8 +81,14 @@ type applyStatus struct {
 // "Aplicar agora" button.
 func (h *NetsvcHandler) doReload(ctx context.Context) error {
 	bl, _ := h.db.ListDNSBlocklist()
-	out, err := h.provider.ReloadConfigs(ctx, h.getConfig(), h.reservationsForProvider(), bl, h.ntpServerOption())
+	res, err := h.provider.ReloadConfigs(ctx, h.getConfig(), h.reservationsForProvider(), bl, h.ntpServerOption())
 	st := applyStatus{OK: err == nil, At: time.Now().Unix()}
+	if len(res.Warnings) > 0 {
+		// Applied, but not everything the admin configured got through —
+		// see applyStatus.Warning (I-7).
+		st.Warning = strings.Join(res.Warnings, " ")
+		slog.Warn("DHCP/DNS aplicado com entradas descartadas", "avisos", res.Warnings)
+	}
 	if err != nil {
 		st.Error = err.Error()
 		if h.alertSvc != nil {
@@ -83,7 +98,6 @@ func (h *NetsvcHandler) doReload(ctx context.Context) error {
 	if b, mErr := json.Marshal(st); mErr == nil {
 		_ = h.db.SetSetting(netsvcApplyStatusKey, string(b))
 	}
-	_ = out
 	return err
 }
 
@@ -407,7 +421,14 @@ func (h *NetsvcHandler) blocklist(w http.ResponseWriter, r *http.Request, add bo
 // Preview returns the rendered backend config files (without applying).
 func (h *NetsvcHandler) Preview(w http.ResponseWriter, r *http.Request) {
 	bl, _ := h.db.ListDNSBlocklist()
-	files := h.provider.GenerateConfigs(h.getConfig(), h.reservationsForProvider(), bl, h.ntpServerOption())
+	files, err := h.provider.GenerateConfigs(h.getConfig(), h.reservationsForProvider(), bl, h.ntpServerOption())
+	if err != nil {
+		// A config that cannot be rendered cannot be previewed either —
+		// showing "the rest of it" would be showing a file that will never
+		// be written (I-7).
+		writeError(w, http.StatusBadRequest, "não foi possível gerar a configuração: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, files)
 }
 

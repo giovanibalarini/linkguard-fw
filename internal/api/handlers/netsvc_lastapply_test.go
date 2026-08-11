@@ -12,14 +12,14 @@ import (
 type fakeNetsvcProvider struct{}
 
 func (fakeNetsvcProvider) Backend() netsvc.Backend { return netsvc.BackendKeaUnbound }
-func (fakeNetsvcProvider) GenerateConfigs(netsvc.Config, []netsvc.Reservation, []string, string) []netsvc.ConfigFile {
-	return nil
+func (fakeNetsvcProvider) GenerateConfigs(netsvc.Config, []netsvc.Reservation, []string, string) ([]netsvc.ConfigFile, error) {
+	return nil, nil
 }
 func (fakeNetsvcProvider) Apply(context.Context, netsvc.Config, []netsvc.Reservation, []string) (string, error) {
 	return "", nil
 }
-func (fakeNetsvcProvider) ReloadConfigs(context.Context, netsvc.Config, []netsvc.Reservation, []string, string) (string, error) {
-	return "", nil
+func (fakeNetsvcProvider) ReloadConfigs(context.Context, netsvc.Config, []netsvc.Reservation, []string, string) (netsvc.ApplyResult, error) {
+	return netsvc.ApplyResult{}, nil
 }
 func (fakeNetsvcProvider) Leases(context.Context) ([]netsvc.Lease, error) { return nil, nil }
 
@@ -53,5 +53,37 @@ func TestLastApplyStatusNilWhenNeverApplied(t *testing.T) {
 	}
 	if !got.OK {
 		t.Errorf("expected OK=true after a successful fake reload, got %+v", got)
+	}
+}
+
+// warningNetsvcProvider applies successfully but reports entries it had to
+// drop — the I-7 case: "aplicado" and "tudo o que você configurou está em
+// vigor" não são a mesma afirmação.
+type warningNetsvcProvider struct{ fakeNetsvcProvider }
+
+func (warningNetsvcProvider) ReloadConfigs(context.Context, netsvc.Config, []netsvc.Reservation, []string, string) (netsvc.ApplyResult, error) {
+	return netsvc.ApplyResult{Warnings: []string{"2 domínio(s) da lista de bloqueio são inválidos e não foram aplicados ao DNS"}}, nil
+}
+
+func TestLastApplyStatusCarriesRenderWarnings(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	h := NewNetsvcHandler(db, warningNetsvcProvider{}, nil)
+	if err := h.doReload(context.Background()); err != nil {
+		t.Fatalf("doReload: %v", err)
+	}
+	got := h.lastApplyStatus()
+	if got == nil {
+		t.Fatal("esperava um last_apply registrado")
+	}
+	if !got.OK {
+		t.Errorf("descartar entrada de lista não é falha de apply: %+v", got)
+	}
+	if got.Warning == "" {
+		t.Errorf("as entradas descartadas têm que chegar ao painel pelo status de apply: %+v", got)
 	}
 }

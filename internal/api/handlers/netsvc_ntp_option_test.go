@@ -21,16 +21,16 @@ type capturingNetsvcProvider struct {
 }
 
 func (*capturingNetsvcProvider) Backend() netsvc.Backend { return netsvc.BackendKeaUnbound }
-func (p *capturingNetsvcProvider) GenerateConfigs(_ netsvc.Config, _ []netsvc.Reservation, _ []string, ntpServer string) []netsvc.ConfigFile {
+func (p *capturingNetsvcProvider) GenerateConfigs(_ netsvc.Config, _ []netsvc.Reservation, _ []string, ntpServer string) ([]netsvc.ConfigFile, error) {
 	p.lastNTPServerPreview = ntpServer
-	return nil
+	return nil, nil
 }
 func (*capturingNetsvcProvider) Apply(context.Context, netsvc.Config, []netsvc.Reservation, []string) (string, error) {
 	return "", nil
 }
-func (p *capturingNetsvcProvider) ReloadConfigs(_ context.Context, _ netsvc.Config, _ []netsvc.Reservation, _ []string, ntpServer string) (string, error) {
+func (p *capturingNetsvcProvider) ReloadConfigs(_ context.Context, _ netsvc.Config, _ []netsvc.Reservation, _ []string, ntpServer string) (netsvc.ApplyResult, error) {
 	p.lastNTPServerReload = ntpServer
-	return "", nil
+	return netsvc.ApplyResult{}, nil
 }
 func (*capturingNetsvcProvider) Leases(context.Context) ([]netsvc.Lease, error) { return nil, nil }
 
@@ -127,8 +127,9 @@ func TestPreviewIncludesNTPServerOptionWhenServeLANEnabled(t *testing.T) {
 		t.Fatalf("SetSetting: %v", err)
 	}
 
-	files := h.provider.GenerateConfigs(h.getConfig(), h.reservationsForProvider(), nil, h.ntpServerOption())
-	_ = files
+	if _, err := h.provider.GenerateConfigs(h.getConfig(), h.reservationsForProvider(), nil, h.ntpServerOption()); err != nil {
+		t.Fatalf("GenerateConfigs: %v", err)
+	}
 	want := netsvc.DefaultConfig().Gateway
 	if p.lastNTPServerPreview != want {
 		t.Errorf("ntpServer = %q, want %q (the LAN gateway)", p.lastNTPServerPreview, want)

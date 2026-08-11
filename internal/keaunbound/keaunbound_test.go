@@ -351,7 +351,7 @@ func TestGenerateKeaConfigOmitsNTPServersOptionWhenEmpty(t *testing.T) {
 
 func TestGenerateUnboundConfigRecursiveByDefault(t *testing.T) {
 	cfg := netsvc.DefaultConfig() // empty upstreams = recursive
-	out := GenerateUnboundConfig(cfg, []string{"ads.example.com"})
+	out, _, _ := GenerateUnboundConfig(cfg, []string{"ads.example.com"})
 	wants := []string{
 		"server:",
 		"interface: 192.168.3.3",
@@ -376,7 +376,7 @@ func TestGenerateUnboundConfigRecursiveByDefault(t *testing.T) {
 func TestGenerateUnboundConfigForwarding(t *testing.T) {
 	cfg := netsvc.DefaultConfig()
 	cfg.Upstreams = []string{"1.1.1.1", "8.8.8.8"}
-	out := GenerateUnboundConfig(cfg, nil)
+	out, _, _ := GenerateUnboundConfig(cfg, nil)
 	for _, w := range []string{"forward-zone:", "forward-addr: 1.1.1.1", "forward-addr: 8.8.8.8"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("forwarding config missing %q\n%s", w, out)
@@ -400,7 +400,7 @@ func TestGenerateUnboundConfigForwarding(t *testing.T) {
 func TestGenerateUnboundConfigSkipsInjectedBlocklistEntry(t *testing.T) {
 	cfg := netsvc.DefaultConfig()
 	malicious := "evil.com.\"\ninclude: \"/etc/passwd"
-	out := GenerateUnboundConfig(cfg, []string{"good.example.com", malicious})
+	out, _, _ := GenerateUnboundConfig(cfg, []string{"good.example.com", malicious})
 
 	if strings.Contains(out, "include:") {
 		t.Errorf("injected directive reached unbound.conf:\n%s", out)
@@ -419,36 +419,44 @@ func TestGenerateUnboundConfigSkipsInjectedBlocklistEntry(t *testing.T) {
 func TestGenerateUnboundConfigSkipsInvalidDomainSuffix(t *testing.T) {
 	cfg := netsvc.DefaultConfig()
 	cfg.DomainSuffix = "lan\"\ninclude: \"/etc/passwd"
-	out := GenerateUnboundConfig(cfg, nil)
+	out, _, _ := GenerateUnboundConfig(cfg, nil)
 
 	if strings.Contains(out, "include:") {
 		t.Errorf("injected directive via domain_suffix reached unbound.conf:\n%s", out)
 	}
 }
 
-// TestGenerateUnboundConfigSkipsInvalidGateway: Gateway feeds the
-// `interface:` directive by string concatenation.
-func TestGenerateUnboundConfigSkipsInvalidGateway(t *testing.T) {
+// TestGenerateUnboundConfigRejectsInvalidGateway: Gateway feeds the
+// `interface:` directive by string concatenation. The injected value must
+// never reach unbound.conf — and, since I-7, it does not get there by the
+// directive being quietly dropped (which would leave unbound listening on
+// 127.0.0.1 alone, DNS dead for the LAN, apply reporting success) but by
+// the render failing outright.
+func TestGenerateUnboundConfigRejectsInvalidGateway(t *testing.T) {
 	cfg := netsvc.DefaultConfig()
 	cfg.Gateway = "192.168.3.3\ninterface: 0.0.0.0"
-	out := GenerateUnboundConfig(cfg, nil)
+	out, _, err := GenerateUnboundConfig(cfg, nil)
 
+	if err == nil {
+		t.Fatalf("esperava falha de renderização, obtive:\n%s", out)
+	}
 	if strings.Contains(out, "interface: 0.0.0.0") {
 		t.Errorf("injected interface directive via gateway reached unbound.conf:\n%s", out)
 	}
-	// The always-present loopback interface line must still be there.
-	if !strings.Contains(out, "interface: 127.0.0.1") {
-		t.Errorf("loopback interface line missing:\n%s", out)
-	}
 }
 
-// TestGenerateUnboundConfigSkipsInvalidSubnetCIDR: SubnetCIDR feeds the
-// `access-control:` directive by string concatenation.
-func TestGenerateUnboundConfigSkipsInvalidSubnetCIDR(t *testing.T) {
+// TestGenerateUnboundConfigRejectsInvalidSubnetCIDR: SubnetCIDR feeds the
+// `access-control:` directive by string concatenation. Same reasoning as
+// the gateway above — dropping it alone would leave the LAN with no
+// access-control line at all, i.e. no DNS.
+func TestGenerateUnboundConfigRejectsInvalidSubnetCIDR(t *testing.T) {
 	cfg := netsvc.DefaultConfig()
 	cfg.SubnetCIDR = "192.168.3.0/24 allow\naccess-control: 0.0.0.0/0"
-	out := GenerateUnboundConfig(cfg, nil)
+	out, _, err := GenerateUnboundConfig(cfg, nil)
 
+	if err == nil {
+		t.Fatalf("esperava falha de renderização, obtive:\n%s", out)
+	}
 	if strings.Contains(out, "access-control: 0.0.0.0/0") {
 		t.Errorf("injected access-control directive via subnet_cidr reached unbound.conf:\n%s", out)
 	}
@@ -459,7 +467,7 @@ func TestGenerateUnboundConfigSkipsInvalidSubnetCIDR(t *testing.T) {
 func TestGenerateUnboundConfigSkipsInvalidUpstream(t *testing.T) {
 	cfg := netsvc.DefaultConfig()
 	cfg.Upstreams = []string{"1.1.1.1", "evil\nforward-addr: 6.6.6.6"}
-	out := GenerateUnboundConfig(cfg, nil)
+	out, _, _ := GenerateUnboundConfig(cfg, nil)
 
 	if strings.Contains(out, "6.6.6.6") {
 		t.Errorf("injected forward-addr via upstreams reached unbound.conf:\n%s", out)
@@ -793,5 +801,75 @@ func TestReloadConfigsSkipsValidationWhenCheckerIsReallyAbsent(t *testing.T) {
 	}
 	if _, err := os.Stat(s.unboundConf); err != nil {
 		t.Error("a config devia ser escrita mesmo sem validação possível")
+	}
+}
+
+// ─── I-7: campo singular inválido derruba o apply; entradas de lista contam ──
+//
+// Descartar o Gateway deixa o unbound ouvindo só em 127.0.0.1 e descartar
+// a SubnetCIDR deixa a LAN sem access-control: nos dois casos sai uma
+// config VÁLIDA (o unbound-checkconf aprova) que mata o DNS do escritório
+// em silêncio, enquanto o apply reporta sucesso e o painel segue exibindo
+// os valores configurados. "Pular e logar" só é a estratégia certa para
+// entrada de lista, onde uma entrada ruim não pode afundar as boas.
+func TestGenerateUnboundConfigFailsOnInvalidGateway(t *testing.T) {
+	c := netsvc.DefaultConfig()
+	c.Gateway = "192.168.3.3; evil"
+	if _, _, err := GenerateUnboundConfig(c, nil); err == nil {
+		t.Fatal("um gateway inválido tem que derrubar o apply, não sair do unbound.conf em silêncio")
+	}
+}
+
+func TestGenerateUnboundConfigFailsOnInvalidSubnetCIDR(t *testing.T) {
+	c := netsvc.DefaultConfig()
+	c.SubnetCIDR = "não é cidr"
+	if _, _, err := GenerateUnboundConfig(c, nil); err == nil {
+		t.Fatal("uma sub-rede inválida tem que derrubar o apply: sem access-control a LAN inteira perde o DNS")
+	}
+}
+
+func TestReloadConfigsAbortsWhenASingularUnboundFieldIsInvalid(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	c := netsvc.DefaultConfig()
+	c.Gateway = "192.168.3.3; evil"
+
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, nil, ""); err == nil {
+		t.Fatal("ReloadConfigs tinha que falhar com um campo singular inválido")
+	}
+	if _, err := os.Stat(s.unboundConf); err == nil {
+		t.Error("nada pode ser escrito quando a renderização reprova")
+	}
+	if strings.Contains(strings.Join(e.writes, "\n"), "reload-or-restart") {
+		t.Error("nada pode ser recarregado quando a renderização reprova")
+	}
+}
+
+// Entradas de lista continuam sendo puladas — mas contadas, e a contagem
+// sai do apply para o painel poder mostrar. Sem isso, a blocklist encolhia
+// em silêncio e o apply dizia "ok".
+func TestReloadConfigsReportsSkippedListEntries(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	c := netsvc.DefaultConfig()
+	c.Upstreams = []string{"1.1.1.1", "não-é-ip"}
+
+	res, err := s.ReloadConfigs(context.Background(), c, nil, []string{"ads.example.com", "domínio inválido!"}, "")
+	if err != nil {
+		t.Fatalf("uma entrada de lista ruim não pode afundar as boas: %v", err)
+	}
+	if len(res.Warnings) == 0 {
+		t.Fatal("as entradas descartadas têm que sair no resultado do apply, não só no journal")
+	}
+	joined := strings.Join(res.Warnings, " | ")
+	if !strings.Contains(joined, "1") {
+		t.Errorf("o aviso tem que trazer a contagem das descartadas, obtive %q", joined)
+	}
+	content, rErr := os.ReadFile(s.unboundConf)
+	if rErr != nil {
+		t.Fatalf("a config devia ter sido escrita: %v", rErr)
+	}
+	if !strings.Contains(string(content), "forward-addr: 1.1.1.1") || !strings.Contains(string(content), "ads.example.com") {
+		t.Errorf("as entradas válidas têm que continuar sendo renderizadas:\n%s", content)
 	}
 }

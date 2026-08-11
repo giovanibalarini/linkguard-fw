@@ -108,7 +108,7 @@ func TestDefaultConfigServersIsEmptySliceNotNil(t *testing.T) {
 }
 
 func TestGenerateChronyConfRendersServersWithHeader(t *testing.T) {
-	content := GenerateChronyConf(Config{Servers: []string{"192.36.143.130", "c.ntp.br"}})
+	content, _ := GenerateChronyConf(Config{Servers: []string{"192.36.143.130", "c.ntp.br"}})
 	for _, want := range []string{
 		"# managed by linkguard",
 		"server 192.36.143.130 iburst",
@@ -124,7 +124,7 @@ func TestGenerateChronyConfRendersServersWithHeader(t *testing.T) {
 // ServeLAN=true renders one `allow <cidr>` line per admin-chosen network —
 // no longer implicitly the DHCP LAN subnet (spec §3.1).
 func TestGenerateChronyConfEmitsAllowWhenServing(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}})
+	content, _ := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}})
 	if !strings.Contains(content, "allow 192.168.3.0/24") {
 		t.Errorf("expected allow line for the configured CIDR:\n%s", content)
 	}
@@ -134,7 +134,7 @@ func TestGenerateChronyConfEmitsAllowWhenServing(t *testing.T) {
 // choice of multiple networks (VLAN, Wi-Fi, guest) all get their own allow
 // line — the whole point of replacing the single implicit LAN subnet.
 func TestGenerateChronyConfEmitsOneAllowLinePerNetwork(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24", "10.20.0.0/24", "192.168.50.0/24"}})
+	content, _ := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24", "10.20.0.0/24", "192.168.50.0/24"}})
 	for _, want := range []string{"allow 192.168.3.0/24", "allow 10.20.0.0/24", "allow 192.168.50.0/24"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("content missing %q:\n%s", want, content)
@@ -146,7 +146,7 @@ func TestGenerateChronyConfEmitsOneAllowLinePerNetwork(t *testing.T) {
 // emit an allow line, even if networks are configured (defense in depth —
 // the chrony drop-in must reflect the toggle, not just the list's presence).
 func TestGenerateChronyConfOmitsAllowWhenNotServing(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: false, AllowedNetworks: []string{"192.168.3.0/24"}})
+	content, _ := GenerateChronyConf(Config{ServeLAN: false, AllowedNetworks: []string{"192.168.3.0/24"}})
 	if strings.Contains(content, "allow") {
 		t.Errorf("expected no allow line when ServeLAN is false:\n%s", content)
 	}
@@ -156,7 +156,7 @@ func TestGenerateChronyConfOmitsAllowWhenNotServing(t *testing.T) {
 // AllowedNetworks list is an explicit "nothing allowed" state (spec §3.1),
 // never an implicit allow-all.
 func TestGenerateChronyConfOmitsAllowWhenListEmpty(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: true})
+	content, _ := GenerateChronyConf(Config{ServeLAN: true})
 	if strings.Contains(content, "allow") {
 		t.Errorf("expected no allow line when the network list is empty:\n%s", content)
 	}
@@ -167,7 +167,7 @@ func TestGenerateChronyConfOmitsAllowWhenListEmpty(t *testing.T) {
 // attempt) must never reach the rendered output, even if other entries in
 // the same list are valid.
 func TestGenerateChronyConfRejectsInvalidCIDR(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"not a cidr; evil", "192.168.3.0/24"}})
+	content, _ := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"not a cidr; evil", "192.168.3.0/24"}})
 	if strings.Contains(content, "not a cidr") || strings.Contains(content, "evil") {
 		t.Errorf("invalid CIDR reached the rendered output:\n%s", content)
 	}
@@ -181,7 +181,7 @@ func TestGenerateChronyConfRejectsInvalidCIDR(t *testing.T) {
 // handler-level ValidateAllowedNetworks somehow (defense in depth, spec
 // §3.1's "guarda-corpo").
 func TestGenerateChronyConfRejectsOpenWildcard(t *testing.T) {
-	content := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"0.0.0.0/0", "::/0"}})
+	content, _ := GenerateChronyConf(Config{ServeLAN: true, AllowedNetworks: []string{"0.0.0.0/0", "::/0"}})
 	if strings.Contains(content, "allow") {
 		t.Errorf("expected no allow line for open wildcards:\n%s", content)
 	}
@@ -196,7 +196,7 @@ func TestGenerateChronyConfRejectsOpenWildcard(t *testing.T) {
 // skipped (with a loud log), not fatal, matching every other "one bad
 // entry doesn't sink the good ones" render-time guard in this codebase.
 func TestGenerateChronyConfSkipsInvalidServer(t *testing.T) {
-	content := GenerateChronyConf(Config{Servers: []string{"c.ntp.br", "evil\nallow 0.0.0.0/0"}})
+	content, _ := GenerateChronyConf(Config{Servers: []string{"c.ntp.br", "evil\nallow 0.0.0.0/0"}})
 	if strings.Contains(content, "allow 0.0.0.0/0") {
 		t.Errorf("injected directive via a malicious server entry reached the rendered chrony drop-in:\n%s", content)
 	}
@@ -211,7 +211,7 @@ func TestReloadConfigWritesDropinWhenServersSet(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}})
+	_, err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}})
 	if err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestReloadConfigRemovesDropinWhenServersEmptyAndNotServing(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{}); err != nil {
+	if _, err := s.ReloadConfig(context.Background(), Config{}); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	if _, err := os.Stat(confPath); !os.IsNotExist(err) {
@@ -258,7 +258,7 @@ func TestReloadConfigWritesDropinWhenServeLANOnlyNoCustomServers(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}}); err != nil {
+	if _, err := s.ReloadConfig(context.Background(), Config{ServeLAN: true, AllowedNetworks: []string{"192.168.3.0/24"}}); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	got, err := os.ReadFile(confPath)
@@ -283,7 +283,7 @@ func TestReloadConfigWritesDropinWhenServeLANOnEvenWithEmptyList(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{ServeLAN: true}); err != nil {
+	if _, err := s.ReloadConfig(context.Background(), Config{ServeLAN: true}); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	got, err := os.ReadFile(confPath)
@@ -300,7 +300,7 @@ func TestReloadConfigRemovingAbsentDropinIsNotAnError(t *testing.T) {
 	confPath := filepath.Join(dir, "linkguard.conf") // never created
 	s := &Service{exec: &fakeExec{}, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{}); err != nil {
+	if _, err := s.ReloadConfig(context.Background(), Config{}); err != nil {
 		t.Fatalf("ReloadConfig on absent drop-in must be idempotent, got: %v", err)
 	}
 }
@@ -310,7 +310,7 @@ func TestReloadConfigSetsTimezoneWhenConfigured(t *testing.T) {
 	exec := &fakeExec{}
 	s := &Service{exec: exec, confPath: filepath.Join(dir, "linkguard.conf")}
 
-	if err := s.ReloadConfig(context.Background(), Config{Timezone: "America/Sao_Paulo"}); err != nil {
+	if _, err := s.ReloadConfig(context.Background(), Config{Timezone: "America/Sao_Paulo"}); err != nil {
 		t.Fatalf("ReloadConfig: %v", err)
 	}
 	if !containsExecuted(exec.executed, "timedatectl set-timezone America/Sao_Paulo") {
@@ -323,7 +323,7 @@ func TestReloadConfigNoopWriteInDryRun(t *testing.T) {
 	confPath := filepath.Join(dir, "linkguard.conf")
 	s := &Service{exec: &fakeExec{dryRun: true}, confPath: confPath}
 
-	if err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}}); err != nil {
+	if _, err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}}); err != nil {
 		t.Fatalf("ReloadConfig in dry-run: %v", err)
 	}
 	if _, err := os.Stat(confPath); !os.IsNotExist(err) {
@@ -550,5 +550,37 @@ func TestInstallChronyRunsSystemdRun(t *testing.T) {
 	want := "systemd-run --pipe --wait -- apt-get install -y --no-install-recommends chrony"
 	if !containsExecuted(exec.executed, want) {
 		t.Errorf("expected %q, got %v", want, exec.executed)
+	}
+}
+
+// I-7 (mesmo tratamento do unbound): um servidor NTP descartado por ser
+// inválido continua sendo apenas pulado — uma entrada ruim não pode afundar
+// as boas — mas passa a ser CONTADO e devolvido pelo apply. Antes, a lista
+// encolhia em silêncio: o chrony ficava sem aquele servidor, o apply dizia
+// "ok" e o painel continuava exibindo o valor configurado.
+func TestGenerateChronyConfReportsSkippedServers(t *testing.T) {
+	content, warnings := GenerateChronyConf(Config{Servers: []string{"c.ntp.br", "evil\nallow 0.0.0.0/0"}})
+	if !strings.Contains(content, "server c.ntp.br iburst") {
+		t.Errorf("a entrada válida tem que continuar sendo renderizada:\n%s", content)
+	}
+	if len(warnings) == 0 {
+		t.Fatal("a entrada descartada tem que sair como aviso, não só no journal")
+	}
+	if !strings.Contains(strings.Join(warnings, " "), "1") {
+		t.Errorf("o aviso tem que trazer a contagem, obtive %+v", warnings)
+	}
+}
+
+func TestReloadConfigSurfacesSkippedServers(t *testing.T) {
+	dir := t.TempDir()
+	exec := &fakeExec{}
+	s := &Service{exec: exec, confPath: filepath.Join(dir, "linkguard.conf")}
+
+	warnings, err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br", "evil\nallow 0.0.0.0/0"}})
+	if err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	if len(warnings) == 0 {
+		t.Error("o apply tem que devolver as entradas descartadas para o painel poder mostrar")
 	}
 }
