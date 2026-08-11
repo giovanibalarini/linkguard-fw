@@ -79,17 +79,23 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	b.WriteString("\tset blocklist {\n\t\ttype ipv4_addr\n\t\tflags interval\n\t}\n\n")
 	b.WriteString("\tset blocked_hosts {\n\t\ttype ipv4_addr\n\t}\n\n")
 	b.WriteString("\tchain user_rules {\n\t}\n\n")
+	// mark_hosts/forward's rules carry `counter` from the very first boot —
+	// ReconcileStructuralChains reconciles both on every subsequent boot
+	// from the exact same canonical definition (see its doc comment), and a
+	// fresh install must never diverge from an upgraded box's post-reconcile
+	// state, the same "fresh box == upgraded box" invariant already applied
+	// to the input chain above.
 	b.WriteString("\tchain mark_hosts {\n")
 	b.WriteString("\t\ttype filter hook prerouting priority mangle; policy accept;\n")
-	b.WriteString("\t\tmeta mark set ip saddr map @host_wan\n")
+	b.WriteString("\t\tcounter meta mark set ip saddr map @host_wan\n")
 	b.WriteString("\t}\n\n")
 	b.WriteString("\tchain forward {\n")
 	b.WriteString("\t\ttype filter hook forward priority filter; policy accept;\n")
-	b.WriteString("\t\tjump user_rules\n")
-	b.WriteString("\t\tip saddr @blocked_hosts drop\n")
-	b.WriteString("\t\tip daddr @blocked_hosts drop\n")
-	b.WriteString("\t\tip daddr @blocklist drop\n")
-	b.WriteString("\t\tip saddr @blocklist drop\n")
+	b.WriteString("\t\tcounter jump user_rules\n")
+	b.WriteString("\t\tip saddr @blocked_hosts counter drop\n")
+	b.WriteString("\t\tip daddr @blocked_hosts counter drop\n")
+	b.WriteString("\t\tip daddr @blocklist counter drop\n")
+	b.WriteString("\t\tip saddr @blocklist counter drop\n")
 	b.WriteString("\t}\n\n")
 	// The first `hook input` chain in the project (2026-08-11, "serve NTP to
 	// the LAN"). Empty and policy accept on a fresh install, exactly like an

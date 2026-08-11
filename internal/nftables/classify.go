@@ -32,14 +32,14 @@ func classifyRule(chain, expr string) (managed bool, owner RuleOwner) {
 		return false, RuleOwner{}
 	case masqueradeChain: // postrouting
 		return true, RuleOwner{Key: "nat", Label: "NAT (WANs)"}
-	case "mark_hosts":
+	case MarkHostsChain:
 		return true, RuleOwner{Key: "wan_steering", Label: "Direcionamento por WAN"}
 	case InputChain: // input
 		if strings.Contains(expr, "dport 123") {
 			return true, RuleOwner{Key: "ntp", Label: "NTP"}
 		}
 		return true, RuleOwner{Label: genericLabel}
-	case "forward":
+	case ForwardChain:
 		switch {
 		case strings.Contains(expr, "@blocked_hosts"):
 			return true, RuleOwner{Key: "host_block", Label: "Hosts bloqueados"}
@@ -111,7 +111,7 @@ func describeRule(chain, expr string) string {
 			}
 		}
 
-	case "forward":
+	case ForwardChain:
 		switch {
 		case expr == "jump user_rules":
 			return "Avalia as regras personalizadas do admin antes dos bloqueios"
@@ -121,7 +121,7 @@ func describeRule(chain, expr string) string {
 			return "Descarta tráfego de/para destinos bloqueados"
 		}
 
-	case "mark_hosts":
+	case MarkHostsChain:
 		if strings.Contains(expr, "map @host_wan") {
 			return "Marca o host de origem com a WAN definida em Direcionamento por WAN"
 		}

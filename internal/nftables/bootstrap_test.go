@@ -209,6 +209,29 @@ func TestBuildBootstrapRulesetInputChainPolicyIsAccept(t *testing.T) {
 	}
 }
 
+// TestBuildBootstrapRulesetForwardAndMarkHostsCarryCounter is the fresh-
+// install regression test for the design spec's §6 caution: the canonical
+// definition ReconcileStructuralChains reconciles to (and that this
+// function must match, so a fresh install and an upgraded/reconciled box
+// converge) carries `counter` on every forward/mark_hosts rule — without
+// it, Phase A's whole point (surfacing those counts on the panel) would
+// have nothing to show on a freshly bootstrapped box.
+func TestBuildBootstrapRulesetForwardAndMarkHostsCarryCounter(t *testing.T) {
+	rs := buildBootstrapRuleset([]string{"enp5s0"})
+	for _, want := range []string{
+		"counter jump user_rules",
+		"ip saddr @blocked_hosts counter drop",
+		"ip daddr @blocked_hosts counter drop",
+		"ip daddr @blocklist counter drop",
+		"ip saddr @blocklist counter drop",
+		"counter meta mark set ip saddr map @host_wan",
+	} {
+		if !strings.Contains(rs, want) {
+			t.Errorf("bootstrap ruleset missing %q:\n%s", want, rs)
+		}
+	}
+}
+
 func TestBuildBootstrapRulesetSanitizesInterfaces(t *testing.T) {
 	rs := buildBootstrapRuleset([]string{"enp5s0", `evil"; flush ruleset; #`, "enp5s0"})
 	if strings.Contains(rs, "evil") || strings.Contains(rs, "flush ruleset;") {

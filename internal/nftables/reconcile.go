@@ -177,6 +177,104 @@ func sanitizeNetworks(in []string) []string {
 // DHCP) is ever touched. When serving is false, or the network list is
 // empty after sanitization, the chain is flushed and left empty — not
 // deleted — so its state is always explicit and idempotent.
+// ForwardChain evaluates the admin's own rules (via jump) and then the
+// managed blocklist/host-block drops. MarkHostsChain steers a host's
+// forwarded traffic to a specific WAN by fwmark, looked up from the
+// host_wan map. Both are structural — created once at EnsureTable/bootstrap
+// — and, since ReconcileStructuralChains, reconciled on every boot exactly
+// like postrouting/input.
+const (
+	ForwardChain   = "forward"
+	MarkHostsChain = "mark_hosts"
+)
+
+// forwardChainRules is the canonical, ordered rule set for the forward
+// chain, each expressed as the nft argv tokens that follow `add rule inet
+// linkguard forward`. Order matters — nft evaluates top to bottom — so the
+// admin's own rules (reached via the jump) run first; an admin's explicit
+// accept must never be shadowed by a managed drop that ran before it. Every
+// rule carries `counter`: see ReconcileStructuralChains' doc comment for
+// why that is non-negotiable.
+func forwardChainRules() [][]string {
+	return [][]string{
+		{"counter", "jump", UserChain},
+		{"ip", "saddr", "@" + BlockedSet, "counter", "drop"},
+		{"ip", "daddr", "@" + BlockedSet, "counter", "drop"},
+		{"ip", "daddr", "@blocklist", "counter", "drop"},
+		{"ip", "saddr", "@blocklist", "counter", "drop"},
+	}
+}
+
+// markHostsChainRules is the canonical rule set for mark_hosts — a single
+// rule, also carrying `counter`.
+func markHostsChainRules() [][]string {
+	return [][]string{
+		{"counter", "meta", "mark", "set", "ip", "saddr", "map", "@" + HostWanMap},
+	}
+}
+
+// ReconcileStructuralChains rebuilds the forward and mark_hosts chains from
+// their canonical definitions above, on every boot — not just once at
+// EnsureTable/bootstrap time — mirroring ReconcileMasquerade's safety
+// properties exactly: each chain is flushed on its own (never the table or
+// the ruleset), the result is idempotent, it's a no-op in dry-run, and it
+// persists afterward.
+//
+// Why this exists (design spec §1/§6): unlike postrouting/input, these two
+// chains were, until now, only ever created once at bootstrap and never
+// touched again — the exact gap that let a double-load of the ruleset
+// (2026-08-10 incident: the same file applied twice) leave every rule in
+// both chains permanently duplicated. Duplicates survived every reboot
+// because Persist snapshots whatever is live, and nothing ever flushed
+// these two chains again to clear the second copy. Reconciling on every
+// boot closes that gap the same way it was already closed for masquerade
+// and the NTP input rules: a duplicate cannot outlive the next restart.
+//
+// Every rule in both canonical definitions carries `counter`. Production's
+// forward-chain drop rules were hand-created in June 2026 already WITH
+// counters (the whole reason Phase A exists is to surface those counts on
+// the panel) — reconciling to a counter-less definition would flush the
+// chain and rebuild it from scratch every boot, silently resetting that
+// data to zero each time. mark_hosts never had a counter in production
+// (nothing reconciled it before this); this is what starts counting it,
+// on the same schedule as everything else from now on.
+func (s *Service) ReconcileStructuralChains(ctx context.Context) error {
+	if s.exec.IsDryRun() {
+		return nil
+	}
+
+	if err := s.rebuildChain(ctx, ForwardChain, forwardChainRules()); err != nil {
+		return err
+	}
+	if err := s.rebuildChain(ctx, MarkHostsChain, markHostsChainRules()); err != nil {
+		return err
+	}
+
+	slog.Info("chains estruturais reconciliadas a partir da definição canônica", "chains", []string{ForwardChain, MarkHostsChain})
+
+	if err := s.Persist(ctx); err != nil {
+		slog.Warn("chains estruturais reconciliadas, mas não foi possível persistir para o próximo boot", "err", err)
+	}
+	return nil
+}
+
+// rebuildChain flushes exactly the named chain and re-adds each rule from
+// the given canonical token lists, in order. Shared by
+// ReconcileStructuralChains' two chains so the flush-then-rewrite sequence
+// can't drift between them.
+func (s *Service) rebuildChain(ctx context.Context, chain string, rules [][]string) error {
+	if _, err := s.exec.Execute(ctx, "nft", "flush", "chain", Family, Table, chain); err != nil {
+		return fmt.Errorf("limpar chain %s: %w", chain, err)
+	}
+	for _, tokens := range rules {
+		args := append([]string{"add", "rule", Family, Table, chain}, tokens...)
+		if _, err := s.exec.Execute(ctx, "nft", args...); err != nil {
+			return fmt.Errorf("aplicar regra em %s: %w", chain, err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) ReconcileNTPInput(ctx context.Context, allowedNetworks []string, serving bool) error {
 	if s.exec.IsDryRun() {
 		return nil
