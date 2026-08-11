@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
+	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -44,7 +45,8 @@ func newNftTestHandler(t *testing.T, ruleset string) (*handlers.NftablesHandler,
 	}
 	t.Cleanup(func() { db.Close() })
 	svc := nftables.NewService(&fakeNftExec{ruleset: ruleset})
-	return handlers.NewNftablesHandler(svc, db), db
+	fr := firewallrules.NewService(db, svc)
+	return handlers.NewNftablesHandler(svc, db, fr), db
 }
 
 // TestWanHostPersistsLiveSnapshot is the regression test for "regras de

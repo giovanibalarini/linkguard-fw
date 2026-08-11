@@ -24,6 +24,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/dnslog"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
@@ -58,6 +59,7 @@ type Server struct {
 	hostSvc     *hosts.Service
 	netifSvc    *netif.Service
 	nftSvc      *nftables.Service
+	frSvc       *firewallrules.Service
 	netSvc      netsvc.Provider
 	notifySvc   *notify.Service
 	trafficSvc  *hosttraffic.Service
@@ -84,7 +86,7 @@ type Config struct {
 func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
-	hostSvc *hosts.Service, netifSvc *netif.Service, nftSvc *nftables.Service, netSvc netsvc.Provider,
+	hostSvc *hosts.Service, netifSvc *netif.Service, nftSvc *nftables.Service, frSvc *firewallrules.Service, netSvc netsvc.Provider,
 	notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
 	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
 	mon *monitoring.Collector, sec secrets.Secrets, aiClient *ai.Client, backupSched *backup.Scheduler) *Server {
@@ -102,6 +104,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		hostSvc:     hostSvc,
 		netifSvc:    netifSvc,
 		nftSvc:      nftSvc,
+		frSvc:       frSvc,
 		netSvc:      netSvc,
 		notifySvc:   notifySvc,
 		trafficSvc:  trafficSvc,
@@ -214,7 +217,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/firewall/rules", iptH.DeleteRule)
 
 		// nftables (native firewall management — replaces iptables)
-		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db)
+		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db, s.frSvc)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/overview", nftH.Overview)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/ruleset", nftH.Ruleset)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/managed", nftH.Managed)
@@ -225,11 +228,16 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/wan-host", nftH.WanHost)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/blocklist", nftH.Blocklist)
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/blocklist", nftH.Blocklist)
-		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/rules", nftH.ListUserRules)
-		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules", nftH.CreateUserRule)
-		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/rules", nftH.UpdateUserRule)
-		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/rules", nftH.DeleteUserRule)
-		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules/move", nftH.MoveUserRule)
+		// The admin's own rules (Phase B, design spec §4.1): id-based CRUD
+		// against the DB, not nft's volatile handle — every mutation
+		// reconciles user_rules immediately so nft never lags what the panel
+		// shows.
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/rules", nftH.ListRules)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules", nftH.CreateRule)
+		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/rules", nftH.UpdateRule)
+		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/rules", nftH.DeleteRule)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules/reorder", nftH.ReorderRules)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules/toggle", nftH.ToggleRule)
 
 		// Port forwarding (DNAT)
 		pfH := handlers.NewPortForwardHandler(s.db, s.nftSvc)

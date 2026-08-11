@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
+	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 // fakeOverviewExec answers `nft -a list table inet linkguard` with a fixed
@@ -45,9 +48,17 @@ const overviewFixture = `table inet linkguard {
 }
 `
 
-func newOverviewTestHandler(table string) *handlers.NftablesHandler {
+func newOverviewTestHandler(t *testing.T, table string) *handlers.NftablesHandler {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
 	svc := nftables.NewService(&fakeOverviewExec{table: table})
-	return handlers.NewNftablesHandler(svc, nil)
+	fr := firewallrules.NewService(db, svc)
+	return handlers.NewNftablesHandler(svc, db, fr)
 }
 
 // TestOverviewReturnsAllChainsWithoutNullSlices is the standing-rule
@@ -55,7 +66,7 @@ func newOverviewTestHandler(table string) *handlers.NftablesHandler {
 // and breaks the frontend's `.map()`. The empty user_rules chain's `rules`
 // must come back as `[]`, never `null`.
 func TestOverviewReturnsAllChainsWithoutNullSlices(t *testing.T) {
-	h := newOverviewTestHandler(overviewFixture)
+	h := newOverviewTestHandler(t, overviewFixture)
 
 	r := httptest.NewRequest("GET", "/api/nftables/overview", nil)
 	w := httptest.NewRecorder()
@@ -81,7 +92,7 @@ func TestOverviewReturnsAllChainsWithoutNullSlices(t *testing.T) {
 // TestOverviewCarriesCountersOwnershipAndDescription checks the response is
 // the fully-classified view (Parts 1+2), not a bare re-dump of the ruleset.
 func TestOverviewCarriesCountersOwnershipAndDescription(t *testing.T) {
-	h := newOverviewTestHandler(overviewFixture)
+	h := newOverviewTestHandler(t, overviewFixture)
 
 	r := httptest.NewRequest("GET", "/api/nftables/overview", nil)
 	w := httptest.NewRecorder()
@@ -123,7 +134,8 @@ func TestOverviewCarriesCountersOwnershipAndDescription(t *testing.T) {
 
 func TestOverviewPropagatesNftErrors(t *testing.T) {
 	svc := nftables.NewService(&failingExec{})
-	h := handlers.NewNftablesHandler(svc, nil)
+	// db/fr stay nil: ListRuleset fails before Overview ever touches either.
+	h := handlers.NewNftablesHandler(svc, nil, nil)
 	r := httptest.NewRequest("GET", "/api/nftables/overview", nil)
 	w := httptest.NewRecorder()
 	h.Overview(w, r)

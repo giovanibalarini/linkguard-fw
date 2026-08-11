@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -17,11 +17,12 @@ import (
 type NftablesHandler struct {
 	svc *nftables.Service
 	db  *storage.DB
+	fr  *firewallrules.Service
 }
 
 // NewNftablesHandler creates an NftablesHandler.
-func NewNftablesHandler(svc *nftables.Service, db *storage.DB) *NftablesHandler {
-	return &NftablesHandler{svc: svc, db: db}
+func NewNftablesHandler(svc *nftables.Service, db *storage.DB, fr *firewallrules.Service) *NftablesHandler {
+	return &NftablesHandler{svc: svc, db: db, fr: fr}
 }
 
 // Ruleset returns the full live nftables ruleset.
@@ -39,6 +40,13 @@ func (h *NftablesHandler) Ruleset(w http.ResponseWriter, r *http.Request) {
 // classification (managed vs. the admin's own, plus which control owns a
 // managed rule) — the structured view behind the unified Firewall overview
 // page (design spec §3). Read-only.
+//
+// The user_rules chain gets one extra step beyond a plain read of nft
+// (Phase B, design spec §4.1): a disabled rule lives only in the DB, never
+// in nft, so a bare ListRuleset would silently omit it. MergeUserRules
+// interleaves the DB's full rule list (in position order) with the live
+// chain so a disabled rule still shows up — with no handle and no counter,
+// honestly marked, never hidden ("mostrar tudo, mentir sobre nada").
 func (h *NftablesHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	chains, err := h.svc.ListRuleset(r.Context())
 	if err != nil {
@@ -48,6 +56,19 @@ func (h *NftablesHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	if chains == nil {
 		chains = []nftables.ChainInfo{}
 	}
+
+	dbRules, err := h.db.ListFirewallRules()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	stored := firewallrules.ToStoredRules(dbRules)
+	for i := range chains {
+		if chains[i].Name == nftables.UserChain {
+			chains[i] = nftables.MergeUserRules(stored, chains[i])
+		}
+	}
+
 	writeJSON(w, http.StatusOK, chains)
 }
 
@@ -122,32 +143,45 @@ func (h *NftablesHandler) Blocklist(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// ListUserRules returns the custom rules (ordered, with handles + fields).
-func (h *NftablesHandler) ListUserRules(w http.ResponseWriter, r *http.Request) {
-	rules, err := h.svc.ListUserRules(r.Context())
+// ─── The admin's own rules (Phase B, design spec §4.1) ───────────────────
+//
+// These rules live in the DB now, identified by a stable id — not nft's
+// handle, which changes every time the chain is rebuilt. Every mutation
+// below writes the DB first, then calls reconcile() so the live user_rules
+// chain is re-rendered immediately: the panel must never show a state the
+// firewall isn't actually in.
+
+// maxRuleDescriptionLen bounds the free-text "why this rule exists" field —
+// generous enough for a real explanation, small enough that a request body
+// can't be used to stuff an unbounded blob into the DB on every save.
+const maxRuleDescriptionLen = 500
+
+// ListRules returns the admin's rules, ordered by position.
+func (h *NftablesHandler) ListRules(w http.ResponseWriter, r *http.Request) {
+	rules, err := h.db.ListFirewallRules()
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	if rules == nil {
-		rules = []nftables.UserRule{}
+		rules = []storage.FirewallRule{}
 	}
 	writeJSON(w, http.StatusOK, rules)
 }
 
-type ruleBody struct {
-	Handle       int    `json:"handle"`
-	BeforeHandle int    `json:"before_handle"`
-	Action       string `json:"action"`
-	Iif          string `json:"iif"`
-	Oif          string `json:"oif"`
-	Saddr        string `json:"saddr"`
-	Daddr        string `json:"daddr"`
-	Proto        string `json:"proto"`
-	Dport        string `json:"dport"`
+type firewallRuleBody struct {
+	ID          string `json:"id"`
+	Action      string `json:"action"`
+	Iif         string `json:"iif"`
+	Oif         string `json:"oif"`
+	Saddr       string `json:"saddr"`
+	Daddr       string `json:"daddr"`
+	Proto       string `json:"proto"`
+	Dport       string `json:"dport"`
+	Description string `json:"description"`
 }
 
-func (b ruleBody) fields() nftables.RuleFields {
+func (b firewallRuleBody) fields() nftables.RuleFields {
 	return nftables.RuleFields{
 		Action: strings.TrimSpace(b.Action), Iif: strings.TrimSpace(b.Iif), Oif: strings.TrimSpace(b.Oif),
 		Saddr: strings.TrimSpace(b.Saddr), Daddr: strings.TrimSpace(b.Daddr),
@@ -155,95 +189,199 @@ func (b ruleBody) fields() nftables.RuleFields {
 	}
 }
 
-func validateRuleFields(f nftables.RuleFields) string {
-	if f.Saddr != "" && !validCIDRorIP(f.Saddr) {
-		return "Origem inválida (use IP ou CIDR)"
+// validateFirewallRuleBody reuses nftables.ValidateRuleFields — the exact
+// check ReconcileUserRules/AddUserRule already apply before a field reaches
+// the nft argv — instead of the old handler-local check that only looked at
+// saddr/daddr and let a malformed interface or port through to be rejected
+// later (or worse, silently dropped by the reconcile's own skip-and-log).
+func validateFirewallRuleBody(b firewallRuleBody) string {
+	if err := nftables.ValidateRuleFields(b.fields()); err != nil {
+		return err.Error()
 	}
-	if f.Daddr != "" && !validCIDRorIP(f.Daddr) {
-		return "Destino inválido (use IP ou CIDR)"
+	if len(b.Description) > maxRuleDescriptionLen {
+		return fmt.Sprintf("descrição muito longa (máx. %d caracteres)", maxRuleDescriptionLen)
 	}
 	return ""
 }
 
-// CreateUserRule adds a custom rule (optionally before another, for ordering).
-func (h *NftablesHandler) CreateUserRule(w http.ResponseWriter, r *http.Request) {
-	var b ruleBody
+// reconcileRules re-renders user_rules from the DB and refreshes the live
+// snapshot, shared by every mutation below so nft never lags what the
+// panel/DB show. A reconcile failure is surfaced to the caller as an error
+// (the DB write already landed; only a subsequent successful reconcile —
+// the next mutation, or the next boot — will pick it up), rather than
+// silently reporting success while nft has fallen out of sync.
+func (h *NftablesHandler) reconcileRules(w http.ResponseWriter, r *http.Request) bool {
+	if err := h.fr.Reconcile(r.Context()); err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	saveNftSnapshot(r.Context(), h.db, h.svc)
+	return true
+}
+
+// CreateRule adds a new rule, always appended after every existing one.
+func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
+	var b firewallRuleBody
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if msg := validateRuleFields(b.fields()); msg != "" {
+	if msg := validateFirewallRuleBody(b); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if _, err := h.svc.AddUserRule(r.Context(), b.fields(), b.BeforeHandle); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	row := &storage.FirewallRule{
+		Action: b.fields().Action, Iif: b.fields().Iif, Oif: b.fields().Oif,
+		Saddr: b.fields().Saddr, Daddr: b.fields().Daddr, Proto: b.fields().Proto, Dport: b.fields().Dport,
+		Description: strings.TrimSpace(b.Description),
+	}
+	if err := h.db.CreateFirewallRule(row); err != nil {
+		writeInternalError(w, err)
 		return
 	}
-	auditAction(h.db, r, "nft.rule.add", "user_rules", b.Action)
-	saveNftSnapshot(r.Context(), h.db, h.svc)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	if !h.reconcileRules(w, r) {
+		return
+	}
+	auditAction(h.db, r, "nft.rule.add", "user_rules:"+row.ID, b.Action)
+	writeJSON(w, http.StatusOK, row)
 }
 
-// UpdateUserRule edits a custom rule in place (keeps its position).
-func (h *NftablesHandler) UpdateUserRule(w http.ResponseWriter, r *http.Request) {
-	var b ruleBody
+// UpdateRule edits a rule's content in place, by id — its position and
+// enabled state are untouched (see ReorderRules/ToggleRule for those).
+func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
+	var b firewallRuleBody
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if b.Handle <= 0 {
-		writeError(w, http.StatusBadRequest, "handle is required")
+	if strings.TrimSpace(b.ID) == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	if msg := validateRuleFields(b.fields()); msg != "" {
+	if msg := validateFirewallRuleBody(b); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if _, err := h.svc.UpdateUserRule(r.Context(), b.Handle, b.fields()); err != nil {
+	f := b.fields()
+	row := &storage.FirewallRule{
+		ID: b.ID, Action: f.Action, Iif: f.Iif, Oif: f.Oif,
+		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport,
+		Description: strings.TrimSpace(b.Description),
+	}
+	if err := h.db.UpdateFirewallRule(row); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	auditAction(h.db, r, "nft.rule.update", "user_rules", strconv.Itoa(b.Handle))
-	saveNftSnapshot(r.Context(), h.db, h.svc)
+	if !h.reconcileRules(w, r) {
+		return
+	}
+	auditAction(h.db, r, "nft.rule.update", "user_rules:"+b.ID, b.Action)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// DeleteUserRule removes a custom rule by handle.
-func (h *NftablesHandler) DeleteUserRule(w http.ResponseWriter, r *http.Request) {
-	var b ruleBody
-	if err := decodeJSON(r, &b); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if b.Handle <= 0 {
-		writeError(w, http.StatusBadRequest, "handle is required")
-		return
-	}
-	if _, err := h.svc.DeleteUserRule(r.Context(), b.Handle); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	auditAction(h.db, r, "nft.rule.del", "user_rules", strconv.Itoa(b.Handle))
-	saveNftSnapshot(r.Context(), h.db, h.svc)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// MoveUserRule reorders a custom rule up or down.
-func (h *NftablesHandler) MoveUserRule(w http.ResponseWriter, r *http.Request) {
+// DeleteRule removes a rule permanently, by id.
+func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	var b struct {
-		Handle int    `json:"handle"`
-		Dir    string `json:"dir"`
+		ID string `json:"id"`
 	}
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.svc.MoveUserRule(r.Context(), b.Handle, b.Dir); err != nil {
+	if strings.TrimSpace(b.ID) == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	if err := h.db.DeleteFirewallRule(b.ID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	saveNftSnapshot(r.Context(), h.db, h.svc)
+	if !h.reconcileRules(w, r) {
+		return
+	}
+	auditAction(h.db, r, "nft.rule.del", "user_rules:"+b.ID, "")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ToggleRule enables or disables a rule without deleting it — the
+// appliance-style capability the whole DB-backed model exists for (design
+// spec §4.1). A disabled rule keeps every field intact; it simply stops
+// being rendered into nft until re-enabled.
+func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(b.ID) == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	if err := h.db.SetFirewallRuleEnabled(b.ID, b.Enabled); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !h.reconcileRules(w, r) {
+		return
+	}
+	action := "nft.rule.disable"
+	if b.Enabled {
+		action = "nft.rule.enable"
+	}
+	auditAction(h.db, r, action, "user_rules:"+b.ID, "")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ReorderRules sets the evaluation order for every one of the admin's rules
+// in a single request. ids must be exactly the current set of rule ids —
+// neither more nor fewer: a partial list would silently strand the missing
+// rules at their old positions (possibly colliding with the new ones), and
+// an id LinkGuard doesn't recognise is rejected outright rather than
+// ignored, so a stale client can never quietly corrupt the order.
+func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	current, err := h.db.ListFirewallRules()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if len(b.IDs) != len(current) {
+		writeError(w, http.StatusBadRequest, "a lista de reordenação precisa conter exatamente as regras atuais, sem faltar nem sobrar nenhuma")
+		return
+	}
+	currentSet := make(map[string]bool, len(current))
+	for _, row := range current {
+		currentSet[row.ID] = true
+	}
+	seen := make(map[string]bool, len(b.IDs))
+	for _, id := range b.IDs {
+		if !currentSet[id] {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("regra %q não encontrada", id))
+			return
+		}
+		if seen[id] {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("id %q repetido na lista de reordenação", id))
+			return
+		}
+		seen[id] = true
+	}
+	if err := h.db.ReorderFirewallRules(b.IDs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !h.reconcileRules(w, r) {
+		return
+	}
+	auditAction(h.db, r, "nft.rule.reorder", "user_rules", fmt.Sprintf("%d regras", len(b.IDs)))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

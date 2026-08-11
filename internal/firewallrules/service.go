@@ -114,13 +114,13 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.nft.ReconcileUserRules(ctx, toStoredRules(rows))
+	return s.nft.ReconcileUserRules(ctx, ToStoredRules(rows))
 }
 
-// toStoredRules converts the DB rows into nftables' own StoredRule shape —
+// ToStoredRules converts the DB rows into nftables' own StoredRule shape —
 // internal/nftables cannot import internal/storage (see StoredRule's doc
 // comment), so this conversion always happens on the caller's side.
-func toStoredRules(rows []storage.FirewallRule) []nftables.StoredRule {
+func ToStoredRules(rows []storage.FirewallRule) []nftables.StoredRule {
 	out := make([]nftables.StoredRule, len(rows))
 	for i, r := range rows {
 		out[i] = nftables.StoredRule{
