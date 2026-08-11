@@ -3,6 +3,7 @@ package keaunbound
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,12 @@ type recExec struct {
 	writes      []string
 	keaTestErr  error  // returned by `kea-dhcp4 -t` if set
 	keaTestPath string // records the file path validateKea passed to `-t`
+
+	// unboundEnabled controls the answer to `systemctl is-enabled unbound`,
+	// which EnsureResolvConf gates on: unbound is only Recommends: in the
+	// package, so on a box without it (or where it failed to start) taking
+	// over resolv.conf would knock out the box's own name resolution.
+	unboundEnabled bool
 }
 
 func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -23,6 +30,14 @@ func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string
 	return "", nil
 }
 func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "systemctl" && len(args) == 2 && args[0] == "is-enabled" && args[1] == "unbound" {
+		if e.unboundEnabled {
+			return "enabled\n", nil
+		}
+		// mirrors systemctl's real behaviour: non-zero exit, "disabled" (or
+		// a "no such unit" error) on stdout/stderr either way.
+		return "disabled\n", fmt.Errorf("unit unbound.service is not enabled")
+	}
 	if len(args) >= 2 && args[0] == "-t" { // kea-dhcp4 -t <file>
 		e.keaTestPath = args[1]
 		if e.keaTestErr != nil {
@@ -206,6 +221,47 @@ func TestGenerateUnboundConfigForwarding(t *testing.T) {
 	}
 }
 
+// TestEnsureResolvConfLeavesResolverAloneWhenUnboundNotEnabled: unbound is
+// only `Recommends:` in the package, never `Depends:` — on a box without it
+// installed (or where it failed to start), EnsureResolvConf must not touch
+// either file. Seizing resolv.conf would knock out the box's own name
+// resolution (updater, Telegram/webhook notifications, the AI digest,
+// chrony pool hostnames) with no local resolver to fall back on.
+func TestEnsureResolvConfLeavesResolverAloneWhenUnboundNotEnabled(t *testing.T) {
+	dir := t.TempDir()
+	resolv := filepath.Join(dir, "resolv.conf")
+	resolvSeed := "nameserver 189.40.0.1\nnameserver 189.40.0.2\n"
+	if err := os.WriteFile(resolv, []byte(resolvSeed), 0o644); err != nil {
+		t.Fatalf("seed resolv.conf: %v", err)
+	}
+	dhclient := filepath.Join(dir, "dhclient.conf")
+	dhclientSeed := "send host-name = gethostname();\n"
+	if err := os.WriteFile(dhclient, []byte(dhclientSeed), 0o644); err != nil {
+		t.Fatalf("seed dhclient.conf: %v", err)
+	}
+
+	s := NewService(&recExec{unboundEnabled: false})
+	s.resolvConf = resolv
+	s.dhclientConf = dhclient
+
+	s.EnsureResolvConf(context.Background())
+
+	gotResolv, err := os.ReadFile(resolv)
+	if err != nil {
+		t.Fatalf("ReadFile resolv.conf: %v", err)
+	}
+	if string(gotResolv) != resolvSeed {
+		t.Errorf("resolv.conf was modified with unbound not enabled:\ngot:  %q\nwant: %q", gotResolv, resolvSeed)
+	}
+	gotDhclient, err := os.ReadFile(dhclient)
+	if err != nil {
+		t.Fatalf("ReadFile dhclient.conf: %v", err)
+	}
+	if string(gotDhclient) != dhclientSeed {
+		t.Errorf("dhclient.conf was modified with unbound not enabled:\ngot:  %q\nwant: %q", gotDhclient, dhclientSeed)
+	}
+}
+
 // TestEnsureResolvConfPointsAtLocalUnbound is the regression test for a real
 // production finding on 2026-08-10: /etc/resolv.conf pointed at the ISP's
 // nameservers instead of the local unbound. Nothing in the codebase managed
@@ -218,11 +274,11 @@ func TestEnsureResolvConfPointsAtLocalUnbound(t *testing.T) {
 	if err := os.WriteFile(resolv, []byte("nameserver 189.40.0.1\nnameserver 189.40.0.2\n"), 0o644); err != nil {
 		t.Fatalf("seed resolv.conf: %v", err)
 	}
-	s := NewService(&recExec{})
+	s := NewService(&recExec{unboundEnabled: true})
 	s.resolvConf = resolv
 	s.dhclientConf = filepath.Join(dir, "dhclient.conf")
 
-	s.EnsureResolvConf()
+	s.EnsureResolvConf(context.Background())
 
 	got, err := os.ReadFile(resolv)
 	if err != nil {
@@ -248,11 +304,11 @@ func TestEnsureResolvConfSupersedesDhclient(t *testing.T) {
 	if err := os.WriteFile(dhclient, []byte("send host-name = gethostname();\n"), 0o644); err != nil {
 		t.Fatalf("seed dhclient.conf: %v", err)
 	}
-	s := NewService(&recExec{})
+	s := NewService(&recExec{unboundEnabled: true})
 	s.resolvConf = filepath.Join(dir, "resolv.conf")
 	s.dhclientConf = dhclient
 
-	s.EnsureResolvConf()
+	s.EnsureResolvConf(context.Background())
 
 	got, err := os.ReadFile(dhclient)
 	if err != nil {
@@ -270,12 +326,12 @@ func TestEnsureResolvConfSupersedesDhclient(t *testing.T) {
 // second run must not keep appending the same line.
 func TestEnsureResolvConfDoesNotDuplicateSupersede(t *testing.T) {
 	dir := t.TempDir()
-	s := NewService(&recExec{})
+	s := NewService(&recExec{unboundEnabled: true})
 	s.resolvConf = filepath.Join(dir, "resolv.conf")
 	s.dhclientConf = filepath.Join(dir, "dhclient.conf")
 
-	s.EnsureResolvConf()
-	s.EnsureResolvConf()
+	s.EnsureResolvConf(context.Background())
+	s.EnsureResolvConf(context.Background())
 
 	got, err := os.ReadFile(s.dhclientConf)
 	if err != nil {
@@ -316,11 +372,11 @@ func TestEnsureResolvConfIgnoresCommentedOutSupersede(t *testing.T) {
 	if err := os.WriteFile(dhclient, []byte(seed), 0o644); err != nil {
 		t.Fatalf("seed dhclient.conf: %v", err)
 	}
-	s := NewService(&recExec{})
+	s := NewService(&recExec{unboundEnabled: true})
 	s.resolvConf = filepath.Join(dir, "resolv.conf")
 	s.dhclientConf = dhclient
 
-	s.EnsureResolvConf()
+	s.EnsureResolvConf(context.Background())
 
 	got, err := os.ReadFile(dhclient)
 	if err != nil {
@@ -351,11 +407,11 @@ func TestEnsureResolvConfReplacesConflictingValue(t *testing.T) {
 	if err := os.WriteFile(dhclient, []byte(seed), 0o644); err != nil {
 		t.Fatalf("seed dhclient.conf: %v", err)
 	}
-	s := NewService(&recExec{})
+	s := NewService(&recExec{unboundEnabled: true})
 	s.resolvConf = filepath.Join(dir, "resolv.conf")
 	s.dhclientConf = dhclient
 
-	s.EnsureResolvConf()
+	s.EnsureResolvConf(context.Background())
 
 	got, err := os.ReadFile(dhclient)
 	if err != nil {
@@ -387,11 +443,11 @@ func TestEnsureResolvConfReplacesIrregularSpacing(t *testing.T) {
 	if err := os.WriteFile(dhclient, []byte(seed), 0o644); err != nil {
 		t.Fatalf("seed dhclient.conf: %v", err)
 	}
-	s := NewService(&recExec{})
+	s := NewService(&recExec{unboundEnabled: true})
 	s.resolvConf = filepath.Join(dir, "resolv.conf")
 	s.dhclientConf = dhclient
 
-	s.EnsureResolvConf()
+	s.EnsureResolvConf(context.Background())
 
 	got, err := os.ReadFile(dhclient)
 	if err != nil {

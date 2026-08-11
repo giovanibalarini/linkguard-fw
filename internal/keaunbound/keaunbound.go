@@ -94,7 +94,28 @@ func (s *Service) EnsureKeaDirReadable() {
 // failure is logged as a warning rather than blocking startup. A dedicated
 // dns-resolver health check to surface this failure in the UI is planned
 // but not implemented yet.
-func (s *Service) EnsureResolvConf() {
+//
+// Gated on unbound actually being enabled: the Debian package lists unbound
+// as `Recommends:`, never `Depends:`, so it can legitimately be absent (or
+// present but failed to start). Unconditionally pointing resolv.conf at
+// 127.0.0.1 on such a box, and stripping the ISP's servers from dhclient's
+// config, would leave nothing answering DNS at all — silently breaking the
+// updater's fetch from GitHub releases, Telegram/webhook notifications, the
+// AI digest, and chrony's pool hostnames. Do NOT remove this guard "to
+// simplify" without re-reading this comment: it is the difference between
+// gaining a resolver and losing name resolution entirely.
+//
+// `systemctl is-enabled` (not `is-active`) is used deliberately: it answers
+// from unit configuration rather than current process state, so it gives
+// the same answer regardless of where in the boot sequence this runs,
+// instead of racing unbound's own startup.
+func (s *Service) EnsureResolvConf(ctx context.Context) {
+	out, err := s.exec.ExecuteRead(ctx, "systemctl", "is-enabled", "unbound")
+	if err != nil || strings.TrimSpace(out) != "enabled" {
+		slog.Info("resolver local (unbound) não está instalado/habilitado; resolv.conf foi deixado como está", "path", s.resolvConf, "systemctl_output", strings.TrimSpace(out), "err", err)
+		return
+	}
+
 	const body = "# managed by linkguard\nnameserver 127.0.0.1\n"
 	if err := os.WriteFile(s.resolvConf, []byte(body), 0o644); err != nil {
 		slog.Warn("não foi possível apontar o resolv.conf para o resolver local", "path", s.resolvConf, "err", err)

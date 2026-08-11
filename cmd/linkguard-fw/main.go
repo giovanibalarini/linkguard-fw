@@ -297,7 +297,7 @@ func run() int {
 
 	// Point /etc/resolv.conf at the local unbound and stop dhclient from
 	// undoing it on lease renewal (see EnsureResolvConf's doc comment).
-	keaSvc.EnsureResolvConf()
+	keaSvc.EnsureResolvConf(ctx)
 
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)
