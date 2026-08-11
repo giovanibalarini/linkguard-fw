@@ -1428,12 +1428,17 @@ func (db *DB) GetAIReport(id string) (*AIReport, error) {
 
 // ListFirewallRules returns every stored rule (enabled or not), ordered by
 // position — the order ReconcileUserRules renders them into nft and the
-// order the panel displays them in.
+// order the panel displays them in. The `created_at` tiebreaker makes that
+// order deterministic even when two rows share the same position (should
+// not normally happen — ReorderFirewallRules/CreateFirewallRule both assign
+// distinct positions — but a hand-edited row or a bug elsewhere must not be
+// able to make evaluation order flip between boots depending on SQLite's
+// unspecified tie order for an ORDER BY with duplicate keys).
 func (db *DB) ListFirewallRules() ([]FirewallRule, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, position, enabled, action, iif, oif, saddr, daddr, proto, dport,
 		       description, created_at, updated_at
-		FROM firewall_rules ORDER BY position`)
+		FROM firewall_rules ORDER BY position, created_at`)
 	if err != nil {
 		return nil, err
 	}
