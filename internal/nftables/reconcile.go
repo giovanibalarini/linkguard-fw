@@ -40,15 +40,20 @@ func (s *Service) ReconcileMasquerade(ctx context.Context, wanInterfaces []strin
 	}
 	ifaces := sanitizeInterfaces(wanInterfaces)
 
+	if len(ifaces) == 0 {
+		// No configured WANs (all disabled, last one deleted, or a box using
+		// LinkGuard for firewall/hosts but no links): refuse to touch the
+		// chain at all. Flushing here would take down whatever masquerade
+		// rule is currently live and working, and since Persist is skipped
+		// in this branch too, /etc/nftables.conf would silently diverge
+		// from the (now empty) live chain. Acting on an empty source of
+		// truth is strictly less safe than doing nothing, so we do nothing.
+		slog.Warn("nenhuma interface WAN válida configurada; regra de NAT existente foi mantida intacta", "requested", wanInterfaces)
+		return nil
+	}
+
 	if _, err := s.exec.Execute(ctx, "nft", "flush", "chain", Family, Table, masqueradeChain); err != nil {
 		return fmt.Errorf("limpar chain %s: %w", masqueradeChain, err)
-	}
-	if len(ifaces) == 0 {
-		// No configured WANs: an empty chain is the correct end state — an
-		// `oifname { }` rule would be malformed, and masquerading everything
-		// would be worse than masquerading nothing.
-		slog.Warn("nenhuma interface WAN válida configurada; regra de NAT ficou vazia", "requested", wanInterfaces)
-		return nil
 	}
 
 	quoted := make([]string, len(ifaces))

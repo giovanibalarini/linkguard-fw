@@ -122,23 +122,25 @@ func TestReconcileMasqueradeSanitizesInterfaces(t *testing.T) {
 	}
 }
 
-// TestReconcileMasqueradeWithNoWANsLeavesChainEmpty: with zero configured
-// WANs there is nothing legitimate to masquerade on; the chain is flushed
-// and left empty rather than getting a malformed empty-set rule.
-func TestReconcileMasqueradeWithNoWANsLeavesChainEmpty(t *testing.T) {
+// TestReconcileMasqueradeWithNoWANsLeavesTheChainAlone: with zero configured
+// WANs (all disabled, last one deleted, or a box using LinkGuard for
+// firewall/hosts but no links) there is nothing legitimate to masquerade on
+// — but there may well be a live, working NAT rule already in the chain
+// (e.g. written by a previous reconcile, or the DB read racing a link
+// delete). Flushing on an empty source of truth would take a healthy box's
+// NAT down and, since Persist is also skipped in this branch, leave
+// /etc/nftables.conf out of sync with whatever the live chain ends up as.
+// Refusing to act — no flush, no add — is strictly safer than acting on
+// nothing, and it stays idempotent.
+func TestReconcileMasqueradeWithNoWANsLeavesTheChainAlone(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
 	if err := s.ReconcileMasquerade(context.Background(), nil); err != nil {
 		t.Fatalf("ReconcileMasquerade: %v", err)
 	}
-	if !ranCommand(exec.executed, "nft flush chain inet linkguard postrouting") {
-		t.Errorf("expected the chain to still be flushed; ran: %v", exec.executed)
-	}
-	for _, c := range exec.executed {
-		if strings.Contains(c, "masquerade") {
-			t.Errorf("expected no masquerade rule with zero WANs, ran: %q", c)
-		}
+	if len(exec.executed) != 0 {
+		t.Errorf("expected no commands at all with zero WANs (chain must be left alone), ran: %v", exec.executed)
 	}
 }
 
