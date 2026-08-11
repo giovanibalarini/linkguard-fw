@@ -55,6 +55,47 @@ type Notifier interface {
 	NotifyRecovery(title, message string)
 }
 
+// stateAlertTypes are the problem types that represent an ongoing condition
+// with a recovery counterpart that closes it — every type below is raised by
+// one method and cleared by another's s.AutoResolve(type, ...) call
+// (systemd unit back up, link back online, resource back under threshold,
+// resolver back local, and so on). ResolveStaleOnStartup uses this list to
+// decide what it is safe to close on a restart.
+//
+// TypeRuleError is deliberately excluded: it is a catch-all raised from
+// seven unrelated call sites (failover, NTP apply, DHCP/DNS apply, and four
+// in the balancer) with nothing that ever resolves it — see Create's doc
+// comment for why. Clearing it at startup would silently discard a genuine
+// unacknowledged failure that no watcher will ever re-raise on its own,
+// since nothing observes a "rule_error fixed" transition.
+//
+// Also absent, and for the same underlying reason (no AutoResolve call
+// anywhere resolves them): TypeSlowBoot ("a slow boot can't un-happen, only
+// the next reboot can be fast" — see SlowBoot's doc comment), TypeFailover,
+// and TypeAppDown. TypeGatewayDown and TypeRouteChanged are unused
+// constants — nothing in this codebase raises them at all.
+//
+// TestStateAlertTypesMatchAutoResolveCallSites guards this list against
+// drifting from service.go's actual AutoResolve call sites.
+var stateAlertTypes = []string{
+	TypeLinkOffline,
+	TypeLinkDegraded,
+	TypeServiceOffline,
+	TypeDiskFull,
+	TypeHighCPU,
+	TypeHighMemory,
+	TypeBackupFailed,
+	TypeNTPUnsynced,
+	TypeDiskSMARTFail,
+	TypeDiskSMARTDegraded,
+	TypeDiskSMARTHot,
+	TypeJournalCorrupt,
+	TypeFirewallNATDrift,
+	TypeWANInterfaceMissing,
+	TypeDNSResolverDrift,
+	TypeSecurityUpdatesPending,
+}
+
 // Service manages alert generation and retrieval.
 type Service struct {
 	db       *storage.DB
@@ -283,6 +324,46 @@ func (s *Service) AutoResolve(alertType, linkID string) {
 		if a.Type == alertType && a.LinkID == linkID {
 			_ = s.db.ResolveAlert(a.ID)
 		}
+	}
+}
+
+// ResolveStaleOnStartup closes state-derived alerts (stateAlertTypes) left
+// open by a previous process. The health state that gates whether a
+// condition is "new" (internal/monitoring's observe map, see Create's doc
+// comment) lives only in memory, so a restart forgets which conditions were
+// already true. Whatever is still genuinely wrong gets re-raised by the
+// watchers within their next tick or two; whatever was fixed while the
+// service was down — the exact situation that left three stale alerts open
+// by hand on 2026-08-11 — stays closed instead of sitting red on the panel
+// forever.
+//
+// This is bookkeeping, not an event worth pushing at the operator: it
+// reuses AutoResolve directly, so it neither creates recovery rows nor
+// notifies. Callers should invoke it once, early at startup, and before the
+// collectors/schedulers start — otherwise a still-true condition raised (or
+// re-raised) concurrently by an already-running watcher could race this
+// cleanup and be resolved right back out from under it.
+func (s *Service) ResolveStaleOnStartup() {
+	open, err := s.db.GetAlerts(true, 0)
+	if err != nil {
+		slog.Error("resolve stale alerts on startup: list open alerts", "err", err)
+		return
+	}
+	isStateType := make(map[string]bool, len(stateAlertTypes))
+	for _, t := range stateAlertTypes {
+		isStateType[t] = true
+	}
+	done := make(map[string]bool)
+	for _, a := range open {
+		if !isStateType[a.Type] {
+			continue
+		}
+		key := a.Type + "\x00" + a.LinkID
+		if done[key] {
+			continue // AutoResolve already sweeps every row for this (type, linkID)
+		}
+		done[key] = true
+		s.AutoResolve(a.Type, a.LinkID)
 	}
 }
 

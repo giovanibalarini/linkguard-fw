@@ -156,6 +156,16 @@ func run() int {
 	}
 
 	alertSvc := alerts.NewService(db)
+	// Close state-derived alerts left open by a previous process before any
+	// watcher starts observing again: the health state that gates whether a
+	// condition is "new" lives only in memory, so every restart forgets
+	// what was already true. Whatever is still genuinely wrong gets
+	// re-raised within the first tick or two; whatever was fixed while the
+	// service was down (three alerts had to be resolved by hand on
+	// 2026-08-11 for exactly this reason) stays closed. Must run before the
+	// collectors/schedulers below start, so a still-true condition is
+	// re-raised by the first tick rather than racing this cleanup.
+	alertSvc.ResolveStaleOnStartup()
 	notifySvc := notify.NewService(db, secretsSvc)
 	alertSvc.SetNotifier(notifySvc)
 	authSvc := auth.NewService(db, cfg.JWTSecret, secretsSvc)

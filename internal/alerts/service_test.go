@@ -1,7 +1,11 @@
 package alerts
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -277,6 +281,178 @@ func TestConfigDriftAlertPairsResolveEachOther(t *testing.T) {
 				t.Errorf("%s should have been auto-resolved by its recovery call", tc.problemType)
 			}
 		})
+	}
+}
+
+// TestResolveStaleOnStartupClearsStateDerivedAlert guards the fix for the
+// 2026-08-11 aftermath: three alerts had to be resolved by hand because the
+// conditions they described were fixed by a service restart, but nothing
+// ever observed the transition (health state lives only in memory) to close
+// them. A state-derived type left open by a previous process must be
+// resolved at startup.
+func TestResolveStaleOnStartupClearsStateDerivedAlert(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.HighCPU(95); err != nil {
+		t.Fatalf("HighCPU: %v", err)
+	}
+
+	s.ResolveStaleOnStartup()
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	for _, a := range open {
+		if a.Type == TypeHighCPU {
+			t.Errorf("expected the stale high_cpu alert to be resolved at startup, still open: %+v", a)
+		}
+	}
+}
+
+// TestResolveStaleOnStartupPreservesRuleError guards the deliberate
+// exemption: rule_error has no recovery counterpart, so clearing it at
+// startup would silently discard a genuine unacknowledged failure that
+// nothing else will ever re-raise.
+func TestResolveStaleOnStartupPreservesRuleError(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.RuleError("Failover for WAN VIVO failed: X"); err != nil {
+		t.Fatalf("RuleError: %v", err)
+	}
+
+	s.ResolveStaleOnStartup()
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	found := false
+	for _, a := range open {
+		if a.Type == TypeRuleError {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected an open rule_error alert to survive ResolveStaleOnStartup, but it was resolved")
+	}
+}
+
+// TestResolveStaleOnStartupIsSilentBookkeeping guards that the cleanup is
+// pure bookkeeping: it must not create any new alert row (recovery or
+// otherwise) and must not notify — the operator does not need to be told
+// about a condition that already went away while the service was down.
+func TestResolveStaleOnStartupIsSilentBookkeeping(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.HighCPU(95); err != nil {
+		t.Fatalf("HighCPU: %v", err)
+	}
+	if err := s.NTPUnsynced(); err != nil {
+		t.Fatalf("NTPUnsynced: %v", err)
+	}
+	fn.normal, fn.recovery = nil, nil // ignore the notifications from raising them above
+
+	before, err := db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+
+	s.ResolveStaleOnStartup()
+
+	if len(fn.normal) != 0 || len(fn.recovery) != 0 {
+		t.Errorf("expected no notifications from ResolveStaleOnStartup, got normal=%v recovery=%v", fn.normal, fn.recovery)
+	}
+
+	after, err := db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("expected ResolveStaleOnStartup to create no new alert rows: before=%d after=%d", len(before), len(after))
+	}
+}
+
+// TestStateAlertTypesMatchAutoResolveCallSites is a drift guard: it parses
+// this package's own service.go and checks that the set of alert-type
+// identifiers passed as ResolveStaleOnStartup's raw material — every type
+// some method here actually resolves via s.AutoResolve(Type..., ...) —
+// matches stateAlertTypes exactly. If a future problem/recovery pair is
+// added (a new AutoResolve call site) without updating stateAlertTypes, or
+// vice versa, this test fails instead of the mismatch going unnoticed.
+func TestStateAlertTypesMatchAutoResolveCallSites(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine this test file's location")
+	}
+	srcPath := filepath.Join(filepath.Dir(thisFile), "service.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parse service.go: %v", err)
+	}
+
+	autoResolved := map[string]bool{}
+	var declaredList []string
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.CallExpr:
+			sel, ok := node.Fun.(*ast.SelectorExpr)
+			if ok && sel.Sel.Name == "AutoResolve" && len(node.Args) > 0 {
+				if ident, ok := node.Args[0].(*ast.Ident); ok {
+					autoResolved[ident.Name] = true
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range node.Names {
+				if name.Name != "stateAlertTypes" || len(node.Values) == 0 {
+					continue
+				}
+				lit, ok := node.Values[0].(*ast.CompositeLit)
+				if !ok {
+					continue
+				}
+				for _, el := range lit.Elts {
+					if ident, ok := el.(*ast.Ident); ok {
+						declaredList = append(declaredList, ident.Name)
+					}
+				}
+			}
+		}
+		return true
+	})
+
+	if len(autoResolved) == 0 {
+		t.Fatal("found no s.AutoResolve(Type..., ...) call sites while parsing service.go — parser problem?")
+	}
+	if len(declaredList) == 0 {
+		t.Fatal("found no identifiers in the stateAlertTypes declaration while parsing service.go — parser problem?")
+	}
+
+	declared := map[string]bool{}
+	for _, name := range declaredList {
+		if declared[name] {
+			t.Errorf("stateAlertTypes lists %s more than once", name)
+		}
+		declared[name] = true
+	}
+
+	for name := range autoResolved {
+		if !declared[name] {
+			t.Errorf("%s has a recovery method that calls AutoResolve but is missing from stateAlertTypes", name)
+		}
+	}
+	for name := range declared {
+		if !autoResolved[name] {
+			t.Errorf("stateAlertTypes lists %s but no method resolves it via AutoResolve — is this stale?", name)
+		}
 	}
 }
 
