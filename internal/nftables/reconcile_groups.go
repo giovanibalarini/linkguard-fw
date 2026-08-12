@@ -60,9 +60,12 @@ func (s *Service) listGroupChains(ctx context.Context) ([]string, error) {
 //     no nft, só que ninguém pula para lá.
 //  3. Reconstruir a forward: bloqueios primeiro, depois um jump por grupo
 //     ativado, na ordem do admin.
-//  4. Só agora apagar as chains órfãs (grupos que o admin removeu). O nft
-//     recusa apagar chain ainda referenciada — se isto rodasse antes do
-//     passo 3, a forward ainda teria o jump e a remoção falharia.
+//  4. Só agora apagar as chains órfãs (grupos que o admin removeu), e só se
+//     o passo 3 tiver dado certo. O nft recusa apagar chain ainda
+//     referenciada (EBUSY) — se isto rodasse antes do passo 3, ou depois de
+//     um passo 3 que falhou, a forward ainda teria o jump; o `delete`
+//     falharia, mas o `flush` que vem antes dele não, e a órfã ficaria
+//     vazia e ainda referenciada (fail-open — ver o passo 4 no código).
 //
 // Falha por regra é contida (design spec §8): o nft recusar uma regra de um
 // grupo NÃO interrompe os passos seguintes. Interromper faria uma única
@@ -144,13 +147,24 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 	}
 
 	// 3. reconstruir a forward
-	if err := s.rebuildChain(ctx, ForwardChain, forwardChainRules(valid)); err != nil {
-		failures = append(failures, err.Error())
+	forwardErr := s.rebuildChain(ctx, ForwardChain, forwardChainRules(valid))
+	if forwardErr != nil {
+		failures = append(failures, forwardErr.Error())
 	}
 
-	// 4. remover as órfãs, agora que ninguém mais pula para elas
-	live, err := s.listGroupChains(ctx)
-	if err != nil {
+	// 4. remover as órfãs, agora que ninguém mais pula para elas — e SÓ se o
+	// passo 3 deu certo. Com a forward antiga ainda viva, ela ainda tem o
+	// `jump` para a órfã: o `delete` falharia com EBUSY (o nft recusa apagar
+	// chain referenciada), mas o `flush` que vem antes funciona — o nft
+	// aceita esvaziar chain referenciada. Sobraria uma forward antiga
+	// pulando para uma chain órfã recém-esvaziada, e o tráfego que morria no
+	// `drop` daquele grupo passaria a passar. Fail-open num firewall. Uma
+	// chain órfã que sobrevive até o próximo apply não custa nada perto
+	// disso.
+	if forwardErr != nil {
+		slog.Error("chains de grupo órfãs não foram limpas nesta passada: a forward não pôde ser reconstruída e ainda pode referenciá-las",
+			"err", forwardErr)
+	} else if live, err := s.listGroupChains(ctx); err != nil {
 		// Sem saber o que está vivo, não se apaga nada — um `delete` no
 		// escuro é pior do que uma chain órfã, que não é alcançada por
 		// ninguém desde o passo 3.

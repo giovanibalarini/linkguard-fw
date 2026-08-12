@@ -552,6 +552,39 @@ func TestReconcileGroupsReportsRulesItCouldNotRender(t *testing.T) {
 	}
 }
 
+// Se a forward NÃO pôde ser reconstruída, a forward antiga continua viva —
+// e ela ainda tem o `jump grp_orfa`. O `delete` da órfã falharia com EBUSY
+// (o nft recusa apagar chain referenciada), mas o `flush` que vem antes
+// FUNCIONA: o nft aceita esvaziar chain referenciada. O resultado seria uma
+// forward antiga ainda pulando para uma grp_orfa recém-esvaziada — se aquele
+// grupo terminava em `drop`, o tráfego que morria ali passa a passar. É
+// fail-open num firewall, e por isso o passo 4 só roda se o passo 3 deu
+// certo.
+func TestReconcileGroupsDoesNotTouchOrphansWhenTheForwardRebuildFails(t *testing.T) {
+	exec := &fakeReconcileExec{
+		readOut: map[string]string{"nft list table inet linkguard": liveTableWithOrphanGroup},
+		failOn: func(cmd string) error {
+			if cmd == "nft flush chain inet linkguard forward" {
+				return errors.New("nft: Error: Could not process rule: Device or resource busy")
+			}
+			return nil
+		},
+	}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true,
+		Fallthrough: FallthroughContinue}}
+
+	err := s.ReconcileGroups(context.Background(), groups)
+	if err == nil {
+		t.Fatal("a forward não reconstruída tem que virar apply não-ok")
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "grp_orfa") {
+			t.Errorf("mexeu na chain órfã com a forward antiga ainda pulando para ela (%q): %v", c, exec.executed)
+		}
+	}
+}
+
 // Não conseguir listar as chains vivas é motivo para não limpar órfã nenhuma
 // — nunca para desfazer o que já foi aplicado, e nunca para chutar um
 // `delete` às cegas.
