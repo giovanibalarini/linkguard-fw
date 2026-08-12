@@ -29,13 +29,23 @@ export function isSystemGroup(kind: string): boolean {
  *               carregar, ou o grupo não aparece na lista). Nunca afirmar
  *               "em vigor" nem "não está em vigor" a partir daqui.
  *  - `ok`       as linhas estão vivas e nada acima delas pode liberar antes.
- *  - `off`      o grupo do sistema está desligado: as linhas não são emitidas.
+ *  - `off`      o grupo do sistema está desligado e o firewall confirma que
+ *               as linhas não estão lá.
  *  - `not_applied` está ligado, mas o firewall não confirma as linhas na
  *               forward (reconciliação falhou ou ainda não alcançou).
+ *  - `off_but_live` está desligado no painel e as linhas continuam vivas no
+ *               firewall: o desligar não chegou ao nftables e o tráfego
+ *               segue sendo descartado.
  *  - `shadowed` está em vigor, porém depois de grupos do admin ligados, que
  *               podem decidir (accept) antes de o pacote chegar ao bloqueio.
  */
-export type BlockEnforcementStatus = 'unknown' | 'ok' | 'off' | 'not_applied' | 'shadowed';
+export type BlockEnforcementStatus =
+  | 'unknown'
+  | 'ok'
+  | 'off'
+  | 'not_applied'
+  | 'off_but_live'
+  | 'shadowed';
 
 export interface BlockEnforcement {
   status: BlockEnforcementStatus;
@@ -76,20 +86,44 @@ export function blockEnforcement(
   }
   const group = ordered[idx];
 
-  if (!group.enabled) {
-    return {
-      status: 'off',
-      reason: `O grupo "${group.name}" está desligado — as linhas de bloqueio não são emitidas.`,
-      fix: `Ligue o grupo "${group.name}" em Firewall › Grupos de regras.`,
-      above: [],
-      group,
-    };
-  }
+  // Doutrina Enabled × Applied: `enabled` é a INTENÇÃO gravada no banco,
+  // `applied` é o que o kernel tem de verdade (para um grupo do sistema, as
+  // linhas de set vivas na forward). Quem responde "este bloqueio está em
+  // vigor?" tem que perguntar ao kernel primeiro — perguntar a intenção
+  // antes é descrever o formulário, não o firewall.
+  //
+  // Era o que esta função fazia: com `enabled` checado primeiro, um toggle
+  // que gravou no banco e cuja reconciliação falhou virava "as linhas de
+  // bloqueio não são emitidas" enquanto elas continuavam vivas descartando
+  // tráfego — a doutrina invertida no único lugar em que ela foi escrita
+  // nova.
   if (!group.applied) {
+    if (!group.enabled) {
+      return {
+        status: 'off',
+        reason: `O grupo "${group.name}" está desligado — as linhas de bloqueio não são emitidas.`,
+        fix: `Ligue o grupo "${group.name}" em Firewall › Grupos de regras.`,
+        above: [],
+        group,
+      };
+    }
     return {
       status: 'not_applied',
       reason: `O firewall não confirma as linhas do grupo "${group.name}" na chain forward.`,
       fix: 'Confira a aba "Visão geral" do Firewall: a última aplicação pode ter falhado.',
+      above: [],
+      group,
+    };
+  }
+  if (!group.enabled) {
+    // Aplicado sem estar ligado: o desligar ficou só no banco. O bloqueio
+    // continua valendo, ao contrário do que o painel mostra — e dizer o
+    // contrário aqui seria afirmar que o tráfego passa enquanto o kernel o
+    // descarta.
+    return {
+      status: 'off_but_live',
+      reason: `O grupo "${group.name}" está desligado no painel, mas o firewall ainda tem as linhas de bloqueio: o tráfego continua sendo descartado.`,
+      fix: 'Confira a aba "Visão geral" do Firewall: a última aplicação pode ter falhado. Ligar e desligar o grupo de novo força uma nova tentativa.',
       above: [],
       group,
     };

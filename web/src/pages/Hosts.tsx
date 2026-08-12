@@ -94,6 +94,9 @@ export default function Hosts() {
   // mesma função que a lista de grupos usa para o aviso de ordem, para as
   // duas telas nunca discordarem sobre o mesmo bloqueio.
   const enforcement = useMemo(() => blockEnforcement(fwGroups, KIND_BLOCKED_HOSTS), [fwGroups]);
+  // `off_but_live` fica DE FORA daqui de propósito: nesse estado o kernel
+  // está descartando o tráfego: dizer "podem não estar sendo bloqueados de
+  // verdade" seria a mesma mentira ao contrário. Ele tem faixa própria.
   const notEnforced = enforcement.status === 'off' || enforcement.status === 'not_applied' || enforcement.status === 'shadowed';
 
   const openAlias = (h: NetHost) => {
@@ -178,6 +181,24 @@ export default function Hosts() {
               <p className="text-orange-300">
                 {blockedCount === 1 ? 'O host bloqueado abaixo pode não estar sendo bloqueado de verdade.' : `Os ${blockedCount} hosts bloqueados abaixo podem não estar sendo bloqueados de verdade.`}
               </p>
+              <p className="text-gray-300 text-xs mt-1">{enforcement.reason}</p>
+              <p className="text-gray-400 text-xs mt-1">
+                {enforcement.fix}{' '}
+                <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">Abrir os grupos de regras</Link>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* O inverso do aviso acima, e igualmente uma mentira se ficar calado:
+          o grupo aparece desligado no painel e o firewall continua com as
+          linhas de bloqueio. Quem desligou acha que liberou. */}
+      {enforcement.status === 'off_but_live' && (
+        <div className="card border border-yellow-500/40 bg-yellow-500/10 text-sm">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-yellow-300">O bloqueio de hosts aparece desligado, mas ainda está valendo no firewall.</p>
               <p className="text-gray-300 text-xs mt-1">{enforcement.reason}</p>
               <p className="text-gray-400 text-xs mt-1">
                 {enforcement.fix}{' '}

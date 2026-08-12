@@ -590,6 +590,11 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 const { rules } = splitGroupRules(g);
                 const active = selected?.id === g.id;
                 const notApplied = g.enabled && !g.applied;
+                // O outro lado do par Enabled × Applied, que nenhum dos dois
+                // rótulos cobria: desligado no banco e ainda vivo no
+                // firewall. "desligado" sozinho afirmaria que o grupo não
+                // vale nada enquanto o kernel ainda o avalia.
+                const staleOff = !g.enabled && g.applied;
                 const sys = SYSTEM_KINDS[g.kind];
                 const n = sys ? membersOf(g).length : rules.length;
                 const noun = sys
@@ -623,7 +628,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                       />
                       <span className="text-[11px] font-mono text-gray-600 mt-0.5 w-3 text-right shrink-0">{i + 1}</span>
                       <span
-                        className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${!g.enabled ? 'bg-gray-600' : notApplied ? 'bg-yellow-400' : 'bg-green-400'}`}
+                        className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${staleOff || notApplied ? 'bg-yellow-400' : !g.enabled ? 'bg-gray-600' : 'bg-green-400'}`}
                         aria-hidden="true"
                       />
                       <span className="min-w-0 flex-1">
@@ -639,7 +644,8 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                         <span className="block text-[11px] text-gray-500 font-mono truncate">
                           {n} {noun} · {g.has_counter ? formatCount(g.bytes, unit) : '—'}
                         </span>
-                        {!g.enabled && <span className="block text-[11px] text-gray-500">desligado</span>}
+                        {!g.enabled && !staleOff && <span className="block text-[11px] text-gray-500">desligado</span>}
+                        {staleOff && <span className="block text-[11px] text-yellow-500">desligado, ainda no firewall</span>}
                         {notApplied && <span className="block text-[11px] text-yellow-500">configurado, não aplicado</span>}
                         {above.length > 0 && g.enabled && (
                           <span className="mt-0.5 flex items-start gap-1 text-[11px] text-orange-400">
