@@ -941,3 +941,42 @@ func TestToggleRuleRefusesToReenableWhatNftRejects(t *testing.T) {
 		t.Errorf("nada podia ter entrado na chain do grupo, obtive %v", exec.chains[g.ChainName])
 	}
 }
+
+// G-4: nenhum teste provava que proto/dport/iif/oif chegam ao comando do nft
+// — só saddr/daddr. Fazer o CreateRule descartar o dport em silêncio (a linha
+// gravada no banco com a porta, a regra aplicada SEM ela: uma porta liberada
+// para todo mundo, ou um bloqueio muito mais largo do que o admin pediu)
+// passava despercebido pela suíte inteira. Cada campo é conferido sozinho,
+// para que a falta de um não seja mascarada pela presença dos outros, e
+// depois todos juntos, na ordem exata que buildRuleTokens emite.
+func TestCreateRuleRendersEveryFieldIntoTheNftCommand(t *testing.T) {
+	cases := []struct {
+		nome, corpo, esperado string
+	}{
+		{"iif", `"iif":"enp1s0"`, "iifname enp1s0 counter accept"},
+		{"oif", `"oif":"enp2s0"`, "oifname enp2s0 counter accept"},
+		{"proto sem porta", `"proto":"udp"`, "ip protocol udp counter accept"},
+		{"proto icmp", `"proto":"icmp"`, "ip protocol icmp counter accept"},
+		{"proto com porta", `"proto":"tcp","dport":"22"`, "tcp dport 22 counter accept"},
+		{"intervalo de portas", `"proto":"udp","dport":"8000-8080"`, "udp dport 8000-8080 counter accept"},
+		{"tudo junto", `"iif":"enp1s0","oif":"enp2s0","saddr":"10.0.0.1","daddr":"192.168.9.0/24","proto":"tcp","dport":"443"`,
+			"iifname enp1s0 oifname enp2s0 ip saddr 10.0.0.1 ip daddr 192.168.9.0/24 tcp dport 443 counter accept"},
+	}
+	for _, c := range cases {
+		t.Run(c.nome, func(t *testing.T) {
+			h, db, exec := newGroupTestHandlerNft(t)
+			g := createGroupViaAPI(t, h, db, `{"name":"Minhas regras","fallthrough":"continue"}`)
+			exec.executed = nil
+
+			createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"accept",`+c.corpo+`}`)
+
+			want := "add rule inet linkguard " + g.ChainName + " " + c.esperado
+			if !exec.ranWith(want) {
+				t.Errorf("o campo não chegou ao comando do nft.\nesperava: %q\nexecutado: %v", want, exec.executed)
+			}
+			if got := exec.chains[g.ChainName]; len(got) != 1 || got[0] != c.esperado {
+				t.Errorf("a chain do grupo ficou com %v, esperava [%q]", got, c.esperado)
+			}
+		})
+	}
+}
