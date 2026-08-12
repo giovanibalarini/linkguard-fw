@@ -255,6 +255,9 @@ func TestConfigDriftAlertPairsResolveEachOther(t *testing.T) {
 		{"base-deps", TypeBaseDepsMissing,
 			func(s *Service) error { return s.BaseDepsMissing("nftables — sem filtro de pacote") },
 			func(s *Service) error { return s.BaseDepsOK("nftables") }},
+		{"netsvc-deps", TypeNetsvcDepsMissing,
+			func(s *Service) error { return s.NetsvcDepsMissing("kea-dhcp4-server — sem servidor DHCP") },
+			func(s *Service) error { return s.NetsvcDepsOK("kea-dhcp4-server") }},
 	}
 
 	for _, tc := range cases {

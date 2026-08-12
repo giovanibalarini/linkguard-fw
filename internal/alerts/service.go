@@ -44,6 +44,8 @@ const (
 	TypeSecurityUpdatesNone    = "security_updates_none"
 	TypeBaseDepsMissing        = "base_deps_missing"
 	TypeBaseDepsOK             = "base_deps_ok"
+	TypeNetsvcDepsMissing      = "netsvc_deps_missing"
+	TypeNetsvcDepsOK           = "netsvc_deps_ok"
 
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
@@ -97,6 +99,7 @@ var stateAlertTypes = []string{
 	TypeDNSResolverDrift,
 	TypeSecurityUpdatesPending,
 	TypeBaseDepsMissing,
+	TypeNetsvcDepsMissing,
 }
 
 // Service manages alert generation and retrieval.
@@ -534,6 +537,33 @@ func (s *Service) SecurityUpdatesNone() error {
 	s.AutoResolve(TypeSecurityUpdatesPending, "")
 	return s.createRecovery(TypeSecurityUpdatesNone, "Sem atualizações de segurança pendentes",
 		"Não há atualizações de segurança aguardando instalação.", "")
+}
+
+// NetsvcDepsMissing raises the "the DHCP/DNS the admin asked for is not
+// running" alert: the panel accepted the configuration, but the package that
+// would serve it (kea-dhcp4-server, unbound) is not installed and LinkGuard
+// could not install it either. Critical for the same reason BaseDepsMissing
+// is: the box looks configured and is serving nothing, which is the false
+// confidence this product exists to eliminate.
+//
+// It is deliberately NOT TypeRuleError (the catch-all the DHCP/DNS apply
+// used to raise for every failure): "Firewall Rule Error" over a message
+// about a missing package tells the admin to look in the wrong place, and
+// nothing ever resolves a rule_error — while this condition does resolve,
+// the moment the package gets installed.
+func (s *Service) NetsvcDepsMissing(detail string) error {
+	return s.Create(TypeNetsvcDepsMissing, SeverityCritical, "DHCP/DNS sem os pacotes necessários",
+		detail, "")
+}
+
+// NetsvcDepsOK clears NetsvcDepsMissing and records that LinkGuard installed
+// the DHCP/DNS packages itself. Raised only on the transition — an apply
+// that had to install something — never on the routine applies that follow,
+// which would turn the recovery into noise.
+func (s *Service) NetsvcDepsOK(detail string) error {
+	s.AutoResolve(TypeNetsvcDepsMissing, "")
+	return s.createRecovery(TypeNetsvcDepsOK, "Pacotes do DHCP/DNS instalados",
+		"O LinkGuard instalou sob demanda o que faltava para servir DHCP/DNS: "+detail, "")
 }
 
 // BaseDepsMissing raises the strongest alert this package has when LinkGuard

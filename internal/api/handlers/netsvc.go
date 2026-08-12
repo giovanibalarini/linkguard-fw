@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -92,7 +92,30 @@ func (h *NetsvcHandler) doReload(ctx context.Context) error {
 	if err != nil {
 		st.Error = err.Error()
 		if h.alertSvc != nil {
-			_ = h.alertSvc.RuleError("Falha ao aplicar DHCP/DNS: " + err.Error())
+			// A missing/uninstallable package is its own condition, with its
+			// own recovery — not a "Firewall Rule Error" (see
+			// alerts.NetsvcDepsMissing).
+			var prereq *netsvc.PrereqError
+			if errors.As(err, &prereq) {
+				_ = h.alertSvc.NetsvcDepsMissing(prereq.Error())
+			} else {
+				_ = h.alertSvc.RuleError("Falha ao aplicar DHCP/DNS: " + err.Error())
+			}
+		}
+	} else if h.alertSvc != nil {
+		switch {
+		case len(res.Installed) > 0:
+			// The transition: LinkGuard brought in what the admin's feature
+			// needed. Recorded (and the missing-deps alert closed) exactly
+			// once, on the apply that installed it.
+			_ = h.alertSvc.NetsvcDepsOK(strings.Join(res.Installed, ", "))
+		default:
+			// Nothing was installed and the apply worked — including the case
+			// where the admin fixed it by hand over SSH. Close a stale
+			// missing-deps alert silently: no recovery row, no notification,
+			// just an alert that stops being red for a problem that no longer
+			// exists.
+			h.alertSvc.AutoResolve(alerts.TypeNetsvcDepsMissing, "")
 		}
 	}
 	if b, mErr := json.Marshal(st); mErr == nil {
@@ -434,9 +457,29 @@ func (h *NetsvcHandler) Preview(w http.ResponseWriter, r *http.Request) {
 
 // Apply is the "Aplicar agora" button: it gracefully reloads the backend
 // immediately (bypassing the debounce), validating the config first.
+//
+// A failure answers with the actual reason, not "erro interno do servidor".
+// That generic answer (writeInternalError) exists to keep exec stderr and
+// storage internals away from a lower-privileged role — but here it hid the
+// one thing the admin needed to read ("o pacote kea-dhcp4-server não está
+// instalado"), and hid nothing at all in practice: doReload has already
+// persisted the very same string in netsvc_last_apply, which GET /api/dhcp
+// returns to anyone with dhcp.read and the page renders in a red banner. So
+// the real error goes back on the wire, and the server-side log line the
+// generic path provided is kept explicitly.
+//
+// A missing prerequisite gets 503 rather than 500: nothing is broken, the
+// machine is just not able to serve DHCP/DNS yet, and the message says what
+// to do about it.
 func (h *NetsvcHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	if err := h.doReload(r.Context()); err != nil {
-		writeInternalError(w, fmt.Errorf("falha ao aplicar: %w", err))
+		slog.Error("falha ao aplicar DHCP/DNS", "err", err)
+		var prereq *netsvc.PrereqError
+		if errors.As(err, &prereq) {
+			writeError(w, http.StatusServiceUnavailable, prereq.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "falha ao aplicar: "+err.Error())
 		return
 	}
 	auditAction(h.db, r, "netsvc.apply", string(h.provider.Backend()), "")
