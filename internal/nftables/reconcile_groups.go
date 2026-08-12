@@ -174,15 +174,17 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 			if wanted[name] || !validGroupChainName(name) {
 				continue
 			}
-			// O nft recusa apagar chain que ainda tem regra dentro
-			// ("delete chain ... The chain must not contain any rules",
-			// nft(8)) — e uma chain órfã veio justamente de um grupo que
-			// tinha regras. Esvaziar primeiro é o que faz o delete funcionar
-			// em vez de falhar em silêncio a cada boot.
-			if _, err := s.exec.Execute(ctx, "nft", "flush", "chain", Family, Table, name); err != nil {
-				slog.Warn("não foi possível esvaziar chain de grupo órfã antes de removê-la", "chain", name, "err", err)
-				continue
-			}
+			// Delete direto, sem esvaziar antes: verificado ao vivo no nft da
+			// produção (Debian 13), `delete chain` numa chain COM regras
+			// funciona normalmente — a única restrição real é referência
+			// (um `jump` vivo apontando para ela dá "Device or resource
+			// busy"), e disso cuida a ordem dos passos 3/4 acima.
+			//
+			// Um `flush` antes não seria só supérfluo: se o delete falhasse
+			// por qualquer referência que esta reconciliação não conhece, a
+			// chain sobreviveria VAZIA — e um grupo que terminava em `drop`
+			// deixaria de bloquear. Assim, ou a chain some inteira ou nada
+			// muda, e o pior caso é uma órfã inalcançável no ruleset.
 			if _, err := s.exec.Execute(ctx, "nft", "delete", "chain", Family, Table, name); err != nil {
 				slog.Warn("não foi possível remover chain de grupo órfã", "chain", name, "err", err)
 				continue

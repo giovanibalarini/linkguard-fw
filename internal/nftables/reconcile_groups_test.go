@@ -295,12 +295,22 @@ func TestReconcileGroupsOrdersCreateBeforeJumpAndDeleteAfter(t *testing.T) {
 	}
 }
 
-// O nft recusa apagar chain que ainda tem regra dentro ("delete chain ... The
-// chain must not contain any rules"). A chain órfã, vinda de um grupo que o
-// admin apagou, quase sempre tem: ela precisa ser esvaziada antes. Sem isto o
-// `delete` falha em silêncio (só um warn no journal) e as chains órfãs vão se
-// acumulando no firewall para sempre.
-func TestReconcileGroupsFlushesOrphanChainBeforeDeletingIt(t *testing.T) {
+// A chain órfã é apagada DIRETO, sem esvaziar antes.
+//
+// A premissa contrária ("o nft recusa apagar chain que ainda tem regra
+// dentro") era falsa e estava virando invariante de teste: verificado ao
+// vivo no nft da produção (Debian 13), `delete chain` numa chain COM regras
+// funciona normalmente. A única restrição real é referência — um `jump`
+// apontando para ela dá "Device or resource busy" —, e disso quem cuida é a
+// ordem dos passos 3/4.
+//
+// O flush não era só inútil: ele criava um estado que o delete sozinho não
+// cria. Se o delete falha (qualquer referência que a reconciliação não
+// conheça), a chain sobrevive VAZIA — e um grupo que terminava em `drop`
+// deixa de bloquear. Sem o flush, ou a chain some inteira ou nada muda; a
+// pior consequência de um delete que falha vira uma chain órfã inalcançável
+// no ruleset, não um bloqueio que sumiu.
+func TestReconcileGroupsDeletesOrphanChainWithoutEmptyingItFirst(t *testing.T) {
 	exec := &fakeReconcileExec{readOut: map[string]string{
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
@@ -311,20 +321,11 @@ func TestReconcileGroupsFlushesOrphanChainBeforeDeletingIt(t *testing.T) {
 	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
-	idxFlush := indexOfCommand(exec.executed, func(c string) bool {
-		return c == "nft flush chain inet linkguard grp_orfa"
-	})
-	idxDel := indexOfCommand(exec.executed, func(c string) bool {
-		return c == "nft delete chain inet linkguard grp_orfa"
-	})
-	if idxFlush < 0 {
-		t.Fatalf("a chain órfã não foi esvaziada antes do delete: %v", exec.executed)
-	}
-	if idxDel < 0 {
+	if !ranCommand(exec.executed, "nft delete chain inet linkguard grp_orfa") {
 		t.Fatalf("chain órfã não foi removida: %v", exec.executed)
 	}
-	if idxFlush > idxDel {
-		t.Error("esvaziou a chain órfã depois de mandar apagá-la — o nft já teria recusado o delete")
+	if ranCommand(exec.executed, "nft flush chain inet linkguard grp_orfa") {
+		t.Errorf("esvaziou a chain órfã antes de apagá-la: se o delete falhar, ela sobrevive vazia e o grupo para de bloquear: %v", exec.executed)
 	}
 }
 
