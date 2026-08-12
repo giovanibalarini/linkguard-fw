@@ -335,36 +335,49 @@ func TestReconcileRefusesAForwardWhenTheGroupListIsEmpty(t *testing.T) {
 	}
 }
 
-// Depois que a trava está gravada, os dois grupos do sistema TÊM que estar
-// na lista. Se não estiverem (migração que falhou, linha apagada à mão no
-// banco), renderizar a forward a deixaria sem os bloqueios — e isso não
-// pareceria erro, pareceria um admin sem grupo nenhum. Abortar mantém o que
-// já estava valendo e mostra o problema.
+// Faltar UM dos dois já é motivo para não renderizar (migração parcial,
+// linha apagada à mão no banco, restauração incompleta): a forward sairia
+// sem aquele bloqueio, e isso não pareceria erro — pareceria um admin que
+// simplesmente não bloqueou nada. Abortar mantém o que já estava valendo e
+// mostra o problema.
+//
+// Os dois casos são medidos, e não só o primeiro: com o teste sempre
+// apagando o mesmo grupo, metade da verificação podia ser removida sem
+// nenhum teste ficar vermelho.
 func TestReconcileRefusesToRenderAForwardWithoutTheSystemGroups(t *testing.T) {
-	db := newTestDB(t)
-	svc, exec := newTestServiceWithExec(t, db)
-	ctx := context.Background()
+	for _, tc := range []struct{ nome, kind, esperado string }{
+		{"sem hosts bloqueados", nftables.GroupKindBlockedHosts, BlockedHostsGroupName},
+		{"sem destinos bloqueados", nftables.GroupKindBlocklist, BlocklistGroupName},
+	} {
+		t.Run(tc.nome, func(t *testing.T) {
+			db := newTestDB(t)
+			svc, exec := newTestServiceWithExec(t, db)
+			ctx := context.Background()
 
-	if err := svc.EnsureSystemGroups(ctx); err != nil {
-		t.Fatal(err)
-	}
-	groups, _ := db.ListFirewallGroups()
-	// simula a linha sumindo do banco depois da trava gravada
-	if _, err := db.Conn().Exec(`DELETE FROM firewall_groups WHERE id = ?`, groups[0].ID); err != nil {
-		t.Fatal(err)
-	}
+			if err := svc.EnsureSystemGroups(ctx); err != nil {
+				t.Fatal(err)
+			}
+			// simula a linha sumindo do banco depois de criada
+			if _, err := db.Conn().Exec(`DELETE FROM firewall_groups WHERE kind = ?`, tc.kind); err != nil {
+				t.Fatal(err)
+			}
 
-	err := svc.Reconcile(ctx)
-	if err == nil {
-		t.Fatal("reconciliar sem grupo do sistema tem que ser erro, não silêncio")
-	}
-	for _, cmd := range exec.executed {
-		if strings.Contains(strings.Join(cmd, " "), "flush chain") && strings.Contains(strings.Join(cmd, " "), "forward") {
-			t.Fatalf("a forward NÃO pode ter sido tocada: %q", cmd)
-		}
-	}
-	if st := svc.LastApplyStatus(); st == nil || st.OK {
-		t.Error("o apply status tem que ficar não-ok, para a faixa aparecer na tela")
+			err := svc.Reconcile(ctx)
+			if err == nil {
+				t.Fatal("reconciliar sem um dos grupos do sistema tem que ser erro, não silêncio")
+			}
+			if !strings.Contains(err.Error(), tc.esperado) {
+				t.Errorf("o erro tem que nomear o bloqueio que sumiu (%q), obtive %q", tc.esperado, err)
+			}
+			for _, cmd := range exec.executed {
+				if strings.Contains(strings.Join(cmd, " "), "flush chain") && strings.Contains(strings.Join(cmd, " "), "forward") {
+					t.Fatalf("a forward NÃO pode ter sido tocada: %q", cmd)
+				}
+			}
+			if st := svc.LastApplyStatus(); st == nil || st.OK {
+				t.Error("o apply status tem que ficar não-ok, para a faixa aparecer na tela")
+			}
+		})
 	}
 }
 
