@@ -130,3 +130,79 @@ func TestMergeGroupsSortsByPosition(t *testing.T) {
 		}
 	}
 }
+
+// Grupo do sistema (bloqueado por host/destino) não tem chain própria nem
+// jump: o conteúdo dele são as linhas de drop do named set, direto na
+// forward. Applied tem que vir de elas estarem vivas ali — não de um jump
+// que este kind de grupo nunca teve. Fixture na forma REAL do nft: o
+// `counter` já foi consumido para HasCounter/Packets/Bytes, e não sobra no
+// Expression (ver parseChainRuleLine).
+func TestMergeGroupsSystemGroupAppliedFromItsSetLines(t *testing.T) {
+	g := StoredGroup{ID: "h", Name: "Hosts bloqueados", Kind: GroupKindBlockedHosts,
+		Enabled: true, Position: 0}
+	forward := ChainInfo{Name: ForwardChain, Rules: []ChainRule{
+		{Expression: "ip saddr @blocked_hosts drop", Handle: 4, HasCounter: true, Packets: 52, Bytes: 4096},
+		{Expression: "ip daddr @blocked_hosts drop", Handle: 5, HasCounter: true, Packets: 16, Bytes: 1280},
+	}}
+
+	v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, forward)[0]
+	if !v.Applied {
+		t.Error("as linhas do set estão vivas na forward: o grupo está aplicado")
+	}
+	// O contador do grupo é a soma das linhas dele — aqui não há jump para
+	// medir, e as duas linhas juntas são o que o grupo faz.
+	if v.Packets != 68 || v.Bytes != 5376 || !v.HasCounter {
+		t.Errorf("contador do grupo do sistema errado: %+v", v)
+	}
+}
+
+// Grupo do sistema desligado (ou, aqui, ligado mas cujas linhas sumiram da
+// forward viva — ex.: reconcile ainda não rodou) não tem as linhas dele na
+// forward. Applied tem que ser false, e — crucial — HasCounter também: sem
+// nenhuma linha medida, inventar um zero mentiria "medido, deu zero" onde a
+// verdade é "não sei".
+func TestMergeGroupsSystemGroupWithoutItsLinesIsUnapplied(t *testing.T) {
+	g := StoredGroup{ID: "h", Name: "Hosts bloqueados", Kind: GroupKindBlockedHosts, Enabled: true}
+	v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, ChainInfo{Name: ForwardChain})[0]
+	if v.Applied {
+		t.Error("sem as linhas de set vivas, o bloqueio NÃO está em vigor")
+	}
+	if v.HasCounter {
+		t.Error("sem medição, HasCounter é false — nunca um zero inventado")
+	}
+}
+
+// Um grupo de sistema desligado pelo admin não tem as linhas dele na
+// forward — forwardChainRules simplesmente não as emite para um grupo
+// desligado — e isso é a verdade, não um alarme: Enabled é o que o admin
+// pediu, Applied é o que o kernel faz, e aqui os dois concordam em "não".
+func TestMergeGroupsDisabledSystemGroupIsUnappliedWithoutAlarm(t *testing.T) {
+	g := StoredGroup{ID: "h", Name: "Hosts bloqueados", Kind: GroupKindBlockedHosts, Enabled: false}
+	v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, ChainInfo{Name: ForwardChain})[0]
+	if v.Applied {
+		t.Error("grupo de sistema desligado não está aplicado, e isso é o correto")
+	}
+	if v.HasCounter {
+		t.Error("sem medição, HasCounter é false")
+	}
+}
+
+// Grupo de sistema não tem regras dentro de chain nenhuma — o conteúdo dele
+// é o named set, não uma lista de regras. O campo de regras tem que sair
+// vazio (fatia zero-length), nunca nil: um JSON `"rules": null` tem cara de
+// erro de leitura, quando na verdade é que este grupo simplesmente não usa
+// esse campo.
+func TestMergeGroupsSystemGroupHasEmptyNotNilRuleChain(t *testing.T) {
+	g := StoredGroup{ID: "h", Name: "Hosts bloqueados", Kind: GroupKindBlockedHosts, Enabled: true}
+	forward := ChainInfo{Name: ForwardChain, Rules: []ChainRule{
+		{Expression: "ip saddr @blocked_hosts drop", Handle: 4, HasCounter: true, Packets: 52, Bytes: 4096},
+		{Expression: "ip daddr @blocked_hosts drop", Handle: 5, HasCounter: true, Packets: 16, Bytes: 1280},
+	}}
+	v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, forward)[0]
+	if v.Rules.Rules == nil {
+		t.Error("Rules.Rules tem que ser fatia vazia, não nil")
+	}
+	if len(v.Rules.Rules) != 0 {
+		t.Errorf("grupo de sistema não tem regras de chain: %+v", v.Rules.Rules)
+	}
+}
