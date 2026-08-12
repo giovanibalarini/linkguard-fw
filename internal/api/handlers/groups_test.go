@@ -897,3 +897,47 @@ func TestUpdateRuleRefusesAnUnknownGroupAndLeavesTheRuleWhereItWas(t *testing.T)
 		t.Errorf("a chain do grupo tinha que continuar com a regra original, obtive %v", got)
 	}
 }
+
+// G-3: reativar é a única metade do ToggleRule que ACRESCENTA linha ao
+// firewall, e por isso a única que precisa de pré-voo. Uma regra desativada
+// nunca é validada enquanto está desativada (o create/update dela pode ter
+// sido de outra versão, o banco pode ter sido editado à mão): sem o pré-voo,
+// ligar o interruptor grava enabled=true e só então o nft recusa, no meio da
+// reconciliação — a regra fica no banco e na tela como ativada, e fora do
+// firewall. Remover o pré-voo daqui não era pego por teste nenhum.
+func TestToggleRuleRefusesToReenableWhatNftRejects(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db, `{"name":"Minhas regras","fallthrough":"continue"}`)
+
+	// Uma linha "velha" gravada direto no banco, desativada: é exatamente o
+	// caso que o pré-voo existe para pegar, porque ela nunca passou pelo
+	// create/update desta versão.
+	stale := &storage.FirewallRule{GroupID: g.ID, Action: "accept", Iif: nftRefusesToken}
+	if err := db.CreateFirewallRule(stale); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+	if err := db.SetFirewallRuleEnabled(stale.ID, false); err != nil {
+		t.Fatalf("SetFirewallRuleEnabled: %v", err)
+	}
+	exec.executed = nil
+
+	w := doJSON(t, h.ToggleRule, "POST", "/api/nftables/rules/toggle",
+		`{"id":"`+stale.ID+`","enabled":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 com a recusa do nft, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), errNftRefusedContent.Error()) {
+		t.Errorf("o 400 tem que carregar a mensagem do próprio nft, obtive %s", w.Body.String())
+	}
+
+	rules, _ := db.ListFirewallRules()
+	if len(rules) != 1 {
+		t.Fatalf("esperava a regra, obtive %+v", rules)
+	}
+	if rules[0].Enabled {
+		t.Error("a regra foi marcada como ativada mesmo com o nft recusando: o painel diria que ela vale")
+	}
+	if len(exec.chains[g.ChainName]) != 0 {
+		t.Errorf("nada podia ter entrado na chain do grupo, obtive %v", exec.chains[g.ChainName])
+	}
+}
