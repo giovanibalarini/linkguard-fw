@@ -1,9 +1,12 @@
 package storage_test
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -977,5 +980,61 @@ func TestMigrateAddsKindToExistingGroups(t *testing.T) {
 	got, _ := db.ListFirewallGroups()
 	if got[0].Kind != "" && got[0].Kind != "admin" {
 		t.Errorf("linha sem kind explícito tem que sair vazia ou admin, obtive %q", got[0].Kind)
+	}
+}
+
+// migrateAddFirewallGroupKind only ever does anything on a database created
+// before the column existed — and every other test opens a fresh one, where
+// CREATE TABLE already includes it. So the ALTER TABLE path had no coverage
+// at all: an independent review deleted the call from migrate() entirely and
+// the whole suite stayed green.
+//
+// This builds the pre-column schema by hand, then opens it through the real
+// storage.Open() twice: once to migrate, once to prove the guard makes the
+// second run a no-op. The existing row must survive with an empty kind — it
+// is the admin's group, and turning one into a system group by accident
+// would hand it protections (cannot delete, cannot rename) never asked for.
+func TestMigrateAddsKindToADatabaseCreatedBeforeTheColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("abrir banco cru: %v", err)
+	}
+	if _, err := raw.Exec(`
+        CREATE TABLE firewall_groups (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, chain_name TEXT NOT NULL UNIQUE,
+            position INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+            cond_saddr TEXT NOT NULL DEFAULT '', cond_daddr TEXT NOT NULL DEFAULT '',
+            cond_iif TEXT NOT NULL DEFAULT '', fallthrough TEXT NOT NULL DEFAULT 'continue',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO firewall_groups (id, name, chain_name, position, enabled)
+        VALUES ('velho', 'Grupo antigo do admin', 'grp_velho01', 0, 1);`); err != nil {
+		t.Fatalf("montar schema antigo: %v", err)
+	}
+	raw.Close()
+
+	for pass := 1; pass <= 2; pass++ {
+		db, err := storage.Open(path)
+		if err != nil {
+			t.Fatalf("passada %d: storage.Open: %v", pass, err)
+		}
+		groups, err := db.ListFirewallGroups()
+		if err != nil {
+			t.Fatalf("passada %d: listar: %v", pass, err)
+		}
+		if len(groups) != 1 {
+			t.Fatalf("passada %d: esperava 1 grupo preservado, obtive %d", pass, len(groups))
+		}
+		if groups[0].ID != "velho" || groups[0].Name != "Grupo antigo do admin" {
+			t.Errorf("passada %d: a linha antiga não sobreviveu: %+v", pass, groups[0])
+		}
+		if groups[0].Kind != "" {
+			t.Errorf("passada %d: linha antiga tem que ficar com kind vazio (= do admin), obtive %q",
+				pass, groups[0].Kind)
+		}
+		db.Close()
 	}
 }
