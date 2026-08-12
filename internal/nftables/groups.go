@@ -33,6 +33,23 @@ const (
 	GroupKindBlocklist    = "blocklist"
 )
 
+// Nomes de chain reservados dos dois grupos do sistema. Eles NÃO começam com
+// GroupChainPrefix, e isso não é estética: a limpeza de chains órfãs de
+// ReconcileGroups varre o ruleset vivo procurando exatamente o prefixo grp_ e
+// apaga toda chain que não corresponda a um grupo do banco. Um grupo do
+// sistema batizado de grp_… entraria nessa varredura, e a coluna chain_name é
+// NOT NULL UNIQUE (não dá para deixar vazia).
+//
+// Grupo do sistema não tem chain própria — as linhas dele moram na própria
+// forward, porque o conteúdo é um named set, não uma lista de regras. Estes
+// nomes existem só para ocupar a coluna com um valor reservado, inequívoco e
+// que nenhuma varredura de chain de grupo vai enxergar.
+// TestSystemChainNamesAreNeverTakenForGroupChains guarda essa propriedade.
+const (
+	SystemChainBlockedHosts = "sys_blocked_hosts"
+	SystemChainBlocklist    = "sys_blocklist"
+)
+
 // IsSystemGroup reporta se o grupo é mantido pelo LinkGuard em vez de criado
 // pelo admin. Deliberadamente uma lista fechada, não "!= admin": um kind
 // desconhecido (banco de uma versão futura, linha editada à mão) é tratado

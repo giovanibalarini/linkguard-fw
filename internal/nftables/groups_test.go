@@ -165,3 +165,21 @@ func TestValidateGroupAcceptsEmptyKindAsAdmin(t *testing.T) {
 		t.Fatalf("grupo sem kind tem que valer como do admin: %v", err)
 	}
 }
+
+// O nome de chain reservado dos grupos do sistema não pode, em nenhuma
+// hipótese, passar por nome de chain de grupo do admin: a limpeza de órfãs de
+// ReconcileGroups varre o ruleset pelo prefixo grp_ e apaga toda chain que não
+// corresponda a um grupo do banco.
+func TestSystemChainNamesAreNeverTakenForGroupChains(t *testing.T) {
+	for _, name := range []string{SystemChainBlockedHosts, SystemChainBlocklist} {
+		if strings.HasPrefix(name, GroupChainPrefix) {
+			t.Errorf("%q usa o prefixo das chains de grupo do admin", name)
+		}
+		if validGroupChainName(name) {
+			t.Errorf("%q é aceito como chain de grupo do admin; a limpeza de órfãs passaria a enxergá-lo", name)
+		}
+	}
+	if SystemChainBlockedHosts == SystemChainBlocklist {
+		t.Error("os dois grupos do sistema precisam de chain_name distintos (a coluna é UNIQUE)")
+	}
+}

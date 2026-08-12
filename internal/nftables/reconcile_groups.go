@@ -99,6 +99,20 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 	valid := make([]StoredGroup, 0, len(groups))
 	var failures []string
 	for _, g := range groups {
+		if IsSystemGroup(g.Kind) {
+			// Grupo do sistema não tem chain própria: o conteúdo dele é um
+			// named set e as linhas dele são emitidas direto na forward. O
+			// chain_name reservado (sys_…) existe só para ocupar a coluna NOT
+			// NULL UNIQUE do banco e nunca vai para o nft — daí ele não passar
+			// (nem precisar passar) por validGroupChainName, que cobre o
+			// formato grp_ que ReconcileGroups de fato cria e apaga.
+			//
+			// Segue na lista `valid` porque a forward é montada a partir
+			// dela, e a POSIÇÃO do bloqueio no meio dos grupos do admin é
+			// escolha do admin.
+			valid = append(valid, g)
+			continue
+		}
 		if !validGroupChainName(g.ChainName) {
 			slog.Error("grupo não aplicado: nome de chain inseguro",
 				"grupo", g.ID, "nome", g.Name, "chain", g.ChainName)
@@ -128,13 +142,22 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 		valid = append(valid, g)
 	}
 
+	// Grupo do sistema fica de fora de `wanted`: ele não tem chain viva para
+	// preservar, e o nome reservado dele não é uma chain grp_ que a limpeza de
+	// órfãs enxergue.
 	wanted := make(map[string]bool, len(valid))
 	for _, g := range valid {
+		if IsSystemGroup(g.Kind) {
+			continue
+		}
 		wanted[g.ChainName] = true
 	}
 
 	// 1. criar o que falta (idempotente: `add chain` não reclama se já existe)
 	for _, g := range valid {
+		if IsSystemGroup(g.Kind) {
+			continue // não tem chain própria
+		}
 		if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, g.ChainName); err != nil {
 			// Fatal de propósito: se nem criar chain dá certo, a tabela ou o
 			// próprio nft estão fora do ar, e seguir para o passo 3 esvaziaria
@@ -147,6 +170,9 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 	// 2. preencher cada chain
 	var skippedAll []string
 	for _, g := range valid {
+		if IsSystemGroup(g.Kind) {
+			continue // não tem chain própria: nada a preencher
+		}
 		tokenSets, skipped := renderGroupChain(g)
 		skippedAll = append(skippedAll, skipped...)
 		if err := s.rebuildChain(ctx, g.ChainName, tokenSets); err != nil {
@@ -305,6 +331,13 @@ func (s *Service) DeleteUnreferencedChain(ctx context.Context, chain string) err
 func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 	ensure := make([]string, 0, len(groups))
 	for _, g := range groups {
+		if IsSystemGroup(g.Kind) {
+			// Sem chain própria para validar — e recusá-lo aqui seria pior do
+			// que inútil: o pré-voo recebe o conjunto COMPLETO de grupos, então
+			// um "nome de chain inválido" no grupo do sistema faria toda
+			// mutação de regra do admin ser rejeitada com 400.
+			continue
+		}
 		if !validGroupChainName(g.ChainName) {
 			return fmt.Errorf("grupo %q: nome de chain inválido (%q)", g.Name, g.ChainName)
 		}

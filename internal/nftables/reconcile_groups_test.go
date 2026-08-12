@@ -1216,3 +1216,61 @@ func TestDeleteUnreferencedChainIsANoOpInDryRun(t *testing.T) {
 		t.Errorf("dry-run não pode tocar no nft: %v %v", exec.executed, exec.reads)
 	}
 }
+
+// ─── Grupo do sistema ────────────────────────────────────────────────────
+
+// Um grupo do sistema não tem chain própria: o conteúdo dele é um named set
+// (@blocked_hosts / @blocklist) e as linhas dele moram na própria forward. O
+// chain_name reservado que a migração grava (sys_…) existe só para ocupar a
+// coluna NOT NULL UNIQUE — mandá-lo para o nft criaria uma chain vazia e
+// órfã, e validá-lo como se fosse chain de grupo do admin (que só aceita
+// grp_…) marcaria os DOIS bloqueios como "não aplicados" em toda
+// reconciliação: apply não-ok eterno no painel, e o pré-voo `nft -c` de
+// CheckGroups recusando toda mutação de regra com 400.
+func TestReconcileGroupsGivesSystemGroupsNoChainAndNoFailure(t *testing.T) {
+	exec := &fakeReconcileExec{readOut: map[string]string{
+		"nft list table inet linkguard": liveTableWithOrphanGroup,
+	}}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Position: 0, Enabled: true, Fallthrough: FallthroughContinue},
+		{ID: "b", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Position: 1, Enabled: true, Fallthrough: FallthroughContinue},
+		{ID: "a", Name: "Wi-Fi", ChainName: "grp_aaa", Kind: GroupKindAdmin,
+			Position: 2, Enabled: true, Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("grupo do sistema não pode virar falha de aplicação: %v", err)
+	}
+	for _, joined := range exec.executed {
+		if strings.Contains(joined, SystemChainBlockedHosts) || strings.Contains(joined, SystemChainBlocklist) {
+			t.Errorf("o nome de chain reservado do grupo do sistema foi para o nft: %q", joined)
+		}
+	}
+}
+
+// Mesma razão, no pré-voo: CheckGroups valida o que ReconcileGroups
+// renderizaria. Recusar o grupo do sistema aqui faria criar/editar/mover
+// QUALQUER regra devolver 400, porque o pré-voo enxerga o conjunto completo
+// de grupos, não só o que está sendo mexido.
+func TestCheckGroupsDoesNotRejectSystemGroups(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Fallthrough: FallthroughContinue},
+		{ID: "a", Name: "Wi-Fi", ChainName: "grp_aaa", Kind: GroupKindAdmin,
+			Enabled: true, Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.CheckGroups(context.Background(), groups); err != nil {
+		t.Fatalf("o pré-voo recusou um grupo do sistema: %v", err)
+	}
+	for _, script := range exec.checkScripts {
+		if strings.Contains(script, SystemChainBlockedHosts) {
+			t.Errorf("o nome de chain reservado entrou no script validado pelo nft:\n%s", script)
+		}
+	}
+}

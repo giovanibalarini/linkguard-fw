@@ -228,6 +228,16 @@ func forwardChainRules(groups []StoredGroup) [][]string {
 		if !g.Enabled {
 			continue // desligar = tirar o jump; a chain e as regras continuam guardadas
 		}
+		if IsSystemGroup(g.Kind) {
+			// Os bloqueios do sistema já estão fixos no topo desta função. A
+			// linha de grupo que os representa no banco existe para lhes dar
+			// posição na lista que o admin vê e reordena; ela ainda não decide
+			// o que sai aqui, e o nome de chain reservado dela nunca vai para
+			// o nft. Ver §2.3 da spec de 2026-08-12: a forward passa a ser
+			// percorrida como uma lista única, e é aí que a posição destes
+			// dois passa a valer de verdade.
+			continue
+		}
 		if !validGroupChainName(g.ChainName) {
 			// Não é paranoia redundante: este nome sai do banco e é
 			// interpolado no argv do nft, que junta os argumentos e parseia
