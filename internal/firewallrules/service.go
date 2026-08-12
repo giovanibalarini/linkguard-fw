@@ -25,17 +25,43 @@ import (
 // whole DB-backed model exists to eliminate. See ImportOnce's doc comment.
 const ImportedSettingKey = "firewall_rules_imported"
 
+// Alerter é o lado painel-facing da verificação de invariante do Reconcile:
+// quando os grupos do sistema somem da lista depois da migração já ter
+// rodado, o apply status já fica não-ok (a faixa aparece para quem abrir a
+// tela do firewall), mas um bloqueio administrativo fora do ar é motivo para
+// alcançar o operador onde ele estiver — inclusive pelos canais de
+// notificação.
+//
+// Interface local, mesma abordagem de bootstrapdeps.Alerter e alerts.Notifier:
+// evita que este pacote importe internal/alerts, e deixa o Service utilizável
+// sem alerta nenhum (nil) nos testes e em qualquer chamador que não tenha um.
+type Alerter interface {
+	// FirewallSystemGroupsMissing abre o alerta crítico de "os bloqueios não
+	// estão mais na lista; a forward não foi reconstruída".
+	FirewallSystemGroupsMissing(detail string) error
+	// FirewallSystemGroupsOK fecha esse alerta quando a lista volta ao normal.
+	// Só anuncia recuperação se havia mesmo algo aberto.
+	FirewallSystemGroupsOK()
+}
+
 // Service combines the DB (source of truth for the admin's rules) and the
 // nftables service (renders them into the live user_rules chain).
 type Service struct {
-	db  *storage.DB
-	nft *nftables.Service
+	db      *storage.DB
+	nft     *nftables.Service
+	alerter Alerter
 }
 
 // NewService creates a firewallrules Service.
 func NewService(db *storage.DB, nft *nftables.Service) *Service {
 	return &Service{db: db, nft: nft}
 }
+
+// SetAlerter liga o serviço de alertas depois da construção (o alerts.Service
+// e este são criados no mesmo bloco do main, e nenhum precisa do outro para
+// existir). Opcional: sem alerter, a verificação de invariante continua
+// abortando e gravando o apply status — só não abre alerta.
+func (s *Service) SetAlerter(a Alerter) { s.alerter = a }
 
 // ImportOnce migrates a box upgrading from Phase A: its admin rules exist
 // only inside nft's user_rules chain, identified by a volatile handle, and
@@ -309,6 +335,25 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		s.recordApplyStatus(err)
 		return err
 	}
+
+	// A defesa: depois da migração, a chain forward só pode ser reconstruída
+	// se os dois grupos do sistema estiverem na lista — senão ela sairia sem
+	// os bloqueios administrativos, e isso não pareceria erro. Vem ANTES de
+	// ReconcileGroups de propósito: nenhum comando do nft é emitido, então a
+	// forward viva continua sendo a última que foi aplicada com sucesso, com
+	// os bloqueios dentro. Ver ensureSystemGroupsPresent.
+	if err := s.ensureSystemGroupsPresent(groups); err != nil {
+		s.recordApplyStatus(err)
+		if s.alerter != nil {
+			_ = s.alerter.FirewallSystemGroupsMissing(err.Error())
+		}
+		slog.Error("reconciliação abortada antes de tocar no nft: os grupos do sistema não estão na lista", "err", err)
+		return err
+	}
+	if s.alerter != nil {
+		s.alerter.FirewallSystemGroupsOK()
+	}
+
 	applyErr := s.nft.ReconcileGroups(ctx, groups)
 	s.recordApplyStatus(applyErr)
 

@@ -47,6 +47,9 @@ const (
 	TypeNetsvcDepsMissing      = "netsvc_deps_missing"
 	TypeNetsvcDepsOK           = "netsvc_deps_ok"
 
+	TypeFirewallSystemGroupsMissing = "firewall_system_groups_missing"
+	TypeFirewallSystemGroupsOK      = "firewall_system_groups_ok"
+
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
 	SeverityCritical = "critical"
@@ -100,6 +103,7 @@ var stateAlertTypes = []string{
 	TypeSecurityUpdatesPending,
 	TypeBaseDepsMissing,
 	TypeNetsvcDepsMissing,
+	TypeFirewallSystemGroupsMissing,
 }
 
 // Service manages alert generation and retrieval.
@@ -590,6 +594,44 @@ func (s *Service) BaseDepsMissing(detail string) error {
 // restart. No-op when nothing is open.
 func (s *Service) BaseDepsPresent() {
 	s.AutoResolve(TypeBaseDepsMissing, "")
+}
+
+// FirewallSystemGroupsMissing raises the critical alert that says the two
+// system groups (blocked hosts, blocked destinations) are no longer in the
+// group list even though the migration that creates them has already run —
+// which is why internal/firewallrules.Service.Reconcile refused to rebuild
+// the forward chain. The firewall is still enforcing whatever was last
+// applied; what is broken is the ability to apply anything new, and the
+// reason is that applying it would drop the administrative blocks.
+func (s *Service) FirewallSystemGroupsMissing(detail string) error {
+	return s.Create(TypeFirewallSystemGroupsMissing, SeverityCritical,
+		"Bloqueios fora da lista de grupos", detail, "")
+}
+
+// FirewallSystemGroupsOK closes the alert above once the list is whole
+// again — and announces the recovery, but ONLY when something was actually
+// open. Reconcile calls this on every successful pass (every boot and every
+// rule mutation), so announcing unconditionally would file a recovery row
+// each time and bury the alert list under history, the same pileup
+// createRecovery's doc comment describes.
+func (s *Service) FirewallSystemGroupsOK() {
+	open, err := s.db.GetAlerts(true, 0)
+	if err != nil {
+		return
+	}
+	found := false
+	for _, a := range open {
+		if a.Type == TypeFirewallSystemGroupsMissing && a.LinkID == "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+	s.AutoResolve(TypeFirewallSystemGroupsMissing, "")
+	_ = s.createRecovery(TypeFirewallSystemGroupsOK, "Bloqueios de volta na lista de grupos",
+		"Os grupos do sistema voltaram a aparecer na lista e a chain forward foi reconstruída com os bloqueios.", "")
 }
 
 func (s *Service) BaseDepsOK(detail string) error {

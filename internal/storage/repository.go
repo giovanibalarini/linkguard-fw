@@ -1784,6 +1784,63 @@ func (db *DB) MigrateRulesIntoGroup(g FirewallGroup, settingKey, settingValue st
 	return tx.Commit()
 }
 
+// CreateSystemGroups insere os grupos que o próprio LinkGuard mantém (os dois
+// bloqueios) no TOPO da lista e grava a trava de "isto já rodou" — tudo numa
+// transação só, mesma disciplina de MigrateRulesIntoGroup e ImportFirewallRules,
+// pela mesma razão: a trava gravada com só um dos dois grupos inseridos deixaria
+// o outro bloqueio fora da lista para sempre (a trava impede uma segunda
+// tentativa), e é a lista que passa a decidir se o bloqueio existe no firewall.
+//
+// O deslocamento (`position = position + n`) vem ANTES dos INSERTs e abre
+// exatamente n posições no topo: os grupos do admin continuam na mesma ordem
+// relativa, só empurrados para depois dos bloqueios — que é o padrão que já
+// está valendo em produção (bloqueio vence regra do admin). Reordenar depois é
+// escolha do admin, não desta migração.
+//
+// Position é atribuída aqui como o índice de cada linha em rows, não pelo
+// chamador — mesmo esquema sequencial-a-partir-do-zero de ImportFirewallRules,
+// para uma inserção em lote nunca colidir com o que o CRUD normal produz.
+// Enabled vai exatamente como veio na linha.
+func (db *DB) CreateSystemGroups(rows []FirewallGroup, settingKey, settingValue string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+
+	now := time.Now()
+	if len(rows) > 0 {
+		if _, err := tx.Exec(
+			`UPDATE firewall_groups SET position = position + ?, updated_at = ?`, len(rows), now); err != nil {
+			return err
+		}
+	}
+
+	stmt, err := tx.Prepare(`
+        INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
+            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for i, g := range rows {
+		if _, err := stmt.Exec(g.ID, g.Name, g.ChainName, i, g.Enabled,
+			g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, now, now); err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.Exec(`
+        INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		settingKey, settingValue, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (db *DB) SetFirewallGroupEnabled(id string, enabled bool) error {
 	res, err := db.conn.Exec(
 		`UPDATE firewall_groups SET enabled=?, updated_at=? WHERE id=?`,

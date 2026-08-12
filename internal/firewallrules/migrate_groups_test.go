@@ -59,6 +59,154 @@ func newTestService(t *testing.T, db *storage.DB) *Service {
 	return svc
 }
 
+func TestEnsureSystemGroupsCreatesBothAtTheTop(t *testing.T) {
+	db := newTestDB(t)
+	// um grupo do admin que já existe, na posição 0
+	g := storage.FirewallGroup{ID: "a", Name: "Meu grupo", ChainName: "grp_aaa",
+		Position: 0, Enabled: true, Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatal(err)
+	}
+	svc := newTestService(t, db)
+
+	if err := svc.EnsureSystemGroups(context.Background()); err != nil {
+		t.Fatalf("criar grupos do sistema: %v", err)
+	}
+
+	got, _ := db.ListFirewallGroups()
+	if len(got) != 3 {
+		t.Fatalf("esperava 3 grupos, obtive %d: %+v", len(got), got)
+	}
+	// Os dois do sistema nas posições 0 e 1, o do admin empurrado para 2:
+	// o padrão continua sendo bloqueio primeiro.
+	if !nftables.IsSystemGroup(got[0].Kind) || !nftables.IsSystemGroup(got[1].Kind) {
+		t.Errorf("os dois primeiros têm que ser do sistema: %+v", got)
+	}
+	if got[2].ID != "a" {
+		t.Errorf("o grupo do admin foi para o fim: %+v", got)
+	}
+}
+
+// A trava é "já rodou", não "a tabela tem grupo do sistema": senão o boot
+// seguinte ressuscita o que o admin apagou ou desligou de propósito.
+func TestEnsureSystemGroupsIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	svc := newTestService(t, db)
+	ctx := context.Background()
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	groups, _ := db.ListFirewallGroups()
+	// o admin desliga um deles
+	if err := db.SetFirewallGroupEnabled(groups[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := db.ListFirewallGroups()
+	if len(after) != 2 {
+		t.Fatalf("rodou de novo e duplicou: %+v", after)
+	}
+	for _, x := range after {
+		if x.ID == groups[0].ID && x.Enabled {
+			t.Error("religou um grupo que o admin desligou de propósito")
+		}
+	}
+}
+
+// Depois que a trava está gravada, os dois grupos do sistema TÊM que estar
+// na lista. Se não estiverem (migração que falhou, linha apagada à mão no
+// banco), renderizar a forward a deixaria sem os bloqueios — e isso não
+// pareceria erro, pareceria um admin sem grupo nenhum. Abortar mantém o que
+// já estava valendo e mostra o problema.
+func TestReconcileRefusesToRenderAForwardWithoutTheSystemGroups(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newTestServiceWithExec(t, db)
+	ctx := context.Background()
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	groups, _ := db.ListFirewallGroups()
+	// simula a linha sumindo do banco depois da trava gravada
+	if _, err := db.Conn().Exec(`DELETE FROM firewall_groups WHERE id = ?`, groups[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	err := svc.Reconcile(ctx)
+	if err == nil {
+		t.Fatal("reconciliar sem grupo do sistema tem que ser erro, não silêncio")
+	}
+	for _, cmd := range exec.executed {
+		if strings.Contains(strings.Join(cmd, " "), "flush chain") && strings.Contains(strings.Join(cmd, " "), "forward") {
+			t.Fatalf("a forward NÃO pode ter sido tocada: %q", cmd)
+		}
+	}
+	if st := svc.LastApplyStatus(); st == nil || st.OK {
+		t.Error("o apply status tem que ficar não-ok, para a faixa aparecer na tela")
+	}
+}
+
+// Criar os dois grupos do sistema não pode custar nada ao firewall que já
+// está valendo: a reconciliação seguinte tem que dar certo, o apply tem que
+// ficar ok e a forward tem que continuar com os quatro bloqueios. Sem esta
+// asserção, "migrou" significaria só "mexeu no banco" — e o custo real seria
+// invisível aqui: o nome de chain reservado dos grupos do sistema não é um
+// grp_, então tratá-los como grupo do admin marca os DOIS como não aplicados
+// em toda passada (faixa vermelha eterna no painel) e faz o pré-voo `nft -c`
+// recusar qualquer mutação de regra com 400.
+func TestReconcileStaysHealthyAfterTheSystemGroupsAreCreated(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newTestServiceWithExec(t, db)
+	ctx := context.Background()
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Reconcile(ctx); err != nil {
+		t.Fatalf("reconciliar com os grupos do sistema na lista: %v", err)
+	}
+	if st := svc.LastApplyStatus(); st == nil || !st.OK {
+		t.Errorf("o apply tem que ficar ok depois da migração: %+v", st)
+	}
+
+	// O pré-voo de toda mutação enxerga o conjunto COMPLETO de grupos.
+	groups, err := svc.StoredGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckPendingGroups(ctx, groups); err != nil {
+		t.Errorf("o pré-voo passou a recusar tudo por causa dos grupos do sistema: %v", err)
+	}
+
+	var forward []string
+	for _, cmd := range exec.executed {
+		j := strings.Join(cmd, " ")
+		if strings.HasPrefix(j, "add rule inet linkguard forward ") {
+			forward = append(forward, j)
+		}
+	}
+	for _, want := range []string{
+		"ip saddr @blocked_hosts counter drop",
+		"ip daddr @blocked_hosts counter drop",
+		"ip daddr @blocklist counter drop",
+		"ip saddr @blocklist counter drop",
+	} {
+		found := false
+		for _, line := range forward {
+			if strings.HasSuffix(line, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("a forward perdeu o bloqueio %q: %v", want, forward)
+		}
+	}
+}
+
 func TestMigrateCreatesDefaultGroupAndAdoptsRulesInOrder(t *testing.T) {
 	db := newTestDB(t)
 	for i, r := range []storage.FirewallRule{
