@@ -70,6 +70,20 @@ func (h *NftablesHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Nomeia, na descrição de cada jump para um grupo, o nome que o admin deu
+	// a ele — ApplyGroupNames é a única coisa aqui que sabe de grupos;
+	// ListRuleset/MergeUserRules acima não precisam (nem devem) saber.
+	groups, err := h.db.ListFirewallGroups()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	groupNames := make(map[string]string, len(groups))
+	for _, g := range groups {
+		groupNames[g.ChainName] = g.Name
+	}
+	nftables.ApplyGroupNames(chains, groupNames)
+
 	writeJSON(w, http.StatusOK, chains)
 }
 

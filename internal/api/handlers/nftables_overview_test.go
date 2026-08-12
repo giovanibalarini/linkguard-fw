@@ -132,6 +132,71 @@ func TestOverviewCarriesCountersOwnershipAndDescription(t *testing.T) {
 	}
 }
 
+// TestOverviewNamesTheGroupOnAJump proves the handler resolves a group jump
+// line's chain to the admin-given name from the DB (nftables.ApplyGroupNames
+// wired into Overview), rather than leaving describeRule's generic fallback
+// on screen — the whole point of Task 6.
+func TestOverviewNamesTheGroupOnAJump(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	g := newRuleGroup(t, db)
+
+	fixture := `table inet linkguard {
+	chain user_rules {
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		jump user_rules
+		ip saddr 192.168.50.0/24 counter packets 0 bytes 0 jump ` + g.ChainName + `
+	}
+}
+`
+	svc := nftables.NewService(&fakeOverviewExec{table: fixture})
+	fr := firewallrules.NewService(db, svc)
+	h := handlers.NewNftablesHandler(svc, db, fr)
+
+	r := httptest.NewRequest("GET", "/api/nftables/overview", nil)
+	w := httptest.NewRecorder()
+	h.Overview(w, r)
+	if w.Code != 200 {
+		t.Fatalf("Overview: status %d, body %s", w.Code, w.Body.String())
+	}
+
+	var chains []nftables.ChainInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &chains); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var fwd *nftables.ChainInfo
+	for i := range chains {
+		if chains[i].Name == "forward" {
+			fwd = &chains[i]
+		}
+	}
+	if fwd == nil {
+		t.Fatal("forward chain missing from response")
+	}
+	var jumpRule *nftables.ChainRule
+	for i := range fwd.Rules {
+		if strings.Contains(fwd.Rules[i].Expression, g.ChainName) {
+			jumpRule = &fwd.Rules[i]
+		}
+	}
+	if jumpRule == nil {
+		t.Fatalf("group jump rule missing from forward chain: %+v", fwd.Rules)
+	}
+	if !strings.Contains(jumpRule.Description, g.Name) {
+		t.Errorf("description must name the group %q, got %q", g.Name, jumpRule.Description)
+	}
+	if !strings.Contains(jumpRule.Description, "192.168.50.0/24") {
+		t.Errorf("description must say when the group is evaluated, got %q", jumpRule.Description)
+	}
+}
+
 func TestOverviewPropagatesNftErrors(t *testing.T) {
 	svc := nftables.NewService(&failingExec{})
 	// db/fr stay nil: ListRuleset fails before Overview ever touches either.
