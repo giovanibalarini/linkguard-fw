@@ -1136,3 +1136,83 @@ func TestListGroupChainsSeesOnlyGroupChains(t *testing.T) {
 		t.Errorf("a listagem tem que ser escopada na tabela do LinkGuard, leu: %v", exec.reads)
 	}
 }
+
+// ─── DeleteUnreferencedChain: a remoção da chain legada user_rules ───────
+
+// A tentação é dar `flush` antes do `delete` "para garantir". Num firewall
+// isso inverte o risco: o nft ACEITA esvaziar uma chain ainda referenciada e
+// RECUSA apagá-la. Se a forward ainda tiver o jump (reconstrução falhou,
+// ruleset restaurado de um boot antigo), o flush passa, o delete falha, e
+// sobra uma chain viva e VAZIA — o tráfego que as regras do admin
+// bloqueavam ali passa a passar. Sem o flush, ou a chain some inteira ou
+// nada muda.
+func TestDeleteUnreferencedChainNeverFlushesBeforeDeleting(t *testing.T) {
+	exec := &fakeReconcileExec{readOut: map[string]string{
+		"nft list chain inet linkguard user_rules": "table inet linkguard {\n\tchain user_rules {\n\t\ttcp dport 22 counter accept\n\t}\n}\n",
+	}}
+	s := &Service{exec: exec}
+
+	if err := s.DeleteUnreferencedChain(context.Background(), UserChain); err != nil {
+		t.Fatalf("DeleteUnreferencedChain: %v", err)
+	}
+	for _, c := range exec.executed {
+		if strings.HasPrefix(c, "nft flush chain") && strings.Contains(c, UserChain) {
+			t.Errorf("a chain legada não pode ser esvaziada antes de removida: %q", c)
+		}
+	}
+	if !ranCommand(exec.executed, "nft delete chain inet linkguard user_rules") {
+		t.Errorf("a chain legada não foi removida: %v", exec.executed)
+	}
+}
+
+// Isto roda em todo boot depois da migração. Numa máquina onde a chain sumiu
+// há semanas, ela não pode nem tentar apagar nem devolver erro — viraria
+// ruído permanente no log e um apply não-ok eterno.
+func TestDeleteUnreferencedChainIsQuietWhenTheChainIsAlreadyGone(t *testing.T) {
+	exec := &fakeReconcileExec{readErr: errors.New("nft: Error: No such file or directory")}
+	s := &Service{exec: exec}
+
+	if err := s.DeleteUnreferencedChain(context.Background(), UserChain); err != nil {
+		t.Fatalf("chain inexistente não é erro: %v", err)
+	}
+	for _, c := range exec.executed {
+		if strings.HasPrefix(c, "nft delete chain") {
+			t.Errorf("não se apaga uma chain que não está lá: %q", c)
+		}
+	}
+}
+
+// O nft recusando o delete (a forward ainda referencia a chain: "Device or
+// resource busy") tem que chegar ao chamador — é ele que decide o que
+// registrar. O que não pode é a chain ter sido mexida assim mesmo.
+func TestDeleteUnreferencedChainSurfacesTheRefusal(t *testing.T) {
+	exec := &fakeReconcileExec{
+		readOut: map[string]string{"nft list chain inet linkguard user_rules": "table inet linkguard {\n\tchain user_rules {\n\t}\n}\n"},
+		failOn: func(cmd string) error {
+			if strings.HasPrefix(cmd, "nft delete chain") {
+				return errors.New("Device or resource busy")
+			}
+			return nil
+		},
+	}
+	s := &Service{exec: exec}
+
+	err := s.DeleteUnreferencedChain(context.Background(), UserChain)
+	if err == nil {
+		t.Fatal("esperava a recusa do nft chegando ao chamador")
+	}
+	if !strings.Contains(err.Error(), "Device or resource busy") {
+		t.Errorf("a mensagem do nft tem que ser preservada, obtive %q", err)
+	}
+}
+
+func TestDeleteUnreferencedChainIsANoOpInDryRun(t *testing.T) {
+	exec := &fakeReconcileExec{dryRun: true}
+	s := &Service{exec: exec}
+	if err := s.DeleteUnreferencedChain(context.Background(), UserChain); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if len(exec.executed) != 0 || len(exec.reads) != 0 {
+		t.Errorf("dry-run não pode tocar no nft: %v %v", exec.executed, exec.reads)
+	}
+}

@@ -322,3 +322,99 @@ func TestFirewallRulesImportedSettingRoundTrips(t *testing.T) {
 		t.Fatalf("expected the import guard to stick, got %q", val)
 	}
 }
+
+// ─── firewall_groups: a migração única (Fase C1) ──────────────────────────
+
+func TestMigrateRulesIntoGroupAdoptsOrphansAndSetsTheGuardAtomically(t *testing.T) {
+	db := newTestDB(t)
+
+	solta := &storage.FirewallRule{Action: "drop", Daddr: "203.0.113.0/24"}
+	if err := db.CreateFirewallRule(solta); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+	outro := &storage.FirewallGroup{ID: "grupo-existente", Name: "Wi-Fi",
+		ChainName: "grp_ffffffffffff", Enabled: true, Fallthrough: "drop"}
+	if err := db.CreateFirewallGroup(outro); err != nil {
+		t.Fatalf("CreateFirewallGroup: %v", err)
+	}
+	jaAgrupada := &storage.FirewallRule{GroupID: outro.ID, Action: "accept", Proto: "tcp", Dport: "443"}
+	if err := db.CreateFirewallRule(jaAgrupada); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+
+	g := storage.FirewallGroup{ID: "grupo-novo", Name: "Minhas regras",
+		ChainName: "grp_aaaaaaaaaaaa", Enabled: true, Fallthrough: "continue"}
+	if err := db.MigrateRulesIntoGroup(g, "firewall_groups_migrated", "true"); err != nil {
+		t.Fatalf("MigrateRulesIntoGroup: %v", err)
+	}
+
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("esperava o grupo novo ao lado do que já existia, obtive %+v", groups)
+	}
+	all, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	for _, r := range all {
+		switch r.ID {
+		case solta.ID:
+			if r.GroupID != g.ID {
+				t.Errorf("a regra solta não foi adotada pelo grupo novo: %+v", r)
+			}
+		case jaAgrupada.ID:
+			if r.GroupID != outro.ID {
+				t.Errorf("a regra que já tinha grupo foi movida: %+v", r)
+			}
+		}
+	}
+	flag, err := db.GetSetting("firewall_groups_migrated")
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if flag != "true" {
+		t.Fatalf("esperava a trava gravada na mesma transação, obtive %q", flag)
+	}
+}
+
+// A trava gravada com só metade das regras adotadas deixaria a outra metade
+// órfã — exibida no painel e ausente do firewall — sem nunca mais ter uma
+// segunda chance de ser adotada, porque a trava impede a migração de rodar
+// de novo. Ou tudo, ou nada.
+func TestMigrateRulesIntoGroupRollsBackEverythingOnFailure(t *testing.T) {
+	db := newTestDB(t)
+
+	solta := &storage.FirewallRule{Action: "drop", Daddr: "203.0.113.0/24"}
+	if err := db.CreateFirewallRule(solta); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+	const dupID = "id-repetido"
+	if err := db.CreateFirewallGroup(&storage.FirewallGroup{ID: dupID, Name: "Já existe",
+		ChainName: "grp_bbbbbbbbbbbb", Enabled: true, Fallthrough: "continue"}); err != nil {
+		t.Fatalf("CreateFirewallGroup: %v", err)
+	}
+
+	g := storage.FirewallGroup{ID: dupID, Name: "Minhas regras",
+		ChainName: "grp_aaaaaaaaaaaa", Enabled: true, Fallthrough: "continue"}
+	if err := db.MigrateRulesIntoGroup(g, "firewall_groups_migrated", "true"); err == nil {
+		t.Fatal("esperava erro do INSERT com id duplicado")
+	}
+
+	all, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if all[0].GroupID != "" {
+		t.Errorf("a adoção tinha que ter voltado atrás junto com o INSERT: %+v", all[0])
+	}
+	flag, err := db.GetSetting("firewall_groups_migrated")
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if flag != "" {
+		t.Fatalf("a trava não pode ficar gravada numa migração que falhou, obtive %q", flag)
+	}
+}

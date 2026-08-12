@@ -252,6 +252,40 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 	return nil
 }
 
+// DeleteUnreferencedChain remove do ruleset uma chain que ninguém mais
+// alcança — hoje, a user_rules depois de a migração para grupos ter tirado o
+// `jump` dela da forward (ver
+// internal/firewallrules.Service.MigrateRulesIntoDefaultGroup).
+//
+// Não é "DeleteChainIfEmpty", e a diferença é deliberada: NÃO existe flush
+// antes do delete. Verificado ao vivo no nft da produção (Debian 13),
+// `delete chain` numa chain COM regras funciona; a única restrição real é
+// referência — um `jump` vivo apontando para ela dá "Device or resource
+// busy". Um flush "para garantir" não seria só supérfluo: se o delete
+// falhasse justamente por ainda haver referência (o nft ACEITA esvaziar
+// chain referenciada), a chain sobreviveria VAZIA e ainda alcançada, e todo
+// tráfego que as regras do admin bloqueavam ali passaria a passar. Fail-open
+// num firewall, causado pela linha que existia para "garantir". Assim, ou a
+// chain some inteira ou nada muda — e o pior caso é uma chain inalcançável
+// no ruleset, sem efeito nenhum sobre o tráfego, que a próxima passada
+// remove. É a mesma escolha, pela mesma razão, do passo 4 de ReconcileGroups.
+//
+// "Não existe" não é erro: isto é chamado em todo boot depois da migração e
+// não pode virar ruído no log de uma máquina onde a chain sumiu há semanas.
+func (s *Service) DeleteUnreferencedChain(ctx context.Context, chain string) error {
+	if s.exec.IsDryRun() {
+		return nil
+	}
+	if _, err := s.exec.ExecuteRead(ctx, "nft", "list", "chain", Family, Table, chain); err != nil {
+		return nil // não existe mais: nada a fazer
+	}
+	if _, err := s.exec.Execute(ctx, "nft", "delete", "chain", Family, Table, chain); err != nil {
+		return fmt.Errorf("remover chain %s: %w", chain, err)
+	}
+	slog.Info("chain legada removida do ruleset", "chain", chain)
+	return nil
+}
+
 // CheckGroups valida, com um dry run só de parsing (`nft -c`), exatamente
 // as chains que ReconcileGroups renderizaria — mesma renderização, mesma
 // ordem — para que uma regra que passa aqui esteja garantida de virar os

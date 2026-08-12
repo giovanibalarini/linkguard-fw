@@ -1742,6 +1742,47 @@ func (db *DB) DeleteFirewallGroup(id string) error {
 	return tx.Commit()
 }
 
+// MigrateRulesIntoGroup cria o grupo g, adota nele TODAS as regras que ainda
+// não têm grupo, e grava a trava — tudo numa transação só. Se qualquer parte
+// falhar, nada acontece: a alternativa seria a trava gravada com metade das
+// regras adotadas, e a outra metade ficaria órfã, exibida no painel e
+// ausente do firewall — sem segunda chance, já que a trava impediria a
+// migração de rodar de novo. É a mesma disciplina de ImportFirewallRules
+// (I-5), pela mesma razão.
+//
+// O UPDATE é escopado em `group_id = ”` de propósito: adota só o que está
+// solto. Um UPDATE sem essa cláusula jogaria para dentro de "Minhas regras"
+// grupos que o admin já tinha organizado.
+func (db *DB) MigrateRulesIntoGroup(g FirewallGroup, settingKey, settingValue string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+
+	now := time.Now()
+	if _, err := tx.Exec(`
+        INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
+            cond_saddr, cond_daddr, cond_iif, fallthrough, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
+		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE firewall_rules SET group_id = ?, updated_at = ? WHERE group_id = ''`,
+		g.ID, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+        INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		settingKey, settingValue, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (db *DB) SetFirewallGroupEnabled(id string, enabled bool) error {
 	res, err := db.conn.Exec(
 		`UPDATE firewall_groups SET enabled=?, updated_at=? WHERE id=?`,
