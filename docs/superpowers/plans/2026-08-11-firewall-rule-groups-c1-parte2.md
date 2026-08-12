@@ -842,7 +842,12 @@ git commit -m "feat(web): aba de bloqueios e direcionamento, e reorganização d
 
 1. `go build ./... && go vet ./... && go test -count=1 ./...` — tudo limpo.
 2. `cd web && npx tsc --noEmit && npm run build`.
-3. VM: `~/linkguard-testvm/recreate.sh`, instalar o `.deb`, e provar **contra o nft real**:
+3. VM: `~/linkguard-testvm/recreate.sh`. **A VM nasce pelada, de propósito** — o
+   cloud-init não instala nada. Instale com `apt install ./linkguard-fw_*.deb`
+   (não `dpkg -i`), que resolve os `Depends` e prova que a lista está completa;
+   o que está em `Recommends` é o LinkGuard que tem que trazer sob demanda, ou
+   dizer claramente que não conseguiu. Uma VM pré-preparada testa um terreno
+   arrumado por nós, não o que o cliente tem. Então provar, **contra o nft real**:
    - criar dois grupos com condições diferentes e conferir com `nft list chain inet linkguard forward` que os bloqueios vêm antes dos `jump`, e os `jump` na ordem configurada;
    - desligar um grupo e conferir que o `jump` sumiu **e** que a chain e as regras continuam lá;
    - arrastar no Firefox e conferir a nova ordem no `nft`;
