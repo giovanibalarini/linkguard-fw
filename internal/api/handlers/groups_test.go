@@ -1217,3 +1217,82 @@ func TestCreateGroupNeverProducesASystemGroup(t *testing.T) {
 		}
 	}
 }
+
+// systemGroupID devolve o id do primeiro grupo do sistema da máquina de
+// teste — os bloqueios, criados por EnsureSystemGroups como no boot.
+func systemGroupID(t *testing.T, db *storage.DB) string {
+	t.Helper()
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	for _, g := range groups {
+		if nftables.IsSystemGroup(g.Kind) {
+			return g.ID
+		}
+	}
+	t.Fatal("o ambiente de teste tem que ter os grupos do sistema criados")
+	return ""
+}
+
+// C-1 da revisão final: uma regra estacionada dentro de um grupo do sistema
+// some do firewall e o apply diz "ok". O grupo do sistema não tem chain de
+// regras do admin: o conteúdo dele é o named set. CheckGroups pula grupo de
+// sistema, ReconcileGroups pula nos passos 1 e 2, e MergeGroups devolve
+// Rules: [] para ele — cada camada certa isoladamente, e o resultado é que
+// o pré-voo aceita, o reconcile devolve nil (status "ok" na tela) e nenhum
+// comando emitido contém a regra. Ela fica no banco, fora do nft, e não
+// aparece em tela nenhuma. Não dá para chegar lá por clique hoje, mas
+// qualquer cliente com firewall.write chega — e requireGroup é o único lugar
+// que ainda pode avisar o admin, antes da escrita.
+func TestCreateRuleRefusesASystemGroup(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	sysID := systemGroupID(t, db)
+	exec.executed = nil
+
+	w := doJSON(t, h.CreateRule, "POST", "/api/nftables/rules",
+		`{"group_id":"`+sysID+`","action":"drop","saddr":"10.0.0.5"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 para regra em grupo do sistema, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "grupo do sistema") {
+		t.Errorf("a mensagem tem que explicar que o grupo é do sistema, obtive %s", w.Body.String())
+	}
+
+	rules, _ := db.ListFirewallRules()
+	if len(rules) != 0 {
+		t.Fatalf("a regra chegou ao banco e nunca vai existir no nft: %+v", rules)
+	}
+	if exec.ranWith("10.0.0.5") {
+		t.Errorf("nada com a regra podia ter sido executado: %v", exec.executed)
+	}
+}
+
+// O PUT é o caso pior: a regra JÁ vale no firewall. Movê-la para um grupo do
+// sistema a apagava da chain viva e devolvia HTTP 200 — o admin vê a regra
+// na tela, o kernel não a tem mais.
+func TestUpdateRuleRefusesToMoveARuleIntoASystemGroup(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	sysID := systemGroupID(t, db)
+	g := createGroupViaAPI(t, h, db, `{"name":"Minhas regras","fallthrough":"continue"}`)
+	rule := createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	exec.executed = nil
+
+	w := doJSON(t, h.UpdateRule, "PUT", "/api/nftables/rules",
+		`{"id":"`+rule.ID+`","group_id":"`+sysID+`","action":"drop","saddr":"10.0.0.5"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 ao mover regra para grupo do sistema, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "grupo do sistema") {
+		t.Errorf("a mensagem tem que explicar que o grupo é do sistema, obtive %s", w.Body.String())
+	}
+
+	rules, _ := db.ListFirewallRules()
+	if len(rules) != 1 || rules[0].GroupID != g.ID {
+		t.Fatalf("a regra tinha que continuar no grupo do admin, obtive %+v", rules)
+	}
+	// O que decide é o kernel: a linha tinha que continuar viva na chain.
+	if got := exec.chains[g.ChainName]; len(got) != 1 || !strings.Contains(got[0], "10.0.0.5") {
+		t.Errorf("a regra sumiu do firewall com a edição recusada, chain=%v", got)
+	}
+}

@@ -328,6 +328,15 @@ func (h *NftablesHandler) findRule(w http.ResponseWriter, id string) (storage.Fi
 // from nft, which is precisely the false confidence this panel exists to
 // eliminate. Refusing it here, before the write, is the only place that can
 // still tell the admin.
+//
+// Um grupo do sistema é recusado pela mesma razão, e o estrago é ainda mais
+// calado: o conteúdo dele é o named set, não uma chain de regras do admin.
+// CheckGroups pula grupo de sistema, ReconcileGroups pula nos passos 1 e 2 e
+// MergeGroups devolve Rules vazio para ele — cada camada certa isoladamente,
+// e o efeito somado é que o pré-voo `nft -c` ACEITA, o reconcile devolve nil
+// (a tela mostra apply "ok") e nenhum comando emitido contém a regra. Ela
+// fica no banco, ausente do nft e invisível em toda tela. No PUT é pior: uma
+// regra que estava valendo desaparece do firewall com HTTP 200.
 func (h *NftablesHandler) requireGroup(w http.ResponseWriter, groupID string) bool {
 	id := strings.TrimSpace(groupID)
 	if id == "" {
@@ -340,9 +349,16 @@ func (h *NftablesHandler) requireGroup(w http.ResponseWriter, groupID string) bo
 		return false
 	}
 	for _, g := range groups {
-		if g.ID == id {
-			return true
+		if g.ID != id {
+			continue
 		}
+		if nftables.IsSystemGroup(g.Kind) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"%q é um grupo do sistema: o conteúdo dele são os endereços bloqueados, não regras — uma regra colocada aqui nunca chegaria ao firewall. Escolha um grupo seu.",
+				g.Name))
+			return false
+		}
+		return true
 	}
 	writeError(w, http.StatusBadRequest, fmt.Sprintf("grupo %q não encontrado", id))
 	return false
