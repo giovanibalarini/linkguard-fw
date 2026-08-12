@@ -24,6 +24,39 @@ Toda tarefa herda estas restrições.
 8. **Grupo do sistema não pode ser apagado nem renomeado**; pode ser reordenado e ligado/desligado.
 9. Comentários e mensagens ao usuário em português; identificadores em inglês.
 10. **Nunca `git add -A` em diretório inteiro** — arquivo por arquivo.
+11. **A `forward` nunca pode ficar sem os bloqueios em silêncio.** Ver abaixo.
+
+## A ordem das tarefas não é arbitrária
+
+A Task 2 (migração) vem **antes** da Task 3 (renderização) de propósito, e a
+razão vale mais que a ordem em si.
+
+Hoje as quatro linhas de bloqueio são **fixas em código** dentro de
+`forwardChainRules`. Depois da Task 3 elas passam a ser emitidas **apenas
+para grupos de sistema que existam na lista**. Ou seja, a proteção deixa de
+ser garantida pelo código e passa a depender de duas linhas existirem numa
+tabela.
+
+Isso abre um buraco que este plano precisa fechar explicitamente:
+
+- **Entre as duas tarefas**, a árvore fica num estado em que hosts e destinos
+  bloqueados não são aplicados. Por isso a migração vem primeiro.
+- **Em produção**, se `EnsureSystemGroups` falhar no boot (erro de banco,
+  transação abortada), a reconciliação seguiria normalmente e reconstruiria a
+  `forward` **sem os bloqueios** — e isso não pareceria erro: pareceria um
+  admin que não tem grupo nenhum. Bloqueio administrativo sumindo em silêncio
+  é exatamente a mentira que esta tela existe para impedir.
+
+**Defesa obrigatória (Task 2, Step 5):** depois que a trava
+`SystemGroupsSettingKey` está gravada, os dois grupos de sistema **têm** que
+estar na lista. Se não estiverem, `Reconcile` aborta antes de emitir qualquer
+comando do nft, grava o apply status como não-ok e registra alerta. Abortar é
+seguro: a `forward` mantém o que já estava valendo (com os bloqueios), e o
+admin vê o problema. Renderizar seria trocar proteção por silêncio.
+
+É a mesma disciplina que `StoredGroups()` já aplica para erro de leitura do
+banco — só que aqui a leitura **funciona**, e o perigo está no que ela não
+devolve.
 
 ## File Structure
 
@@ -48,77 +81,76 @@ Toda tarefa herda estas restrições.
 
 ---
 
-### Task 1: `kind` no modelo e no banco
+### Task 2: Migração dos dois grupos do sistema
 
 **Files:**
-- Modify: `internal/storage/storage.go`, `internal/storage/repository.go`
-- Modify: `internal/nftables/groups.go`
-- Test: `internal/storage/storage_test.go`, `internal/nftables/groups_test.go`
+- Modify: `internal/firewallrules/migrate_groups.go`, `internal/storage/repository.go`
+- Test: `internal/firewallrules/migrate_groups_test.go`
 
 **Interfaces:**
 - Produces:
-  - `storage.FirewallGroup` ganha `Kind string`
-  - `nftables.StoredGroup` ganha `Kind string`
-  - constantes em `internal/nftables/groups.go`:
-    `GroupKindAdmin = "admin"`, `GroupKindBlockedHosts = "blocked_hosts"`, `GroupKindBlocklist = "blocklist"`
-  - `func IsSystemGroup(kind string) bool`
+  - `const SystemGroupsSettingKey = "firewall_system_groups_created"`
+  - `func (s *Service) EnsureSystemGroups(ctx context.Context) error`
+  - `func (db *DB) CreateSystemGroups(rows []FirewallGroup, settingKey, settingValue string) error`
 
 - [ ] **Step 1: Escrever o teste que falha**
 
-Em `internal/nftables/groups_test.go`:
-
 ```go
-func TestIsSystemGroupRecognisesOnlyTheTwoBlockKinds(t *testing.T) {
-	for _, k := range []string{GroupKindBlockedHosts, GroupKindBlocklist} {
-		if !IsSystemGroup(k) {
-			t.Errorf("%q é grupo do sistema", k)
-		}
-	}
-	for _, k := range []string{GroupKindAdmin, "", "qualquer-outra-coisa"} {
-		if IsSystemGroup(k) {
-			t.Errorf("%q NÃO é grupo do sistema; tratá-lo como tal daria a ele proteções que o admin não pediu", k)
-		}
-	}
-}
-
-// Kind vazio é o que toda linha antiga tem depois do ALTER TABLE. Ela é um
-// grupo do admin, e confundir isso com "sistema" travaria a edição de grupos
-// que o admin criou.
-func TestValidateGroupAcceptsEmptyKindAsAdmin(t *testing.T) {
-	g := StoredGroup{Name: "Meu grupo", Fallthrough: FallthroughContinue}
-	if err := ValidateGroup(g); err != nil {
-		t.Fatalf("grupo sem kind tem que valer como do admin: %v", err)
-	}
-}
-```
-
-Em `internal/storage/storage_test.go`:
-
-```go
-func TestFirewallGroupKindRoundTrips(t *testing.T) {
+func TestEnsureSystemGroupsCreatesBothAtTheTop(t *testing.T) {
 	db := newTestDB(t)
-	g := FirewallGroup{ID: "s1", Name: "Hosts bloqueados", ChainName: "sys_blocked_hosts",
-		Kind: "blocked_hosts", Position: 0, Enabled: true, Fallthrough: "continue"}
-	if err := db.CreateFirewallGroup(&g); err != nil {
-		t.Fatalf("criar: %v", err)
-	}
-	got, _ := db.ListFirewallGroups()
-	if len(got) != 1 || got[0].Kind != "blocked_hosts" {
-		t.Fatalf("kind não persistiu: %+v", got)
-	}
-}
-
-// Bancos que já existem ganham a coluna com valor vazio, e continuam
-// funcionando: toda linha antiga é grupo do admin.
-func TestMigrateAddsKindToExistingGroups(t *testing.T) {
-	db := newTestDB(t)
-	g := FirewallGroup{ID: "a", Name: "Antigo", ChainName: "grp_aaa", Fallthrough: "continue"}
+	// um grupo do admin que já existe, na posição 0
+	g := storage.FirewallGroup{ID: "a", Name: "Meu grupo", ChainName: "grp_aaa",
+		Position: 0, Enabled: true, Fallthrough: "continue"}
 	if err := db.CreateFirewallGroup(&g); err != nil {
 		t.Fatal(err)
 	}
+	svc := newTestService(t, db)
+
+	if err := svc.EnsureSystemGroups(context.Background()); err != nil {
+		t.Fatalf("criar grupos do sistema: %v", err)
+	}
+
 	got, _ := db.ListFirewallGroups()
-	if got[0].Kind != "" && got[0].Kind != "admin" {
-		t.Errorf("linha sem kind explícito tem que sair vazia ou admin, obtive %q", got[0].Kind)
+	if len(got) != 3 {
+		t.Fatalf("esperava 3 grupos, obtive %d: %+v", len(got), got)
+	}
+	// Os dois do sistema nas posições 0 e 1, o do admin empurrado para 2:
+	// o padrão continua sendo bloqueio primeiro.
+	if !nftables.IsSystemGroup(got[0].Kind) || !nftables.IsSystemGroup(got[1].Kind) {
+		t.Errorf("os dois primeiros têm que ser do sistema: %+v", got)
+	}
+	if got[2].ID != "a" {
+		t.Errorf("o grupo do admin foi para o fim: %+v", got)
+	}
+}
+
+// A trava é "já rodou", não "a tabela tem grupo do sistema": senão o boot
+// seguinte ressuscita o que o admin apagou ou desligou de propósito.
+func TestEnsureSystemGroupsIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	svc := newTestService(t, db)
+	ctx := context.Background()
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	groups, _ := db.ListFirewallGroups()
+	// o admin desliga um deles
+	if err := db.SetFirewallGroupEnabled(groups[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := db.ListFirewallGroups()
+	if len(after) != 2 {
+		t.Fatalf("rodou de novo e duplicou: %+v", after)
+	}
+	for _, x := range after {
+		if x.ID == groups[0].ID && x.Enabled {
+			t.Error("religou um grupo que o admin desligou de propósito")
+		}
 	}
 }
 ```
@@ -126,101 +158,102 @@ func TestMigrateAddsKindToExistingGroups(t *testing.T) {
 - [ ] **Step 2: Rodar e confirmar que falha**
 
 ```bash
-export PATH=$HOME/sdk/go1.25.0/bin:$PATH
-go test ./internal/nftables/ -run 'TestIsSystemGroup|TestValidateGroupAcceptsEmptyKind'
-go test ./internal/storage/ -run 'TestFirewallGroupKind|TestMigrateAddsKind'
+go test ./internal/firewallrules/ -run TestEnsureSystemGroups
 ```
-Esperado: FAIL — `undefined: IsSystemGroup`, campo `Kind` inexistente.
 
-- [ ] **Step 3: Schema**
+- [ ] **Step 3: Implementar**
 
-Em `internal/storage/storage.go`, acrescentar `kind TEXT NOT NULL DEFAULT ''` ao `CREATE TABLE IF NOT EXISTS firewall_groups`, e uma migração imperativa para bancos existentes, no molde de `migrateAddFirewallRuleGroupID` (guardada por `pragma_table_info`, em transação):
+`CreateSystemGroups` numa transação: desloca os grupos existentes (`UPDATE firewall_groups SET position = position + 2`), insere os dois com `position` 0 e 1, grava a trava. `ChainName` dos grupos do sistema é fixo e reservado (`sys_blocked_hosts`, `sys_blocklist`) — nunca `grp_`, para a limpeza de chains órfãs não os enxergar como chain de grupo do admin.
+
+`EnsureSystemGroups` é chamada na sequência de boot **antes** de `Reconcile`, junto de `MigrateRulesIntoDefaultGroup`.
+
+- [ ] **Step 4: Rodar e confirmar que passa**
+
+```bash
+go test ./internal/firewallrules/ -v
+```
+
+- [ ] **Step 5: A defesa — `Reconcile` recusa renderizar uma forward sem bloqueios**
+
+Este passo é o que impede a Task 3 de transformar uma falha de migração em
+perda silenciosa de proteção. Escreva o teste primeiro:
 
 ```go
-func (db *DB) migrateAddFirewallGroupKind() error {
-	var count int
-	err := db.conn.QueryRow(
-		`SELECT COUNT(*) FROM pragma_table_info('firewall_groups') WHERE name = 'kind'`,
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("checar coluna kind: %w", err)
+// Depois que a trava está gravada, os dois grupos do sistema TÊM que estar
+// na lista. Se não estiverem (migração que falhou, linha apagada à mão no
+// banco), renderizar a forward a deixaria sem os bloqueios — e isso não
+// pareceria erro, pareceria um admin sem grupo nenhum. Abortar mantém o que
+// já estava valendo e mostra o problema.
+func TestReconcileRefusesToRenderAForwardWithoutTheSystemGroups(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newTestServiceWithExec(t, db)
+	ctx := context.Background()
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if count > 0 {
-		return nil
+	groups, _ := db.ListFirewallGroups()
+	// simula a linha sumindo do banco depois da trava gravada
+	if _, err := db.Conn().Exec(`DELETE FROM firewall_groups WHERE id = ?`, groups[0].ID); err != nil {
+		t.Fatal(err)
 	}
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
+
+	err := svc.Reconcile(ctx)
+	if err == nil {
+		t.Fatal("reconciliar sem grupo do sistema tem que ser erro, não silêncio")
 	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN kind TEXT NOT NULL DEFAULT ''`); err != nil {
-		return fmt.Errorf("adicionar coluna kind: %w", err)
+	for _, cmd := range exec.executed {
+		if strings.Contains(cmd, "flush chain") && strings.Contains(cmd, "forward") {
+			t.Fatalf("a forward NÃO pode ter sido tocada: %q", cmd)
+		}
 	}
-	return tx.Commit()
+	if st := svc.LastApplyStatus(); st == nil || st.OK {
+		t.Error("o apply status tem que ficar não-ok, para a faixa aparecer na tela")
+	}
 }
 ```
 
-Chamar em `migrate()` junto das outras imperativas. Incluir `kind` em todos os `SELECT`/`INSERT` de `firewall_groups` que listam colunas.
+Implementar: em `Reconcile`, depois de montar a lista e **antes** de chamar
+`ReconcileGroups`, verificar que — se a trava está gravada — ambos os kinds
+de sistema estão presentes. Faltando qualquer um, devolver erro descritivo
+(nomeando qual falta), gravar o apply status e registrar alerta, sem emitir
+comando nenhum.
 
-- [ ] **Step 4: Constantes e helper**
+- [ ] **Step 6: Provar por mutação**
 
-Em `internal/nftables/groups.go`:
+Remova a verificação e rode o teste: ele tem que ficar vermelho mostrando que
+a `forward` foi reconstruída. Restaure. Relate.
 
-```go
-// Kind separa os grupos que o admin criou dos dois que o próprio LinkGuard
-// mantém para os named sets de bloqueio. Vazio conta como admin: é o valor
-// que toda linha criada antes desta coluna existir carrega, e tratá-las como
-// "do sistema" daria a elas proteções (não apagar, não renomear) que o admin
-// nunca pediu.
-const (
-	GroupKindAdmin        = "admin"
-	GroupKindBlockedHosts = "blocked_hosts"
-	GroupKindBlocklist    = "blocklist"
-)
+- [ ] **Step 7: Ligar no boot**
 
-// IsSystemGroup reporta se o grupo é mantido pelo LinkGuard em vez de criado
-// pelo admin. Deliberadamente uma lista fechada, não "!= admin": um kind
-// desconhecido (banco de uma versão futura, linha editada à mão) é tratado
-// como do admin, que é o lado seguro — o erro caro seria travar a edição de
-// um grupo que o admin criou.
-func IsSystemGroup(kind string) bool {
-	return kind == GroupKindBlockedHosts || kind == GroupKindBlocklist
-}
-```
+Em `cmd/linkguard-fw/main.go`, depois de `MigrateRulesIntoDefaultGroup` e antes de `Reconcile`.
 
-Acrescentar `Kind string` a `StoredGroup` e a `storage.FirewallGroup`.
-
-- [ ] **Step 5: Rodar e confirmar que passa**
+- [ ] **Step 8: Commit**
 
 ```bash
-go test ./internal/nftables/ ./internal/storage/
-```
-Esperado: `ok` nos dois.
-
-- [ ] **Step 6: Suíte inteira**
-
-```bash
-go build ./... && go vet ./... && go test -count=1 ./...
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add internal/storage/storage.go internal/storage/repository.go internal/storage/storage_test.go internal/nftables/groups.go internal/nftables/groups_test.go
-git commit -m "feat(groups): kind separa grupo do admin de grupo do sistema"
+git add internal/firewallrules/migrate_groups.go internal/firewallrules/migrate_groups_test.go internal/firewallrules/service.go internal/storage/repository.go cmd/linkguard-fw/main.go
+git commit -m "feat(firewallrules): criar os dois grupos do sistema, e recusar forward sem bloqueios"
 ```
 
 ---
 
-### Task 2: A chain forward passa a ser uma lista só
+### Task 3: A chain forward passa a ser uma lista só
 
 **Files:**
 - Modify: `internal/nftables/reconcile.go` (`forwardChainRules`)
 - Modify: `internal/nftables/reconcile_groups.go` (grupo do sistema não tem chain própria)
 - Test: `internal/nftables/reconcile_groups_test.go`
 
+> **Esta tarefa é a que remove a garantia estrutural.** Até aqui, as quatro
+> linhas de bloqueio eram fixas em código e existiam sempre. Depois dela,
+> existem só se houver grupo de sistema na lista. A defesa que torna isso
+> aceitável foi entregue na Task 2, Step 5 — **confirme que ela está no lugar
+> antes de começar**. Se por qualquer motivo ela não estiver, pare e diga:
+> sem ela, esta tarefa transforma uma falha de migração em firewall sem
+> bloqueio, calado.
+
 **Interfaces:**
-- Consumes: `StoredGroup.Kind`, `IsSystemGroup`, `GroupKind*` (Task 1); `BlockedSet`, `groupJumpTokens`, `rebuildChain`.
+- Consumes: `StoredGroup.Kind`, `IsSystemGroup`, `GroupKind*` (Task 1); a verificação de invariante do `Reconcile` (Task 2, Step 5); `BlockedSet`, `groupJumpTokens`, `rebuildChain`.
 - Produces: `forwardChainRules(groups []StoredGroup) [][]string` passa a emitir, por item ordenado, ou o `jump` (admin) ou as duas linhas de set (sistema).
 
 - [ ] **Step 1: Escrever o teste que falha**
@@ -390,7 +423,7 @@ git commit -m "feat(nftables): a chain forward passa a seguir uma lista ordenada
 
 ---
 
-### Task 3: `Applied` e contadores do grupo do sistema
+### Task 4: `Applied` e contadores do grupo do sistema
 
 **Files:**
 - Modify: `internal/nftables/merge_groups.go`
@@ -459,111 +492,6 @@ go test ./internal/nftables/ -run TestMergeGroups -v
 ```bash
 git add internal/nftables/merge_groups.go internal/nftables/merge_groups_test.go
 git commit -m "feat(nftables): Applied do grupo do sistema vem das linhas de set vivas"
-```
-
----
-
-### Task 4: Migração dos dois grupos do sistema
-
-**Files:**
-- Modify: `internal/firewallrules/migrate_groups.go`, `internal/storage/repository.go`
-- Test: `internal/firewallrules/migrate_groups_test.go`
-
-**Interfaces:**
-- Produces:
-  - `const SystemGroupsSettingKey = "firewall_system_groups_created"`
-  - `func (s *Service) EnsureSystemGroups(ctx context.Context) error`
-  - `func (db *DB) CreateSystemGroups(rows []FirewallGroup, settingKey, settingValue string) error`
-
-- [ ] **Step 1: Escrever o teste que falha**
-
-```go
-func TestEnsureSystemGroupsCreatesBothAtTheTop(t *testing.T) {
-	db := newTestDB(t)
-	// um grupo do admin que já existe, na posição 0
-	g := storage.FirewallGroup{ID: "a", Name: "Meu grupo", ChainName: "grp_aaa",
-		Position: 0, Enabled: true, Fallthrough: "continue"}
-	if err := db.CreateFirewallGroup(&g); err != nil {
-		t.Fatal(err)
-	}
-	svc := newTestService(t, db)
-
-	if err := svc.EnsureSystemGroups(context.Background()); err != nil {
-		t.Fatalf("criar grupos do sistema: %v", err)
-	}
-
-	got, _ := db.ListFirewallGroups()
-	if len(got) != 3 {
-		t.Fatalf("esperava 3 grupos, obtive %d: %+v", len(got), got)
-	}
-	// Os dois do sistema nas posições 0 e 1, o do admin empurrado para 2:
-	// o padrão continua sendo bloqueio primeiro.
-	if !nftables.IsSystemGroup(got[0].Kind) || !nftables.IsSystemGroup(got[1].Kind) {
-		t.Errorf("os dois primeiros têm que ser do sistema: %+v", got)
-	}
-	if got[2].ID != "a" {
-		t.Errorf("o grupo do admin foi para o fim: %+v", got)
-	}
-}
-
-// A trava é "já rodou", não "a tabela tem grupo do sistema": senão o boot
-// seguinte ressuscita o que o admin apagou ou desligou de propósito.
-func TestEnsureSystemGroupsIsIdempotent(t *testing.T) {
-	db := newTestDB(t)
-	svc := newTestService(t, db)
-	ctx := context.Background()
-
-	if err := svc.EnsureSystemGroups(ctx); err != nil {
-		t.Fatal(err)
-	}
-	groups, _ := db.ListFirewallGroups()
-	// o admin desliga um deles
-	if err := db.SetFirewallGroupEnabled(groups[0].ID, false); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := svc.EnsureSystemGroups(ctx); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := db.ListFirewallGroups()
-	if len(after) != 2 {
-		t.Fatalf("rodou de novo e duplicou: %+v", after)
-	}
-	for _, x := range after {
-		if x.ID == groups[0].ID && x.Enabled {
-			t.Error("religou um grupo que o admin desligou de propósito")
-		}
-	}
-}
-```
-
-- [ ] **Step 2: Rodar e confirmar que falha**
-
-```bash
-go test ./internal/firewallrules/ -run TestEnsureSystemGroups
-```
-
-- [ ] **Step 3: Implementar**
-
-`CreateSystemGroups` numa transação: desloca os grupos existentes (`UPDATE firewall_groups SET position = position + 2`), insere os dois com `position` 0 e 1, grava a trava. `ChainName` dos grupos do sistema é fixo e reservado (`sys_blocked_hosts`, `sys_blocklist`) — nunca `grp_`, para a limpeza de chains órfãs não os enxergar como chain de grupo do admin.
-
-`EnsureSystemGroups` é chamada na sequência de boot **antes** de `Reconcile`, junto de `MigrateRulesIntoDefaultGroup`.
-
-- [ ] **Step 4: Rodar e confirmar que passa**
-
-```bash
-go test ./internal/firewallrules/ -v
-```
-
-- [ ] **Step 5: Ligar no boot**
-
-Em `cmd/linkguard-fw/main.go`, depois de `MigrateRulesIntoDefaultGroup` e antes de `Reconcile`.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add internal/firewallrules/migrate_groups.go internal/firewallrules/migrate_groups_test.go internal/storage/repository.go cmd/linkguard-fw/main.go
-git commit -m "feat(firewallrules): criar os dois grupos do sistema na migração"
 ```
 
 ---
