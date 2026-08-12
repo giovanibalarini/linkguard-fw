@@ -198,6 +198,15 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
+	// Renomear ou dar condição de entrada a um grupo do sistema não faz
+	// sentido: o nome é o que ele é, e o conteúdo dele é a lista de membros
+	// do named set, não regras alcançadas por uma condição. O que o admin
+	// pode fazer com ele — reordenar e ligar/desligar — tem endpoint próprio.
+	if nftables.IsSystemGroup(existing.Kind) {
+		writeError(w, http.StatusBadRequest,
+			"este é um grupo do sistema: o nome e a condição de entrada dele não são editáveis; use reordenar ou ligar/desligar")
+		return
+	}
 
 	row := existing
 	row.Name, row.CondSaddr, row.CondDaddr = b.Name, b.CondSaddr, b.CondDaddr
@@ -258,7 +267,20 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 	// os irmãos devolvem 500 (falha do servidor, que é o que é) e este
 	// devolvia 400 com o texto cru do erro de banco, culpando o cliente por
 	// uma pane do servidor e vazando a mensagem interna para a tela.
-	if _, found := h.findGroup(w, id); !found {
+	g, found := h.findGroup(w, id)
+	if !found {
+		return
+	}
+	// Apagar um grupo do sistema não é "perder um grupo": as duas linhas de
+	// bloqueio são o que faz a chain forward ainda descartar tráfego de host
+	// e destino bloqueados. Sem uma delas, a reconciliação passa a abortar em
+	// toda passada — para não renderizar uma forward sem proteção, calada — e
+	// o firewall inteiro fica em modo somente-leitura. Pior: não há caminho de
+	// volta pelo painel, porque CreateGroup sempre grava kind=admin. A
+	// recuperação seria sqlite3 na máquina.
+	if nftables.IsSystemGroup(g.Kind) {
+		writeError(w, http.StatusBadRequest,
+			"este é um grupo do sistema e não pode ser removido; para desativá-lo, use o botão de ligar/desligar")
 		return
 	}
 	if err := h.db.DeleteFirewallGroup(id); err != nil {

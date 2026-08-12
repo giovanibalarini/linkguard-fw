@@ -1081,3 +1081,59 @@ func TestDeleteGroupResolvesTheIDLikeItsSiblings(t *testing.T) {
 		t.Errorf("a mensagem interna do banco não pode vazar para a tela: %s", broken.Body.String())
 	}
 }
+
+// Um grupo do sistema apagado não é "um grupo a menos": as duas linhas de
+// bloqueio são o que faz a forward ainda descartar tráfego de host e destino
+// bloqueados. Sem uma delas a reconciliação aborta em toda passada — para
+// não renderizar uma forward sem proteção, calada — e o firewall inteiro
+// fica somente-leitura, sem caminho de volta pelo painel (CreateGroup sempre
+// grava kind=admin). Esta guarda foi puxada para antes da tarefa que a
+// planejava, para a árvore nunca ficar nesse estado.
+func TestSystemGroupCannotBeDeletedOrRenamed(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("listar: %v", err)
+	}
+	var sys *storage.FirewallGroup
+	for i := range groups {
+		if nftables.IsSystemGroup(groups[i].Kind) {
+			sys = &groups[i]
+			break
+		}
+	}
+	if sys == nil {
+		t.Fatal("o ambiente de teste tem que ter os grupos do sistema criados")
+	}
+
+	del := httptest.NewRequest("DELETE", "/api/nftables/groups",
+		strings.NewReader(`{"id":"`+sys.ID+`"}`))
+	w := httptest.NewRecorder()
+	h.DeleteGroup(w, del)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("apagar grupo do sistema: esperava 400, obtive %d", w.Code)
+	}
+
+	upd := httptest.NewRequest("PUT", "/api/nftables/groups",
+		strings.NewReader(`{"id":"`+sys.ID+`","name":"Renomeado","fallthrough":"continue"}`))
+	w2 := httptest.NewRecorder()
+	h.UpdateGroup(w2, upd)
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("renomear grupo do sistema: esperava 400, obtive %d", w2.Code)
+	}
+
+	after, _ := db.ListFirewallGroups()
+	var still bool
+	for _, g := range after {
+		if g.ID == sys.ID {
+			still = true
+			if g.Name != sys.Name {
+				t.Errorf("o nome foi alterado: %q -> %q", sys.Name, g.Name)
+			}
+		}
+	}
+	if !still {
+		t.Fatal("o grupo do sistema sumiu do banco")
+	}
+}
