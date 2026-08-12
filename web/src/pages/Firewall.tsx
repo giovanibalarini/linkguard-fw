@@ -17,10 +17,15 @@ import type { FirewallRule, FirewallRulesData, IptablesBackup, LastApply, NftCha
 type Tab = 'overview' | 'rules' | 'portforward' | 'ruleset' | 'backups';
 type Action = 'accept' | 'drop' | 'reject';
 
-const ACTIONS: Record<Action, { label: string; color: string; ring: string; Icon: typeof Check }> = {
-  accept: { label: 'Permitir', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10', Icon: Check },
-  drop: { label: 'Bloquear', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10', Icon: Ban },
-  reject: { label: 'Rejeitar', color: 'text-orange-400', ring: 'border-orange-500 bg-orange-500/10', Icon: Slash },
+// The labels are the nftables keywords themselves, never translated: what
+// the admin reads here is what they will find in `nft list ruleset`, with no
+// panel-only vocabulary in between. `hint` carries the meaning in plain
+// Portuguese for the rule form, where someone is choosing rather than
+// reading. Same reasoning as rendering rule conditions in raw nft syntax.
+const ACTIONS: Record<Action, { label: string; hint: string; color: string; ring: string; Icon: typeof Check }> = {
+  accept: { label: 'accept', hint: 'deixa passar', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10', Icon: Check },
+  drop: { label: 'drop', hint: 'descarta em silêncio', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10', Icon: Ban },
+  reject: { label: 'reject', hint: 'recusa e avisa a origem', color: 'text-orange-400', ring: 'border-orange-500 bg-orange-500/10', Icon: Slash },
 };
 
 const emptyModal = {
@@ -305,7 +310,7 @@ export default function Firewall() {
                             />
                           </div>
                         )}
-                        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium border shrink-0 ${a.ring} ${a.color}`}><a.Icon className="w-3 h-3" />{a.label}</span>
+                        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium border shrink-0 ${a.ring} ${a.color}`}><a.Icon className="w-3 h-3" /><span className="font-mono">{a.label}</span></span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="text-gray-300 text-sm truncate">{describe(r)}</span>
@@ -484,7 +489,8 @@ export default function Firewall() {
                     return (
                       <button key={act} onClick={() => setModal({ ...modal, action: act })} className={`flex flex-col items-center gap-1 rounded-lg border p-3 transition ${active ? a.ring : 'border-gray-700 bg-gray-800/40 hover:border-gray-600'}`}>
                         <a.Icon className={`w-5 h-5 ${active ? a.color : 'text-gray-400'}`} />
-                        <span className={`text-xs ${active ? a.color : 'text-gray-400'}`}>{a.label}</span>
+                        <span className={`text-xs font-mono ${active ? a.color : 'text-gray-400'}`}>{a.label}</span>
+                        <span className="text-[10px] text-gray-500 leading-tight text-center">{a.hint}</span>
                       </button>
                     );
                   })}

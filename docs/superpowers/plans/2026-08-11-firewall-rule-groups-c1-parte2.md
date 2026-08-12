@@ -718,6 +718,10 @@ Em `web/src/types.ts`, acrescentar `FirewallGroup` e `GroupView` espelhando os J
 
 Colunas: `#`, **Ação** (selo verde/vermelho), **Quando a regra casa** (sintaxe nft crua, em `font-mono` — decisão do operador: o que se lê na tela é o que se acha no `nft list`), **Descrição**, **Pacotes**, **Tráfego**, ações. Números com `tabular-nums`, alinhados à direita.
 
+**O selo de ação traz o keyword do nftables, em `font-mono`, nunca traduzido** — `accept`, `drop`, `reject`, e para as chains gerenciadas também `dnat`, `snat`, `masquerade`, `jump`, `mark` (spec §7.2.1). Reaproveite o mapa `ACTIONS` de `web/src/pages/Firewall.tsx`, que já foi convertido: ele tem `label` (o keyword) e `hint` (a explicação curta em português, para o formulário). Não reintroduza "Permitir"/"Bloquear" em lugar nenhum.
+
+Para "e o que sobrar", os três valores na tela são `accept`, `drop` e **"continuar avaliando"** — este último em português porque não é uma ação do nft, e sim a ausência de uma (nenhuma linha final é emitida; o `jump` retorna sozinho). Rotulá-lo `return` sugeriria uma regra `return` que o LinkGuard não escreve.
+
 - [ ] **Step 4: Contadores honestos**
 
 `has_counter === false` renderiza `—`, nunca `0`. Vale para grupo e para regra. Seletor bytes/bits reaproveitando o que `FirewallOverview.tsx` já tem.

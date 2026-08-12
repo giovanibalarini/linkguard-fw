@@ -64,14 +64,23 @@ function formatCount(bytes: number, unit: Unit): string {
 // the same ACTIONS palette convention used by the custom-rules tab, extended
 // to the non accept/drop/reject actions LinkGuard's own chains use
 // (masquerade, jump, dnat, mark).
+//
+// The labels are the nftables keywords themselves — accept, drop, reject,
+// masquerade, dnat, jump — never translated. These are the trade's own
+// vocabulary: a network admin reads `drop` on this screen and finds `drop`
+// in `nft list ruleset`, with no second dictionary in between that exists
+// only inside this panel. Same reasoning as showing rule conditions in raw
+// nft syntax. The plain-Portuguese sentence beside the badge carries the
+// meaning; the badge carries the identity.
 function ruleVerb(expr: string): { label: string; color: string; ring: string; Icon: typeof Check } {
-  if (/\baccept$/.test(expr)) return { label: 'Permite', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10', Icon: Check };
-  if (/\bdrop$/.test(expr)) return { label: 'Bloqueia', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10', Icon: Ban };
-  if (/\breject/.test(expr)) return { label: 'Rejeita', color: 'text-orange-400', ring: 'border-orange-500 bg-orange-500/10', Icon: Slash };
-  if (/masquerade|dnat/.test(expr)) return { label: 'NAT', color: 'text-blue-400', ring: 'border-blue-500 bg-blue-500/10', Icon: ArrowRightLeft };
-  if (/^(counter )?jump /.test(expr)) return { label: 'Avalia', color: 'text-purple-400', ring: 'border-purple-500 bg-purple-500/10', Icon: CornerDownRight };
-  if (/meta mark set/.test(expr)) return { label: 'Marca', color: 'text-yellow-400', ring: 'border-yellow-500 bg-yellow-500/10', Icon: Tag };
-  return { label: 'Regra', color: 'text-gray-400', ring: 'border-gray-600 bg-gray-700/30', Icon: HelpCircle };
+  if (/\baccept$/.test(expr)) return { label: 'accept', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10', Icon: Check };
+  if (/\bdrop$/.test(expr)) return { label: 'drop', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10', Icon: Ban };
+  if (/\breject/.test(expr)) return { label: 'reject', color: 'text-orange-400', ring: 'border-orange-500 bg-orange-500/10', Icon: Slash };
+  if (/\bmasquerade\b/.test(expr)) return { label: 'masquerade', color: 'text-blue-400', ring: 'border-blue-500 bg-blue-500/10', Icon: ArrowRightLeft };
+  if (/\bdnat\b/.test(expr)) return { label: 'dnat', color: 'text-blue-400', ring: 'border-blue-500 bg-blue-500/10', Icon: ArrowRightLeft };
+  if (/^(counter )?jump /.test(expr)) return { label: 'jump', color: 'text-purple-400', ring: 'border-purple-500 bg-purple-500/10', Icon: CornerDownRight };
+  if (/meta mark set/.test(expr)) return { label: 'mark', color: 'text-yellow-400', ring: 'border-yellow-500 bg-yellow-500/10', Icon: Tag };
+  return { label: 'regra', color: 'text-gray-400', ring: 'border-gray-600 bg-gray-700/30', Icon: HelpCircle };
 }
 
 function RuleRow({
@@ -107,7 +116,7 @@ function RuleRow({
           {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         </button>
         <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium border shrink-0 ${v.ring} ${v.color}`}>
-          <v.Icon className="w-3 h-3" />{v.label}
+          <v.Icon className="w-3 h-3" /><span className="font-mono">{v.label}</span>
         </span>
         <span className="text-gray-300 text-sm flex-1 min-w-0">{rule.description}</span>
         {disabled && (

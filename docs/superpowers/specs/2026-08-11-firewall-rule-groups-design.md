@@ -270,6 +270,25 @@ A coluna "quando a regra casa" mostra **sintaxe nft crua** (`tcp dport 443`,
 é literalmente o que se acha no `nft list`, sem uma camada de tradução onde
 caberia a tela dizer uma coisa e o firewall fazer outra.
 
+### 7.2.1 Nome de ação não se traduz
+
+Pela mesma razão, os **nomes clássicos de ação de firewall ficam em inglês**,
+sempre, em qualquer tela: `accept`, `drop`, `reject`, `dnat`, `snat`,
+`masquerade`, `jump`, `mark`. Nunca "Permitir", "Bloquear", "Rejeitar".
+
+São o vocabulário do ofício, não jargão de implementação: quem administra
+rede lê `drop` no painel e encontra `drop` no `nft list ruleset`, sem um
+segundo dicionário que só existe aqui dentro. Traduzir criaria exatamente a
+camada de interpretação que a §7.2 acabou de eliminar da coluna ao lado.
+
+Onde a pessoa está **escolhendo** em vez de lendo — o formulário de criar
+regra —, o keyword vem acompanhado de uma explicação curta em português
+("descarta em silêncio", "recusa e avisa a origem"). O keyword é a
+identidade; a frase é o significado. As descrições em prosa do resto da tela
+continuam em português: elas explicam o que a regra faz, não nomeiam a ação.
+
+Aplicado retroativamente às telas que já existiam (v1.0.98).
+
 ### 7.3 Demais regras da tela
 
 - **Contadores** por regra, em bytes ou bits, no mesmo seletor que a Visão
