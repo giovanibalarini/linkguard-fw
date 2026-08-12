@@ -41,6 +41,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/sysprep"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 	"github.com/giovanibalarini/linkguard-fw/internal/tlscert"
@@ -61,10 +62,29 @@ func run() int {
 	debug := flag.Bool("debug", false, "Enable debug logs")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	notifyDown := flag.Bool("notify-down", false, "Send a 'service down' notification and exit (systemd OnFailure)")
+	prepareSystem := flag.Bool("prepare-system", false, "Create the filesystem paths the systemd unit needs before it can start, then exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(version)
+		return 0
+	}
+
+	// Chamado pelos TRÊS caminhos de instalação (postinst do .deb,
+	// deploy/install.sh, `make install`) logo depois de copiar o binário,
+	// para que os três deixem a máquina no MESMO estado. Ver
+	// internal/sysprep: sem isso a unidade morre em 226/NAMESPACE, em loop
+	// de restart, disparando o OnFailure a cada tentativa — e sem nunca
+	// executar uma linha do binário que instalaria a base.
+	if *prepareSystem {
+		created, err := sysprep.Prepare("")
+		for _, line := range created {
+			fmt.Println("[INFO] criado: " + line)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "[ERRO] "+err.Error())
+			return 1
+		}
 		return 0
 	}
 

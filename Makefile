@@ -120,8 +120,11 @@ test-coverage:
 install: build
 	@echo ">>> Installing LinkGuard FW..."
 	install -m 0755 $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
-	install -d -m 0750 $(DATA_DIR)
-	install -d -m 0750 $(CONFIG_DIR)
+	# Mesma chamada que o postinst do .deb e o deploy/install.sh fazem — os
+	# três caminhos de instalação têm que deixar a máquina no MESMO estado.
+	# A lista de caminhos mora em internal/sysprep. Sem isto o serviço fica
+	# em loop de 226/NAMESPACE numa máquina pelada.
+	$(INSTALL_DIR)/$(BINARY_NAME) --prepare-system
 	install -m 0644 deploy/linkguard-fw.service $(SERVICE_DIR)/linkguard-fw.service
 	@if [ ! -f $(CONFIG_DIR)/config.json ]; then \
 		$(INSTALL_DIR)/$(BINARY_NAME) --config $(CONFIG_DIR)/config.json --init-config 2>/dev/null || true; \

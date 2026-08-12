@@ -52,11 +52,19 @@ fi
 info "Installing binary to ${INSTALL_BIN}..."
 install -m 0755 "${BINARY_SRC}" "${INSTALL_BIN}"
 
-# ─── Create directories ──────────────────────────────────────────────────────
+# ─── Prepare the filesystem the systemd unit needs ───────────────────────────
+#
+# Mesma chamada que o postinst do .deb e o `make install` fazem, para que os
+# três caminhos de instalação deixem a máquina no MESMO estado. A lista de
+# caminhos mora em internal/sysprep (um lugar só).
+#
+# Sem isto, instalar por este script deixava o serviço em loop de
+# 226/NAMESPACE ("Failed to set up mount namespacing: /etc/nftables.conf: No
+# such file or directory") — e cada tentativa disparava o
+# OnFailure=linkguard-notify-down.service.
 
-info "Creating directories..."
-install -d -m 0750 "${DATA_DIR}"
-install -d -m 0750 "${CONFIG_DIR}"
+info "Preparing system paths (nftables.conf, config/state dirs, DHCP/DNS dirs)..."
+"${INSTALL_BIN}" --prepare-system
 
 # ─── Default config ──────────────────────────────────────────────────────────
 

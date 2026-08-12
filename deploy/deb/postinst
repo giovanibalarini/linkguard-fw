@@ -7,52 +7,28 @@ CONFIG_FILE="${CONFIG_DIR}/config.json"
 
 case "$1" in
   configure)
-    install -d -m 0750 "${DATA_DIR}"
-    install -d -m 0750 "${CONFIG_DIR}"
-
-    # /etc/nftables.conf tem que existir ANTES de o serviço subir. Ele está em
-    # ReadWritePaths= na unidade systemd SEM o prefixo `-`, e um caminho
-    # inexistente ali faz a montagem do namespace falhar: a unidade morre com
-    # 226/NAMESPACE e fica em loop de restart, sem nunca chegar a rodar uma
-    # linha do binário. Até aqui o arquivo vinha de graça porque o pacote
-    # nftables era Depends:; agora a base está em Recommends: (para que
-    # `dpkg -i` numa máquina pelada instale E configure — ver o alvo `deb` no
-    # Makefile), então numa máquina pelada ele não existe. Sem esta linha, o
-    # serviço que deveria instalar o nftables sozinho nunca sobe para fazê-lo.
+    # Preparo do sistema de arquivos: os caminhos que a unidade declara em
+    # ReadWritePaths= têm que existir ANTES de o serviço subir. O systemd
+    # monta o namespace no START; um caminho ausente ali ou mata a unidade
+    # com 226/NAMESPACE (entradas sem o prefixo `-`) ou fica permanentemente
+    # somente-leitura para o processo em execução, mesmo depois de o apt
+    # criar o diretório de verdade.
     #
-    # Criar vazio é seguro: o LinkGuard é dono deste arquivo (ver README) e o
-    # reescreve por inteiro no primeiro Persist(). O `nft -f` nele é só o
-    # cabeçalho que o próprio Persist() gera.
-    if [ ! -f /etc/nftables.conf ]; then
-      printf '#!/usr/sbin/nft -f\n\n# Arquivo gerenciado pelo LinkGuard FW.\n# Vazio até o primeiro apply de firewall.\n' > /etc/nftables.conf
-      chmod 0644 /etc/nftables.conf
-      echo "[INFO] /etc/nftables.conf criado (vazio) para o serviço poder subir."
+    # A lista mora num lugar só — internal/sysprep, no próprio binário — e é
+    # chamada igual pelos três caminhos de instalação (este postinst,
+    # deploy/install.sh e `make install`). Antes disso ela existia só aqui, e
+    # quem instalava pelos outros dois ficava com o serviço em loop de
+    # 226/NAMESPACE. O binário já está desempacotado quando o postinst roda.
+    #
+    # Não aborta a configuração do pacote em caso de falha: um pacote em `iU`
+    # não deixa painel nenhum para explicar o que houve, que é justamente o
+    # que este produto evita.
+    if [ -x /usr/local/bin/linkguard-fw ]; then
+      /usr/local/bin/linkguard-fw --prepare-system || \
+        echo "[WARN] --prepare-system falhou; o serviço pode não subir (veja o erro acima)."
+    else
+      echo "[WARN] /usr/local/bin/linkguard-fw não encontrado; --prepare-system não rodou."
     fi
-
-    # /etc/kea e /etc/unbound/unbound.conf.d têm que existir ANTES de o
-    # serviço subir — mesmo numa máquina onde o kea e o unbound ainda não
-    # estão instalados.
-    #
-    # Motivo (medido na VM de teste, não deduzido): a unidade roda com
-    # ProtectSystem=strict e o systemd monta o namespace do serviço no
-    # START. Um diretório que não existia naquele instante não entra como
-    # gravável — o `-` do ReadWritePaths só evita que a unidade morra com
-    # 226/NAMESPACE, ele não cria montagem nenhuma. Resultado: o LinkGuard
-    # instala o kea sob demanda quando o admin liga o DHCP, o apt cria o
-    # /etc/kea de verdade, e o processo em execução continua vendo aquele
-    # diretório como somente-leitura ("Read-only file system") até alguém
-    # reiniciar o serviço. Criando aqui, vazio, a montagem existe desde o
-    # start e a primeira aplicação de DHCP/DNS funciona sem reinício.
-    #
-    # Mesma lógica do /etc/nftables.conf acima. Só cria se não existir: num
-    # box que já tem os pacotes, o dono e o modo do diretório são do pacote
-    # e não têm que ser mexidos aqui.
-    for d in /etc/kea /etc/unbound/unbound.conf.d; do
-      if [ ! -d "$d" ]; then
-        install -d -m 0755 "$d"
-        echo "[INFO] $d criado (vazio) para o LinkGuard poder aplicar DHCP/DNS sem reiniciar."
-      fi
-    done
 
     if [ ! -f "${CONFIG_FILE}" ]; then
       # Generate a random JWT secret (64 hex chars) so the service is not
