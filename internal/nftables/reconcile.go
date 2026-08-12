@@ -180,12 +180,12 @@ func sanitizeNetworks(in []string) []string {
 // empty after sanitization, the chain is flushed and left empty — not
 // deleted — so its state is always explicit and idempotent.
 // ForwardChain evaluates the managed blocklist/host-block drops and then
-// jumps into each enabled rule group, in the admin's order (a partir da Fase
-// C1 — ver forwardChainRules para por que os bloqueios vêm primeiro).
-// MarkHostsChain steers a host's forwarded traffic to a specific WAN by
-// fwmark, looked up from the host_wan map. Both are structural — created
-// once at EnsureTable/bootstrap — and reconciled on every boot exactly like
-// postrouting/input: mark_hosts por ReconcileStructuralChains, forward por
+// jumps into each enabled rule group, in the admin's order (since Phase C1 —
+// see forwardChainRules for why the blocks come first). MarkHostsChain
+// steers a host's forwarded traffic to a specific WAN by fwmark, looked up
+// from the host_wan map. Both are structural — created once at
+// EnsureTable/bootstrap — and reconciled on every boot exactly like
+// postrouting/input: mark_hosts by ReconcileStructuralChains, forward by
 // ReconcileGroups.
 const (
 	ForwardChain   = "forward"
@@ -262,11 +262,11 @@ func markHostsChainRules() [][]string {
 // chain is flushed on its own (never the table or the ruleset), the result
 // is idempotent, it's a no-op in dry-run, and it persists afterward.
 //
-// A forward saiu daqui (grupos de regras, Fase C1): ela agora depende dos
-// grupos do admin e é reconstruída por ReconcileGroups, que é quem os
-// conhece. Reconciliar as duas em lugares diferentes faria a última a rodar
-// apagar os jumps da outra — quem chama esta função no boot tem que chamar
-// ReconcileGroups também, senão a forward deixa de ser reconciliada.
+// The forward chain left this function with rule groups (Phase C1): it now
+// depends on the admin's groups and is rebuilt by ReconcileGroups, the only
+// place that knows them. Reconciling it in two places would make whichever
+// ran last wipe the other's rules — so whoever calls this at boot must call
+// ReconcileGroups too, or the forward stops being reconciled at all.
 //
 // Why this exists (design spec §1/§6): unlike postrouting/input, these two
 // chains were, until now, only ever created once at bootstrap and never
@@ -278,8 +278,8 @@ func markHostsChainRules() [][]string {
 // boot closes that gap the same way it was already closed for masquerade
 // and the NTP input rules: a duplicate cannot outlive the next restart.
 //
-// Every rule in every canonical definition here — e em forwardChainRules,
-// que hoje mora em ReconcileGroups — carries `counter`. Production's
+// Every rule in every canonical definition here — and in forwardChainRules,
+// which now lives with ReconcileGroups — carries `counter`. Production's
 // forward-chain drop rules were hand-created in June 2026 already WITH
 // counters (the whole reason Phase A exists is to surface those counts on
 // the panel) — reconciling to a counter-less definition would flush the
