@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Pencil, Ban, ShieldCheck, Circle, TrendingUp, ArrowDown, ArrowUp } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { RefreshCw, Pencil, Ban, ShieldCheck, Circle, TrendingUp, ArrowDown, ArrowUp, AlertTriangle } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
-import type { NetHost, HostTraffic } from '../types';
+import { blockEnforcement, KIND_BLOCKED_HOSTS } from '../lib/blockGroups';
+import type { NetHost, HostTraffic, FirewallGroup, FirewallGroupsData } from '../types';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
 
@@ -17,7 +19,16 @@ function fmtBytes(n: number): string {
 export default function Hosts() {
   const { can } = useAuth();
   const canManage = can('hosts.block');
+  const canReadFirewall = can('firewall.read');
   const [hosts, setHosts] = useState<NetHost[]>([]);
+  // Os grupos do firewall, só para saber se o bloqueio de host está mesmo em
+  // vigor. Desde que os bloqueios viraram grupos reordenáveis, marcar um host
+  // como bloqueado deixou de bastar: o grupo "Hosts bloqueados" pode estar
+  // desligado, ou arrastado para depois de um grupo do admin que faz accept —
+  // e nos dois casos esta tela mostraria "bloqueado" enquanto o tráfego passa.
+  // null = não consultado (sem permissão de firewall ou falha), que NÃO é o
+  // mesmo que "está tudo certo": nesse caso a tela não afirma nada.
+  const [fwGroups, setFwGroups] = useState<FirewallGroup[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [filter, setFilter] = useState('');
@@ -47,9 +58,26 @@ export default function Hosts() {
       const t = await client.get<HostTraffic[]>('/api/hosts/traffic');
       setTalkers(t.data ?? []);
     } catch { /* ignore */ }
+    await fetchBlockGroup();
+  };
+
+  // Estado do grupo de bloqueio — melhor esforço, exige firewall.read.
+  const fetchBlockGroup = async () => {
+    if (!canReadFirewall) { setFwGroups(null); return; }
+    try {
+      const g = await client.get<FirewallGroupsData>('/api/nftables/groups');
+      setFwGroups(g.data?.groups ?? []);
+    } catch {
+      setFwGroups(null);
+    }
   };
 
   useEffect(() => { fetchHosts(); }, []);
+  // As permissões chegam depois da primeira renderização (/api/auth/me é
+  // assíncrono): sem este efeito, a consulta acima seria pulada em toda
+  // navegação direta para esta página e a tela nunca saberia se o bloqueio
+  // está em vigor — calada, como se estivesse.
+  useEffect(() => { fetchBlockGroup(); }, [canReadFirewall]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -60,6 +88,13 @@ export default function Hosts() {
   }, [hosts, filter]);
 
   const onlineCount = useMemo(() => hosts.filter((h) => h.online).length, [hosts]);
+  const blockedCount = useMemo(() => hosts.filter((h) => h.blocked).length, [hosts]);
+
+  // enforcement é a resposta a "bloquear aqui adianta alguma coisa?" — a
+  // mesma função que a lista de grupos usa para o aviso de ordem, para as
+  // duas telas nunca discordarem sobre o mesmo bloqueio.
+  const enforcement = useMemo(() => blockEnforcement(fwGroups, KIND_BLOCKED_HOSTS), [fwGroups]);
+  const notEnforced = enforcement.status === 'off' || enforcement.status === 'not_applied' || enforcement.status === 'shadowed';
 
   const openAlias = (h: NetHost) => {
     setAliasFor(h);
@@ -128,6 +163,36 @@ export default function Hosts() {
       </div>
 
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchHosts} className="underline">Tentar novamente</button></div>}
+
+      {/* "Bloqueado" no inventário não é mais garantia de bloqueio em vigor:
+          o grupo do sistema que descarta esses hosts pode estar desligado,
+          pode não estar aplicado, ou pode ter sido arrastado para depois de
+          um grupo do admin que libera antes. Quando isso acontece, o painel
+          diz — com o motivo e o caminho para resolver —, em vez de mostrar um
+          selo vermelho de bloqueio que o tráfego desmente. */}
+      {blockedCount > 0 && notEnforced && (
+        <div className="card border border-orange-500/40 bg-orange-500/10 text-sm">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-orange-300">
+                {blockedCount === 1 ? 'O host bloqueado abaixo pode não estar sendo bloqueado de verdade.' : `Os ${blockedCount} hosts bloqueados abaixo podem não estar sendo bloqueados de verdade.`}
+              </p>
+              <p className="text-gray-300 text-xs mt-1">{enforcement.reason}</p>
+              <p className="text-gray-400 text-xs mt-1">
+                {enforcement.fix}{' '}
+                <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">Abrir os grupos de regras</Link>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {blockedCount > 0 && enforcement.status === 'unknown' && enforcement.reason && (
+        <div className="card border border-gray-700 text-sm text-gray-400">
+          <span className="text-gray-300">{enforcement.reason}</span>{' '}
+          Não dá para confirmar aqui se os bloqueios abaixo estão em vigor. {enforcement.fix}
+        </div>
+      )}
 
       {talkers.length > 0 && (
         <Panel title={<span className="flex items-center gap-2"><TrendingUp className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Top consumidores</span><span className="text-xs text-gray-600 font-normal">— quem está usando a banda agora (fluxos ativos)</span></span>}>
@@ -211,8 +276,11 @@ export default function Hosts() {
                     <dd className="text-gray-400 font-mono">{h.interface || '—'}</dd>
                   </dl>
                   {h.blocked && (
-                    <span className="mt-2 inline-flex items-center gap-1 text-xs text-red-400">
-                      <Ban className="w-3 h-3" /> bloqueado
+                    <span
+                      className={`mt-2 inline-flex items-center gap-1 text-xs ${notEnforced ? 'text-orange-400' : 'text-red-400'}`}
+                      title={notEnforced ? enforcement.reason : undefined}
+                    >
+                      <Ban className="w-3 h-3" /> {notEnforced ? 'bloqueado — não em vigor' : 'bloqueado'}
                     </span>
                   )}
                 </div>
@@ -238,8 +306,11 @@ export default function Hosts() {
                       <td className="py-3 pr-4">
                         <div className="text-white font-medium">{h.alias || h.hostname || '—'}</div>
                         {h.blocked && (
-                          <span className="inline-flex items-center gap-1 text-xs text-red-400">
-                            <Ban className="w-3 h-3" /> bloqueado
+                          <span
+                            className={`inline-flex items-center gap-1 text-xs ${notEnforced ? 'text-orange-400' : 'text-red-400'}`}
+                            title={notEnforced ? enforcement.reason : undefined}
+                          >
+                            <Ban className="w-3 h-3" /> {notEnforced ? 'bloqueado — não em vigor' : 'bloqueado'}
                           </span>
                         )}
                       </td>
@@ -325,6 +396,23 @@ export default function Hosts() {
                 Deseja {confirmFor.blocked ? 'desbloquear' : 'bloquear'} o host{' '}
                 <span className="text-white font-medium">{confirmFor.alias || confirmFor.ip || confirmFor.mac}</span>?
               </p>
+              {/* Bloquear com o grupo desligado, não aplicado ou embaixo de um
+                  grupo que libera devolveria "sucesso" e não bloquearia nada.
+                  Dizer isso ANTES do clique é o ponto: depois, o host já
+                  aparece bloqueado na lista. */}
+              {!confirmFor.blocked && notEnforced && (
+                <div className="rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 py-2 text-xs">
+                  <p className="text-orange-300 flex items-start gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" aria-hidden="true" />
+                    <span>Este bloqueio não vai entrar em vigor agora.</span>
+                  </p>
+                  <p className="text-gray-300 mt-1">{enforcement.reason}</p>
+                  <p className="text-gray-400 mt-1">
+                    {enforcement.fix}{' '}
+                    <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">Abrir os grupos de regras</Link>
+                  </p>
+                </div>
+              )}
               {confirmError && (
                 <div className="rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-sm px-3 py-2">{confirmError}</div>
               )}
