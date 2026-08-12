@@ -206,7 +206,16 @@ func TestForwardChainDefaultOrderIsBlocksFirst(t *testing.T) {
 		{ID: "g", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 2},
 	}
 	s := renderChainScript(ForwardChain, forwardChainRules(groups))
-	if strings.Index(s, "@blocked_hosts") > strings.Index(s, "jump grp_aaa") {
+	idxBlock := strings.Index(s, "@blocked_hosts")
+	idxJump := strings.Index(s, "jump grp_aaa")
+	if idxBlock < 0 || idxJump < 0 {
+		// strings.Index devolve -1 para "não encontrado", e -1 > idx dá falso
+		// para qualquer idx >= 0 — sem esta checagem o teste passaria vazio
+		// (verde) numa forward sem nenhum @blocked_hosts, exatamente o
+		// cenário que ele deveria pegar.
+		t.Fatalf("esperava tanto o bloqueio quanto o jump na forward, faltou algum: block=%d jump=%d\n%s", idxBlock, idxJump, s)
+	}
+	if idxBlock > idxJump {
 		t.Errorf("no padrão os bloqueios vêm primeiro:\n%s", s)
 	}
 }
