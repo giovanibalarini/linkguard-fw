@@ -581,6 +581,17 @@ func (s *Service) BaseDepsMissing(detail string) error {
 // BaseDepsOK clears BaseDepsMissing and records that LinkGuard installed the
 // base packages itself. Raised only on the transition (a boot that actually
 // had to install something), never on every start — see bootstrapdeps.Ensure.
+// BaseDepsPresent silently closes a stale "base ausente" alert. Nothing was
+// installed by LinkGuard and there is no recovery to announce — the
+// condition simply stopped being true, typically because the admin ran
+// apt-get over SSH. Before this existed, that alert was only ever created
+// or cleared by an install LinkGuard itself performed, so an admin who
+// fixed it by hand kept a red critical alert until the next service
+// restart. No-op when nothing is open.
+func (s *Service) BaseDepsPresent() {
+	s.AutoResolve(TypeBaseDepsMissing, "")
+}
+
 func (s *Service) BaseDepsOK(detail string) error {
 	s.AutoResolve(TypeBaseDepsMissing, "")
 	return s.createRecovery(TypeBaseDepsOK, "Dependências base instaladas",

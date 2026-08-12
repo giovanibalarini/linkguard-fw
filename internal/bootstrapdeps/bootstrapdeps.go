@@ -80,6 +80,10 @@ type Alerter interface {
 	BaseDepsMissing(detail string) error
 	// BaseDepsOK clears it after LinkGuard installed what was missing.
 	BaseDepsOK(detail string) error
+	// BaseDepsPresent silently clears it when the base turns out to be in
+	// place and LinkGuard did not install anything — the admin fixed it by
+	// hand. No recovery is announced: nobody has anything to announce.
+	BaseDepsPresent()
 }
 
 // Ensure guarantees the base packages at startup, and is honest when it
@@ -103,6 +107,15 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) bool {
 	missing := Missing(ctx, exec, BasePackages...)
 	if len(missing) == 0 {
 		slog.Debug("dependências base presentes", "pacotes", BasePackages)
+		// Fecha um alerta que ficou aberto de uma tentativa anterior (ou de
+		// um boot anterior) e que já não descreve a máquina. Sem isto, quem
+		// instalasse à mão pelo SSH ficava com o alerta crítico para
+		// sempre: o alerta só era mexido quando o PRÓPRIO LinkGuard
+		// instalava algo. Não gera alerta de recuperação — não houve
+		// recuperação nossa a anunciar.
+		if alerter != nil {
+			alerter.BaseDepsPresent()
+		}
 		return true
 	}
 
@@ -139,7 +152,7 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) bool {
 		return true
 	}
 
-	detail := describeMissing(still)
+	detail := describeMissing(still) + retryNotice
 	slog.Error("o LinkGuard não conseguiu instalar dependências base; o appliance está incompleto",
 		"faltando", still, "detalhe", detail, "err", err)
 	if alerter != nil {
@@ -147,6 +160,16 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) bool {
 	}
 	return false
 }
+
+// retryNotice is the sentence that turns this alert from a dead end into
+// something with a way out. Two facts an operator cannot guess: LinkGuard
+// keeps trying on its own (so "no WAN yet at boot" heals itself), and a
+// manual install is noticed on the next attempt — this alert used to be
+// re-evaluated ONLY at boot, so whoever fixed it by hand over SSH without
+// restarting the service kept a red critical alert forever, with nothing on
+// screen suggesting a restart or anything else.
+const retryNotice = " O LinkGuard tenta de novo sozinho a cada poucos minutos: " +
+	"se você instalar à mão, o alerta se fecha na tentativa seguinte, sem precisar reiniciar o serviço."
 
 // retryDelays is the schedule for re-attempting the base install after a
 // failure. It starts short because the likeliest cause is transient and

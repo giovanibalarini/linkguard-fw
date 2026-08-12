@@ -96,7 +96,11 @@ func (e *fakeExec) ran(substr string) bool {
 type fakeAlerter struct {
 	missing []string
 	ok      []string
+	// present conta os fechamentos silenciosos (nada instalado por nós).
+	present int
 }
+
+func (a *fakeAlerter) BaseDepsPresent() { a.present++ }
 
 func (a *fakeAlerter) BaseDepsMissing(detail string) error {
 	a.missing = append(a.missing, detail)
@@ -777,5 +781,60 @@ func TestAptReasonPrefereAsLinhasEDoApt(t *testing.T) {
 	}
 	if !strings.Contains(reason, "erros do apt no log do serviço") {
 		t.Errorf("o motivo tem que dizer que sobraram erros no log:\n%s", reason)
+	}
+}
+
+// O alerta de base ausente era reavaliado SÓ no boot: quem instalasse à mão
+// pelo SSH sem reiniciar ficava com um alerta crítico vermelho para sempre, e
+// a mensagem não dizia nem para reiniciar. Agora ela diz o que de fato
+// acontece — o LinkGuard tenta de novo sozinho.
+func TestOAlertaDeBaseAusenteDizComoSaiDele(t *testing.T) {
+	exec := newFakeExec()
+	exec.installFails = true
+	al := &fakeAlerter{}
+
+	Ensure(context.Background(), exec, al)
+
+	if len(al.missing) != 1 {
+		t.Fatalf("esperava um alerta, obtive %v", al.missing)
+	}
+	detail := al.missing[0]
+	for _, want := range []string{"tenta de novo sozinho", "sem precisar reiniciar o serviço"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("o alerta não diz %q:\n%s", want, detail)
+		}
+	}
+}
+
+// E a promessa tem que ser verdade: uma tentativa posterior, no mesmo
+// processo, reconhece o que o admin instalou à mão e fecha o alerta.
+func TestUmaTentativaPosteriorFechaOAlertaSemReiniciarOServico(t *testing.T) {
+	exec := newFakeExec()
+	exec.installFails = true
+	al := &fakeAlerter{}
+
+	if Ensure(context.Background(), exec, al) {
+		t.Fatal("pré-condição: a primeira tentativa tem que falhar")
+	}
+	if len(al.ok) != 0 {
+		t.Fatalf("nada foi instalado ainda: %v", al.ok)
+	}
+
+	// O admin instalou à mão pelo SSH — sem reiniciar o LinkGuard.
+	for _, p := range BasePackages {
+		exec.installed[p] = true
+	}
+
+	if !Ensure(context.Background(), exec, al) {
+		t.Fatal("com a base instalada à mão, a tentativa seguinte tem que dizer que acabou")
+	}
+	if len(al.missing) != 1 {
+		t.Errorf("não pode reabrir o alerta depois de resolvido: %v", al.missing)
+	}
+	if al.present == 0 {
+		t.Error("o alerta crítico continua aberto: quem instalou à mão ficaria com ele para sempre")
+	}
+	if len(al.ok) != 0 {
+		t.Errorf("o LinkGuard não instalou nada; não há recuperação a anunciar: %v", al.ok)
 	}
 }
