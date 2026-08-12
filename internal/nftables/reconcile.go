@@ -202,13 +202,16 @@ const (
 //
 // Cada item vira uma coisa ou outra, nunca as duas:
 //
-//   - grupo do sistema (host bloqueado, destino bloqueado): as duas linhas
-//     de `drop` do named set correspondente, direto aqui. Ele não tem chain
-//     própria — o conteúdo dele é o set — e o chain_name reservado (sys_…)
-//     nunca vai para o nft.
-//   - grupo do admin: um `jump` para a chain dele. A condição de entrada vai
-//     na própria linha do jump: se ela não casa, o grupo inteiro é pulado sem
-//     o kernel olhar as regras de dentro.
+//   - grupo do sistema (host bloqueado, destino bloqueado): as linhas de
+//     `drop` do named set correspondente, lidas de systemGroupForwardRules
+//     (groups.go) — a mesma fonte que IsSystemGroup consulta, para que os
+//     dois nunca possam discordar sobre o que é um kind de sistema. Ele não
+//     tem chain própria — o conteúdo dele é o set — e o chain_name reservado
+//     (sys_…) nunca vai para o nft.
+//   - grupo do admin: qualquer kind que não está em systemGroupForwardRules
+//     (hoje, kind == "admin" ou vazio). Um `jump` para a chain dele. A
+//     condição de entrada vai na própria linha do jump: se ela não casa, o
+//     grupo inteiro é pulado sem o kernel olhar as regras de dentro.
 //
 // O padrão continua sendo bloqueios primeiro (é assim que a migração os cria,
 // nas posições 0 e 1), e continua valendo a razão da §3 da design spec: um
@@ -244,35 +247,27 @@ func forwardChainRules(groups []StoredGroup) [][]string {
 			// membros do set continuam guardados (o set não é tocado aqui).
 			continue
 		}
-		switch g.Kind {
-		case GroupKindBlockedHosts:
-			rules = append(rules,
-				[]string{"ip", "saddr", "@" + BlockedSet, "counter", "drop"},
-				[]string{"ip", "daddr", "@" + BlockedSet, "counter", "drop"},
-			)
-		case GroupKindBlocklist:
-			rules = append(rules,
-				[]string{"ip", "daddr", "@blocklist", "counter", "drop"},
-				[]string{"ip", "saddr", "@blocklist", "counter", "drop"},
-			)
-		default: // grupo do admin
-			if !validGroupChainName(g.ChainName) {
-				// Não é paranoia redundante: este nome sai do banco e é
-				// interpolado no argv do nft, que junta os argumentos e parseia
-				// o resultado — a mesma porta que reIface/ValidMark fecham nos
-				// outros geradores deste pacote.
-				slog.Error("grupo ignorado ao montar a chain forward: nome de chain inseguro",
-					"grupo", g.ID, "nome", g.Name, "chain", g.ChainName)
-				continue
-			}
-			tokens, err := groupJumpTokens(g)
-			if err != nil {
-				slog.Error("grupo ignorado ao montar a chain forward: condição inválida",
-					"grupo", g.ID, "nome", g.Name, "err", err)
-				continue
-			}
-			rules = append(rules, tokens)
+		if renderer, ok := systemGroupForwardRules[g.Kind]; ok {
+			rules = append(rules, renderer()...)
+			continue
 		}
+		// grupo do admin
+		if !validGroupChainName(g.ChainName) {
+			// Não é paranoia redundante: este nome sai do banco e é
+			// interpolado no argv do nft, que junta os argumentos e parseia
+			// o resultado — a mesma porta que reIface/ValidMark fecham nos
+			// outros geradores deste pacote.
+			slog.Error("grupo ignorado ao montar a chain forward: nome de chain inseguro",
+				"grupo", g.ID, "nome", g.Name, "chain", g.ChainName)
+			continue
+		}
+		tokens, err := groupJumpTokens(g)
+		if err != nil {
+			slog.Error("grupo ignorado ao montar a chain forward: condição inválida",
+				"grupo", g.ID, "nome", g.Name, "err", err)
+			continue
+		}
+		rules = append(rules, tokens)
 	}
 	return rules
 }

@@ -50,13 +50,45 @@ const (
 	SystemChainBlocklist    = "sys_blocklist"
 )
 
+// systemGroupForwardRules é a fonte única sobre "o que é um grupo do
+// sistema": as chaves são os únicos kinds que este pacote reconhece como
+// mantidos pelo LinkGuard, e o valor é exatamente a linha (ou par de linhas)
+// que aquele kind emite na forward. IsSystemGroup e forwardChainRules leem
+// as duas do mesmo mapa — não é mais possível um kind ser "do sistema" para
+// um e cair no ramo do admin no outro, porque não existe um segundo lugar
+// que tenha essa opinião.
+//
+// Antes desta mudança, IsSystemGroup era uma lista fechada de kinds e
+// forwardChainRules era um switch com um `case` para cada um mais um
+// `default` tratado como admin — coincidiam porque os dois foram escritos
+// juntos, mas nada os mantinha em sincronia: um terceiro kind de sistema
+// acrescentado só a um dos dois faria o outro divergir em silêncio (ver
+// TestSystemGroupKindKnownToIsSystemGroupIsAlwaysRenderedAsSystem). Isto
+// fecha essa divergência estruturalmente, não com uma checagem a mais.
+var systemGroupForwardRules = map[string]func() [][]string{
+	GroupKindBlockedHosts: func() [][]string {
+		return [][]string{
+			{"ip", "saddr", "@" + BlockedSet, "counter", "drop"},
+			{"ip", "daddr", "@" + BlockedSet, "counter", "drop"},
+		}
+	},
+	GroupKindBlocklist: func() [][]string {
+		return [][]string{
+			{"ip", "daddr", "@blocklist", "counter", "drop"},
+			{"ip", "saddr", "@blocklist", "counter", "drop"},
+		}
+	},
+}
+
 // IsSystemGroup reporta se o grupo é mantido pelo LinkGuard em vez de criado
 // pelo admin. Deliberadamente uma lista fechada, não "!= admin": um kind
 // desconhecido (banco de uma versão futura, linha editada à mão) é tratado
 // como do admin, que é o lado seguro — o erro caro seria travar a edição de
-// um grupo que o admin criou.
+// um grupo que o admin criou. A lista fechada é systemGroupForwardRules, não
+// uma segunda cópia dos dois nomes.
 func IsSystemGroup(kind string) bool {
-	return kind == GroupKindBlockedHosts || kind == GroupKindBlocklist
+	_, ok := systemGroupForwardRules[kind]
+	return ok
 }
 
 // StoredGroup is this package's own view of a rule group, deliberately

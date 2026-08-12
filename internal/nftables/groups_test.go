@@ -156,6 +156,31 @@ func TestIsSystemGroupRecognisesOnlyTheTwoBlockKinds(t *testing.T) {
 	}
 }
 
+// A prova do m-3: IsSystemGroup e forwardChainRules leem o mesmo mapa
+// (systemGroupForwardRules), então não existe mais um kind que IsSystemGroup
+// reconheça como "do sistema" e forwardChainRules trate como admin — o
+// cenário que a revisão apontou como risco futuro (um terceiro kind de
+// sistema acrescentado só a um dos dois). Este teste acrescenta um kind
+// hipotético ao mapa em tempo de execução e confirma que as duas funções o
+// enxergam do mesmo jeito, sem precisar tocar em nenhuma delas.
+func TestSystemGroupKindKnownToIsSystemGroupIsAlwaysRenderedAsSystem(t *testing.T) {
+	const hypotheticalKind = "kind_de_sistema_hipotetico_para_teste"
+	hypotheticalLine := []string{"ip", "saddr", "@hipotetico", "counter", "drop"}
+	systemGroupForwardRules[hypotheticalKind] = func() [][]string {
+		return [][]string{hypotheticalLine}
+	}
+	t.Cleanup(func() { delete(systemGroupForwardRules, hypotheticalKind) })
+
+	if !IsSystemGroup(hypotheticalKind) {
+		t.Fatal("IsSystemGroup devia reconhecer o kind hipotético recém-acrescentado ao mapa")
+	}
+
+	lines := forwardLines([]StoredGroup{{ID: "x", Kind: hypotheticalKind, Enabled: true, Position: 0}})
+	if len(lines) != 1 || lines[0] != strings.Join(hypotheticalLine, " ") {
+		t.Errorf("forwardChainRules devia renderizar o kind hipotético a partir do mesmo mapa que IsSystemGroup consulta, obtive %v", lines)
+	}
+}
+
 // Kind vazio é o que toda linha antiga tem depois do ALTER TABLE. Ela é um
 // grupo do admin, e confundir isso com "sistema" travaria a edição de grupos
 // que o admin criou.
