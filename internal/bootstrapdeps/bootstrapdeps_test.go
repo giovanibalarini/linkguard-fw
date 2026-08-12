@@ -646,3 +646,56 @@ func TestTodaChamadaDeAptRecolheAUnidadeTransiente(t *testing.T) {
 		}
 	}
 }
+
+// O veredito do Ensure é o que permite ao chamador tentar de novo. Ele roda
+// uma vez por tentativa, e o motivo mais comum de falhar logo depois do boot
+// é o apt-daily/unattended-upgrades estar com o lock do dpkg — sem uma
+// segunda tentativa, a base nunca era instalada NAQUELE boot.
+func TestEnsureDizSeAindaFaltaAlgo(t *testing.T) {
+	// Máquina já provisionada: nada a fazer.
+	if !Ensure(context.Background(), newFakeExec(BasePackages...), nil) {
+		t.Error("numa máquina já provisionada o Ensure tem que dizer que acabou")
+	}
+
+	// Máquina pelada com apt funcionando: instalou, acabou.
+	ok := newFakeExec()
+	if !Ensure(context.Background(), ok, nil) {
+		t.Error("depois de instalar com sucesso o Ensure tem que dizer que acabou")
+	}
+
+	// apt indisponível (lock do dpkg, espelho morto): NÃO acabou.
+	stuck := newFakeExec()
+	stuck.installFails = true
+	if Ensure(context.Background(), stuck, nil) {
+		t.Error("com a base ainda faltando o Ensure não pode dizer que acabou — é o que faz o chamador tentar de novo")
+	}
+
+	// Dry-run: não há o que tentar de novo.
+	dry := newFakeExec()
+	dry.dryRun = true
+	if !Ensure(context.Background(), dry, nil) {
+		t.Error("em dry-run não existe retentativa que resolva")
+	}
+}
+
+// A escala começa curta (o lock do dpkg se resolve sozinho em minutos) e
+// estabiliza (sem WAN, martelar o apt não compra nada).
+func TestRetryDelayComecaCurtoEEstabiliza(t *testing.T) {
+	first := RetryDelay(0)
+	if first > time.Minute {
+		t.Errorf("a primeira retentativa tem que ser rápida, veio %v", first)
+	}
+	if RetryDelay(1) <= first {
+		t.Errorf("a espera tem que crescer: %v depois de %v", RetryDelay(1), first)
+	}
+	last := RetryDelay(99)
+	if last != RetryDelay(1000) {
+		t.Errorf("a espera tem que estabilizar, %v != %v", last, RetryDelay(1000))
+	}
+	if last > 30*time.Minute {
+		t.Errorf("um teto de %v deixa a base sem instalar por tempo demais", last)
+	}
+	if RetryDelay(-1) != first {
+		t.Errorf("tentativa negativa tem que se comportar como a primeira")
+	}
+}

@@ -293,171 +293,205 @@ func run() int {
 		}
 	})
 
-	// Guarantee the base packages (nftables, iproute2, iptables,
-	// iputils-ping) before anything below tries to use them. Installing the
-	// LinkGuard is handing it the machine: on a bare box it brings in what it
-	// cannot work without, instead of assuming somebody prepared the ground.
+	// provisionSystem é tudo o que o LinkGuard faz no boot que MEXE na
+	// máquina: forwarding, policy routing, bootstrap/reconciliação do
+	// nftables, accounting do conntrack, NTP e resolv.conf.
 	//
-	// This is what finishes the install: the .deb declares the base in
-	// Recommends:, not Depends:, so `dpkg -i` on a machine with nothing on it
-	// installs AND configures the package and the service actually starts
-	// (with Depends: it stops at `iU` and there is no panel left to explain
-	// anything). A package's own maintainer scripts cannot do this — dpkg
-	// holds its lock for the whole run — but a running service can.
-	//
-	// Must come before EnsureForwarding/EnsureTable below, which need `ip`
-	// and `nft` to exist. On an already-provisioned box it is one dpkg-query
-	// per package and nothing else, so it does not slow down ordinary boots.
-	// If apt cannot deliver (no network, dead mirror), it does not fail
-	// silently: critical alert on the panel plus a log naming what is missing
-	// and what stops working — and the boot carries on, so the operator has a
-	// panel to read it on.
-	//
-	// It runs on pkgExec, the package-manager executor (see its declaration
-	// above), never on the application's 30s one.
-	bootstrapdeps.Ensure(ctx, pkgExec, alertSvc)
+	// Tudo isto depende de o `nft`/`ip` existirem, então continua vindo
+	// DEPOIS de garantir a base — mas fora do caminho crítico da subida (ver
+	// a goroutine logo abaixo). É idempotente de ponta a ponta, e por isso
+	// pode ser chamado de novo quando uma tentativa posterior de instalar a
+	// base finalmente der certo.
+	provisionSystem := func() {
+		// Enable IPv4 forwarding so the box can route between LAN and WAN; it
+		// defaults to 0 on a fresh system and a firewall/router needs it on.
+		routeSvc.EnsureForwarding()
 
-	// Enable IPv4 forwarding so the box can route between LAN and WAN; it
-	// defaults to 0 on a fresh system and a firewall/router needs it on.
-	routeSvc.EnsureForwarding()
+		// Apply the WAN host-steering policy routing at startup (LinkGuard now owns
+		// this; it previously came from /etc/network/linkguard-routing.sh via rc.local).
+		balancerSvc.EnsureSteerRouting(ctx)
 
-	// Apply the WAN host-steering policy routing at startup (LinkGuard now owns
-	// this; it previously came from /etc/network/linkguard-routing.sh via rc.local).
-	balancerSvc.EnsureSteerRouting(ctx)
-
-	// Bootstrap `table inet linkguard` if it doesn't exist yet — every other
-	// nftables operation (block host, port forward, custom rule) assumes the
-	// table is already there. On every install to date this table was created
-	// by hand once; this makes a fresh install self-sufficient instead of
-	// silently failing the first time an admin uses the Firewall screen.
-	if configuredLinks, err := linkSvc.List(); err != nil {
-		slog.Warn("could not load links for nftables bootstrap", "err", err)
-	} else {
-		wanInterfaces := make([]string, 0, len(configuredLinks))
-		for _, l := range configuredLinks {
-			wanInterfaces = append(wanInterfaces, l.Interface)
-		}
-		if nftSvc.EnsureTable(ctx, wanInterfaces) {
-			// The table was just created empty — restore whatever was saved on
-			// the last mutation (host_wan, blocklist, user rules, host blocks,
-			// port forwards) so a from-scratch install with a restored database
-			// comes back with the same firewall it had, not a blank one. Only
-			// runs right after a bootstrap: reapplying a snapshot on every
-			// ordinary restart would risk clobbering a running firewall with
-			// stale state instead.
-			if snapshot, _ := db.GetSetting(nftables.LiveSnapshotSettingKey); snapshot != "" {
-				if _, err := nftSvc.Restore(ctx, snapshot); err != nil {
-					slog.Warn("bootstrapped nftables table but could not restore the saved elements", "err", err)
-				} else {
-					slog.Info("restored saved nftables elements after bootstrap (host_wan/blocklist/user rules/port forwards)")
+		// Bootstrap `table inet linkguard` if it doesn't exist yet — every other
+		// nftables operation (block host, port forward, custom rule) assumes the
+		// table is already there. On every install to date this table was created
+		// by hand once; this makes a fresh install self-sufficient instead of
+		// silently failing the first time an admin uses the Firewall screen.
+		if configuredLinks, err := linkSvc.List(); err != nil {
+			slog.Warn("could not load links for nftables bootstrap", "err", err)
+		} else {
+			wanInterfaces := make([]string, 0, len(configuredLinks))
+			for _, l := range configuredLinks {
+				wanInterfaces = append(wanInterfaces, l.Interface)
+			}
+			if nftSvc.EnsureTable(ctx, wanInterfaces) {
+				// The table was just created empty — restore whatever was saved on
+				// the last mutation (host_wan, blocklist, user rules, host blocks,
+				// port forwards) so a from-scratch install with a restored database
+				// comes back with the same firewall it had, not a blank one. Only
+				// runs right after a bootstrap: reapplying a snapshot on every
+				// ordinary restart would risk clobbering a running firewall with
+				// stale state instead.
+				if snapshot, _ := db.GetSetting(nftables.LiveSnapshotSettingKey); snapshot != "" {
+					if _, err := nftSvc.Restore(ctx, snapshot); err != nil {
+						slog.Warn("bootstrapped nftables table but could not restore the saved elements", "err", err)
+					} else {
+						slog.Info("restored saved nftables elements after bootstrap (host_wan/blocklist/user rules/port forwards)")
+					}
 				}
 			}
-		}
 
-		// Reconcile the masquerade rule on EVERY boot, not just when the table
-		// had to be created. EnsureTable is a no-op on an already-provisioned
-		// box, so before this the NAT rule kept whatever interface names it was
-		// born with — in production a renamed NIC (enp4s0 -> enp5s0) silently
-		// took WAN1's NAT down until an operator intervened by hand.
-		enabledWANs := make([]string, 0, len(configuredLinks))
-		for _, l := range configuredLinks {
-			if l.Enabled && l.Interface != "" {
-				enabledWANs = append(enabledWANs, l.Interface)
+			// Reconcile the masquerade rule on EVERY boot, not just when the table
+			// had to be created. EnsureTable is a no-op on an already-provisioned
+			// box, so before this the NAT rule kept whatever interface names it was
+			// born with — in production a renamed NIC (enp4s0 -> enp5s0) silently
+			// took WAN1's NAT down until an operator intervened by hand.
+			enabledWANs := make([]string, 0, len(configuredLinks))
+			for _, l := range configuredLinks {
+				if l.Enabled && l.Interface != "" {
+					enabledWANs = append(enabledWANs, l.Interface)
+				}
+			}
+			if err := nftSvc.ReconcileMasquerade(ctx, enabledWANs); err != nil {
+				slog.Warn("não foi possível reconciliar a regra de NAT no boot", "err", err)
+			}
+
+			// Reconcile the NTP-protection input chain on every boot too — same
+			// self-healing reasoning as the masquerade rule above: a box upgraded
+			// from before this feature (2026-08-11) has no input chain at all, and
+			// EnsureTable/ReconcileNTPInput being no-ops on an already-provisioned
+			// box means only an explicit reconcile keeps it in sync with the
+			// admin's chosen networks and the serve-to-LAN toggle. Reads both
+			// straight from the "ntp_config" settings key (owned by
+			// internal/api/handlers.NTPHandler) since main wires the HTTP layer
+			// after this point and has no handler instance yet. Reshaped
+			// 2026-08-11 (spec §4): the chain is keyed on
+			// timesync.Config.AllowedNetworks, not the WAN interface set — see
+			// ReconcileNTPInput's doc comment.
+			var ntpCfg timesync.Config
+			if raw, _ := db.GetSetting("ntp_config"); raw != "" {
+				_ = json.Unmarshal([]byte(raw), &ntpCfg)
+			}
+			if err := nftSvc.ReconcileNTPInput(ctx, ntpCfg.AllowedNetworks, ntpCfg.ServeLAN); err != nil {
+				slog.Warn("não foi possível reconciliar a chain de proteção do NTP no boot", "err", err)
+			}
+
+			// Reconcile the structural chain (mark_hosts) on every boot too.
+			// Until this feature (2026-08-11, firewall page redesign spec §6)
+			// it was only ever created once at EnsureTable/bootstrap and never
+			// touched again — the gap that let a double-load of the ruleset
+			// (2026-08-10 incident) leave every rule in it permanently
+			// duplicated, since nothing ever flushed and rewrote it again. See
+			// ReconcileStructuralChains' doc comment.
+			//
+			// The forward chain used to be reconciled here too; since rule
+			// groups (Phase C1) it belongs to ReconcileGroups, called below via
+			// frSvc.Reconcile — the only place that knows the admin's groups.
+			if err := nftSvc.ReconcileStructuralChains(ctx); err != nil {
+				slog.Warn("não foi possível reconciliar a chain estrutural (mark_hosts) no boot", "err", err)
+			}
+
+			// Phase B (firewall page redesign spec §4.1): the admin's own rules
+			// now live in the DB, not just inside nft. On a box upgrading from
+			// Phase A, ImportOnce brings whatever is in the live user_rules
+			// chain into the DB exactly once (guarded by a settings flag, never
+			// by "is the table empty" — see its doc comment for why that
+			// distinction matters), preserving order; a fresh install has
+			// nothing to import and just sets the guard.
+			//
+			// MigrateRulesIntoDefaultGroup runs right after: it adopts whatever
+			// rules are still ungrouped — including whatever ImportOnce just
+			// brought in — into the "Minhas regras" group, once, guarded the
+			// same way. The order between these two is not arbitrary: inverting
+			// them would make a box still on Phase A (nothing in the DB yet,
+			// the real rules only living in the legacy user_rules chain) run
+			// the group migration against an empty rule set, then have
+			// ImportOnce bring the rules in afterwards as orphans nobody ever
+			// adopts into a group.
+			//
+			// Reconcile (Fase C1) is what actually renders the forward chain
+			// (blocks, then the group jumps) and every grp_ chain from the DB —
+			// see its doc comment. It is called unconditionally last, on every
+			// boot, same as the other reconciles above. This is not redundant
+			// with the two calls above even though both of them also reconcile
+			// internally when they do real work (MigrateRulesIntoDefaultGroup
+			// must, to safely retire the legacy user_rules chain — see its doc
+			// comment): on a box with nothing to migrate, that function returns
+			// without reconciling at all, which would leave the forward chain
+			// stuck on whatever was last written to /etc/nftables.conf.
+			if err := frSvc.ImportOnce(ctx); err != nil {
+				slog.Warn("não foi possível importar as regras existentes de user_rules para o banco", "err", err)
+			}
+			if err := frSvc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
+				slog.Warn("não foi possível migrar as regras soltas para o grupo padrão", "err", err)
+			}
+			if err := frSvc.Reconcile(ctx); err != nil {
+				slog.Warn("não foi possível reconciliar os grupos de regras (chain forward) a partir do banco no boot", "err", err)
 			}
 		}
-		if err := nftSvc.ReconcileMasquerade(ctx, enabledWANs); err != nil {
-			slog.Warn("não foi possível reconciliar a regra de NAT no boot", "err", err)
-		}
 
-		// Reconcile the NTP-protection input chain on every boot too — same
-		// self-healing reasoning as the masquerade rule above: a box upgraded
-		// from before this feature (2026-08-11) has no input chain at all, and
-		// EnsureTable/ReconcileNTPInput being no-ops on an already-provisioned
-		// box means only an explicit reconcile keeps it in sync with the
-		// admin's chosen networks and the serve-to-LAN toggle. Reads both
-		// straight from the "ntp_config" settings key (owned by
-		// internal/api/handlers.NTPHandler) since main wires the HTTP layer
-		// after this point and has no handler instance yet. Reshaped
-		// 2026-08-11 (spec §4): the chain is keyed on
-		// timesync.Config.AllowedNetworks, not the WAN interface set — see
-		// ReconcileNTPInput's doc comment.
-		var ntpCfg timesync.Config
-		if raw, _ := db.GetSetting("ntp_config"); raw != "" {
-			_ = json.Unmarshal([]byte(raw), &ntpCfg)
-		}
-		if err := nftSvc.ReconcileNTPInput(ctx, ntpCfg.AllowedNetworks, ntpCfg.ServeLAN); err != nil {
-			slog.Warn("não foi possível reconciliar a chain de proteção do NTP no boot", "err", err)
-		}
+		// Enable conntrack byte accounting so per-host traffic (top talkers) can be
+		// computed; without it /proc/net/nf_conntrack has no byte counters.
+		trafficSvc.EnsureAccounting()
 
-		// Reconcile the structural chain (mark_hosts) on every boot too.
-		// Until this feature (2026-08-11, firewall page redesign spec §6)
-		// it was only ever created once at EnsureTable/bootstrap and never
-		// touched again — the gap that let a double-load of the ruleset
-		// (2026-08-10 incident) leave every rule in it permanently
-		// duplicated, since nothing ever flushed and rewrote it again. See
-		// ReconcileStructuralChains' doc comment.
-		//
-		// The forward chain used to be reconciled here too; since rule
-		// groups (Phase C1) it belongs to ReconcileGroups, called below via
-		// frSvc.Reconcile — the only place that knows the admin's groups.
-		if err := nftSvc.ReconcileStructuralChains(ctx); err != nil {
-			slog.Warn("não foi possível reconciliar a chain estrutural (mark_hosts) no boot", "err", err)
-		}
+		// Enable NTP time sync (chrony) if it's installed — LinkGuard owns this
+		// the same way it owns the three prerequisites above.
+		timesync.EnsureEnabled(ctx, exec)
 
-		// Phase B (firewall page redesign spec §4.1): the admin's own rules
-		// now live in the DB, not just inside nft. On a box upgrading from
-		// Phase A, ImportOnce brings whatever is in the live user_rules
-		// chain into the DB exactly once (guarded by a settings flag, never
-		// by "is the table empty" — see its doc comment for why that
-		// distinction matters), preserving order; a fresh install has
-		// nothing to import and just sets the guard.
-		//
-		// MigrateRulesIntoDefaultGroup runs right after: it adopts whatever
-		// rules are still ungrouped — including whatever ImportOnce just
-		// brought in — into the "Minhas regras" group, once, guarded the
-		// same way. The order between these two is not arbitrary: inverting
-		// them would make a box still on Phase A (nothing in the DB yet,
-		// the real rules only living in the legacy user_rules chain) run
-		// the group migration against an empty rule set, then have
-		// ImportOnce bring the rules in afterwards as orphans nobody ever
-		// adopts into a group.
-		//
-		// Reconcile (Fase C1) is what actually renders the forward chain
-		// (blocks, then the group jumps) and every grp_ chain from the DB —
-		// see its doc comment. It is called unconditionally last, on every
-		// boot, same as the other reconciles above. This is not redundant
-		// with the two calls above even though both of them also reconcile
-		// internally when they do real work (MigrateRulesIntoDefaultGroup
-		// must, to safely retire the legacy user_rules chain — see its doc
-		// comment): on a box with nothing to migrate, that function returns
-		// without reconciling at all, which would leave the forward chain
-		// stuck on whatever was last written to /etc/nftables.conf.
-		if err := frSvc.ImportOnce(ctx); err != nil {
-			slog.Warn("não foi possível importar as regras existentes de user_rules para o banco", "err", err)
-		}
-		if err := frSvc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
-			slog.Warn("não foi possível migrar as regras soltas para o grupo padrão", "err", err)
-		}
-		if err := frSvc.Reconcile(ctx); err != nil {
-			slog.Warn("não foi possível reconciliar os grupos de regras (chain forward) a partir do banco no boot", "err", err)
-		}
+		// Relax /etc/kea's directory permissions so DHCP config validation/apply
+		// doesn't fail under AppArmor (see EnsureKeaDirReadable's doc comment).
+		keaSvc.EnsureKeaDirReadable()
+
+		// Point /etc/resolv.conf at the local unbound and stop dhclient from
+		// undoing it on lease renewal (see EnsureResolvConf's doc comment).
+		keaSvc.EnsureResolvConf(ctx)
 	}
 
-	// Enable conntrack byte accounting so per-host traffic (top talkers) can be
-	// computed; without it /proc/net/nf_conntrack has no byte counters.
-	trafficSvc.EnsureAccounting()
-
-	// Enable NTP time sync (chrony) if it's installed — LinkGuard owns this
-	// the same way it owns the three prerequisites above.
-	timesync.EnsureEnabled(ctx, exec)
-
-	// Relax /etc/kea's directory permissions so DHCP config validation/apply
-	// doesn't fail under AppArmor (see EnsureKeaDirReadable's doc comment).
-	keaSvc.EnsureKeaDirReadable()
-
-	// Point /etc/resolv.conf at the local unbound and stop dhclient from
-	// undoing it on lease renewal (see EnsureResolvConf's doc comment).
-	keaSvc.EnsureResolvConf(ctx)
+	// O painel e o monitor de failover sobem PRIMEIRO; a base e o
+	// provisionamento vão para segundo plano.
+	//
+	// Antes, bootstrapdeps.Ensure rodava síncrono aqui: com o executor de
+	// pacote (10 min por comando) o pior caso era install + apt-get update +
+	// install ≈ 30 minutos sem monitor de failover, sem balanceamento e sem
+	// painel. E o cenário em que o apt trava devagar é justamente "a WAN
+	// caiu" — exatamente quando o failover é a única coisa que importa. É o
+	// padrão do incidente de 2026-07-24, em que uma migração sem transação
+	// travou o boot desta aplicação por 50+ minutos numa máquina de
+	// produção.
+	//
+	// Por que esta ordem e não simplesmente limitar o prazo total do Ensure:
+	// um teto no Ensure escolhe entre "esperar menos" e "instalar a base" —
+	// os dois importam, e num link ruim qualquer teto que caiba num boot
+	// aceitável é curto demais para um apt honesto. Subir antes remove a
+	// escolha: o painel aparece em milissegundos, o failover está de pé, e a
+	// instalação tem todo o tempo de que precisa.
+	//
+	// Numa máquina já provisionada isto custa quatro dpkg-query e o
+	// provisionamento roda igual, poucos milissegundos depois da subida.
+	//
+	// O laço existe porque Ensure roda uma vez por tentativa e o motivo mais
+	// comum de falhar logo depois do boot é o apt-daily/unattended-upgrades
+	// estar com o lock do dpkg — nada que uma segunda tentativa alguns
+	// minutos depois não resolva. Sem ele, a base nunca era instalada nesse
+	// boot. Cada tentativa bem-sucedida reprovisiona (é aí que o `nft`
+	// finalmente existe para a reconciliação valer).
+	go func() {
+		for attempt := 0; ; attempt++ {
+			done := bootstrapdeps.Ensure(ctx, pkgExec, alertSvc)
+			if done || attempt == 0 {
+				provisionSystem()
+			}
+			if done {
+				return
+			}
+			delay := bootstrapdeps.RetryDelay(attempt)
+			slog.Warn("base incompleta; o LinkGuard vai tentar instalar de novo", "em", delay)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+		}
+	}()
 
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)

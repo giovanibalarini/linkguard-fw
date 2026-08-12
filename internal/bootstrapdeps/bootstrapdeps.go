@@ -34,6 +34,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
@@ -91,16 +92,23 @@ type Alerter interface {
 //
 // On an already-provisioned box this costs one dpkg-query per package and
 // nothing else — no apt call, no alert, no log noise.
-func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) {
+//
+// It returns whether there is nothing left to do: the base is in place, or
+// (dry-run) nothing may be done about it. A false answer is the caller's cue
+// to try again later — see RetryDelay. The single most common reason for a
+// false right after boot is not a broken mirror but apt-daily/
+// unattended-upgrades holding the dpkg lock, and the whole fix for that is
+// to ask again in a few minutes.
+func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) bool {
 	missing := Missing(ctx, exec, BasePackages...)
 	if len(missing) == 0 {
 		slog.Debug("dependências base presentes", "pacotes", BasePackages)
-		return
+		return true
 	}
 
 	if exec.IsDryRun() {
 		slog.Info("dry-run: dependências base ausentes não serão instaladas", "pacotes", missing)
-		return
+		return true
 	}
 
 	slog.Warn("dependências base ausentes; o LinkGuard vai instalá-las", "pacotes", missing)
@@ -128,7 +136,7 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) {
 		if alerter != nil {
 			_ = alerter.BaseDepsOK(detail)
 		}
-		return
+		return true
 	}
 
 	detail := describeMissing(still)
@@ -137,6 +145,31 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) {
 	if alerter != nil {
 		_ = alerter.BaseDepsMissing(detail)
 	}
+	return false
+}
+
+// retryDelays is the schedule for re-attempting the base install after a
+// failure. It starts short because the likeliest cause is transient and
+// self-clearing (apt-daily or unattended-upgrades holding the dpkg lock,
+// routine in the first minutes after a boot) and settles at a quarter of an
+// hour because the other likely cause is not (no WAN yet, dead mirror) and
+// hammering apt buys nothing.
+var retryDelays = []time.Duration{
+	30 * time.Second,
+	2 * time.Minute,
+	5 * time.Minute,
+	15 * time.Minute,
+}
+
+// RetryDelay is how long to wait before attempt+1, given that attempt failed.
+func RetryDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= len(retryDelays) {
+		return retryDelays[len(retryDelays)-1]
+	}
+	return retryDelays[attempt]
 }
 
 // EnsureInstalled is the on-demand sibling of Ensure: it guarantees the
