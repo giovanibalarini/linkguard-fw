@@ -54,6 +54,23 @@ func newTestDB(t *testing.T) *storage.DB {
 	return db
 }
 
+// newTestService constrói o serviço já com os dois grupos do sistema na
+// lista — que é como toda máquina fica logo no começo do boot, antes de
+// qualquer coisa que reconcilie (ver a ordem em cmd/linkguard-fw/main.go).
+//
+// Sem eles, Reconcile se recusa a reconstruir a chain forward, e com razão:
+// uma forward montada a partir de uma lista sem os grupos do sistema sairia
+// sem os bloqueios administrativos. Um teste que reconcilia sem esse passo
+// não estaria testando um estado que a produção alcança.
+func newTestService(t *testing.T, db *storage.DB, nft *nftables.Service) *firewallrules.Service {
+	t.Helper()
+	svc := firewallrules.NewService(db, nft)
+	if err := svc.EnsureSystemGroups(context.Background()); err != nil {
+		t.Fatalf("criar os grupos do sistema: %v", err)
+	}
+	return svc
+}
+
 // newTestGroup cria um grupo com o mesmo formato de chain que a produção usa
 // (GroupChainName sobre o id) — um nome fora de grp_[a-z0-9_] faria a
 // reconciliação pular o grupo inteiro, e o teste passaria a medir o filtro
@@ -61,10 +78,18 @@ func newTestDB(t *testing.T) *storage.DB {
 func newTestGroup(t *testing.T, db *storage.DB, name string) storage.FirewallGroup {
 	t.Helper()
 	id := fmt.Sprintf("%012x-0000-4000-8000-000000000000", len(name)*7+1)
+	// Depois do que já existe (os grupos do sistema), como o CRUD real faz:
+	// duas linhas na mesma posição deixariam a ordem da lista à mercê do
+	// desempate do SELECT.
+	existing, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
 	g := storage.FirewallGroup{
 		ID:          id,
 		Name:        name,
 		ChainName:   nftables.GroupChainName(id),
+		Position:    len(existing),
 		Enabled:     true,
 		Fallthrough: nftables.FallthroughContinue,
 	}
@@ -89,7 +114,7 @@ func TestImportOnceImportsExistingRulesPreservingOrder(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{userRulesOut: twoRulesFixture}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if err := svc.ImportOnce(context.Background()); err != nil {
 		t.Fatalf("ImportOnce: %v", err)
@@ -128,7 +153,7 @@ func TestImportOnceRunsOnlyOnce(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{userRulesOut: twoRulesFixture}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if err := svc.ImportOnce(context.Background()); err != nil {
 		t.Fatalf("first ImportOnce: %v", err)
@@ -173,7 +198,7 @@ func TestImportOnceDoesNotResurrectDeliberatelyDeletedRules(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{userRulesOut: twoRulesFixture}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if err := svc.ImportOnce(context.Background()); err != nil {
 		t.Fatalf("first ImportOnce: %v", err)
@@ -233,7 +258,7 @@ func TestImportOnceImportsUnvalidatableRuleDisabledWithRawTextPreserved(t *testi
 }
 `}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if err := svc.ImportOnce(context.Background()); err != nil {
 		t.Fatalf("ImportOnce must not abort on one unparsable rule: %v", err)
@@ -261,7 +286,7 @@ func TestImportOnceWithNoExistingRulesStillSetsGuard(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{userRulesOut: "table inet linkguard {\n\tchain user_rules {\n\t}\n}\n"}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if err := svc.ImportOnce(context.Background()); err != nil {
 		t.Fatalf("ImportOnce: %v", err)
@@ -306,7 +331,7 @@ func TestImportOnceImportsUnmodellableCtStateRuleDisabledWithRawTextPreserved(t 
 	db := newTestDB(t)
 	exec := &fakeExec{userRulesOut: ctStateRuleFixture}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if err := svc.ImportOnce(context.Background()); err != nil {
 		t.Fatalf("ImportOnce: %v", err)
@@ -337,7 +362,7 @@ func TestImportOnceImportsUnmodellableTCPFlagsRuleDisabledWithRawTextPreserved(t
 	db := newTestDB(t)
 	exec := &fakeExec{userRulesOut: tcpFlagsRuleFixture}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if err := svc.ImportOnce(context.Background()); err != nil {
 		t.Fatalf("ImportOnce: %v", err)
@@ -373,7 +398,7 @@ func TestImportOnceRoundTrippingRuleImportsEnabledWithNoDescriptionOverwrite(t *
 	db := newTestDB(t)
 	exec := &fakeExec{userRulesOut: twoRulesFixture}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if err := svc.ImportOnce(context.Background()); err != nil {
 		t.Fatalf("ImportOnce: %v", err)
@@ -401,7 +426,7 @@ func TestReconcileRecordsSuccessfulApplyStatus(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	if svc.LastApplyStatus() != nil {
 		t.Fatal("expected no apply status before Reconcile has ever run")
@@ -440,7 +465,7 @@ func TestReconcileRecordsFailedApplyStatusWithNftsMessage(t *testing.T) {
 	db := newTestDB(t)
 	exec := &failingRebuildExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	row := &storage.FirewallRule{Action: "accept", Saddr: "10.0.0.1"}
 	if err := db.CreateFirewallRule(row); err != nil {
@@ -468,7 +493,7 @@ func TestCheckPendingRejectsWhatNftWouldReject(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{checkErr: errors.New("nft: Error: could not process rule")}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	candidate := []storage.FirewallRule{{Enabled: true, Action: "accept", Saddr: "10.0.0.1"}}
 	if err := svc.CheckPending(context.Background(), candidate); err == nil {
@@ -480,7 +505,7 @@ func TestCheckPendingAcceptsAWellFormedCandidate(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	candidate := []storage.FirewallRule{{Enabled: true, Action: "drop", Daddr: "203.0.113.0/24"}}
 	if err := svc.CheckPending(context.Background(), candidate); err != nil {
@@ -496,7 +521,7 @@ func TestReconcileRendersEnabledDBRulesIntoTheirGroupChain(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	g := newTestGroup(t, db, "Minhas regras")
 
@@ -555,7 +580,7 @@ func TestReconcileLeavesARuleWithoutAValidGroupOutOfTheFirewall(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	g := newTestGroup(t, db, "Minhas regras")
 	if err := db.CreateFirewallRule(&storage.FirewallRule{GroupID: g.ID, Action: "accept", Saddr: "10.0.0.1"}); err != nil {
@@ -583,7 +608,7 @@ func TestReconcileAbortsOnDBErrorInsteadOfWipingTheFirewall(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	newTestGroup(t, db, "Minhas regras")
 	db.Close() // qualquer leitura a partir daqui falha
@@ -613,7 +638,7 @@ func TestReconcileRecordsApplyStatusOnDBReadError(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	newTestGroup(t, db, "Minhas regras")
 	if _, err := db.Conn().Exec(`DROP TABLE firewall_groups`); err != nil {
@@ -646,7 +671,7 @@ func TestReconcileRecordsNotOKWhenAnEnabledRuleCouldNotBeRendered(t *testing.T) 
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	g := newTestGroup(t, db, "Minhas regras")
 	bad := &storage.FirewallRule{GroupID: g.ID, Action: "accept", Iif: "eth0\" ; flush ruleset #"}
@@ -699,7 +724,7 @@ func TestReconcileDoesNotSwallowAnNftRefusalThatArrivesWithASkippedRule(t *testi
 	db := newTestDB(t)
 	exec := &forwardFailingExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	g := newTestGroup(t, db, "Minhas regras")
 	bad := &storage.FirewallRule{GroupID: g.ID, Action: "accept", Iif: "eth0\" ; flush ruleset #"}
@@ -728,7 +753,7 @@ func TestCheckPendingGroupsRejectsWhatNftWouldReject(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{checkErr: errors.New("nft: Error: could not process rule")}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	candidate := []nftables.StoredGroup{{
 		ID: "a3f21c08-0000-4000-8000-000000000000", Name: "Wi-Fi",
@@ -746,7 +771,7 @@ func TestCheckPendingGroupsAcceptsAWellFormedCandidate(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
-	svc := firewallrules.NewService(db, nft)
+	svc := newTestService(t, db, nft)
 
 	candidate := []nftables.StoredGroup{{
 		ID: "b3f21c08-0000-4000-8000-000000000000", Name: "Wi-Fi",

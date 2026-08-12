@@ -59,6 +59,43 @@ func newTestService(t *testing.T, db *storage.DB) *Service {
 	return svc
 }
 
+// newBootedService devolve o serviço no estado em que o boot o deixa antes
+// de qualquer migração: os dois grupos do sistema já criados (é o PRIMEIRO
+// passo da sequência em cmd/linkguard-fw/main.go, justamente porque as
+// migrações reconciliam por dentro). O histórico do exec vem zerado, para o
+// teste só enxergar os comandos que ele mesmo provocou.
+//
+// Um teste de migração que não passe por aqui não reproduz nenhum estado que
+// a produção alcance: sem grupo do sistema na lista, Reconcile se recusa a
+// reconstruir a chain forward.
+func newBootedService(t *testing.T, db *storage.DB) (*Service, *migrateExec) {
+	t.Helper()
+	svc, exec := newTestServiceWithExec(t, db)
+	if err := svc.EnsureSystemGroups(context.Background()); err != nil {
+		t.Fatalf("criar os grupos do sistema: %v", err)
+	}
+	exec.executed = nil
+	return svc, exec
+}
+
+// adminGroups devolve só os grupos que o admin tem — os dois do sistema
+// existem em toda máquina e não interessam a quem está medindo migração de
+// regra.
+func adminGroups(t *testing.T, db *storage.DB) []storage.FirewallGroup {
+	t.Helper()
+	all, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	var out []storage.FirewallGroup
+	for _, g := range all {
+		if !nftables.IsSystemGroup(g.Kind) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 func TestEnsureSystemGroupsCreatesBothAtTheTop(t *testing.T) {
 	db := newTestDB(t)
 	// um grupo do admin que já existe, na posição 0
@@ -114,6 +151,111 @@ func TestEnsureSystemGroupsIsIdempotent(t *testing.T) {
 		if x.ID == groups[0].ID && x.Enabled {
 			t.Error("religou um grupo que o admin desligou de propósito")
 		}
+	}
+}
+
+// A defesa NÃO pode ser guardada pela trava. A trava só é gravada quando
+// EnsureSystemGroups conclui com sucesso — então, no cenário que mais
+// importa (a criação dos grupos falhou: erro de banco, transação abortada),
+// ela fica vazia e uma defesa condicionada a ela ficaria desligada
+// exatamente ali. A invariante certa é sobre a LISTA que vai ser
+// renderizada: sem nenhum grupo do sistema nela, a forward não é
+// reconstruída, tenha a trava sido gravada ou não.
+//
+// Isto cobre também a janela do boot: se alguma reconciliação rodasse antes
+// da criação dos grupos, ela renderizaria uma forward sem os bloqueios sem
+// parecer erro nenhum.
+func TestReconcileRefusesAForwardWithNoSystemGroupAtAllEvenWithoutTheGuard(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newTestServiceWithExec(t, db)
+	ctx := context.Background()
+
+	// O admin tem grupo; o que não existe é grupo do sistema. E a trava não
+	// foi gravada — é assim que a máquina fica quando EnsureSystemGroups
+	// falhou no boot.
+	const id = "c3f21c08-0000-4000-8000-000000000000"
+	g := storage.FirewallGroup{ID: id, Name: "Meu grupo", ChainName: nftables.GroupChainName(id),
+		Position: 0, Enabled: true, Fallthrough: nftables.FallthroughContinue}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatal(err)
+	}
+	if flag, _ := db.GetSetting(SystemGroupsSettingKey); flag != "" {
+		t.Fatalf("o teste precisa da trava vazia, obtive %q", flag)
+	}
+
+	if err := svc.Reconcile(ctx); err == nil {
+		t.Fatal("sem nenhum grupo do sistema na lista, reconciliar tem que ser erro — senão a forward sai sem bloqueio nenhum e ninguém percebe")
+	}
+	if len(exec.executed) != 0 {
+		t.Errorf("nenhum comando do nft pode ter rodado: a forward viva é a última que foi aplicada COM os bloqueios; rodou: %v", exec.executed)
+	}
+	if st := svc.LastApplyStatus(); st == nil || st.OK {
+		t.Errorf("o apply status tem que ficar não-ok, para a faixa aparecer na tela: %+v", st)
+	}
+}
+
+// A sequência do boot, na ordem do main.go: os grupos do sistema nascem
+// ANTES das duas migrações, porque as duas reconciliam por dentro — e uma
+// reconciliação com a lista ainda sem os bloqueios é exatamente o que a
+// defesa acima recusa. Nenhum passo pode falhar, e o resultado final tem que
+// ser o mesmo padrão que já vale em produção: bloqueio primeiro, grupo do
+// admin depois, cada um na sua posição.
+func TestBootSequenceCreatesTheSystemGroupsBeforeAnyReconcile(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateFirewallRule(&storage.FirewallRule{ID: "r1", Enabled: true,
+		Action: "accept", Proto: "tcp", Dport: "22"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := newTestService(t, db)
+	ctx := context.Background()
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatalf("EnsureSystemGroups: %v", err)
+	}
+	if err := svc.ImportOnce(ctx); err != nil {
+		t.Fatalf("ImportOnce depois dos grupos do sistema: %v", err)
+	}
+	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
+		t.Fatalf("MigrateRulesIntoDefaultGroup depois dos grupos do sistema: %v", err)
+	}
+	if err := svc.Reconcile(ctx); err != nil {
+		t.Fatalf("Reconcile no fim do boot: %v", err)
+	}
+
+	groups, _ := db.ListFirewallGroups()
+	if len(groups) != 3 {
+		t.Fatalf("esperava os 2 do sistema + o grupo padrão, obtive %d: %+v", len(groups), groups)
+	}
+	if groups[0].Kind != nftables.GroupKindBlockedHosts ||
+		groups[1].Kind != nftables.GroupKindBlocklist ||
+		groups[2].Name != DefaultGroupName {
+		t.Fatalf("a ordem tem que continuar sendo bloqueio primeiro, grupo do admin depois: %+v", groups)
+	}
+	// Posições distintas: duas linhas empatadas em 0 deixam a ordem da lista
+	// à mercê do desempate do SELECT, e é essa lista que decide a ordem de
+	// avaliação da forward.
+	seen := map[int]string{}
+	for _, g := range groups {
+		if other, dup := seen[g.Position]; dup {
+			t.Errorf("posição %d empatada entre %q e %q", g.Position, other, g.Name)
+		}
+		seen[g.Position] = g.Name
+	}
+}
+
+// O mesmo, no banco recém-criado: nenhum grupo de espécie nenhuma. É a
+// janela do boot de uma instalação nova — e uma lista vazia é justamente o
+// que ReconcileGroups trata como "o admin não tem grupo nenhum", reduzindo a
+// forward. Sem grupo do sistema na lista, essa redução não pode acontecer.
+func TestReconcileRefusesAForwardWhenTheGroupListIsEmpty(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newTestServiceWithExec(t, db)
+
+	if err := svc.Reconcile(context.Background()); err == nil {
+		t.Fatal("lista vazia não pode render uma forward: ela sairia sem os bloqueios")
+	}
+	if len(exec.executed) != 0 {
+		t.Errorf("nenhum comando do nft pode ter rodado, rodou: %v", exec.executed)
 	}
 }
 
@@ -218,15 +360,15 @@ func TestMigrateCreatesDefaultGroupAndAdoptsRulesInOrder(t *testing.T) {
 			t.Fatalf("preparar regra: %v", err)
 		}
 	}
-	svc := newTestService(t, db)
+	svc, _ := newBootedService(t, db)
 
 	if err := svc.MigrateRulesIntoDefaultGroup(context.Background()); err != nil {
 		t.Fatalf("migrar: %v", err)
 	}
 
-	groups, _ := db.ListFirewallGroups()
+	groups := adminGroups(t, db)
 	if len(groups) != 1 {
-		t.Fatalf("esperava exatamente 1 grupo, obtive %d: %+v", len(groups), groups)
+		t.Fatalf("esperava exatamente 1 grupo do admin, obtive %d: %+v", len(groups), groups)
 	}
 	g := groups[0]
 	if g.Name != "Minhas regras" {
@@ -260,13 +402,13 @@ func TestMigrateIsIdempotentAndDoesNotResurrectDeletedRules(t *testing.T) {
 	if err := db.CreateFirewallRule(&r); err != nil {
 		t.Fatal(err)
 	}
-	svc := newTestService(t, db)
+	svc, _ := newBootedService(t, db)
 	ctx := context.Background()
 
 	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
 		t.Fatalf("primeira migração: %v", err)
 	}
-	groups, _ := db.ListFirewallGroups()
+	groups := adminGroups(t, db)
 	if err := db.DeleteFirewallGroup(groups[0].ID); err != nil {
 		t.Fatalf("apagar: %v", err)
 	}
@@ -284,8 +426,7 @@ func TestMigrateIsIdempotentAndDoesNotResurrectDeletedRules(t *testing.T) {
 	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
 		t.Fatalf("segunda migração: %v", err)
 	}
-	groups, _ = db.ListFirewallGroups()
-	if len(groups) != 0 {
+	if groups := adminGroups(t, db); len(groups) != 0 {
 		t.Fatalf("a migração rodou de novo e ressuscitou o que o admin apagou: %+v", groups)
 	}
 }
@@ -314,7 +455,7 @@ func TestMigrateRemovesUserRulesChainOnlyAfterForwardRebuild(t *testing.T) {
 	if err := db.CreateFirewallRule(&r); err != nil {
 		t.Fatal(err)
 	}
-	svc, exec := newTestServiceWithExec(t, db)
+	svc, exec := newBootedService(t, db)
 
 	if err := svc.MigrateRulesIntoDefaultGroup(context.Background()); err != nil {
 		t.Fatalf("migrar: %v", err)
@@ -348,12 +489,12 @@ func TestMigrateLeavesTheAdoptedRulesRenderedInTheGroupChain(t *testing.T) {
 		Action: "drop", Daddr: "203.0.113.7"}); err != nil {
 		t.Fatal(err)
 	}
-	svc, exec := newTestServiceWithExec(t, db)
+	svc, exec := newBootedService(t, db)
 
 	if err := svc.MigrateRulesIntoDefaultGroup(context.Background()); err != nil {
 		t.Fatalf("migrar: %v", err)
 	}
-	groups, _ := db.ListFirewallGroups()
+	groups := adminGroups(t, db)
 	if len(groups) != 1 {
 		t.Fatalf("esperava o grupo padrão criado, obtive %+v", groups)
 	}
@@ -384,7 +525,7 @@ func TestMigrateAdoptsOnlyTheRulesThatHaveNoGroup(t *testing.T) {
 	db := newTestDB(t)
 	const id = "b3f21c08-0000-4000-8000-000000000000"
 	existing := storage.FirewallGroup{ID: id, Name: "Wi-Fi visitantes",
-		ChainName: nftables.GroupChainName(id), Enabled: true,
+		ChainName: nftables.GroupChainName(id), Position: 2, Enabled: true,
 		Fallthrough: nftables.FallthroughDrop}
 	if err := db.CreateFirewallGroup(&existing); err != nil {
 		t.Fatal(err)
@@ -397,7 +538,7 @@ func TestMigrateAdoptsOnlyTheRulesThatHaveNoGroup(t *testing.T) {
 		Action: "drop", Saddr: "10.0.0.9"}); err != nil {
 		t.Fatal(err)
 	}
-	svc := newTestService(t, db)
+	svc, _ := newBootedService(t, db)
 
 	if err := svc.MigrateRulesIntoDefaultGroup(context.Background()); err != nil {
 		t.Fatalf("migrar: %v", err)
@@ -474,15 +615,14 @@ func TestMigrateAbortsInsteadOfRerunningWhenTheGuardCannotBeRead(t *testing.T) {
 		Action: "accept", Proto: "tcp", Dport: "22"}); err != nil {
 		t.Fatal(err)
 	}
-	svc, exec := newTestServiceWithExec(t, db)
+	svc, exec := newBootedService(t, db)
 	ctx := context.Background()
 
 	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
 		t.Fatalf("primeira migração: %v", err)
 	}
-	groupsBefore, _ := db.ListFirewallGroups()
-	if len(groupsBefore) != 1 {
-		t.Fatalf("esperava 1 grupo depois da primeira migração, obtive %d", len(groupsBefore))
+	if groupsBefore := adminGroups(t, db); len(groupsBefore) != 1 {
+		t.Fatalf("esperava 1 grupo do admin depois da primeira migração, obtive %d", len(groupsBefore))
 	}
 
 	// O admin segue usando a máquina: uma regra nova, ainda sem grupo.
@@ -512,12 +652,9 @@ func TestMigrateAbortsInsteadOfRerunningWhenTheGuardCannotBeRead(t *testing.T) {
 		t.Fatal("esperava erro quando a trava não pôde ser lida")
 	}
 
-	groupsAfter, err := db.ListFirewallGroups()
-	if err != nil {
-		t.Fatalf("ListFirewallGroups: %v", err)
-	}
+	groupsAfter := adminGroups(t, db)
 	if len(groupsAfter) != 1 {
-		t.Fatalf("um erro de leitura da trava não pode disparar uma segunda migração -- esperava continuar com 1 grupo, obtive %d: %+v", len(groupsAfter), groupsAfter)
+		t.Fatalf("um erro de leitura da trava não pode disparar uma segunda migração -- esperava continuar com 1 grupo do admin, obtive %d: %+v", len(groupsAfter), groupsAfter)
 	}
 	rules, _ := db.ListFirewallRules()
 	for _, r := range rules {
@@ -547,7 +684,7 @@ func TestMigrateAbortsInsteadOfRerunningWhenTheGuardCannotBeRead(t *testing.T) {
 // só que o delete aconteceu.
 func TestMigrateRetriesRemovingTheLegacyChainOnEveryBootAfterTheGuardIsSet(t *testing.T) {
 	db := newTestDB(t)
-	svc, exec := newTestServiceWithExec(t, db)
+	svc, exec := newBootedService(t, db)
 	ctx := context.Background()
 
 	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err != nil {

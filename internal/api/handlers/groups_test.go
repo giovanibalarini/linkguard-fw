@@ -238,7 +238,31 @@ func newGroupTestHandlerNft(t *testing.T) (*handlers.NftablesHandler, *storage.D
 	exec := newFakeNft()
 	svc := nftables.NewService(exec)
 	fr := firewallrules.NewService(db, svc)
+	// Como no boot: sem os dois grupos do sistema na lista, o Reconcile de
+	// toda mutação se recusa a reconstruir a chain forward.
+	if err := fr.EnsureSystemGroups(context.Background()); err != nil {
+		t.Fatalf("EnsureSystemGroups: %v", err)
+	}
 	return handlers.NewNftablesHandler(svc, db, fr), db, exec
+}
+
+// adminGroups são os grupos que o admin criou. Toda máquina carrega também
+// os dois grupos do sistema (os bloqueios), criados no boot antes de
+// qualquer coisa que reconcilie — e eles não interessam a um teste que está
+// medindo o CRUD de grupo do admin.
+func adminGroups(t *testing.T, db *storage.DB) []storage.FirewallGroup {
+	t.Helper()
+	all, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	var out []storage.FirewallGroup
+	for _, g := range all {
+		if !nftables.IsSystemGroup(g.Kind) {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 func doJSON(t *testing.T, fn http.HandlerFunc, method, path, body string) *httptest.ResponseRecorder {
@@ -304,8 +328,7 @@ func TestCreateGroupRejectsBadConditionBeforeItReachesTheDB(t *testing.T) {
 			t.Errorf("corpo %s: esperava 400, obtive %d (%s)", body, w.Code, w.Body.String())
 		}
 	}
-	groups, _ := db.ListFirewallGroups()
-	if len(groups) != 0 {
+	if groups := adminGroups(t, db); len(groups) != 0 {
 		t.Fatalf("nada podia ter chegado ao banco, obtive %+v", groups)
 	}
 }
@@ -444,7 +467,7 @@ func TestUpdateGroupChangesTheConditionKeepingChainAndPosition(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("UpdateGroup: status %d, body %s", w.Code, w.Body.String())
 	}
-	groups, _ := db.ListFirewallGroups()
+	groups := adminGroups(t, db)
 	if len(groups) != 1 {
 		t.Fatalf("esperava um grupo, obtive %+v", groups)
 	}
@@ -477,7 +500,7 @@ func TestDeleteGroupRemovesItsRules(t *testing.T) {
 		t.Fatalf("DeleteGroup: status %d, body %s", w.Code, w.Body.String())
 	}
 
-	groups, _ := db.ListFirewallGroups()
+	groups := adminGroups(t, db)
 	if len(groups) != 1 || groups[0].ID != other.ID {
 		t.Fatalf("esperava só o outro grupo, obtive %+v", groups)
 	}
@@ -507,8 +530,7 @@ func TestToggleGroupOnlyRemovesTheJump(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("ToggleGroup: status %d, body %s", w.Code, w.Body.String())
 	}
-	groups, _ := db.ListFirewallGroups()
-	if groups[0].Enabled {
+	if groups := adminGroups(t, db); groups[0].Enabled {
 		t.Error("o grupo continua ligado no banco")
 	}
 	if exec.forwardHasJumpTo(g.ChainName) {
@@ -553,17 +575,32 @@ func TestReorderGroupsRejectsUnknownID(t *testing.T) {
 		}
 	}
 
-	groups, _ := db.ListFirewallGroups()
+	groups := adminGroups(t, db)
 	if len(groups) != 2 || groups[0].ID != a.ID || groups[1].ID != b.ID {
 		t.Fatalf("a ordem original tinha que ficar intacta, obtive %+v", groups)
 	}
 
+	// A lista COMPLETA inclui os dois grupos do sistema: eles são linhas de
+	// grupo como as outras e entram na mesma reordenação (é o que permite ao
+	// admin escolher onde os bloqueios são avaliados).
+	all, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	ids := make([]string, 0, len(all))
+	for _, g := range all {
+		if g.ID != a.ID && g.ID != b.ID {
+			ids = append(ids, `"`+g.ID+`"`)
+		}
+	}
+	ids = append(ids, `"`+b.ID+`"`, `"`+a.ID+`"`)
+
 	w := doJSON(t, h.ReorderGroups, "POST", "/api/nftables/groups/reorder",
-		`{"ids":["`+b.ID+`","`+a.ID+`"]}`)
+		`{"ids":[`+strings.Join(ids, ",")+`]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reordenar com a lista completa: status %d, body %s", w.Code, w.Body.String())
 	}
-	groups, _ = db.ListFirewallGroups()
+	groups = adminGroups(t, db)
 	if groups[0].ID != b.ID || groups[1].ID != a.ID {
 		t.Fatalf("a ordem nova não foi gravada: %+v", groups)
 	}
@@ -571,21 +608,23 @@ func TestReorderGroupsRejectsUnknownID(t *testing.T) {
 
 // ─── Leitura ──────────────────────────────────────────────────────────────
 
-type groupsResponseBody struct {
-	Groups []struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		ChainName string `json:"chain_name"`
-		Enabled   bool   `json:"enabled"`
-		Applied   bool   `json:"applied"`
-		Rules     struct {
-			Rules []struct {
-				Expression string `json:"expression"`
-				Applied    bool   `json:"applied"`
-				Enabled    *bool  `json:"enabled"`
-			} `json:"rules"`
+type groupView struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	ChainName string `json:"chain_name"`
+	Enabled   bool   `json:"enabled"`
+	Applied   bool   `json:"applied"`
+	Rules     struct {
+		Rules []struct {
+			Expression string `json:"expression"`
+			Applied    bool   `json:"applied"`
+			Enabled    *bool  `json:"enabled"`
 		} `json:"rules"`
-	} `json:"groups"`
+	} `json:"rules"`
+}
+
+type groupsResponseBody struct {
+	Groups      []groupView                `json:"groups"`
 	ApplyStatus *firewallrules.ApplyStatus `json:"apply_status"`
 }
 
@@ -616,14 +655,22 @@ func TestListGroupsIsHonestAboutWhatIsApplied(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v (body %s)", err, w.Body.String())
 	}
-	if len(body.Groups) != 2 {
-		t.Fatalf("esperava 2 grupos, obtive %+v", body.Groups)
+	// Os dois grupos do sistema vêm na frente em toda máquina; o que este
+	// teste mede é a honestidade da visão dos grupos do ADMIN.
+	var admin []groupView
+	for _, g := range body.Groups {
+		if !strings.HasPrefix(g.ChainName, "sys_") {
+			admin = append(admin, g)
+		}
+	}
+	if len(admin) != 2 {
+		t.Fatalf("esperava 2 grupos do admin, obtive %+v", body.Groups)
 	}
 	if body.ApplyStatus == nil || !body.ApplyStatus.OK {
 		t.Errorf("esperava o apply-status da última reconciliação, obtive %+v", body.ApplyStatus)
 	}
 
-	first := body.Groups[0]
+	first := admin[0]
 	if first.ID != live.ID || !first.Applied {
 		t.Errorf("o grupo ligado tinha que aparecer aplicado (jump vivo na forward): %+v", first)
 	}
@@ -649,7 +696,7 @@ func TestListGroupsIsHonestAboutWhatIsApplied(t *testing.T) {
 		t.Errorf("faltou uma das regras na visão do grupo: %+v", first.Rules.Rules)
 	}
 
-	second := body.Groups[1]
+	second := admin[1]
 	if second.ID != dark.ID || second.Applied {
 		t.Errorf("o grupo desligado não tem jump: Applied tinha que ser falso: %+v", second)
 	}
@@ -820,11 +867,7 @@ func TestCreateGroupRefusedByNftNeverReachesTheDB(t *testing.T) {
 		t.Errorf("o 400 tem que carregar a mensagem do próprio nft, obtive %s", w.Body.String())
 	}
 
-	groups, err := db.ListFirewallGroups()
-	if err != nil {
-		t.Fatalf("ListFirewallGroups: %v", err)
-	}
-	if len(groups) != 0 {
+	if groups := adminGroups(t, db); len(groups) != 0 {
 		t.Fatalf("o grupo chegou ao banco antes de o nft aceitar: %+v", groups)
 	}
 	for name := range exec.chains {

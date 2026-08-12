@@ -31,12 +31,18 @@ const DefaultGroupName = "Minhas regras"
 // GroupsMigratedSettingKey e ImportedSettingKey, é "isto já rodou alguma vez"
 // e não "a tabela já tem grupo do sistema": a segunda forma faria o boot
 // seguinte recriar — ligado, e de volta ao topo — o bloqueio que o admin
-// desligou ou reordenou de propósito.
+// desligou ou reordenou de propósito. Pior que ressuscitar: cada recriação
+// desloca TODOS os grupos do admin em +2, então a lista se reordenaria
+// sozinha a cada reinicialização.
+// (TestEnsureSystemGroupsDoesNotRecreateGroupsDeletedFromTheTable prova as
+// duas coisas.)
 //
-// A trava tem um segundo papel, que é o que a torna crítica: gravada, ela
-// significa "a partir de agora os dois grupos do sistema TÊM que estar na
-// lista". É o que Reconcile verifica antes de reconstruir a chain forward —
-// ver ensureSystemGroupsPresent.
+// A trava NÃO guarda a defesa do Reconcile, e isso é deliberado: ela só é
+// gravada quando EnsureSystemGroups conclui com sucesso, então uma defesa
+// condicionada a ela ficaria desligada exatamente no cenário que precisa
+// cobrir — o da criação que falhou. A invariante que o Reconcile verifica é
+// sobre a lista que vai ser renderizada, não sobre esta trava. Ver
+// ensureSystemGroupsPresent.
 const SystemGroupsSettingKey = "firewall_system_groups_created"
 
 // Nomes fixos dos dois grupos do sistema. Ao contrário do nome de um grupo do
@@ -115,16 +121,31 @@ func (s *Service) EnsureSystemGroups(ctx context.Context) error {
 }
 
 // ensureSystemGroupsPresent é a defesa que torna aceitável a chain forward
-// deixar de ter os bloqueios fixos em código: a partir do momento em que a
-// trava está gravada, os dois grupos do sistema TÊM que estar na lista que vai
-// ser renderizada.
+// deixar de ter os bloqueios fixos em código: os dois grupos do sistema TÊM
+// que estar na lista que vai ser renderizada.
 //
-// Se um deles não estiver (a migração falhou, a linha foi apagada à mão no
-// banco, uma restauração parcial), renderizar a forward mesmo assim a
-// deixaria sem os `drop` dos sets — e isso não pareceria erro nenhum:
-// pareceria um admin que simplesmente não tem aquele bloqueio. Bloqueio
-// administrativo sumindo em silêncio é exatamente a mentira que esta tela
-// existe para impedir.
+// A invariante é sobre a LISTA, e não sobre SystemGroupsSettingKey. Guardá-la
+// pela trava era o mesmo que desligá-la no cenário que ela existe para cobrir:
+// a trava só é gravada quando EnsureSystemGroups conclui com sucesso, então a
+// máquina em que a criação falhou (erro de banco, transação abortada) ficaria
+// justamente sem defesa, renderizando uma forward sem nenhum bloqueio em
+// silêncio. Sem a trava no caminho, a mesma verificação cobre os três casos
+// que importam: a migração falhou, a linha foi apagada à mão no banco, ou a
+// reconciliação rodou antes de os grupos existirem. O boot cria os grupos
+// antes de qualquer coisa que reconcilie (ver main.go), então não há falso
+// positivo a temer.
+//
+// Se um deles não estiver, renderizar a forward mesmo assim a deixaria sem os
+// `drop` dos sets — e isso não pareceria erro nenhum: pareceria um admin que
+// simplesmente não tem aquele bloqueio. Bloqueio administrativo sumindo em
+// silêncio é exatamente a mentira que esta tela existe para impedir.
+//
+// ATENÇÃO — a verificação olha PRESENÇA, nunca Enabled. Um grupo do sistema
+// desligado é escolha explícita do admin (é assim que se desliga um bloqueio
+// pelo painel), e exigir Enabled aqui transformaria esse toggle numa
+// reconciliação que aborta: o admin desligaria o bloqueio e o firewall
+// inteiro pararia de aceitar qualquer mudança. Ver
+// TestReconcileAcceptsTheSystemGroupsTurnedOffByTheAdmin.
 //
 // Abortar é o lado seguro, e por uma razão concreta: a chain forward VIVA
 // continua sendo a última que foi aplicada com sucesso — isto é, com os
@@ -136,17 +157,6 @@ func (s *Service) EnsureSystemGroups(ctx context.Context) error {
 // A diferença é que ali a leitura falhou; aqui ela funcionou, e o perigo está
 // no que ela não devolveu.
 func (s *Service) ensureSystemGroupsPresent(groups []nftables.StoredGroup) error {
-	flag, err := s.db.GetSetting(SystemGroupsSettingKey)
-	if err != nil {
-		// Não dá para provar a invariante, então não se renderiza. Tratar o
-		// erro de leitura como "a trava não está gravada" desligaria a
-		// verificação exatamente no boot em que o banco está com problema.
-		return fmt.Errorf("ler a trava dos grupos do sistema antes de reconstruir a chain forward: %w", err)
-	}
-	if flag == "" {
-		return nil // ainda não migrado: os bloqueios não dependem da lista
-	}
-
 	present := make(map[string]bool, 2)
 	for _, g := range groups {
 		if nftables.IsSystemGroup(g.Kind) {
@@ -163,13 +173,14 @@ func (s *Service) ensureSystemGroupsPresent(groups []nftables.StoredGroup) error
 	if len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("a chain forward NÃO foi reconstruída: %s sumiu da lista de grupos depois da migração já ter rodado, e renderizar assim deixaria o firewall sem esse bloqueio sem parecer erro; o firewall segue com o que já estava valendo",
+	return fmt.Errorf("a chain forward NÃO foi reconstruída: %s não está na lista de grupos, e renderizar assim deixaria o firewall sem esse bloqueio sem parecer erro; o firewall segue com o que já estava valendo",
 		strings.Join(missing, " e "))
 }
 
 // MigrateRulesIntoDefaultGroup adota, uma única vez, as regras que hoje vivem
 // soltas (sem group_id) num grupo chamado "Minhas regras": sem condição,
-// "continuar avaliando", em primeira posição. A ordem é preservada, e o
+// "continuar avaliando", depois dos grupos que já existem (no boot, os dois
+// bloqueios do sistema). A ordem das regras é preservada, e o
 // comportamento do firewall depois da migração é o mesmo de antes — é uma
 // regra dessa migração, não uma coincidência: um grupo sem condição de
 // entrada e sem linha final é, no nft, apenas um desvio que executa as
@@ -234,12 +245,24 @@ func (s *Service) MigrateRulesIntoDefaultGroup(ctx context.Context) error {
 		return s.removeLegacyUserRulesChain(ctx)
 	}
 
+	// O grupo padrão entra DEPOIS do que já existe, não na posição 0: no boot
+	// os dois grupos do sistema já foram criados (nas posições 0 e 1) quando
+	// se chega aqui, e um segundo grupo na posição 0 empataria com o
+	// bloqueio de hosts — a ordem da lista passaria a depender do desempate
+	// do SELECT, e é essa lista que decide a ordem de avaliação da forward.
+	// Entrando no fim, o resultado é o mesmo que já vale em produção:
+	// bloqueio primeiro, regras do admin depois.
+	existing, err := s.db.ListFirewallGroups()
+	if err != nil {
+		return fmt.Errorf("ler os grupos existentes antes de criar o grupo padrão: %w", err)
+	}
+
 	id := uuid.NewString()
 	g := storage.FirewallGroup{
 		ID:          id,
 		Name:        DefaultGroupName,
 		ChainName:   nftables.GroupChainName(id),
-		Position:    0,
+		Position:    len(existing),
 		Enabled:     true,
 		Fallthrough: nftables.FallthroughContinue,
 	}

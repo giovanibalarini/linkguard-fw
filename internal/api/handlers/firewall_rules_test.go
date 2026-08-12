@@ -45,6 +45,13 @@ func newFirewallRulesTestHandler(t *testing.T) (*handlers.NftablesHandler, *stor
 	exec := &recordingRuleExec{}
 	nftSvc := nftables.NewService(exec)
 	frSvc := firewallrules.NewService(db, nftSvc)
+	// Mesma ordem do boot (cmd/linkguard-fw/main.go): os dois grupos do
+	// sistema primeiro, porque é a lista de grupos que passa a decidir se os
+	// bloqueios existem na chain forward — sem eles, TODA reconciliação se
+	// recusa a reconstruí-la e toda mutação desta API responderia 500.
+	if err := frSvc.EnsureSystemGroups(context.Background()); err != nil {
+		t.Fatalf("EnsureSystemGroups: %v", err)
+	}
 	// Consume the initial import so its own reconcile commands don't
 	// contaminate a test's assertions about a specific mutation.
 	_ = frSvc.ImportOnce(context.Background())

@@ -58,6 +58,11 @@ func newOverviewTestHandler(t *testing.T, table string) *handlers.NftablesHandle
 	t.Cleanup(func() { db.Close() })
 	svc := nftables.NewService(&fakeOverviewExec{table: table})
 	fr := firewallrules.NewService(db, svc)
+	// Como no boot: sem os dois grupos do sistema na lista, o Reconcile se
+	// recusa a reconstruir a chain forward.
+	if err := fr.EnsureSystemGroups(context.Background()); err != nil {
+		t.Fatalf("EnsureSystemGroups: %v", err)
+	}
 	return handlers.NewNftablesHandler(svc, db, fr)
 }
 

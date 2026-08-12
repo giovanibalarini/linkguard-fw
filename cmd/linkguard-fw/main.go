@@ -395,6 +395,33 @@ func run() int {
 				slog.Warn("não foi possível reconciliar a chain estrutural (mark_hosts) no boot", "err", err)
 			}
 
+			// EnsureSystemGroups vem PRIMEIRO, antes de qualquer coisa que
+			// reconcilie, e a ordem é o ponto: ele cria, uma única vez, as
+			// duas linhas de grupo que representam os bloqueios (hosts e
+			// destinos) nas posições 0 e 1, empurrando os grupos do admin
+			// para depois. É a lista de grupos que passa a decidir se os
+			// bloqueios existem na chain forward — e as duas migrações
+			// abaixo reconciliam por dentro, então rodá-las antes desta
+			// abriria uma janela em que a forward é reconstruída com a lista
+			// ainda sem os bloqueios. A defesa de firewallrules recusa
+			// exatamente esse estado (ver ensureSystemGroupsPresent): com a
+			// ordem invertida, as duas migrações do boot de upgrade
+			// falhariam em vez de migrar.
+			//
+			// Não depende de nenhuma das duas: só lê a própria trava e
+			// insere as duas linhas, deslocando as posições existentes.
+			// TestEnsureSystemGroupsRunsBeforeTheMigrationsThatReconcile
+			// guarda essa ordem contra deriva.
+			//
+			// Um erro aqui não derruba o boot: os grupos não são criados, e
+			// tudo que reconcilia a seguir se recusa a reconstruir a forward
+			// (o firewall segue valendo com a última forward aplicada, que
+			// tem os bloqueios dentro), com apply-status não-ok e alerta
+			// crítico. A próxima inicialização tenta de novo.
+			if err := frSvc.EnsureSystemGroups(ctx); err != nil {
+				slog.Warn("não foi possível criar os grupos do sistema (hosts e destinos bloqueados)", "err", err)
+			}
+
 			// Phase B (firewall page redesign spec §4.1): the admin's own rules
 			// now live in the DB, not just inside nft. On a box upgrading from
 			// Phase A, ImportOnce brings whatever is in the live user_rules
@@ -428,22 +455,6 @@ func run() int {
 			}
 			if err := frSvc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
 				slog.Warn("não foi possível migrar as regras soltas para o grupo padrão", "err", err)
-			}
-			// EnsureSystemGroups vem depois das duas migrações acima e ANTES do
-			// Reconcile, e a ordem é o ponto: ele cria, uma única vez, as duas
-			// linhas de grupo que representam os bloqueios (hosts e destinos)
-			// nas posições 0 e 1, empurrando os grupos do admin para depois —
-			// e é a partir da trava que ele grava que o Reconcile passa a
-			// EXIGIR esses dois grupos na lista antes de reconstruir a chain
-			// forward. Rodar isto depois do Reconcile faria a primeira
-			// reconciliação do boot acontecer com a lista ainda incompleta.
-			//
-			// Um erro aqui não derruba o boot, mas também não passa batido: a
-			// trava não é gravada, então a exigência do Reconcile continua
-			// desligada (o firewall segue com os bloqueios como sempre esteve)
-			// e a próxima inicialização tenta de novo.
-			if err := frSvc.EnsureSystemGroups(ctx); err != nil {
-				slog.Warn("não foi possível criar os grupos do sistema (hosts e destinos bloqueados)", "err", err)
 			}
 			if err := frSvc.Reconcile(ctx); err != nil {
 				slog.Warn("não foi possível reconciliar os grupos de regras (chain forward) a partir do banco no boot", "err", err)
