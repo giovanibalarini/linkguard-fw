@@ -56,6 +56,27 @@ const (
 	// exactly the "configurado ≠ funcionando" state this project treats as
 	// worse than not installing at all.
 	dnsRootDataPackage = "dns-root-data"
+
+	// unboundActivatedMarker is the copy of the unbound config that was last
+	// ACTIVATED — the one the running daemon is actually serving with.
+	//
+	// It exists because "what is on disk" is not the same question. The
+	// restart decision used to compare the file at s.unboundConf against the
+	// new content, and that file is written BEFORE the reload: if an apply
+	// wrote both configs and then died on Kea's reload-or-restart, the next
+	// apply saw old == new, decided a graceful SIGHUP was enough, and left
+	// unbound on the sockets it was started with (127.0.0.1) — LAN with no
+	// DNS, panel saying "aplicado". That is the exact defect
+	// unboundNeedsRestart was introduced to fix, coming back through
+	// another door.
+	//
+	// Written only after the reload/restart of unbound succeeded, so a
+	// half-finished apply can never be mistaken for an activated one. Lives
+	// under /var/lib (state, not configuration) and is never read by any
+	// daemon. On a box upgrading from before this file existed the marker is
+	// absent, so the first apply restarts unbound once — a sub-second DNS
+	// blip, on the safe side of the question.
+	unboundActivatedMarker = "/var/lib/linkguard-fw/unbound-applied.conf"
 )
 
 // Service is the Kea+unbound Provider. Config paths and the Kea binary are
@@ -78,9 +99,12 @@ type Service struct {
 	//
 	// Defaults to exec (tests and dry-run); main.go points it at a
 	// long-deadline executor.
-	installExec     firewall.Executor
-	keaConf         string
-	unboundConf     string
+	installExec firewall.Executor
+	keaConf     string
+	unboundConf string
+	// unboundApplied is a copy of the unbound config LinkGuard last
+	// ACTIVATED — not merely wrote to disk. See unboundActivatedMarker.
+	unboundApplied  string
 	keaBin          string
 	unboundCheckBin string
 	resolvConf      string
@@ -94,6 +118,7 @@ func NewService(exec firewall.Executor) *Service {
 		installExec:     exec,
 		keaConf:         KeaConfPath,
 		unboundConf:     UnboundConfPath,
+		unboundApplied:  unboundActivatedMarker,
 		keaBin:          keaBinDefault,
 		unboundCheckBin: unboundCheckBinDefault,
 		resolvConf:      ResolvConfPath,
@@ -403,11 +428,14 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
 	}
 
-	// Decided BEFORE the write, while the old file is still on disk: whether
-	// unbound needs a real restart or the graceful reload is enough (see
-	// unboundNeedsRestart).
+	// Whether unbound needs a real restart or the graceful reload is enough
+	// (see unboundNeedsRestart). Compared against what was last ACTIVATED,
+	// never against what is on disk: the config file is written before the
+	// reload, so an apply that wrote it and then failed further down would
+	// otherwise make the NEXT apply believe nothing changed. See
+	// unboundActivatedMarker.
 	restartUnbound := slices.Contains(installed, unboundPackage) ||
-		unboundNeedsRestart(readFileOrEmpty(s.unboundConf), unboundContent)
+		unboundNeedsRestart(readFileOrEmpty(s.unboundApplied), unboundContent)
 
 	if !s.exec.IsDryRun() {
 		for _, f := range files {
@@ -437,6 +465,19 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		out = append(out, svc+": "+o)
 		if err != nil {
 			return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings, Installed: installed}, fmt.Errorf("reload %s: %w", svc, err)
+		}
+	}
+
+	// Só agora — com os dois daemons recarregados sem erro — esta config
+	// pode ser chamada de "ativada". É este arquivo, e não o do /etc, que a
+	// próxima decisão de restart compara.
+	if !s.exec.IsDryRun() {
+		if err := os.WriteFile(s.unboundApplied, []byte(unboundContent), 0o600); err != nil {
+			// Não é motivo para falhar o apply (que deu certo); o custo de
+			// perder o marcador é um restart a mais no próximo apply, que é
+			// o lado seguro da dúvida.
+			slog.Warn("não foi possível registrar a config do unbound ativada; o próximo apply pode reiniciar o unbound sem necessidade",
+				"path", s.unboundApplied, "err", err)
 		}
 	}
 	return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings, Installed: installed}, nil

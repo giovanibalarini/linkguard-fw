@@ -46,11 +46,19 @@ type recExec struct {
 	// missing instead of failing opaquely.
 	missingPkgs  map[string]bool
 	installFails bool
+
+	// failOn faz Execute falhar em qualquer comando que contenha esta
+	// substring — usado para reproduzir o apply que escreve os arquivos e
+	// morre no reload do kea.
+	failOn string
 }
 
 func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
 	full := cmd + " " + strings.Join(args, " ")
 	e.writes = append(e.writes, full)
+	if e.failOn != "" && strings.Contains(full, e.failOn) {
+		return "", errors.New("Job failed. See journalctl -xe")
+	}
 	if strings.Contains(full, "apt-get install") {
 		if e.installFails {
 			return "", errors.New("E: Unable to locate package")
@@ -103,6 +111,7 @@ func newTestSvc(t *testing.T, e *recExec) *Service {
 	s := NewService(e)
 	s.keaConf = filepath.Join(dir, "kea-dhcp4.conf")
 	s.unboundConf = filepath.Join(dir, "unbound.conf")
+	s.unboundApplied = filepath.Join(dir, "unbound-applied.conf")
 	// O checker é resolvido no sistema de arquivos antes de rodar (I-6),
 	// então um serviço de teste precisa apontar para um arquivo que existe
 	// de verdade: "instalado" e "ausente" viraram estados distintos, não
@@ -1120,10 +1129,25 @@ func TestReloadKeepsGracefulReloadWhenOnlyTheBlocklistChanges(t *testing.T) {
 // Instalação sob demanda: o pacote acabou de subir o unbound com a config
 // padrão dele (só 127.0.0.1). Mesmo que o arquivo do LinkGuard já estivesse
 // no lugar, o processo em execução não é o que leu esse arquivo.
+//
+// O teste começa por um apply inteiro bem-sucedido de propósito: assim o
+// marcador de "ativado" já bate com a config que será gerada de novo, e a
+// ÚNICA coisa capaz de forçar o restart no segundo apply é o fato de o
+// pacote ter sido (re)instalado. Antes, este teste passava pelo motivo
+// errado — nele o arquivo antigo simplesmente não existia, então quem
+// forçava o restart era o ramo "a config mudou", e remover a cláusula do
+// pacote instalado não quebrava nada.
 func TestReloadRestartsUnboundRightAfterInstallingIt(t *testing.T) {
-	e := &recExec{missingPkgs: map[string]bool{unboundPackage: true}}
+	e := &recExec{}
 	s := newTestSvc(t, e)
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
+		t.Fatalf("apply inicial: %v", err)
+	}
 
+	// O unbound foi removido e reinstalado (por fora, ou por um purge): o
+	// daemon voltou com a config padrão do pacote, escutando só no loopback.
+	e.missingPkgs = map[string]bool{unboundPackage: true}
+	e.writes = nil
 	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
 		t.Fatalf("ReloadConfigs: %v", err)
 	}
@@ -1156,5 +1180,90 @@ func TestInstalacaoSobDemandaUsaOExecutorDePacote(t *testing.T) {
 	}
 	if slices.ContainsFunc(appExec.writes, func(c string) bool { return strings.Contains(c, "apt-get install") }) {
 		t.Errorf("o apt saiu pelo executor de 30s da aplicação; comandos: %v", appExec.writes)
+	}
+}
+
+// O defeito "painel diz aplicado, LAN sem DNS" voltando por outra porta.
+//
+// A decisão de reiniciar comparava o ARQUIVO EM DISCO com a config nova — e o
+// arquivo é escrito ANTES do reload. Um apply que escreve os dois arquivos e
+// morre no reload-or-restart do kea deixa o disco já com a config nova; o
+// apply seguinte vê antigo == novo, decide que SIGHUP basta, e o unbound
+// segue nos sockets em que subiu (127.0.0.1): LAN sem DNS, painel dizendo
+// "aplicado".
+//
+// A cláusula slices.Contains(installed, unboundPackage) não protege este
+// caso: o unbound já estava instalado nas duas tentativas.
+func TestUnboundReiniciaQuandoOApplyAnteriorMorreuDepoisDeEscreverOsArquivos(t *testing.T) {
+	// O unbound em execução subiu escutando só no loopback (padrão do
+	// pacote), e é isso que o marcador de "ativado" registra.
+	e := &recExec{failOn: "systemctl reload-or-restart " + keaService}
+	s := newTestSvc(t, e)
+	if err := os.WriteFile(s.unboundApplied, []byte("server:\n  interface: 127.0.0.1\n"), 0o600); err != nil {
+		t.Fatalf("preparar marcador: %v", err)
+	}
+
+	c := netsvc.DefaultConfig()
+	c.Gateway = "192.168.3.3"
+
+	// Apply 1: escreve os arquivos e morre no reload do kea.
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, nil, ""); err == nil {
+		t.Fatal("esperava falha no reload do kea")
+	}
+	if got := readFileOrEmpty(s.unboundConf); !strings.Contains(got, "interface: 192.168.3.3") {
+		t.Fatalf("o teste depende de o arquivo já ter sido escrito no apply que falhou; conteúdo:\n%s", got)
+	}
+
+	// Apply 2: o kea volta a funcionar. O unbound em execução continua nos
+	// sockets antigos, então TEM que ser restart.
+	e.failOn = ""
+	e.writes = nil
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, nil, ""); err != nil {
+		t.Fatalf("segundo apply: %v", err)
+	}
+	joined := strings.Join(e.writes, "\n")
+	if !strings.Contains(joined, "systemctl restart "+unboundService) {
+		t.Errorf("o unbound nunca reabriu os sockets: SIGHUP não basta depois de um apply interrompido;\ncomandos:\n%s", joined)
+	}
+}
+
+// E o marcador só pode ser escrito quando a config foi de fato ATIVADA —
+// senão ele herda exatamente o defeito do arquivo em disco.
+func TestOMarcadorDeAtivadoNaoEEscritoQuandoOApplyFalha(t *testing.T) {
+	e := &recExec{failOn: "systemctl reload-or-restart " + keaService}
+	s := newTestSvc(t, e)
+
+	c := netsvc.DefaultConfig()
+	c.Gateway = "192.168.3.3"
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, nil, ""); err == nil {
+		t.Fatal("esperava falha no reload do kea")
+	}
+	if _, err := os.Stat(s.unboundApplied); err == nil {
+		t.Error("o apply falhou: nada pode ter sido registrado como ativado")
+	}
+}
+
+// E o caso normal continua valendo: depois de um apply inteiro bem-sucedido o
+// marcador existe, e o apply seguinte com a MESMA escuta não derruba o
+// resolvedor.
+func TestOMarcadorEvitaRestartDesnecessarioNoApplySeguinte(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	c := netsvc.DefaultConfig()
+	c.Gateway = "192.168.3.3"
+
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, nil, ""); err != nil {
+		t.Fatalf("primeiro apply: %v", err)
+	}
+	if readFileOrEmpty(s.unboundApplied) == "" {
+		t.Fatal("um apply bem-sucedido tem que registrar a config ativada")
+	}
+
+	e.writes = nil
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, []string{"ads.example.com"}, ""); err != nil {
+		t.Fatalf("segundo apply: %v", err)
+	}
+	if strings.Contains(strings.Join(e.writes, "\n"), "systemctl restart "+unboundService) {
+		t.Errorf("nada mudou na escuta: não pode derrubar o unbound;\n%s", strings.Join(e.writes, "\n"))
 	}
 }
