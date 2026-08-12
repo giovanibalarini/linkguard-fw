@@ -137,8 +137,18 @@ Importar e corrigir o setup atual antes de adicionar features.
 Para máquinas que querem virar firewall "do zero".
 - [ ] Habilitar `ip_forward` + NAT (MASQUERADE) escopado por WAN.
 - [ ] Política FORWARD sã por padrão.
-- [ ] **Grupos de regras via chains nativas** (nft chains) — ativar/desativar um
-      grupo inteiro removendo/inserindo o jump, sem mexer regra a regra.
+- [x] **Grupos de regras via chains nativas** (nft chains) — ativar/desativar um
+      grupo inteiro removendo/inserindo o jump, sem mexer regra a regra. Tela
+      própria ("Grupos de regras"), com Direcionamento por WAN / Destinos
+      bloqueados / Hosts bloqueados numa aba separada ("Bloqueios e
+      direcionamento").
+
+> **Mudança de comportamento (Fase C1):** hosts e destinos bloqueados agora
+> são avaliados **antes** das regras do admin e sempre vencem — antes era o
+> contrário, e um `accept` de grupo conseguia anular um bloqueio. Quem
+> atualizar uma instalação em produção precisa revisar bloqueios e grupos:
+> algo que hoje passa por causa de uma regra de grupo pode passar a ser
+> bloqueado depois da atualização.
 
 ### Fase 2 — Host-cêntrico (a fundação que destrava o resto)
 - [ ] Inventário de hosts da LAN trafegando dados (ip neigh + conntrack).

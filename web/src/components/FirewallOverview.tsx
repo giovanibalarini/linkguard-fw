@@ -10,7 +10,8 @@ type Unit = 'bytes' | 'bits';
 
 interface Props {
   chains: NftChainInfo[];
-  onOpenRulesTab: () => void;
+  onOpenGroupsTab: () => void;
+  onOpenBlocksTab: () => void;
   onOpenPortForwardTab: () => void;
 }
 
@@ -39,11 +40,14 @@ const CHAIN_LABELS: Record<string, string> = {
 
 // Where "abrir" takes the admin for a managed rule's owning control. `to`
 // navigates to another page; `tab` switches a tab on this same page.
-const OWNER_LINKS: Record<string, { to?: string; tab?: 'rules' | 'portforward' }> = {
+// wan_steering and blocklist moved from "Regras" to "Bloqueios e
+// direcionamento" (Task 10) — the links follow the panels, not the chain
+// name they still share with user_rules.
+const OWNER_LINKS: Record<string, { to?: string; tab?: 'groups' | 'blocks' | 'portforward' }> = {
   ntp: { to: '/ntp' },
   nat: { to: '/links' },
-  wan_steering: { tab: 'rules' },
-  blocklist: { tab: 'rules' },
+  wan_steering: { tab: 'blocks' },
+  blocklist: { tab: 'blocks' },
   host_block: { to: '/hosts' },
   port_forward: { tab: 'portforward' },
 };
@@ -84,17 +88,17 @@ function ruleVerb(expr: string): { label: string; color: string; ring: string; I
 }
 
 function RuleRow({
-  rule, unit, expanded, onToggle, isUserRule, onOpenRulesTab, onOpenPortForwardTab,
+  rule, unit, expanded, onToggle, isUserRule, onOpenGroupsTab, onOpenBlocksTab, onOpenPortForwardTab,
 }: {
   rule: NftChainRule; unit: Unit; expanded: boolean; onToggle: () => void;
-  isUserRule: boolean; onOpenRulesTab: () => void; onOpenPortForwardTab: () => void;
+  isUserRule: boolean; onOpenGroupsTab: () => void; onOpenBlocksTab: () => void; onOpenPortForwardTab: () => void;
 }) {
   const v = ruleVerb(rule.expression);
   // Which control owns a managed rule decides where "abrir" takes the admin
   // — not the chain it lives in (the forward chain alone mixes blocklist
   // and host-block rules, each pointing somewhere different).
   const link = rule.owner.key ? OWNER_LINKS[rule.owner.key] : undefined;
-  const openTab = link?.tab === 'rules' ? onOpenRulesTab : link?.tab === 'portforward' ? onOpenPortForwardTab : undefined;
+  const openTab = link?.tab === 'groups' ? onOpenGroupsTab : link?.tab === 'blocks' ? onOpenBlocksTab : link?.tab === 'portforward' ? onOpenPortForwardTab : undefined;
   // A disabled admin rule exists in the DB but was never sent to nft
   // (Phase B, design spec §4.1) — shown here, not hidden, but visibly
   // dimmed and labelled so it can never be mistaken for an active rule.
@@ -151,7 +155,7 @@ function RuleRow({
           <span className="inline-flex items-center gap-2 shrink-0 text-xs">
             <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/30">Sua regra</span>
             {isUserRule && (
-              <button onClick={onOpenRulesTab} className="inline-flex items-center gap-1 text-gray-400 hover:text-gray-200" title="Editar na aba Regras">
+              <button onClick={onOpenGroupsTab} className="inline-flex items-center gap-1 text-gray-400 hover:text-gray-200" title="Editar na aba Grupos de regras">
                 <Pencil className="w-3.5 h-3.5" />
               </button>
             )}
@@ -188,7 +192,7 @@ function RuleRow({
  * here via the pencil icon, so the CRUD/reorder controls already shipped
  * are not duplicated or regressed).
  */
-export default function FirewallOverview({ chains, onOpenRulesTab, onOpenPortForwardTab }: Props) {
+export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenBlocksTab, onOpenPortForwardTab }: Props) {
   const [unit, setUnit] = useState<Unit>('bytes');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const toggle = (key: string) => setExpanded((e) => ({ ...e, [key]: !e[key] }));
@@ -246,7 +250,7 @@ export default function FirewallOverview({ chains, onOpenRulesTab, onOpenPortFor
                     <span className="text-[11px] text-gray-600">hook {chain.hook} · priority {chain.priority} · policy {chain.policy}</span>
                   )}
                   {chain.name === 'user_rules' && (
-                    <button onClick={onOpenRulesTab} className="ml-auto text-xs text-blue-400 hover:text-blue-300 inline-flex items-center gap-1">
+                    <button onClick={onOpenGroupsTab} className="ml-auto text-xs text-blue-400 hover:text-blue-300 inline-flex items-center gap-1">
                       gerenciar <ExternalLink className="w-3 h-3" />
                     </button>
                   )}
@@ -254,7 +258,7 @@ export default function FirewallOverview({ chains, onOpenRulesTab, onOpenPortFor
                 {chain.rules.length === 0 ? (
                   <p className="text-gray-600 text-sm py-1.5 pl-1">
                     {chain.name === 'user_rules' ? (
-                      <>Nenhuma regra personalizada. <button onClick={onOpenRulesTab} className="text-blue-400 hover:text-blue-300 underline">Criar uma</button>.</>
+                      <>Nenhuma regra personalizada. <button onClick={onOpenGroupsTab} className="text-blue-400 hover:text-blue-300 underline">Criar uma</button>.</>
                     ) : 'Nenhuma regra.'}
                   </p>
                 ) : (
@@ -272,7 +276,8 @@ export default function FirewallOverview({ chains, onOpenRulesTab, onOpenPortFor
                           expanded={!!expanded[key]}
                           onToggle={() => toggle(key)}
                           isUserRule={chain.name === 'user_rules'}
-                          onOpenRulesTab={onOpenRulesTab}
+                          onOpenGroupsTab={onOpenGroupsTab}
+                          onOpenBlocksTab={onOpenBlocksTab}
                           onOpenPortForwardTab={onOpenPortForwardTab}
                         />
                       );
@@ -304,7 +309,8 @@ export default function FirewallOverview({ chains, onOpenRulesTab, onOpenPortFor
                         expanded={!!expanded[key]}
                         onToggle={() => toggle(key)}
                         isUserRule={false}
-                        onOpenRulesTab={onOpenRulesTab}
+                        onOpenGroupsTab={onOpenGroupsTab}
+                        onOpenBlocksTab={onOpenBlocksTab}
                         onOpenPortForwardTab={onOpenPortForwardTab}
                       />
                     );

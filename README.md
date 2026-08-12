@@ -269,6 +269,16 @@ it will show as a permanently-down target for a service that no longer runs.
 - Dry-run mode previews commands without applying them
 - Automatic iptables backup before any `apply` operation with one-click rollback
 
+### Firewall evaluation order changed: blocks now win
+
+**As of this release, blocked hosts and blocked destinations ("Bloqueios e
+direcionamento" tab) are evaluated BEFORE the admin's own rule groups, and
+always win.** Before, it was the other way around — an `accept` in a rule
+group could override a block. If you are updating an existing production
+install: anything you had relying on a rule group letting through a host or
+destination that is also on a blocklist will now be blocked instead. Review
+your blocklists and rule groups after updating.
+
 ## Development
 
 ```bash
