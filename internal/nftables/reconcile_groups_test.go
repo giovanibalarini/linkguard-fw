@@ -574,6 +574,65 @@ func warnLineMentioning(logs, substr string) string {
 	return ""
 }
 
+// errorLineMentioning é warnLineMentioning para nível ERROR — usado pelo
+// alarme do m-5 (ReconcileGroups reclamando de uma forward sem bloqueio
+// nenhum).
+func errorLineMentioning(logs, substr string) string {
+	for _, l := range strings.Split(logs, "\n") {
+		if strings.Contains(l, "level=ERROR") && strings.Contains(l, substr) {
+			return l
+		}
+	}
+	return ""
+}
+
+// m-5: a invariante "a forward nunca fica sem bloqueio" mora uma camada
+// acima (firewallrules.ensureSystemGroupsPresent) — ReconcileGroups não se
+// defende sozinha, e hoje não há chamador que escape dessa defesa. Mas
+// ReconcileGroups é exportada, e um chamador futuro que não passe por ali
+// ficaria sem aviso nenhum: o único slog hoje ("nenhum grupo veio do banco")
+// não cobre "veio uma lista, mas sem nenhum grupo de sistema dentro". Este
+// teste chama ReconcileGroups diretamente — contornando a defesa de
+// propósito, como faria esse chamador futuro — e confirma que o alarme
+// dispara.
+func TestReconcileGroupsLogsErrorWhenForwardEndsUpWithoutAnyBlock(t *testing.T) {
+	logs := captureLogs(t)
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Kind: GroupKindAdmin, Enabled: true, Position: 0,
+			Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if errorLineMentioning(logs.String(), "nenhum bloqueio administrativo") == "" {
+		t.Fatalf("esperava um slog.Error alertando que a forward ficou sem bloqueio nenhum:\n%s", logs.String())
+	}
+}
+
+// E o alarme não pode disparar no caso normal — lista com os dois grupos do
+// sistema —, senão vira ruído em todo boot de toda máquina em produção.
+func TestReconcileGroupsDoesNotLogTheNoBlockAlarmWhenSystemGroupsArePresent(t *testing.T) {
+	logs := captureLogs(t)
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: true, Position: 1, Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if warn := errorLineMentioning(logs.String(), "nenhum bloqueio administrativo"); warn != "" {
+		t.Errorf("o caso normal (grupos do sistema presentes) não pode disparar o alarme: %s", warn)
+	}
+}
+
 // E o aviso é só para o caso "zero grupos": uma remoção de órfã normal, com
 // grupos vivos, não pode ficar avisando a cada apply — aviso que aparece
 // sempre é aviso que ninguém lê.

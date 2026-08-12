@@ -45,6 +45,21 @@ func (s *Service) listGroupChains(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+// anyRuleIsADrop reporta se algum dos token sets termina em "drop" — é como
+// se reconhece, nesta representação, uma linha de bloqueio administrativo
+// (todas terminam em "counter", "drop") entre os jumps de grupo do admin
+// (que terminam em "jump", <chain>). Usado só pelo alarme de ReconcileGroups
+// (m-5): não precisa ser mais esperto que isso, porque o objetivo é detectar
+// "zero bloqueios", não validar a forma exata de cada linha.
+func anyRuleIsADrop(rules [][]string) bool {
+	for _, tokens := range rules {
+		if len(tokens) > 0 && tokens[len(tokens)-1] == "drop" {
+			return true
+		}
+	}
+	return false
+}
+
 // ReconcileGroups reconstrói, a partir do banco, todo o conjunto de chains
 // dos grupos e a chain forward que os alcança. Mantém as mesmas garantias
 // de segurança do resto do pacote: só dá flush nos chains próprios (nunca
@@ -191,7 +206,21 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 	}
 
 	// 3. reconstruir a forward
-	forwardErr := s.rebuildChain(ctx, ForwardChain, forwardChainRules(valid))
+	forwardRules := forwardChainRules(valid)
+	// A invariante "a forward nunca fica sem bloqueio em silêncio" mora uma
+	// camada acima (internal/firewallrules.ensureSystemGroupsPresent, que
+	// aborta ANTES de chegar aqui quando a lista não tem os dois grupos do
+	// sistema) — hoje não há chamador que escape dela, mas ReconcileGroups é
+	// exportada, e um chamador futuro que não passe por ali ficaria fora
+	// dessa defesa. Isto não é a defesa de verdade: é o alarme para esse
+	// caso, barato (um slog.Error, nunca um erro fatal) e que não existia —
+	// o único aviso hoje é o de "nenhum grupo veio do banco" (abaixo, passo
+	// 4), que não cobre "veio lista, mas sem nenhum bloqueio dentro".
+	if !anyRuleIsADrop(forwardRules) {
+		slog.Error("a chain forward reconciliada não contém nenhum bloqueio administrativo (nenhuma linha `drop`); a defesa esperada é internal/firewallrules.ensureSystemGroupsPresent — isto é o alarme para o caso de algum chamador tê-la contornado",
+			"grupos_recebidos", len(groups), "grupos_aplicados", len(valid))
+	}
+	forwardErr := s.rebuildChain(ctx, ForwardChain, forwardRules)
 	if forwardErr != nil {
 		failures = append(failures, forwardErr.Error())
 	}
