@@ -176,6 +176,20 @@ Reverter restaura o estado anterior **dos grupos** no banco e reconcilia as
 chains próprias. Não é `flush ruleset` nem restauração de snapshot inteiro —
 continua valendo a regra do projeto de nunca dar flush no que não é nosso.
 
+### 5.3 A edição fica travada enquanto a janela corre
+
+Nenhuma alteração em grupos ou regras é aceita enquanto há confirmação
+pendente: a API recusa e o painel desabilita os controles, exibindo a faixa
+com o relógio.
+
+Sem isso, "reverter ao estado anterior" vira uma coisa ambígua — o estado
+anterior a qual das mudanças? — e o operador pode empilhar uma segunda
+alteração arriscada sobre uma que ainda não se provou boa. Travar mantém o
+alvo da reversão sendo exatamente um.
+
+O relógio exibe **"reverte em"**, não "expira em": diz ao operador o que vai
+acontecer com a máquina dele, não que um prazo terminou.
+
 ## 6. Migração
 
 Na primeira execução, as regras hoje existentes em `user_rules` viram um
@@ -206,37 +220,67 @@ para uma aba própria, **"Bloqueios e direcionamento"**, dentro do Firewall.
 Ficam perto porque agora são avaliadas antes dos grupos, e entender a ordem
 exige ver as duas coisas no mesmo lugar.
 
+### 7.1 Índice e detalhe, não acordeão
+
+O desenho foi decidido comparando três tratamentos no companion visual. O
+escolhido é **índice à esquerda, detalhe à direita** — nada expande nem
+colapsa, o operador seleciona um grupo e lê. A tela nunca muda de altura sob
+o cursor, que era a origem do "confuso" na primeira proposta.
+
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Grupos de regras                          [+ Novo grupo]  │
-│  Avaliados de cima para baixo, depois dos bloqueios.       │
-│  ℹ Hosts e destinos bloqueados vêm antes e sempre vencem.  │
-├────────────────────────────────────────────────────────────┤
-│ ⠿ ▼ Wi-Fi visitantes             ● ligado      2 regras    │
-│     quando: origem 192.168.50.0/24 · atravessando          │
-│       1  Permitir  TCP:443               1.2k pct  4.1 MB  │
-│       2  Permitir  UDP:53                  84 pct  12.0 KB │
-│     e o que sobrar? → BLOQUEAR             12 pct   980 B  │
-├────────────────────────────────────────────────────────────┤
-│ ⠿ ▶ Visitantes fora do firewall  ● ligado      3 regras ⚠  │
-│     quando: origem 192.168.50.0/24 · destinado ao firewall │
-├────────────────────────────────────────────────────────────┤
-│ ⠿ ▶ Testes                       ○ desligado   2 regras    │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────┬─────────────────────────────────────────────────────┐
+│ 5 GRUPOS  [Novo] │  Wi-Fi visitantes      [Desligar] [Editar] [Remover]│
+├──────────────────┤                                                     │
+│ ⠿1 ● Wi-Fi visi… │  QUANDO origem 192.168.50.0/24 · ONDE atravessando  │
+│      2 regras ·  │                        entraram 1.247 pct · 4.1 MB  │
+│      4.1 MB      │                                                     │
+│ ⠿2 ● Servidores  │   #  AÇÃO      QUANDO A REGRA CASA  DESCR.  PCT  TRÁFEGO│
+│      1 regra ·   │   1  Permitir  tcp dport 443        naveg.  1.219  4.1 MB│
+│      84.5 MB     │   2  Permitir  udp dport 53         DNS        84  12.0 KB│
+│ ⠿3 ● Visitantes  │  ┌ e o que sobrar? BLOQUEAR ──────────── 12 ·  980 B ┐│
+│      fora do  ⚠  │                                                     │
+│      firewall    │  [+ Nova regra neste grupo]                         │
+│ ⠿4 ● Minhas reg… │                                                     │
+│ ⠿5 ○ Testes      │                                                     │
+└──────────────────┴─────────────────────────────────────────────────────┘
 ```
 
-- **Colapsado por padrão**, expande no clique — resumo com contagem em vez
-  de cartão grande, preferência já registrada do operador.
+**Índice (esquerda).** Ordem, estado (ponto verde/cinza), nome e um resumo de
+uma linha — `2 regras · 4.1 MB` — que permite comparar grupos sem abrir
+nenhum. O ⠿ de arrastar só aparece no hover, para a lista ficar limpa em
+repouso. Grupo de escopo "destinado ao firewall" leva ⚠ discreto, avisando
+antes do clique que alterá-lo pedirá confirmação.
+
+**Detalhe (direita).** Nome, ações do grupo no topo, e a condição de entrada
+numa faixa própria — com o contador do `jump`, isto é, quanto tráfego de
+fato entrou no grupo.
+
+### 7.2 As regras são uma tabela de colunas alinhadas
+
+Esta é a correção do diagnóstico errado da primeira proposta: o problema não
+era quantidade de informação, era **falta de coluna**. Selo, condição,
+contadores e ícones soltos numa linha flex alinhavam diferente em cada grupo,
+e o olho tinha que varrer. Appliance profissional é mais denso que aquilo e
+mais legível, porque o olho desce a coluna.
+
+Colunas: `#`, ação, **quando a regra casa**, descrição, pacotes, tráfego.
+
+A coluna "quando a regra casa" mostra **sintaxe nft crua** (`tcp dport 443`,
+`ip saddr 10.0.0.5`), não português. Decisão do operador: o que se lê na tela
+é literalmente o que se acha no `nft list`, sem uma camada de tradução onde
+caberia a tela dizer uma coisa e o firewall fazer outra.
+
+### 7.3 Demais regras da tela
+
 - **Contadores** por regra, em bytes ou bits, no mesmo seletor que a Visão
-  geral já tem. O contador do grupo é o **contador da própria linha de
-  `jump`** — quanto tráfego de fato entrou no grupo —, não a soma das
-  regras: soma contaria a mais o que casou duas condições e a menos o que
-  entrou e não casou com nada. Regra sem contador exibe "—", nunca zero.
-- **Arrastar** reordena grupos entre si e regras dentro do grupo.
-- Grupo com escopo "destinado ao firewall" leva marca visível (⚠) porque
-  alterá-lo dispara a confirmação da §5.
+  geral já tem. O contador do grupo é o da própria linha de `jump` — não a
+  soma das regras: soma contaria a mais o que casou duas condições e a menos
+  o que entrou e não casou com nada. Sem contador exibe "—", nunca zero.
+- **Arrastar** no índice reordena grupos; arrastar na tabela reordena regras.
 - O selo **"Configurada, não aplicada"** da Fase B passa a valer também no
   nível do grupo.
+- Durante uma confirmação pendente (§5.3), a faixa com o relógio ocupa o topo
+  e os controles ficam desabilitados.
 - Tudo gated por `firewall.write`, como o resto da tela.
 
 ## 8. Segurança e honestidade
@@ -283,7 +327,8 @@ verdade, é gerenciável pelo painel e é verificável ali.
 - **Reconciliação**: flush apenas dos chains próprios (mesmo teste de
   segurança do masquerade); idempotente entre execuções sucessivas; no-op em
   dry-run.
-- **Confirmar-ou-reverte (C2)**: expira e reverte; confirmação dentro da
+- **Confirmar-ou-reverte (C2)**: com janela pendente, toda mutação de grupo
+  ou regra é recusada pela API (§5.3); expira e reverte; confirmação dentro da
   janela mantém; pendente sobrevive a restart do processo e é revertido no
   boot; mudança só de grupo "atravessando" não abre janela.
 - **VM com navegador**: criar dois grupos com condições diferentes e provar
