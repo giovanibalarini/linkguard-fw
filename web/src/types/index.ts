@@ -329,6 +329,18 @@ export interface NftChainInfo {
 // translated — same discipline as the rule actions (spec §7.2.1).
 export type GroupFallthrough = 'continue' | 'accept' | 'drop';
 
+// FirewallGroupKind separa os grupos que o admin criou dos dois que o próprio
+// LinkGuard mantém para os named sets de bloqueio (@blocked_hosts e
+// @blocklist). Espelha as constantes do backend (internal/nftables/groups.go).
+//
+// String vazia conta como grupo do admin: é o valor que toda linha criada
+// antes desta coluna existir carrega, e tratá-la como "do sistema" daria a ela
+// proteções (não apagar, não renomear) que o admin nunca pediu. Um kind
+// desconhecido cai no mesmo lado seguro — por isso a checagem é uma lista
+// fechada dos dois kinds de sistema (isSystemGroup em lib/blockGroups.ts), e
+// nunca `kind !== 'admin'`.
+export type FirewallGroupKind = '' | 'admin' | 'blocked_hosts' | 'blocklist';
+
 // FirewallGroup is one group of rules: a chain of its own (`chain_name`,
 // always derived server-side from the id, never from the typed name),
 // reached from forward by an entry condition + `counter jump`.
@@ -351,6 +363,11 @@ export interface FirewallGroup {
   cond_daddr: string;
   cond_iif: string;
   fallthrough: GroupFallthrough;
+  // kind diz quem mantém este grupo. Para um grupo do sistema, `rules` volta
+  // vazio de propósito: o conteúdo dele são os membros de um named set, não
+  // uma lista de regras, e ele não tem chain própria — as linhas de drop dele
+  // moram na própria forward, e `applied` vem de todas elas estarem vivas lá.
+  kind: FirewallGroupKind;
   applied: boolean;
   handle: number;
   packets: number;

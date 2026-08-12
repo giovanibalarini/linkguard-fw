@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   RefreshCw, Database, Download, RotateCcw, Terminal,
 } from 'lucide-react';
@@ -9,22 +10,51 @@ import { useAuth } from '../context/AuthContext';
 import PortForwarding from '../components/PortForwarding';
 import FirewallOverview from '../components/FirewallOverview';
 import FirewallGroups from '../components/FirewallGroups';
-import BlocksAndRouting from '../components/BlocksAndRouting';
+import WanSteering from '../components/WanSteering';
 import type { IptablesBackup, NftChainInfo, SystemMetrics } from '../types';
 
-type Tab = 'overview' | 'groups' | 'blocks' | 'portforward' | 'ruleset' | 'backups';
+// A aba "blocks" (Bloqueios e direcionamento) se dissolveu: os dois bloqueios
+// viraram grupos do sistema, dentro de "Grupos de regras", e o direcionamento
+// por WAN ganhou casa própria (spec de 2026-08-12, §3).
+const TABS = [
+  ['overview', 'Visão geral'],
+  ['groups', 'Grupos de regras'],
+  ['steering', 'Direcionamento por WAN'],
+  ['portforward', 'Encaminhamento'],
+  ['ruleset', 'Ruleset'],
+  ['backups', 'Snapshots'],
+] as const;
+
+type Tab = (typeof TABS)[number][0];
+
+function isTab(v: string | null): v is Tab {
+  return !!v && TABS.some(([id]) => id === v);
+}
 
 export default function Firewall() {
   const { can } = useAuth();
   const canWrite = can('firewall.write');
+  // ?tab=groups deixa outra tela apontar direto para a aba certa — é o que a
+  // tela de Hosts usa para levar o admin ao grupo "Hosts bloqueados" quando
+  // um bloqueio não está em vigor. Sem isso, o link só conseguiria dizer
+  // "vá ao Firewall e procure".
+  const [params, setParams] = useSearchParams();
   const [overview, setOverview] = useState<NftChainInfo[]>([]);
   const [ifaces, setIfaces] = useState<string[]>([]);
   const [ruleset, setRuleset] = useState('');
   const [backups, setBackups] = useState<IptablesBackup[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+
+  const tabParam = params.get('tab');
+  const activeTab: Tab = isTab(tabParam) ? tabParam : 'overview';
+  const setActiveTab = (t: Tab) => {
+    const next = new URLSearchParams(params);
+    if (t === 'overview') next.delete('tab');
+    else next.set('tab', t);
+    setParams(next, { replace: true });
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -92,8 +122,10 @@ export default function Firewall() {
       )}
 
       <div className="flex gap-2 border-b border-gray-800 overflow-x-auto">
-        {([['overview', 'Visão geral'], ['groups', 'Grupos de regras'], ['blocks', 'Bloqueios e direcionamento'], ['portforward', 'Encaminhamento'], ['ruleset', 'Ruleset'], ['backups', `Snapshots (${backups.length})`]] as [Tab, string][]).map(([id, label]) => (
-          <button key={id} onClick={() => setActiveTab(id)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap shrink-0 ${activeTab === id ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{label}</button>
+        {TABS.map(([id, label]) => (
+          <button key={id} onClick={() => setActiveTab(id)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap shrink-0 ${activeTab === id ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+            {id === 'backups' ? `${label} (${backups.length})` : label}
+          </button>
         ))}
       </div>
 
@@ -103,13 +135,13 @@ export default function Firewall() {
         <FirewallOverview
           chains={overview}
           onOpenGroupsTab={() => setActiveTab('groups')}
-          onOpenBlocksTab={() => setActiveTab('blocks')}
+          onOpenSteeringTab={() => setActiveTab('steering')}
           onOpenPortForwardTab={() => setActiveTab('portforward')}
         />
       ) : activeTab === 'groups' ? (
         <FirewallGroups ifaces={ifaces} canWrite={canWrite} onMsg={setMsg} />
-      ) : activeTab === 'blocks' ? (
-        <BlocksAndRouting canWrite={canWrite} onMsg={setMsg} />
+      ) : activeTab === 'steering' ? (
+        <WanSteering canWrite={canWrite} onMsg={setMsg} />
       ) : activeTab === 'portforward' ? (
         <PortForwarding ifaces={ifaces} canWrite={canWrite} onMsg={setMsg} />
       ) : activeTab === 'ruleset' ? (

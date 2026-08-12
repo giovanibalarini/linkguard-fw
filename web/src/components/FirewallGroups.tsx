@@ -2,14 +2,16 @@ import { useEffect, useState } from 'react';
 import type { DragEvent } from 'react';
 import {
   Plus, Pencil, Trash2, Check, Ban, Slash, GripVertical, Power, PowerOff,
-  Layers, CornerDownRight, ShieldAlert, RefreshCw,
+  Layers, CornerDownRight, ShieldAlert, RefreshCw, Lock, X, AlertTriangle,
 } from 'lucide-react';
 import client from '../api/client';
 import Modal from './ui/Modal';
 import IconButton from './ui/IconButton';
+import { useAuth } from '../context/AuthContext';
+import { isSystemGroup, KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../lib/blockGroups';
 import type {
   FirewallGroup, FirewallGroupsData, FirewallRule, FirewallRulesData,
-  GroupFallthrough, LastApply, NftChainRule,
+  GroupFallthrough, LastApply, NetHost, NftChainRule, NftManaged,
 } from '../types';
 
 interface Props {
@@ -40,6 +42,38 @@ const FALLTHROUGH: Record<GroupFallthrough, { hint: string; color: string; ring:
   continue: { hint: 'não decide nada; a avaliação segue adiante', color: 'text-gray-300', ring: 'border-gray-600 bg-gray-700/30' },
   accept: { hint: 'deixa passar tudo o que sobrou', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10' },
   drop: { hint: 'descarta em silêncio tudo o que sobrou', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10' },
+};
+
+/**
+ * SYSTEM_KINDS descreve os dois grupos que o LinkGuard mantém (spec §2.1).
+ *
+ * `lines` são as linhas que o kind põe na chain forward, na mesma ordem em
+ * que o backend as emite (systemGroupForwardRules, internal/nftables/
+ * groups.go): o que se lê aqui é o que se acha no `nft list chain inet
+ * linkguard forward`, sem um segundo dicionário no meio — mesma disciplina
+ * das expressões das regras.
+ *
+ * `members` é o rótulo do conteúdo: um grupo do sistema não tem regras, tem
+ * membros de um named set.
+ */
+const SYSTEM_KINDS: Record<string, {
+  what: string;
+  lines: string[];
+  member: [string, string];
+  empty: string;
+}> = {
+  [KIND_BLOCKED_HOSTS]: {
+    what: 'Qualquer tráfego de ou para estes hosts é descartado. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo.',
+    lines: ['ip saddr @blocked_hosts counter drop', 'ip daddr @blocked_hosts counter drop'],
+    member: ['host', 'hosts'],
+    empty: 'Nenhum host bloqueado.',
+  },
+  [KIND_BLOCKLIST]: {
+    what: 'Qualquer tráfego de ou para estes destinos é descartado — a faixa vale como origem e como destino. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo.',
+    lines: ['ip daddr @blocklist counter drop', 'ip saddr @blocklist counter drop'],
+    member: ['faixa', 'faixas'],
+    empty: 'Nenhum destino bloqueado.',
+  },
 };
 
 type Unit = 'bytes' | 'bits';
@@ -180,12 +214,28 @@ function errMsg(e: unknown): string {
  *    the exact slots they already occupied.
  */
 export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
+  const { can } = useAuth();
+  // Bloquear/desbloquear host é permissão da tela de Hosts (hosts.block), não
+  // de firewall.write: o bloqueio por MAC mora no inventário, e é de lá que a
+  // API o aplica ao set. Quem pode mexer no firewall mas não nos hosts vê a
+  // lista de membros e nenhum botão que fingiria funcionar.
+  const canBlockHosts = can('hosts.block');
+  const canReadHosts = can('hosts.read');
   const [groups, setGroups] = useState<FirewallGroup[]>([]);
   // allRules is the flat, globally ordered list behind /rules/reorder. The
   // groups payload alone cannot stand in for it: its rules carry no
   // position, so there is no way to know where a group's rules sit among
   // the others.
   const [allRules, setAllRules] = useState<FirewallRule[]>([]);
+  // managed traz os membros dos named sets — o conteúdo dos grupos do
+  // sistema. Eles não vêm em `rules` (um grupo do sistema não tem chain):
+  // /api/nftables/managed é a leitura do set vivo, os mesmos endpoints que a
+  // aba antiga usava.
+  const [managed, setManaged] = useState<NftManaged>({ wan_hosts: [], blocklist: [], blocked_hosts: [] });
+  // hosts é o inventário, só para dar nome e MAC ao IP que está no set — e
+  // porque desbloquear exige o MAC. null = não consultado ou sem permissão,
+  // que é diferente de "inventário vazio".
+  const [hosts, setHosts] = useState<NetHost[] | null>(null);
   const [applyStatus, setApplyStatus] = useState<LastApply | undefined>(undefined);
   const [selectedId, setSelectedId] = useState<string>('');
   const [unit, setUnit] = useState<Unit>('bytes');
@@ -195,24 +245,46 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const [dragRule, setDragRule] = useState<number | null>(null);
   const [ruleModal, setRuleModal] = useState(emptyRuleModal);
   const [groupModal, setGroupModal] = useState(emptyGroupModal);
+  const [newCidr, setNewCidr] = useState('');
+  const [hostPicker, setHostPicker] = useState({ open: false, filter: '' });
 
   const load = async () => {
     try {
-      const [gr, rl] = await Promise.all([
+      const [gr, rl, mg] = await Promise.all([
         client.get<FirewallGroupsData>('/api/nftables/groups'),
         client.get<FirewallRulesData>('/api/nftables/rules'),
+        client.get<NftManaged>('/api/nftables/managed'),
       ]);
       setGroups(gr.data?.groups ?? []);
       setApplyStatus(gr.data?.apply_status ?? undefined);
       setAllRules(rl.data?.rules ?? []);
+      setManaged(mg.data ?? { wan_hosts: [], blocklist: [], blocked_hosts: [] });
     } catch (e) {
       onMsg('Erro: ' + errMsg(e));
     } finally {
       setLoading(false);
     }
+    await loadHosts();
+  };
+
+  // Inventário: melhor esforço e à parte, porque exige outra permissão
+  // (hosts.read). Falhar aqui não pode derrubar a tela de grupos.
+  const loadHosts = async () => {
+    if (!canReadHosts) { setHosts(null); return; }
+    try {
+      const hs = await client.get<NetHost[]>('/api/hosts');
+      setHosts(hs.data ?? []);
+    } catch {
+      setHosts(null);
+    }
   };
 
   useEffect(() => { load(); }, []);
+  // As permissões chegam depois da primeira renderização (/api/auth/me é
+  // assíncrono). Sem este efeito, numa navegação direta para esta aba o
+  // inventário nunca seria lido e a lista de hosts bloqueados apareceria sem
+  // nome, sem MAC e sem como desbloquear.
+  useEffect(() => { loadHosts(); }, [canReadHosts]);
 
   const selected = groups.find((g) => g.id === selectedId) ?? groups[0];
 
@@ -285,15 +357,58 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       if (!groupModal.id && created) setSelectedId(created);
     }, groupModal.id ? 'Grupo atualizado.' : 'Grupo criado.').then((ok) => { if (ok) closeGroupModal(); });
   };
+  // A mensagem diz o que continua guardado, e um grupo do sistema não guarda
+  // regras: guarda os membros do set (é literalmente o que o nft mostra —
+  // as linhas somem da forward, o set fica intacto).
   const toggleGroup = (g: FirewallGroup) => run(
     () => client.post('/api/nftables/groups/toggle', { id: g.id, enabled: !g.enabled }),
-    g.enabled ? 'Grupo desligado — as regras continuam guardadas.' : 'Grupo ligado.',
+    g.enabled
+      ? (isSystemGroup(g.kind) ? 'Bloqueio desligado — os membros continuam guardados.' : 'Grupo desligado — as regras continuam guardadas.')
+      : (isSystemGroup(g.kind) ? 'Bloqueio ligado.' : 'Grupo ligado.'),
   );
   const removeGroup = (g: FirewallGroup) => {
     const n = splitGroupRules(g).rules.length;
     const detail = n === 0 ? '' : ` As ${n} regra${n === 1 ? '' : 's'} dentro dele ${n === 1 ? 'será apagada' : 'serão apagadas'} junto.`;
     if (!confirm(`Remover o grupo "${g.name}"?${detail}`)) return;
     run(() => client.delete('/api/nftables/groups', { data: { id: g.id } }), 'Grupo removido.');
+  };
+
+  // ─── Membros dos grupos do sistema ─────────────────────────────────────
+  // O conteúdo de um grupo do sistema é a lista de membros do named set, não
+  // regras: adicionar e remover continuam nos endpoints que já existiam.
+  const membersOf = (g: FirewallGroup): string[] => {
+    if (g.kind === KIND_BLOCKED_HOSTS) return managed.blocked_hosts;
+    if (g.kind === KIND_BLOCKLIST) return managed.blocklist;
+    return [];
+  };
+  const hostByIP = new Map((hosts ?? []).map((h) => [h.ip, h]));
+
+  // adminGroupsAbove devolve os grupos do admin LIGADOS que estão antes da
+  // posição `i` na lista — a condição do aviso da spec §2.2. `groups` já vem
+  // ordenado por position, e é essa mesma ordem que a forward tem.
+  const adminGroupsAbove = (i: number): string[] =>
+    groups.slice(0, i).filter((g) => !isSystemGroup(g.kind) && g.enabled).map((g) => g.name);
+
+  const addCidr = () => {
+    const cidr = newCidr.trim();
+    if (!cidr) return;
+    run(() => client.post('/api/nftables/blocklist', { cidr }), 'Destino bloqueado.')
+      .then((ok) => { if (ok) setNewCidr(''); });
+  };
+  const delCidr = (cidr: string) => {
+    if (!confirm(`Desbloquear o destino ${cidr}?`)) return;
+    run(() => client.delete('/api/nftables/blocklist', { data: { cidr } }), 'Destino desbloqueado.');
+  };
+  // Host bloqueado é identificado pelo MAC (o inventário é a fonte de
+  // verdade; o IP é o que vai para o set) — daí a ida ao endpoint de hosts em
+  // vez de mexer no set direto, que deixaria o inventário mentindo.
+  const blockHost = (h: NetHost) => {
+    run(() => client.post('/api/hosts/block', { mac: h.mac, blocked: true }), 'Host bloqueado.')
+      .then((ok) => { if (ok) setHostPicker({ open: false, filter: '' }); });
+  };
+  const unblockHost = (h: NetHost) => {
+    if (!confirm(`Desbloquear o host ${h.alias || h.hostname || h.ip}?`)) return;
+    run(() => client.post('/api/hosts/block', { mac: h.mac, blocked: false }), 'Host desbloqueado.');
   };
 
   // Reordering, both here and in the rules table, is optimistic with an
@@ -407,6 +522,14 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   }
 
   const detail = selected ? splitGroupRules(selected) : undefined;
+  // Grupo do sistema: outro detalhe inteiro. Não tem condição de entrada,
+  // não tem tabela de regras e não tem "e o que sobrar" — mostrar esses
+  // blocos vazios sugeriria que ele os tem e que estão neutros, o que é
+  // diferente de não existirem (spec §2.1).
+  const selectedSys = selected ? SYSTEM_KINDS[selected.kind] : undefined;
+  const selectedIdx = selected ? groups.findIndex((g) => g.id === selected.id) : -1;
+  const aboveSelected = selectedSys && selectedIdx > 0 ? adminGroupsAbove(selectedIdx) : [];
+  const selectedMembers = selected && selectedSys ? membersOf(selected) : [];
 
   return (
     <div className="space-y-4">
@@ -419,14 +542,16 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
         </div>
       )}
 
-      {/* Ordem de avaliação (spec §3): fixa e visível, porque a inversão é
-          mudança de comportamento numa máquina em produção. */}
+      {/* Ordem de avaliação: a faixa antiga dizia que os bloqueios eram
+          avaliados antes dos grupos e "sempre venciam". Desde que eles
+          viraram grupos reordenáveis (spec §2.2) isso deixou de ser verdade
+          universal — e a ordem real agora está na lista abaixo, numerada. */}
       <div className="card flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <p className="text-gray-400 text-xs flex items-start gap-2">
           <ShieldAlert className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
           <span>
-            <span className="text-gray-300">Hosts bloqueados e destinos bloqueados são avaliados antes dos grupos e sempre vencem.</span>{' '}
-            Depois deles, os grupos são avaliados de cima para baixo: o que a condição de entrada não casar é pulado inteiro.
+            <span className="text-gray-300">A lista abaixo é a ordem real de avaliação, de cima para baixo.</span>{' '}
+            O que a condição de entrada de um grupo não casar é pulado inteiro; os bloqueios do sistema nascem no topo e podem ser arrastados como qualquer outro item.
           </span>
         </p>
         <div className="flex items-center gap-2 text-xs shrink-0">
@@ -465,6 +590,17 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 const { rules } = splitGroupRules(g);
                 const active = selected?.id === g.id;
                 const notApplied = g.enabled && !g.applied;
+                const sys = SYSTEM_KINDS[g.kind];
+                const n = sys ? membersOf(g).length : rules.length;
+                const noun = sys
+                  ? (n === 1 ? sys.member[0] : sys.member[1])
+                  : `regra${n === 1 ? '' : 's'}`;
+                // Aviso de ordem (spec §2.2): um bloqueio arrastado para
+                // depois de um grupo LIGADO do admin pode nunca ver o pacote,
+                // porque aquele grupo pode decidir antes. Grupo desligado não
+                // põe linha na forward, então não entra na conta — seria
+                // alarme falso.
+                const above = sys ? adminGroupsAbove(i) : [];
                 return (
                   <li
                     key={g.id}
@@ -491,12 +627,26 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                         aria-hidden="true"
                       />
                       <span className="min-w-0 flex-1">
-                        <span className={`block text-sm truncate ${active ? 'text-white font-medium' : 'text-gray-200'}`}>{g.name}</span>
+                        <span className={`flex items-center gap-1.5 text-sm ${active ? 'text-white font-medium' : 'text-gray-200'}`}>
+                          <span className="truncate">{g.name}</span>
+                          {sys && (
+                            <Lock
+                              className="w-3 h-3 shrink-0 text-gray-500"
+                              aria-label="grupo do sistema"
+                            />
+                          )}
+                        </span>
                         <span className="block text-[11px] text-gray-500 font-mono truncate">
-                          {rules.length} regra{rules.length === 1 ? '' : 's'} · {g.has_counter ? formatCount(g.bytes, unit) : '—'}
+                          {n} {noun} · {g.has_counter ? formatCount(g.bytes, unit) : '—'}
                         </span>
                         {!g.enabled && <span className="block text-[11px] text-gray-500">desligado</span>}
                         {notApplied && <span className="block text-[11px] text-yellow-500">configurado, não aplicado</span>}
+                        {above.length > 0 && g.enabled && (
+                          <span className="mt-0.5 flex items-start gap-1 text-[11px] text-orange-400">
+                            <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" aria-hidden="true" />
+                            <span>regras acima deste bloqueio podem liberar tráfego que ele descartaria</span>
+                          </span>
+                        )}
                       </span>
                     </button>
                     {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-blue-500" aria-hidden="true" />}
@@ -513,6 +663,157 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
             <Layers className="w-10 h-10 text-gray-700 mx-auto mb-3" />
             <p className="text-gray-400 text-sm">Nenhum grupo para mostrar.</p>
             <p className="text-gray-600 text-xs mt-1">Um grupo junta regras sob uma condição de entrada e liga ou desliga todas de uma vez.</p>
+          </div>
+        ) : selectedSys ? (
+          /* ─── Detalhe de um grupo do sistema (spec §4) ───────────────── */
+          <div className="card space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-white font-semibold truncate">{selected.name}</h3>
+                <p className="text-[11px] text-gray-600">Mantido pelo LinkGuard: não pode ser apagado nem renomeado. Pode ser ligado, desligado e reordenado.</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-300">
+                  <Lock className="w-3 h-3" aria-hidden="true" /> do sistema
+                </span>
+                {!selected.enabled && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-400">
+                    Desligado
+                  </span>
+                )}
+                {selected.enabled && !selected.applied && (
+                  <span
+                    className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border border-yellow-500/40 bg-yellow-500/10 text-yellow-400"
+                    title="O bloqueio está ligado aqui, mas o firewall não confirma as linhas dele na chain forward — pode ser um erro ao aplicar; confira o aviso no topo."
+                  >
+                    Configurado, não aplicado
+                  </span>
+                )}
+                {canWrite && (
+                  <button
+                    onClick={() => toggleGroup(selected)}
+                    disabled={busy}
+                    className="btn-secondary flex items-center gap-1.5 text-xs px-2.5 py-1.5 disabled:opacity-50"
+                  >
+                    {selected.enabled ? <><PowerOff className="w-3.5 h-3.5" /> Desligar</> : <><Power className="w-3.5 h-3.5" /> Ligar</>}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* O que ele faz, as linhas exatas que ele põe na forward e
+                quanto elas descartaram. */}
+            <div className="rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2.5 space-y-1.5">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                <p className="text-sm text-gray-300 min-w-0">{selectedSys.what}</p>
+                <div className="text-xs font-mono text-gray-400 shrink-0">
+                  {selected.has_counter
+                    ? <>descartou {selected.packets.toLocaleString('pt-BR')} pct · {formatCount(selected.bytes, unit)}</>
+                    : <span className="text-gray-600">sem contador · —</span>}
+                </div>
+              </div>
+              <div>
+                {selectedSys.lines.map((line) => (
+                  <p key={line} className="font-mono text-[11px] text-gray-600 break-words">{line}</p>
+                ))}
+              </div>
+              {!selected.applied && (
+                <p className={`text-[11px] ${selected.enabled ? 'text-yellow-500' : 'text-gray-500'}`}>
+                  {selected.enabled
+                    ? 'O firewall não confirma estas linhas na chain forward: neste momento nenhum membro abaixo está sendo bloqueado.'
+                    : 'Grupo desligado: nenhum membro abaixo está sendo bloqueado. Eles continuam guardados para quando ele voltar.'}
+                </p>
+              )}
+              {/* Aviso de ordem (spec §2.2): a flexibilidade de arrastar um
+                  bloqueio para baixo não pode virar armadilha silenciosa. */}
+              {selected.enabled && aboveSelected.length > 0 && (
+                <p className="text-[11px] text-orange-400 flex items-start gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" aria-hidden="true" />
+                  <span>
+                    Regras acima deste bloqueio podem liberar tráfego que ele descartaria:{' '}
+                    <span className="text-orange-300">{aboveSelected.join(', ')}</span>{' '}
+                    {aboveSelected.length === 1 ? 'é avaliado' : 'são avaliados'} antes dele.
+                    {canWrite && ' Arraste-o para o topo da lista para voltar ao padrão.'}
+                  </span>
+                </p>
+              )}
+            </div>
+
+            {/* Membros do named set — o conteúdo do grupo. Não há contador
+                por membro: o nft conta as linhas de drop do grupo (acima),
+                não cada elemento do set, e inventar um número por membro
+                seria dado falso. */}
+            <div>
+              <h4 className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">
+                {selectedMembers.length} {selectedMembers.length === 1 ? selectedSys.member[0] : selectedSys.member[1]}
+              </h4>
+              {selectedMembers.length === 0 ? (
+                <p className="text-gray-600 text-sm py-2">{selectedSys.empty}</p>
+              ) : (
+                <ul className="rounded-lg border border-gray-800 divide-y divide-gray-800/70">
+                  {selectedMembers.map((m) => {
+                    const h = selected.kind === KIND_BLOCKED_HOSTS ? hostByIP.get(m) : undefined;
+                    return (
+                      <li key={m} className="flex items-center gap-3 px-3 py-2">
+                        <span className="font-mono text-sm text-gray-200 shrink-0">{m}</span>
+                        {selected.kind === KIND_BLOCKED_HOSTS && (
+                          <span className="text-xs text-gray-500 truncate min-w-0 flex-1">
+                            {h ? (
+                              <>
+                                {(h.alias || h.hostname) && <span className="text-gray-400">{h.alias || h.hostname} </span>}
+                                <span className="font-mono text-gray-600">{h.mac}</span>
+                              </>
+                            ) : hosts === null ? '' : (
+                              <span className="text-gray-600">sem host correspondente no inventário</span>
+                            )}
+                          </span>
+                        )}
+                        <span className="flex-1" />
+                        {selected.kind === KIND_BLOCKLIST && canWrite && (
+                          <IconButton icon={X} onClick={() => delCidr(m)} disabled={busy} label="Desbloquear destino" variant="danger" className="min-w-[32px] min-h-[32px]" />
+                        )}
+                        {selected.kind === KIND_BLOCKED_HOSTS && canBlockHosts && (
+                          h ? (
+                            <IconButton icon={X} onClick={() => unblockHost(h)} disabled={busy} label="Desbloquear host" variant="danger" className="min-w-[32px] min-h-[32px]" />
+                          ) : (
+                            <span className="text-[10px] text-gray-600 text-right" title="O bloqueio de host é feito pelo MAC, no inventário. Este IP está no set sem host correspondente — desbloqueie pela página Hosts quando ele reaparecer.">
+                              só pela página Hosts
+                            </span>
+                          )
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+
+              {/* Adicionar membro: os mesmos endpoints de sempre. */}
+              {selected.kind === KIND_BLOCKLIST && canWrite && (
+                <div className="flex flex-col sm:flex-row gap-2 mt-3">
+                  <input
+                    className="input flex-1"
+                    placeholder="CIDR ou IP (ex.: 163.116.128.0/17)"
+                    value={newCidr}
+                    onChange={(e) => setNewCidr(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addCidr()}
+                  />
+                  <button onClick={addCidr} disabled={busy || !newCidr.trim()} className="btn-primary flex items-center gap-2 justify-center disabled:opacity-50">
+                    <Plus className="w-4 h-4" /> Bloquear destino
+                  </button>
+                </div>
+              )}
+              {selected.kind === KIND_BLOCKED_HOSTS && (
+                canBlockHosts && hosts !== null ? (
+                  <button onClick={() => setHostPicker({ open: true, filter: '' })} disabled={busy} className="btn-secondary flex items-center gap-2 text-sm mt-3 disabled:opacity-50">
+                    <Plus className="w-4 h-4" /> Bloquear host
+                  </button>
+                ) : (
+                  <p className="text-[11px] text-gray-600 mt-3">
+                    O bloqueio de host é feito pelo MAC, na página <span className="text-gray-400">Hosts</span> — é lá que a máquina é reconhecida pelo nome.
+                  </p>
+                )
+              )}
+            </div>
           </div>
         ) : (
           <div className="card space-y-4">
@@ -904,6 +1205,61 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
         <div className="px-6 py-4 border-t border-gray-800 flex gap-3">
           <button onClick={saveRule} disabled={busy} className="btn-primary flex-1 disabled:opacity-50">{busy ? 'Salvando...' : 'Salvar'}</button>
           <button onClick={closeRuleModal} className="btn-secondary flex-1">Cancelar</button>
+        </div>
+      </Modal>
+
+      {/* ─── Escolher host para bloquear ────────────────────────────────── */}
+      {/* O bloqueio é por MAC, e quem sabe o MAC é o inventário — por isso a
+          escolha é uma lista de hosts conhecidos, e não um campo de IP livre
+          que gravaria um bloqueio que o inventário não reconheceria. */}
+      <Modal
+        open={hostPicker.open}
+        onClose={() => setHostPicker({ open: false, filter: '' })}
+        title="Bloquear host"
+        size="md"
+        className="rounded-xl border border-gray-700 bg-gray-900 shadow-2xl flex flex-col"
+      >
+        <div className="p-6 space-y-3 overflow-y-auto">
+          <input
+            className="input w-full"
+            placeholder="Filtrar por IP, MAC, apelido..."
+            value={hostPicker.filter}
+            onChange={(e) => setHostPicker({ ...hostPicker, filter: e.target.value })}
+          />
+          {(() => {
+            const q = hostPicker.filter.trim().toLowerCase();
+            const list = (hosts ?? [])
+              .filter((h) => !h.blocked)
+              .filter((h) => !q || [h.ip, h.mac, h.alias, h.hostname].some((v) => v?.toLowerCase().includes(q)));
+            if (list.length === 0) {
+              return <p className="text-gray-600 text-sm py-4 text-center">Nenhum host disponível{q ? ' para este filtro' : ''}.</p>;
+            }
+            return (
+              <ul className="rounded-lg border border-gray-800 divide-y divide-gray-800/70 max-h-72 overflow-y-auto">
+                {list.map((h) => (
+                  <li key={h.mac || h.ip}>
+                    <button
+                      onClick={() => blockHost(h)}
+                      disabled={busy}
+                      className="w-full text-left px-3 py-2 hover:bg-gray-800/60 disabled:opacity-50 flex items-center gap-3"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm text-gray-200 truncate">{h.alias || h.hostname || h.ip || h.mac}</span>
+                        <span className="block text-[11px] text-gray-600 font-mono truncate">{h.ip || 'sem IP'} · {h.mac}</span>
+                      </span>
+                      <Ban className="w-4 h-4 text-gray-500 shrink-0" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            );
+          })()}
+          <p className="text-[11px] text-gray-600">
+            O host entra no set <span className="font-mono">@blocked_hosts</span> e fica marcado como bloqueado no inventário. Um host sem IP conhecido só passa a ser descartado quando aparecer na rede.
+          </p>
+        </div>
+        <div className="px-6 py-4 border-t border-gray-800">
+          <button onClick={() => setHostPicker({ open: false, filter: '' })} className="btn-secondary w-full">Fechar</button>
         </div>
       </Modal>
     </div>
