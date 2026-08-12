@@ -324,29 +324,48 @@ func run() int {
 		// ReconcileStructuralChains' doc comment.
 		//
 		// The forward chain used to be reconciled here too; since rule
-		// groups (Phase C1) it belongs to ReconcileGroups, the only place
-		// that knows the admin's groups — so whoever wires the group
-		// reconcile into this boot path must call it, or the forward stops
-		// being reconciled at all.
+		// groups (Phase C1) it belongs to ReconcileGroups, called below via
+		// frSvc.Reconcile — the only place that knows the admin's groups.
 		if err := nftSvc.ReconcileStructuralChains(ctx); err != nil {
 			slog.Warn("não foi possível reconciliar a chain estrutural (mark_hosts) no boot", "err", err)
 		}
 
 		// Phase B (firewall page redesign spec §4.1): the admin's own rules
 		// now live in the DB, not just inside nft. On a box upgrading from
-		// Phase A, ImportOnce brings whatever is in the live user_rules chain
-		// into the DB exactly once (guarded by a settings flag, never by "is
-		// the table empty" — see its doc comment for why that distinction
-		// matters), preserving order; a fresh install has nothing to import
-		// and just sets the guard. Reconcile then runs unconditionally on
-		// every boot, same as the other reconciles above, so user_rules
-		// always matches the DB — including a box where ImportOnce already
-		// ran on a prior boot.
+		// Phase A, ImportOnce brings whatever is in the live user_rules
+		// chain into the DB exactly once (guarded by a settings flag, never
+		// by "is the table empty" — see its doc comment for why that
+		// distinction matters), preserving order; a fresh install has
+		// nothing to import and just sets the guard.
+		//
+		// MigrateRulesIntoDefaultGroup runs right after: it adopts whatever
+		// rules are still ungrouped — including whatever ImportOnce just
+		// brought in — into the "Minhas regras" group, once, guarded the
+		// same way. The order between these two is not arbitrary: inverting
+		// them would make a box still on Phase A (nothing in the DB yet,
+		// the real rules only living in the legacy user_rules chain) run
+		// the group migration against an empty rule set, then have
+		// ImportOnce bring the rules in afterwards as orphans nobody ever
+		// adopts into a group.
+		//
+		// Reconcile (Fase C1) is what actually renders the forward chain
+		// (blocks, then the group jumps) and every grp_ chain from the DB —
+		// see its doc comment. It is called unconditionally last, on every
+		// boot, same as the other reconciles above. This is not redundant
+		// with the two calls above even though both of them also reconcile
+		// internally when they do real work (MigrateRulesIntoDefaultGroup
+		// must, to safely retire the legacy user_rules chain — see its doc
+		// comment): on a box with nothing to migrate, that function returns
+		// without reconciling at all, which would leave the forward chain
+		// stuck on whatever was last written to /etc/nftables.conf.
 		if err := frSvc.ImportOnce(ctx); err != nil {
 			slog.Warn("não foi possível importar as regras existentes de user_rules para o banco", "err", err)
 		}
+		if err := frSvc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
+			slog.Warn("não foi possível migrar as regras soltas para o grupo padrão", "err", err)
+		}
 		if err := frSvc.Reconcile(ctx); err != nil {
-			slog.Warn("não foi possível reconciliar a chain user_rules a partir do banco no boot", "err", err)
+			slog.Warn("não foi possível reconciliar os grupos de regras (chain forward) a partir do banco no boot", "err", err)
 		}
 	}
 
