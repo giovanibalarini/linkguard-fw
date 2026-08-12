@@ -29,6 +29,31 @@ case "$1" in
       echo "[INFO] /etc/nftables.conf criado (vazio) para o serviço poder subir."
     fi
 
+    # /etc/kea e /etc/unbound/unbound.conf.d têm que existir ANTES de o
+    # serviço subir — mesmo numa máquina onde o kea e o unbound ainda não
+    # estão instalados.
+    #
+    # Motivo (medido na VM de teste, não deduzido): a unidade roda com
+    # ProtectSystem=strict e o systemd monta o namespace do serviço no
+    # START. Um diretório que não existia naquele instante não entra como
+    # gravável — o `-` do ReadWritePaths só evita que a unidade morra com
+    # 226/NAMESPACE, ele não cria montagem nenhuma. Resultado: o LinkGuard
+    # instala o kea sob demanda quando o admin liga o DHCP, o apt cria o
+    # /etc/kea de verdade, e o processo em execução continua vendo aquele
+    # diretório como somente-leitura ("Read-only file system") até alguém
+    # reiniciar o serviço. Criando aqui, vazio, a montagem existe desde o
+    # start e a primeira aplicação de DHCP/DNS funciona sem reinício.
+    #
+    # Mesma lógica do /etc/nftables.conf acima. Só cria se não existir: num
+    # box que já tem os pacotes, o dono e o modo do diretório são do pacote
+    # e não têm que ser mexidos aqui.
+    for d in /etc/kea /etc/unbound/unbound.conf.d; do
+      if [ ! -d "$d" ]; then
+        install -d -m 0755 "$d"
+        echo "[INFO] $d criado (vazio) para o LinkGuard poder aplicar DHCP/DNS sem reiniciar."
+      fi
+    done
+
     if [ ! -f "${CONFIG_FILE}" ]; then
       # Generate a random JWT secret (64 hex chars) so the service is not
       # accidentally started with an empty/insecure secret.

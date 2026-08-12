@@ -133,7 +133,14 @@ for the whole run).
 
 The optional packages (`kea-dhcp4-server`, `unbound`, `chrony`,
 `smartmontools`) are **not** installed at boot. They are installed on demand,
-when an admin turns the corresponding feature on in the panel.
+when an admin turns the corresponding feature on in the panel — saving the
+DHCP or DNS settings brings in `kea-dhcp4-server` and `unbound` and applies
+the configuration in the same action, with **no service restart**. (That
+"no restart" is why this package's postinst creates `/etc/kea` and
+`/etc/unbound/unbound.conf.d` empty: the unit runs under
+`ProtectSystem=strict`, and systemd builds its mount namespace when the
+service *starts* — a directory apt creates later would be read-only to the
+running process.)
 
 **If it cannot install them** (no network, unreachable mirror, broken
 repository), it does not pretend: it retries once after refreshing the apt

@@ -40,6 +40,15 @@ ProtectSystem=strict
 # isc-dhcp-client, which this package neither Depends: nor Recommends: — a
 # box with only a static WAN, or Debian 13 (where isc-dhcp is deprecated),
 # would otherwise never be able to start the firewall manager at all.
+# ATENÇÃO ao que o `-` NÃO faz: ele só torna o caminho opcional na subida da
+# unidade. O namespace é montado no START do serviço, então um diretório que
+# não existia naquele instante não vira gravável só porque o apt o criou
+# depois — o processo em execução continua vendo "Read-only file system".
+# Por isso o postinst cria /etc/kea e /etc/unbound/unbound.conf.d vazios: é o
+# que permite instalar o kea/unbound sob demanda (quando o admin liga o
+# DHCP/DNS no painel) e aplicar a config na MESMA execução, sem reiniciar o
+# serviço no meio de uma ação do admin.
+#
 # /var/lib/linkguard-fw, /etc/linkguard-fw, /etc/nftables.conf and
 # /etc/sysctl.d are always present (created by this package's own postinst)
 # and stay unprefixed. /etc/nftables.conf is only "always present" BECAUSE
