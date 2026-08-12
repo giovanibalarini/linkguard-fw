@@ -315,15 +315,21 @@ func run() int {
 			slog.Warn("não foi possível reconciliar a chain de proteção do NTP no boot", "err", err)
 		}
 
-		// Reconcile the structural chains (forward, mark_hosts) on every
-		// boot too. Until this feature (2026-08-11, firewall page redesign
-		// spec §6) they were only ever created once at EnsureTable/bootstrap
-		// and never touched again — the gap that let a double-load of the
-		// ruleset (2026-08-10 incident) leave every rule in both chains
-		// permanently duplicated, since nothing ever flushed and rewrote
-		// them again. See ReconcileStructuralChains' doc comment.
+		// Reconcile the structural chain (mark_hosts) on every boot too.
+		// Until this feature (2026-08-11, firewall page redesign spec §6)
+		// it was only ever created once at EnsureTable/bootstrap and never
+		// touched again — the gap that let a double-load of the ruleset
+		// (2026-08-10 incident) leave every rule in it permanently
+		// duplicated, since nothing ever flushed and rewrote it again. See
+		// ReconcileStructuralChains' doc comment.
+		//
+		// The forward chain used to be reconciled here too; since rule
+		// groups (Phase C1) it belongs to ReconcileGroups, the only place
+		// that knows the admin's groups — so whoever wires the group
+		// reconcile into this boot path must call it, or the forward stops
+		// being reconciled at all.
 		if err := nftSvc.ReconcileStructuralChains(ctx); err != nil {
-			slog.Warn("não foi possível reconciliar as chains estruturais (forward, mark_hosts) no boot", "err", err)
+			slog.Warn("não foi possível reconciliar a chain estrutural (mark_hosts) no boot", "err", err)
 		}
 
 		// Phase B (firewall page redesign spec §4.1): the admin's own rules

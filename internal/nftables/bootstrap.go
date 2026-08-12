@@ -80,11 +80,19 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	b.WriteString("\tset blocked_hosts {\n\t\ttype ipv4_addr\n\t}\n\n")
 	b.WriteString("\tchain user_rules {\n\t}\n\n")
 	// mark_hosts/forward's rules carry `counter` from the very first boot —
-	// ReconcileStructuralChains reconciles both on every subsequent boot
-	// from the exact same canonical definition (see its doc comment), and a
-	// fresh install must never diverge from an upgraded box's post-reconcile
-	// state, the same "fresh box == upgraded box" invariant already applied
-	// to the input chain above.
+	// each is reconciled on every subsequent boot from its own canonical
+	// definition (mark_hosts by ReconcileStructuralChains, forward by
+	// ReconcileGroups since rule groups, Phase C1), and a fresh install must
+	// never diverge from an upgraded box's post-reconcile state, the same
+	// "fresh box == upgraded box" invariant already applied to the input
+	// chain above.
+	//
+	// The `counter jump user_rules` line below is the one exception, and it
+	// is deliberate: it is what the production box has had since June 2026,
+	// so a fresh install starts from the same ruleset an upgraded one does.
+	// The first ReconcileGroups is what replaces it with the group jumps —
+	// the admin's own rules migrate into a group ("Minhas regras"), so a
+	// forward reaching user_rules is pre-Phase-C1 state, never a target.
 	b.WriteString("\tchain mark_hosts {\n")
 	b.WriteString("\t\ttype filter hook prerouting priority mangle; policy accept;\n")
 	b.WriteString("\t\tcounter meta mark set ip saddr map @host_wan\n")

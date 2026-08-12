@@ -332,7 +332,12 @@ func dnatRule(f PortForward) (string, error) {
 
 // ─── User rules (custom allow/block, ordered, edited via modal) ──────────────
 
-// UserChain is the admin-managed chain (evaluated from `forward`).
+// UserChain is the admin-managed chain. It is NO LONGER reached from
+// `forward`: since rule groups (Phase C1) the admin's rules live inside a
+// group chain, and the one-off migration moves the old ones into the group
+// "Minhas regras". The chain and its contents stay put — it is still
+// reconciled from the DB (ReconcileUserRules) and still read by the panel —
+// but nothing jumps into it, so nothing in it is evaluated by the kernel.
 const UserChain = "user_rules"
 
 // RuleFields is the structured, UX-friendly description of a custom rule. The
