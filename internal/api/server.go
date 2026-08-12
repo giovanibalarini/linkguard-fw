@@ -238,6 +238,17 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/rules", nftH.DeleteRule)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules/reorder", nftH.ReorderRules)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/rules/toggle", nftH.ToggleRule)
+		// Grupos de regras (Fase C1, design spec §2): cada grupo é uma chain
+		// própria, alcançada por um jump condicional a partir da forward.
+		// Ligar/desligar o grupo é pôr/tirar esse jump; reordenar é reescrever
+		// a forward. Mesmo gating das regras — ler é PermFirewallRead,
+		// qualquer mutação é PermFirewallWrite.
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/groups", nftH.ListGroups)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/groups", nftH.CreateGroup)
+		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/groups", nftH.UpdateGroup)
+		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/groups", nftH.DeleteGroup)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/groups/toggle", nftH.ToggleGroup)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/groups/reorder", nftH.ReorderGroups)
 
 		// Port forwarding (DNAT)
 		pfH := handlers.NewPortForwardHandler(s.db, s.nftSvc)
