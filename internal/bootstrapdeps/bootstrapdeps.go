@@ -361,19 +361,38 @@ func installPackages(ctx context.Context, exec firewall.Executor, pkgs ...string
 	if len(pkgs) == 0 {
 		return nil
 	}
-	args := []string{"--pipe", "--wait", "--setenv=DEBIAN_FRONTEND=noninteractive",
-		"--", "apt-get", "install"}
+	args := append([]string{}, systemdRunFlags...)
+	args = append(args, "--", "apt-get", "install")
 	args = append(args, aptFlags...)
 	args = append(args, pkgs...)
 	_, err := exec.Execute(ctx, "systemd-run", args...)
 	return err
 }
 
+// systemdRunFlags are the transient-unit flags every apt run here uses.
+//
+// --collect is not cosmetic: without it, systemd keeps a failed transient
+// unit around ("run-u42.service"), and every aborted attempt — a timeout, a
+// mirror that went away — leaves one more `run-*.service` in failed state
+// forever. That is a real symptom on a real appliance: `systemctl
+// --failed` is the first thing an operator looks at, and it would be
+// showing garbage from an install that has long since been retried
+// successfully. The existing `systemctl reset-failed` in keaunbound does
+// NOT cover these: it clears kea-dhcp4-server/unbound, which are named
+// units, not the anonymous transient ones systemd-run creates.
+var systemdRunFlags = []string{
+	"--collect",
+	"--pipe",
+	"--wait",
+	"--setenv=DEBIAN_FRONTEND=noninteractive",
+}
+
 // updateIndex refreshes the apt package lists, same transient-unit reasoning
 // as InstallPackages.
 func updateIndex(ctx context.Context, exec firewall.Executor) error {
-	_, err := exec.Execute(ctx, "systemd-run", "--pipe", "--wait",
-		"--setenv=DEBIAN_FRONTEND=noninteractive", "--", "apt-get", "update")
+	args := append([]string{}, systemdRunFlags...)
+	args = append(args, "--", "apt-get", "update")
+	_, err := exec.Execute(ctx, "systemd-run", args...)
 	return err
 }
 

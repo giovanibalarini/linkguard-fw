@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1128,5 +1129,32 @@ func TestReloadRestartsUnboundRightAfterInstallingIt(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(e.writes, "\n"), "systemctl restart "+unboundService) {
 		t.Errorf("o unbound recém-instalado tem que ser reiniciado para valer a config do LinkGuard;\n%s", strings.Join(e.writes, "\n"))
+	}
+}
+
+// A instalação sob demanda tem que sair pelo executor de pacote, não pelo
+// executor de 30s da aplicação. Os dois trabalhos não têm nada em comum: um
+// `nft`/`systemctl` que não respondeu em 30s está travado; um apt-get
+// baixando kea + unbound + dns-root-data (~10 MB) passa disso num link de
+// escritório sem nada estar errado. E quando o prazo estourava, o apt não
+// morria junto — a unidade transiente do systemd-run terminava a instalação
+// — então o LinkGuard devolvia 503 "não conseguiu instalar" e criava alerta
+// crítico enquanto o pacote entrava com sucesso.
+func TestInstalacaoSobDemandaUsaOExecutorDePacote(t *testing.T) {
+	appExec := &recExec{missingPkgs: map[string]bool{"kea-dhcp4-server": true, "unbound": true, "dns-root-data": true}}
+	pkgExec := &recExec{missingPkgs: map[string]bool{"kea-dhcp4-server": true, "unbound": true, "dns-root-data": true}}
+
+	s := newTestSvc(t, appExec)
+	s.SetInstallExecutor(pkgExec)
+
+	if _, err := s.ensurePackages(context.Background()); err != nil {
+		t.Fatalf("ensurePackages: %v", err)
+	}
+
+	if !slices.ContainsFunc(pkgExec.writes, func(c string) bool { return strings.Contains(c, "apt-get install") }) {
+		t.Errorf("o apt não saiu pelo executor de pacote; comandos: %v", pkgExec.writes)
+	}
+	if slices.ContainsFunc(appExec.writes, func(c string) bool { return strings.Contains(c, "apt-get install") }) {
+		t.Errorf("o apt saiu pelo executor de 30s da aplicação; comandos: %v", appExec.writes)
 	}
 }

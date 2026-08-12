@@ -297,7 +297,7 @@ func TestInstallPackagesRunsAptOutsideOurOwnSandbox(t *testing.T) {
 	if err := InstallPackages(context.Background(), exec, "chrony"); err != nil {
 		t.Fatalf("InstallPackages: %v", err)
 	}
-	want := "systemd-run --pipe --wait --setenv=DEBIAN_FRONTEND=noninteractive " +
+	want := "systemd-run --collect --pipe --wait --setenv=DEBIAN_FRONTEND=noninteractive " +
 		"-- apt-get install -y --no-install-recommends " +
 		"-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef chrony"
 	if len(exec.executed) != 1 || exec.executed[0] != want {
@@ -619,6 +619,30 @@ func TestInstallFailureMessageKeepsTheReasonAndDropsTheTranscript(t *testing.T) 
 	for _, want := range []string{"kea-dhcp4-server", "DHCP", "apt-get install -y"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("a mensagem tem que citar %q, obtive %q", want, msg)
+		}
+	}
+}
+
+// Toda tentativa abortada (timeout, espelho que sumiu) deixava um
+// `run-*.service` em estado failed para sempre: `systemctl --failed` é a
+// primeira coisa que um operador olha, e ele passava a mostrar lixo de uma
+// instalação já refeita com sucesso. O --collect faz o systemd recolher a
+// unidade transiente mesmo quando ela falha. O `systemctl reset-failed` que
+// já existia no keaunbound NÃO cobre isto: ele limpa kea-dhcp4-server e
+// unbound, que são unidades nomeadas, não as transientes anônimas.
+func TestTodaChamadaDeAptRecolheAUnidadeTransiente(t *testing.T) {
+	exec := newFakeExec()
+	exec.installFails = true
+
+	// install (2x, por causa do retry) + apt-get update
+	_, _ = EnsureInstalled(context.Background(), exec, "kea-dhcp4-server")
+
+	if len(exec.executed) == 0 {
+		t.Fatal("nenhum comando executado")
+	}
+	for _, cmd := range exec.executed {
+		if !strings.HasPrefix(cmd, "systemd-run --collect ") {
+			t.Errorf("chamada de apt sem --collect: %q", cmd)
 		}
 	}
 }

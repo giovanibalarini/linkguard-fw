@@ -61,7 +61,24 @@ const (
 // Service is the Kea+unbound Provider. Config paths and the Kea binary are
 // fields (defaulted to the system paths) so tests can point them at a temp dir.
 type Service struct {
-	exec            firewall.Executor
+	exec firewall.Executor
+	// installExec is the executor used ONLY for the on-demand apt install.
+	// It is separate because the two workloads have nothing in common: an
+	// `nft`/`systemctl`/`kea-dhcp4 -t` call that has not answered in 30s is
+	// hung, while an apt-get fetching kea + unbound + dns-root-data (~10 MB)
+	// over an office link routinely takes longer than that.
+	//
+	// Sharing the 30s executor was actively harmful, not merely slow: when
+	// the deadline fired, the apt did NOT die with it — systemd-run's
+	// transient unit finishes the transaction regardless — so LinkGuard
+	// answered 503 "não conseguiu instalar", raised a CRITICAL alert and
+	// burned its single retry on the dpkg lock, all while apt was installing
+	// successfully. A lie in the opposite direction, and worse than the
+	// original defect.
+	//
+	// Defaults to exec (tests and dry-run); main.go points it at a
+	// long-deadline executor.
+	installExec     firewall.Executor
 	keaConf         string
 	unboundConf     string
 	keaBin          string
@@ -74,12 +91,21 @@ type Service struct {
 func NewService(exec firewall.Executor) *Service {
 	return &Service{
 		exec:            exec,
+		installExec:     exec,
 		keaConf:         KeaConfPath,
 		unboundConf:     UnboundConfPath,
 		keaBin:          keaBinDefault,
 		unboundCheckBin: unboundCheckBinDefault,
 		resolvConf:      ResolvConfPath,
 		dhclientConf:    DhclientConfPath,
+	}
+}
+
+// SetInstallExecutor points the on-demand package install at an executor with
+// a deadline sized for a package download. See Service.installExec.
+func (s *Service) SetInstallExecutor(e firewall.Executor) {
+	if e != nil {
+		s.installExec = e
 	}
 }
 
@@ -135,7 +161,7 @@ func (s *Service) ensurePackages(ctx context.Context) ([]string, error) {
 	if s.exec.IsDryRun() {
 		return nil, nil
 	}
-	installed, err := bootstrapdeps.EnsureInstalled(ctx, s.exec, keaPackage, unboundPackage, dnsRootDataPackage)
+	installed, err := bootstrapdeps.EnsureInstalled(ctx, s.installExec, keaPackage, unboundPackage, dnsRootDataPackage)
 	if err != nil {
 		return installed, &netsvc.PrereqError{Msg: err.Error()}
 	}

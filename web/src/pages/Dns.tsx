@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw, Globe, Ban, Plus, X, Play } from 'lucide-react';
-import client from '../api/client';
+import client, { INSTALL_TIMEOUT_MS, isTimeout } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import DnsQueryLog from '../components/DnsQueryLog';
 import Panel from '../components/ui/Panel';
@@ -29,14 +29,22 @@ export default function Dns() {
   const run = async (fn: () => Promise<any>, ok: string) => {
     setBusy(true); setMsg('');
     try { await fn(); if (ok) setMsg(ok); await fetchData(); }
-    catch (e: any) { setMsg(`Erro: ${e.response?.data?.error || e.message}`); }
+    catch (e: any) {
+      // Desistir de esperar não é o mesmo que ter falhado: se o LinkGuard
+      // estiver instalando kea/unbound, o apt continua rodando fora do
+      // ciclo de vida desta requisição (unidade transiente do systemd-run) e
+      // o resultado real fica registrado em last_apply.
+      setMsg(isTimeout(e)
+        ? 'A aplicação está demorando mais que o normal — provavelmente o LinkGuard está instalando os pacotes de DHCP/DNS. Ela continua em segundo plano: atualize a página em alguns minutos para ver o resultado.'
+        : `Erro: ${e.response?.data?.error || e.message}`);
+    }
     finally { setBusy(false); }
   };
 
   const saveConfig = () => cfg && run(() => client.put('/api/dns/config', { upstreams: cfg.upstreams, log_queries: cfg.log_queries }), 'Config DNS salva — aplicando automaticamente.');
   const addDomain = () => newDomain.trim() && run(() => client.post('/api/dns/blocklist', { domain: newDomain.trim() }), 'Domínio bloqueado — aplicando automaticamente.').then(() => setNewDomain(''));
   const delDomain = (d: string) => run(() => client.delete('/api/dns/blocklist', { data: { domain: d } }), 'Domínio desbloqueado — aplicando automaticamente.');
-  const apply = () => run(() => client.post('/api/netsvc/apply'), 'Aplicado com sucesso.');
+  const apply = () => run(() => client.post('/api/netsvc/apply', null, { timeout: INSTALL_TIMEOUT_MS }), 'Aplicado com sucesso.');
 
   return (
     <div className="p-6 space-y-6">
@@ -69,6 +77,11 @@ export default function Dns() {
       )}
       <p className="text-gray-500 text-xs">Salvar config ou filtro já aplica automaticamente (sem reiniciar o serviço).</p>
 
+      {busy && (
+        <div className="card border border-blue-500/30 bg-blue-500/10 text-blue-300 text-sm">
+          Aplicando… Se os pacotes de DHCP/DNS (kea, unbound) ainda não estiverem instalados, o LinkGuard os instala agora — isso pode levar alguns minutos na primeira vez.
+        </div>
+      )}
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchData} className="underline">Tentar novamente</button></div>}
       {msg && <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
 

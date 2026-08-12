@@ -49,11 +49,30 @@ type NetsvcHandler struct {
 // instant.
 const autoApplyDelay = 1500 * time.Millisecond
 
+// applyBudget is how long an apply may take end to end, and it is
+// deliberately measured from a package download, not from an HTTP request.
+//
+// The context is also detached from the client's (context.WithoutCancel):
+// when the admin's browser gives up, the apt LinkGuard started does NOT die
+// with it — systemd-run's transient unit finishes the transaction — so
+// cancelling here would only make LinkGuard report a failure that is not
+// happening (503 "não conseguiu instalar", CRITICAL alert, and the single
+// dpkg-lock retry burned) while the install completes successfully. Better
+// to keep the work alive and record its true outcome in netsvc_last_apply,
+// which the panel reads back even if this response never reaches anyone.
+const applyBudget = 15 * time.Minute
+
 // NewNetsvcHandler creates a NetsvcHandler. Saving any DHCP/DNS change now
 // auto-applies (debounced), so the admin no longer needs a separate "Aplicar".
 func NewNetsvcHandler(db *storage.DB, provider netsvc.Provider, alertSvc *alerts.Service) *NetsvcHandler {
 	h := &NetsvcHandler{db: db, provider: provider, alertSvc: alertSvc}
-	h.applier = newAutoApplier(autoApplyDelay, func() { _ = h.doReload(context.Background()) })
+	h.applier = newAutoApplier(autoApplyDelay, func() {
+		// Mesmo orçamento do "Aplicar agora": o auto-apply também pode cair
+		// no caminho que instala kea/unbound.
+		ctx, cancel := context.WithTimeout(context.Background(), applyBudget)
+		defer cancel()
+		_ = h.doReload(ctx)
+	})
 	return h
 }
 
@@ -472,7 +491,9 @@ func (h *NetsvcHandler) Preview(w http.ResponseWriter, r *http.Request) {
 // machine is just not able to serve DHCP/DNS yet, and the message says what
 // to do about it.
 func (h *NetsvcHandler) Apply(w http.ResponseWriter, r *http.Request) {
-	if err := h.doReload(r.Context()); err != nil {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), applyBudget)
+	defer cancel()
+	if err := h.doReload(ctx); err != nil {
 		slog.Error("falha ao aplicar DHCP/DNS", "err", err)
 		var prereq *netsvc.PrereqError
 		if errors.As(err, &prereq) {

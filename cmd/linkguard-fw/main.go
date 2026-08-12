@@ -50,6 +50,18 @@ import (
 
 var version = "dev"
 
+// pkgInstallTimeout is the deadline for a single apt-get run. Sized for a
+// package download over a bad link, not for a local command: kea + unbound +
+// dns-root-data are ~10 MB, and the measurement that motivated this was a
+// first apply taking ~40s on a healthy office link — with a 30s executor
+// underneath it.
+//
+// It is a ceiling for a hung apt, not an expectation. Nothing waits on it
+// synchronously any more: the boot path runs it off the critical path (see
+// the goroutine below) and the HTTP path runs it on a request whose context
+// is deliberately detached from the client's.
+const pkgInstallTimeout = 10 * time.Minute
+
 func main() {
 	os.Exit(run())
 }
@@ -178,6 +190,18 @@ func run() int {
 		exec = firewall.NewDryRunExecutor()
 	}
 
+	// pkgExec is the executor for anything that runs a package manager. The
+	// application's `exec` has a 30s deadline — right for `nft`, `ip` or
+	// `systemctl`, far too short for an apt-get fetching packages, and worse
+	// than too short: when the deadline fires, the apt does NOT die with it
+	// (systemd-run's transient unit finishes the transaction), so LinkGuard
+	// reports a failure that is not happening. Every apt path — the base at
+	// boot, the on-demand DHCP/DNS install, chrony — uses this one.
+	pkgExec := exec
+	if !cfg.DryRun {
+		pkgExec = firewall.NewRealExecutor(pkgInstallTimeout)
+	}
+
 	alertSvc := alerts.NewService(db)
 	// Close state-derived alerts left open by a previous process before any
 	// watcher starts observing again: the health state that gates whether a
@@ -206,6 +230,11 @@ func run() int {
 	frSvc := firewallrules.NewService(db, nftSvc)
 	balancerSvc := balancer.NewService(db, exec, linkSvc, alertSvc)
 	keaSvc := keaunbound.NewService(exec)
+	// O caminho sob demanda (o admin liga DHCP/DNS no painel) instala
+	// kea + unbound + dns-root-data. Sem isto ele herdava o executor de 30s
+	// e, ao estourar, mentia dizendo que não conseguiu instalar enquanto o
+	// apt terminava a instalação com sucesso.
+	keaSvc.SetInstallExecutor(pkgExec)
 	var netSvc netsvc.Provider = keaSvc
 	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
@@ -284,14 +313,9 @@ func run() int {
 	// and what stops working — and the boot carries on, so the operator has a
 	// panel to read it on.
 	//
-	// It gets an executor of its own because the application's `exec` has a
-	// 30s timeout: plenty for an `nft` or `ip` call, far too short for an
-	// apt-get fetching packages over a bad link.
-	depExec := exec
-	if !cfg.DryRun {
-		depExec = firewall.NewRealExecutor(10 * time.Minute)
-	}
-	bootstrapdeps.Ensure(ctx, depExec, alertSvc)
+	// It runs on pkgExec, the package-manager executor (see its declaration
+	// above), never on the application's 30s one.
+	bootstrapdeps.Ensure(ctx, pkgExec, alertSvc)
 
 	// Enable IPv4 forwarding so the box can route between LAN and WAN; it
 	// defaults to 0 on a fresh system and a firewall/router needs it on.

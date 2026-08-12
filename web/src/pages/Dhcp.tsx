@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw, Plus, Pencil, Trash2, Server, Network, ListChecks, Play } from 'lucide-react';
-import client from '../api/client';
+import client, { INSTALL_TIMEOUT_MS, isTimeout } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import type { DHCPData, DHCPReservation, NetsvcConfig } from '../types';
 import Panel from '../components/ui/Panel';
@@ -38,7 +38,15 @@ export default function Dhcp() {
   const run = async (fn: () => Promise<any>, ok: string) => {
     setBusy(true); setMsg('');
     try { await fn(); if (ok) setMsg(ok); await fetchData(); }
-    catch (e: any) { setMsg(`Erro: ${e.response?.data?.error || e.message}`); }
+    catch (e: any) {
+      // Desistir de esperar não é o mesmo que ter falhado: se o LinkGuard
+      // estiver instalando kea/unbound, o apt continua rodando fora do
+      // ciclo de vida desta requisição (unidade transiente do systemd-run) e
+      // o resultado real fica registrado em last_apply.
+      setMsg(isTimeout(e)
+        ? 'A aplicação está demorando mais que o normal — provavelmente o LinkGuard está instalando os pacotes de DHCP/DNS. Ela continua em segundo plano: atualize a página em alguns minutos para ver o resultado.'
+        : `Erro: ${e.response?.data?.error || e.message}`);
+    }
     finally { setBusy(false); }
   };
 
@@ -48,7 +56,7 @@ export default function Dhcp() {
     run(() => client.post('/api/dhcp/reservations', { mac: resModal.mac, ip: resModal.ip, hostname: resModal.hostname }), 'Reserva salva — aplicando automaticamente.').then(() => setResModal(null));
   };
   const delRes = (r: DHCPReservation) => confirm(`Remover a reserva de ${r.ip} (${r.mac})?`) && run(() => client.delete('/api/dhcp/reservations', { data: { mac: r.mac } }), 'Reserva removida — aplicando automaticamente.');
-  const apply = () => run(() => client.post('/api/netsvc/apply'), 'Aplicado com sucesso.');
+  const apply = () => run(() => client.post('/api/netsvc/apply', null, { timeout: INSTALL_TIMEOUT_MS }), 'Aplicado com sucesso.');
 
   const expiresIn = (epoch: number) => {
     const s = epoch - Math.floor(Date.now() / 1000);
@@ -88,6 +96,11 @@ export default function Dhcp() {
       )}
       <p className="text-gray-500 text-xs">Salvar reservas ou config já aplica automaticamente (sem reiniciar o serviço).</p>
 
+      {busy && (
+        <div className="card border border-blue-500/30 bg-blue-500/10 text-blue-300 text-sm">
+          Aplicando… Se os pacotes de DHCP/DNS (kea, unbound) ainda não estiverem instalados, o LinkGuard os instala agora — isso pode levar alguns minutos na primeira vez.
+        </div>
+      )}
       {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchData} className="underline">Tentar novamente</button></div>}
       {msg && <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
 
