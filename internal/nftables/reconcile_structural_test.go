@@ -212,15 +212,20 @@ func TestReconcileStructuralChainsMarkHostsRule(t *testing.T) {
 // panel (parseTableRuleset/classifyRule/describeRule), still classifies
 // exactly as expected — i.e. the reconcile and the overview agree on what
 // these chains contain.
+//
+// The forward fixture is the post-Phase-C1 chain — blocks first, then one
+// jump per enabled group, and no `jump user_rules` at all. Feeding it the
+// OLD forward (which is what this did until now) meant it proved that
+// agreement about a chain the reconcile no longer produces.
 func TestReconcileStructuralChainsResultParsesBackCleanly(t *testing.T) {
 	rendered := `table inet linkguard {
 	chain forward {
 		type filter hook forward priority filter; policy accept;
-		counter packets 1 bytes 2 jump user_rules
 		ip saddr @blocked_hosts counter packets 0 bytes 0 drop
 		ip daddr @blocked_hosts counter packets 0 bytes 0 drop
 		ip daddr @blocklist counter packets 0 bytes 0 drop
 		ip saddr @blocklist counter packets 0 bytes 0 drop
+		ip saddr 192.168.50.0/24 counter packets 4 bytes 240 jump grp_aaa
 	}
 	chain mark_hosts {
 		type filter hook prerouting priority mangle; policy accept;
@@ -240,6 +245,11 @@ func TestReconcileStructuralChainsResultParsesBackCleanly(t *testing.T) {
 		if !r.Managed {
 			t.Errorf("forward rule must be managed: %+v", r)
 		}
+	}
+	// The group jump is the last line — the blocks win, and a group the
+	// panel shows is one the kernel evaluates after them (design spec §3).
+	if !strings.Contains(fwd.Rules[4].Expression, "jump grp_aaa") {
+		t.Errorf("last forward rule should be the group jump, got %+v", fwd.Rules[4])
 	}
 	mh := chainByName(chains, "mark_hosts")
 	if mh == nil || len(mh.Rules) != 1 || !mh.Rules[0].HasCounter {
