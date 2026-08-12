@@ -251,6 +251,22 @@ git commit -m "feat(firewallrules): criar os dois grupos do sistema, e recusar f
 > antes de começar**. Se por qualquer motivo ela não estiver, pare e diga:
 > sem ela, esta tarefa transforma uma falha de migração em firewall sem
 > bloqueio, calado.
+>
+> **Parte desta tarefa já foi adiantada na Task 2** (commit `c4db946`), por
+> necessidade: inserir as linhas de grupo de sistema sem isso fazia a
+> reconciliação marcá-las como "nome de chain inválido" a cada passada e o
+> pré-voo recusar qualquer mutação de regra com 400. Já está feito: grupo de
+> sistema não valida chain, não ganha chain, não é preenchido, não entra em
+> `wanted` e não vira falha. **O que sobra para cá é o essencial** —
+> reescrever `forwardChainRules` como lista única.
+>
+> **E um ponto que o plano original esqueceu:** `CheckGroups` renderiza a
+> `forward` do mesmo jeito que `ReconcileGroups`, para o dry run do `nft -c`.
+> Ele **não** aparece em nenhuma tarefa deste plano. Confirme que o script
+> validado passa a conter as linhas de set na posição da lista — senão o
+> pré-voo valida uma chain diferente da que vai ser aplicada, que é
+> exatamente a divergência que o `CheckChainEnsuring` foi criado para
+> eliminar na entrega anterior.
 
 **Interfaces:**
 - Consumes: `StoredGroup.Kind`, `IsSystemGroup`, `GroupKind*` (Task 1); a verificação de invariante do `Reconcile` (Task 2, Step 5); `BlockedSet`, `groupJumpTokens`, `rebuildChain`.
