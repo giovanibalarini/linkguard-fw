@@ -58,6 +58,7 @@ func MergeGroups(groups []StoredGroup, chains map[string]ChainInfo, forward Chai
 	out := make([]GroupView, 0, len(sorted))
 	for _, g := range sorted {
 		v := GroupView{StoredGroup: g}
+		v.Applied = g.Enabled
 		if l, ok := jumps[g.ChainName]; ok {
 			v.Applied = true
 			v.Handle = l.handle

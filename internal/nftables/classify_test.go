@@ -297,3 +297,21 @@ func TestDescribeRuleGroupChainSpeaksPortuguese(t *testing.T) {
 		t.Errorf("descrição não saiu em português: %q", got)
 	}
 }
+
+// A linha de jump para um grupo é gerada pelo LinkGuard a partir da condição
+// de entrada, então ela é "gerenciada" — mas o controle que a produz é a tela
+// de grupos, e é para lá que o "abrir" da Visão geral tem que levar. Sem dono
+// nomeado ela cai no rótulo genérico e vira a única regra da tela em que o
+// admin PODE agir e não recebe link nenhum.
+func TestClassifyRuleGivesTheGroupJumpItsOwnOwner(t *testing.T) {
+	managed, owner := classifyRule(ForwardChain, "ip saddr 192.168.50.0/24 counter jump grp_a3f21c08")
+	if !managed {
+		t.Error("a linha de jump é renderizada pelo LinkGuard, não escrita à mão")
+	}
+	if owner.Key != "rule_groups" {
+		t.Errorf("o dono do jump tem que ser a tela de grupos, obtive %+v", owner)
+	}
+	if owner.Label == "" {
+		t.Error("o dono precisa de rótulo para a tela exibir")
+	}
+}

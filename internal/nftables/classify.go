@@ -68,7 +68,15 @@ func classifyRule(chain, expr string) (managed bool, owner RuleOwner) {
 			return true, RuleOwner{Key: "host_block", Label: "Hosts bloqueados"}
 		case strings.Contains(expr, "@blocklist"):
 			return true, RuleOwner{Key: "blocklist", Label: "Destinos bloqueados"}
-		default: // the `jump user_rules` line itself, or anything future
+		case strings.Contains(expr, "jump "+GroupChainPrefix):
+			// The jump line itself IS LinkGuard's — it is rendered from the
+			// group's entry condition, not typed by the admin — but pointing
+			// it at the generic "LinkGuard" label leaves the one rule on this
+			// screen the admin can actually act on without the "abrir" link
+			// every other managed rule gets. Its owning control is the groups
+			// screen.
+			return true, RuleOwner{Key: "rule_groups", Label: "Grupos de regras"}
+		default: // anything future
 			return true, RuleOwner{Label: genericLabel}
 		}
 	case DNATChain: // prerouting_dnat

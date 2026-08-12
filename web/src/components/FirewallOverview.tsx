@@ -24,7 +24,7 @@ interface Props {
 const STAGE_DEFS: { key: string; label: string; hint: string; chainNames: string[] }[] = [
   { key: 'input', label: 'Entrada', hint: 'tráfego destinado ao próprio firewall (ex.: proteção de NTP)', chainNames: ['input'] },
   { key: 'mark_hosts', label: 'Marcação', hint: 'direciona um host para uma WAN específica', chainNames: ['mark_hosts'] },
-  { key: 'forward', label: 'Encaminhamento', hint: 'tráfego atravessando: suas regras primeiro, depois os bloqueios', chainNames: ['user_rules', 'forward'] },
+  { key: 'forward', label: 'Encaminhamento', hint: 'tráfego atravessando: os bloqueios primeiro, depois seus grupos de regras', chainNames: ['forward'] },
   { key: 'postrouting', label: 'NAT de saída', hint: 'mascaramento de origem para as WANs', chainNames: ['postrouting'] },
   { key: 'prerouting_dnat', label: 'Redirecionamento de porta', hint: 'encaminhamento de porta (DNAT)', chainNames: ['prerouting_dnat'] },
 ];
@@ -50,6 +50,7 @@ const OWNER_LINKS: Record<string, { to?: string; tab?: 'groups' | 'blocks' | 'po
   blocklist: { tab: 'blocks' },
   host_block: { to: '/hosts' },
   port_forward: { tab: 'portforward' },
+  rule_groups: { tab: 'groups' },
 };
 
 function formatCount(bytes: number, unit: Unit): string {
