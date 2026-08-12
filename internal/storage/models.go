@@ -260,6 +260,7 @@ type PendingInterfaceChange struct {
 type FirewallRule struct {
 	ID          string    `json:"id"`
 	Position    int       `json:"position"`
+	GroupID     string    `json:"group_id"`
 	Enabled     bool      `json:"enabled"`
 	Action      string    `json:"action"` // accept | drop | reject
 	Iif         string    `json:"iif"`

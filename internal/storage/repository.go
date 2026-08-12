@@ -1436,7 +1436,7 @@ func (db *DB) GetAIReport(id string) (*AIReport, error) {
 // unspecified tie order for an ORDER BY with duplicate keys).
 func (db *DB) ListFirewallRules() ([]FirewallRule, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, position, enabled, action, iif, oif, saddr, daddr, proto, dport,
+		SELECT id, position, group_id, enabled, action, iif, oif, saddr, daddr, proto, dport,
 		       description, created_at, updated_at
 		FROM firewall_rules ORDER BY position, created_at`)
 	if err != nil {
@@ -1477,10 +1477,10 @@ func (db *DB) CreateFirewallRule(r *FirewallRule) error {
 	}
 
 	_, err := db.conn.Exec(`
-		INSERT INTO firewall_rules (id, position, enabled, action, iif, oif, saddr, daddr, proto, dport,
+		INSERT INTO firewall_rules (id, position, group_id, enabled, action, iif, oif, saddr, daddr, proto, dport,
 		                            description, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Position, boolToInt(r.Enabled), r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Position, r.GroupID, boolToInt(r.Enabled), r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport,
 		r.Description, r.CreatedAt, r.UpdatedAt)
 	return err
 }
@@ -1509,9 +1509,9 @@ func (db *DB) ImportFirewallRules(rows []FirewallRule, settingKey, settingValue 
 	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO firewall_rules (id, position, enabled, action, iif, oif, saddr, daddr, proto, dport,
+		INSERT INTO firewall_rules (id, position, group_id, enabled, action, iif, oif, saddr, daddr, proto, dport,
 		                            description, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -1522,7 +1522,7 @@ func (db *DB) ImportFirewallRules(rows []FirewallRule, settingKey, settingValue 
 		if r.ID == "" {
 			r.ID = uuid.NewString()
 		}
-		if _, err := stmt.Exec(r.ID, i, boolToInt(r.Enabled), r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport,
+		if _, err := stmt.Exec(r.ID, i, r.GroupID, boolToInt(r.Enabled), r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport,
 			r.Description, now, now); err != nil {
 			return err
 		}
@@ -1546,9 +1546,9 @@ func (db *DB) ImportFirewallRules(rows []FirewallRule, settingKey, settingValue 
 func (db *DB) UpdateFirewallRule(r *FirewallRule) error {
 	res, err := db.conn.Exec(`
 		UPDATE firewall_rules
-		SET action=?, iif=?, oif=?, saddr=?, daddr=?, proto=?, dport=?, description=?, updated_at=?
+		SET group_id=?, action=?, iif=?, oif=?, saddr=?, daddr=?, proto=?, dport=?, description=?, updated_at=?
 		WHERE id=?`,
-		r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport, r.Description, time.Now(), r.ID)
+		r.GroupID, r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport, r.Description, time.Now(), r.ID)
 	if err != nil {
 		return err
 	}
@@ -1641,13 +1641,155 @@ func (db *DB) ReorderFirewallRules(ids []string) error {
 	return tx.Commit()
 }
 
+// ─── Firewall groups repository (Fase C1: grupos de regras) ────────────────
+
+// FirewallGroup é um grupo de regras do admin: uma chain própria no nft,
+// alcançada por um jump condicional a partir da chain forward.
+type FirewallGroup struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	ChainName   string    `json:"chain_name"`
+	Position    int       `json:"position"`
+	Enabled     bool      `json:"enabled"`
+	CondSaddr   string    `json:"cond_saddr"`
+	CondDaddr   string    `json:"cond_daddr"`
+	CondIif     string    `json:"cond_iif"`
+	Fallthrough string    `json:"fallthrough"` // continue | accept | drop
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
+	rows, err := db.conn.Query(`
+        SELECT id, name, chain_name, position, enabled, cond_saddr, cond_daddr,
+               cond_iif, fallthrough, created_at, updated_at
+          FROM firewall_groups ORDER BY position ASC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FirewallGroup
+	for rows.Next() {
+		var g FirewallGroup
+		if err := rows.Scan(&g.ID, &g.Name, &g.ChainName, &g.Position, &g.Enabled,
+			&g.CondSaddr, &g.CondDaddr, &g.CondIif, &g.Fallthrough,
+			&g.CreatedAt, &g.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) CreateFirewallGroup(g *FirewallGroup) error {
+	now := time.Now()
+	g.CreatedAt, g.UpdatedAt = now, now
+	_, err := db.conn.Exec(`
+        INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
+            cond_saddr, cond_daddr, cond_iif, fallthrough, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
+		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.CreatedAt, g.UpdatedAt)
+	return err
+}
+
+func (db *DB) UpdateFirewallGroup(g *FirewallGroup) error {
+	g.UpdatedAt = time.Now()
+	res, err := db.conn.Exec(`
+        UPDATE firewall_groups
+           SET name=?, cond_saddr=?, cond_daddr=?, cond_iif=?, fallthrough=?, updated_at=?
+         WHERE id=?`,
+		g.Name, g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.UpdatedAt, g.ID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("grupo %q não encontrado", g.ID)
+	}
+	return nil
+}
+
+// DeleteFirewallGroup apaga o grupo E as regras dentro dele, na mesma
+// transação. Foreign keys estão desligadas no driver, então nada no banco
+// faria isso sozinho — e uma regra órfã seria exibida no painel sem chain
+// nenhuma para ser renderizada, que é exatamente o tipo de mentira que o
+// modelo de reconciliação existe para eliminar.
+func (db *DB) DeleteFirewallGroup(id string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`DELETE FROM firewall_groups WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("grupo %q não encontrado", id)
+	}
+	if _, err := tx.Exec(`DELETE FROM firewall_rules WHERE group_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (db *DB) SetFirewallGroupEnabled(id string, enabled bool) error {
+	res, err := db.conn.Exec(
+		`UPDATE firewall_groups SET enabled=?, updated_at=? WHERE id=?`,
+		enabled, time.Now(), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("grupo %q não encontrado", id)
+	}
+	return nil
+}
+
+func (db *DB) ReorderFirewallGroups(ids []string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	for i, id := range ids {
+		res, err := tx.Exec(
+			`UPDATE firewall_groups SET position=?, updated_at=? WHERE id=?`, i, now, id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("grupo %q não encontrado", id)
+		}
+	}
+	return tx.Commit()
+}
+
 func scanFirewallRule(s interface {
 	Scan(...interface{}) error
 }) (FirewallRule, error) {
 	var r FirewallRule
 	var enabled int
 	err := s.Scan(
-		&r.ID, &r.Position, &enabled, &r.Action, &r.Iif, &r.Oif, &r.Saddr, &r.Daddr, &r.Proto, &r.Dport,
+		&r.ID, &r.Position, &r.GroupID, &enabled, &r.Action, &r.Iif, &r.Oif, &r.Saddr, &r.Daddr, &r.Proto, &r.Dport,
 		&r.Description, &r.CreatedAt, &r.UpdatedAt)
 	r.Enabled = enabled != 0
 	return r, err

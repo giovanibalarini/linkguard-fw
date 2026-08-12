@@ -75,6 +75,7 @@ func (db *DB) migrate() error {
 		createManagedInterfacesTable,
 		createPendingInterfaceChangesTable,
 		createAIReportsTable,
+		createFirewallGroupsTable,
 		createFirewallRulesTable,
 		insertDefaultAdmin,
 	}
@@ -90,6 +91,9 @@ func (db *DB) migrate() error {
 	}
 	if err := db.migrateAddPasswordVersion(); err != nil {
 		return fmt.Errorf("migrate add password_version: %w", err)
+	}
+	if err := db.migrateAddFirewallRuleGroupID(); err != nil {
+		return fmt.Errorf("migrate add firewall_rules.group_id: %w", err)
 	}
 
 	return nil
@@ -119,6 +123,33 @@ func (db *DB) migrateAddPasswordVersion() error {
 	}
 	_, err = db.conn.Exec(`ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 1`)
 	return err
+}
+
+// migrateAddFirewallRuleGroupID adiciona firewall_rules.group_id em bancos
+// que já existem. Fica vazio nas linhas antigas de propósito: é assim que
+// firewallrules.MigrateRulesIntoDefaultGroup reconhece o que ainda precisa
+// ser adotado por um grupo. Em transação como toda migração deste projeto
+// (incidente de 2026-07-24).
+func (db *DB) migrateAddFirewallRuleGroupID() error {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('firewall_rules') WHERE name = 'group_id'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar coluna group_id: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE firewall_rules ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("adicionar coluna group_id: %w", err)
+	}
+	return tx.Commit()
 }
 
 // migrateTrafficSamplesToMetricSamples copies every row from the legacy
@@ -481,10 +512,26 @@ CREATE TABLE IF NOT EXISTS ai_reports (
 // import of pre-existing nft rules (internal/firewallrules) is a separate,
 // explicitly guarded step that runs after storage.Open returns, not part of
 // this migration.
+const createFirewallGroupsTable = `
+CREATE TABLE IF NOT EXISTS firewall_groups (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    chain_name   TEXT NOT NULL UNIQUE,
+    position     INTEGER NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    cond_saddr   TEXT NOT NULL DEFAULT '',
+    cond_daddr   TEXT NOT NULL DEFAULT '',
+    cond_iif     TEXT NOT NULL DEFAULT '',
+    fallthrough  TEXT NOT NULL DEFAULT 'continue',
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
 const createFirewallRulesTable = `
 CREATE TABLE IF NOT EXISTS firewall_rules (
     id          TEXT PRIMARY KEY,
     position    INTEGER NOT NULL,
+    group_id    TEXT NOT NULL DEFAULT '',
     enabled     INTEGER NOT NULL DEFAULT 1,
     action      TEXT NOT NULL,
     iif         TEXT NOT NULL DEFAULT '',
