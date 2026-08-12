@@ -118,6 +118,13 @@ func (s *Service) ListRuleset(ctx context.Context) ([]ChainInfo, error) {
 // }` in a rule — that pair always opens and closes on the same line — so a
 // block's end is unambiguously the first line that is exactly "}" once
 // trimmed; no brace-depth counting is needed.
+//
+// Scope caveat: this parser has no notion of a table boundary — it walks
+// every chain block it sees. All of its scoping comes from being fed `nft
+// ... list table inet linkguard` by its callers. Switching any of them to
+// `nft list ruleset` would silently hand it third-party chains, and
+// listGroupChains (which decides what to DELETE, by name prefix) would
+// start considering chains that are not ours.
 func parseTableRuleset(out string) []ChainInfo {
 	chains := []ChainInfo{}
 	var cur *ChainInfo
