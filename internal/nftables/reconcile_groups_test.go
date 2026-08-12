@@ -601,6 +601,58 @@ func TestReconcileGroupsRefusesUnsafeChainName(t *testing.T) {
 	}
 }
 
+// Um grupo ATIVADO cuja condição de entrada não valida (linha de banco
+// antiga ou editada à mão) não recebe jump: ele existe, aparece ativado no
+// painel, a chain dele é criada e preenchida — e nenhum pacote passa por
+// lá. Um "Wi-Fi visitantes" com "e o que sobrar: descartar" simplesmente
+// para de bloquear. Isso não pode virar apply ok: é exatamente o mesmo peso
+// do nome de chain inseguro, que já vira falha agregada
+// (TestReconcileGroupsRefusesUnsafeChainName). E, como lá, os OUTROS grupos
+// continuam sendo aplicados.
+func TestReconcileGroupsReportsEnabledGroupWithoutAJump(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "a", Name: "Wi-Fi visitantes", ChainName: "grp_aaa", Enabled: true, Position: 0,
+			CondSaddr: "192.168.50.0/33", Fallthrough: FallthroughDrop},
+		{ID: "b", Name: "Servidores", ChainName: "grp_bbb", Enabled: true, Position: 1,
+			Fallthrough: FallthroughContinue},
+	}
+
+	err := s.ReconcileGroups(context.Background(), groups)
+	if err == nil {
+		t.Fatal("grupo ativado que ficou fora da forward tem que virar apply não-ok, veio nil")
+	}
+	if !strings.Contains(err.Error(), "Wi-Fi visitantes") {
+		t.Errorf("o erro tem que dizer QUAL grupo ficou de fora, veio %q", err.Error())
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "jump grp_aaa") {
+			t.Fatalf("a condição inválida não podia ter chegado ao nft: %q", c)
+		}
+	}
+	// Contenção de falha: o grupo bom continua valendo.
+	if !ranCommand(exec.executed, "nft add rule inet linkguard forward counter jump grp_bbb") {
+		t.Errorf("o outro grupo parou de ser aplicado por causa do grupo quebrado: %v", exec.executed)
+	}
+}
+
+// O mesmo grupo, DESLIGADO, não é falha nenhuma: desligado já não tem jump
+// por definição (spec §2.1), e marcar apply não-ok por causa dele deixaria o
+// painel vermelho para sempre por um grupo que o admin não está usando.
+func TestReconcileGroupsIgnoresInvalidConditionOnDisabledGroup(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "a", Name: "Wi-Fi visitantes", ChainName: "grp_aaa", Enabled: false, Position: 0,
+			CondSaddr: "192.168.50.0/33", Fallthrough: FallthroughDrop},
+	}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("grupo desligado com condição inválida não é falha de aplicação: %v", err)
+	}
+}
+
 func TestReconcileGroupsIsIdempotent(t *testing.T) {
 	groups := []StoredGroup{{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true,
 		CondSaddr: "192.168.50.0/24", Fallthrough: FallthroughDrop,

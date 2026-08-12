@@ -90,6 +90,26 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 			failures = append(failures, fmt.Sprintf("grupo %q: nome de chain inválido", g.Name))
 			continue
 		}
+		// Um grupo ATIVADO cuja condição de entrada não renderiza não vai
+		// ganhar jump na forward (forwardChainRules pula) — a chain dele é
+		// criada e preenchida e nenhum pacote entra ali. Um grupo com "e o
+		// que sobrar: descartar" simplesmente para de bloquear, o painel o
+		// mostra ativado, e sem esta linha o apply ainda dizia ok: falha
+		// aberta reportada como sucesso. A chain continua sendo criada e
+		// preenchida (contenção de falha: os outros grupos não são
+		// afetados, e as regras deste continuam guardadas para quando a
+		// condição for corrigida), mas o apply é não-ok e nomeia o grupo.
+		//
+		// Só para grupo ativado: desligado não tem jump por definição
+		// (spec §2.1), e marcá-lo como falha deixaria o painel vermelho por
+		// um grupo que o admin não está usando.
+		if g.Enabled {
+			if _, err := groupJumpTokens(g); err != nil {
+				slog.Error("grupo ativado ficou fora da chain forward: condição de entrada inválida",
+					"grupo", g.ID, "nome", g.Name, "err", err)
+				failures = append(failures, fmt.Sprintf("grupo %q: condição de entrada inválida (%v); o grupo está ativado mas nenhum tráfego passa por ele", g.Name, err))
+			}
+		}
 		valid = append(valid, g)
 	}
 
