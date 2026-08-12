@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -178,32 +179,73 @@ func sanitizeNetworks(in []string) []string {
 // DHCP) is ever touched. When serving is false, or the network list is
 // empty after sanitization, the chain is flushed and left empty — not
 // deleted — so its state is always explicit and idempotent.
-// ForwardChain evaluates the admin's own rules (via jump) and then the
-// managed blocklist/host-block drops. MarkHostsChain steers a host's
-// forwarded traffic to a specific WAN by fwmark, looked up from the
-// host_wan map. Both are structural — created once at EnsureTable/bootstrap
-// — and, since ReconcileStructuralChains, reconciled on every boot exactly
-// like postrouting/input.
+// ForwardChain evaluates the managed blocklist/host-block drops and then
+// jumps into each enabled rule group, in the admin's order (a partir da Fase
+// C1 — ver forwardChainRules para por que os bloqueios vêm primeiro).
+// MarkHostsChain steers a host's forwarded traffic to a specific WAN by
+// fwmark, looked up from the host_wan map. Both are structural — created
+// once at EnsureTable/bootstrap — and reconciled on every boot exactly like
+// postrouting/input: mark_hosts por ReconcileStructuralChains, forward por
+// ReconcileGroups.
 const (
 	ForwardChain   = "forward"
 	MarkHostsChain = "mark_hosts"
 )
 
-// forwardChainRules is the canonical, ordered rule set for the forward
-// chain, each expressed as the nft argv tokens that follow `add rule inet
-// linkguard forward`. Order matters — nft evaluates top to bottom — so the
-// admin's own rules (reached via the jump) run first; an admin's explicit
-// accept must never be shadowed by a managed drop that ran before it. Every
-// rule carries `counter`: see ReconcileStructuralChains' doc comment for
-// why that is non-negotiable.
-func forwardChainRules() [][]string {
-	return [][]string{
-		{"counter", "jump", UserChain},
+// forwardChainRules é o conteúdo canônico e ordenado da chain forward.
+// Ordem importa — o nft avalia de cima para baixo:
+//
+//  1. Os bloqueios administrativos (host bloqueado, destino bloqueado)
+//     vêm PRIMEIRO e vencem qualquer regra do admin. Até a Fase B era o
+//     contrário: um "permitir" do usuário anulava a lista de bloqueio, o
+//     que fazia o botão "bloquear host em 1 clique" mentir. Se o bloqueio
+//     não vence, ele não é bloqueio (design spec §3).
+//  2. Depois, um jump por grupo ativado, na ordem que o admin configurou.
+//     A condição de entrada do grupo vai na própria linha do jump: se ela
+//     não casa, o grupo inteiro é pulado sem o kernel olhar as regras de
+//     dentro.
+//
+// Toda linha carrega `counter`: ver ReconcileStructuralChains sobre por que
+// isso não é negociável.
+//
+// A chain user_rules deixou de ser alcançada daqui: as regras do admin agora
+// moram dentro de um grupo (a migração única leva as antigas para o grupo
+// "Minhas regras"), e um jump para uma chain que não é mais a fonte da
+// verdade só poderia divergir dela.
+func forwardChainRules(groups []StoredGroup) [][]string {
+	rules := [][]string{
 		{"ip", "saddr", "@" + BlockedSet, "counter", "drop"},
 		{"ip", "daddr", "@" + BlockedSet, "counter", "drop"},
 		{"ip", "daddr", "@blocklist", "counter", "drop"},
 		{"ip", "saddr", "@blocklist", "counter", "drop"},
 	}
+
+	sorted := make([]StoredGroup, len(groups))
+	copy(sorted, groups)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
+
+	for _, g := range sorted {
+		if !g.Enabled {
+			continue // desligar = tirar o jump; a chain e as regras continuam guardadas
+		}
+		if !validGroupChainName(g.ChainName) {
+			// Não é paranoia redundante: este nome sai do banco e é
+			// interpolado no argv do nft, que junta os argumentos e parseia
+			// o resultado — a mesma porta que reIface/ValidMark fecham nos
+			// outros geradores deste pacote.
+			slog.Error("grupo ignorado ao montar a chain forward: nome de chain inseguro",
+				"grupo", g.ID, "nome", g.Name, "chain", g.ChainName)
+			continue
+		}
+		tokens, err := groupJumpTokens(g)
+		if err != nil {
+			slog.Error("grupo ignorado ao montar a chain forward: condição inválida",
+				"grupo", g.ID, "nome", g.Name, "err", err)
+			continue
+		}
+		rules = append(rules, tokens)
+	}
+	return rules
 }
 
 // markHostsChainRules is the canonical rule set for mark_hosts — a single
@@ -214,12 +256,17 @@ func markHostsChainRules() [][]string {
 	}
 }
 
-// ReconcileStructuralChains rebuilds the forward and mark_hosts chains from
-// their canonical definitions above, on every boot — not just once at
-// EnsureTable/bootstrap time — mirroring ReconcileMasquerade's safety
-// properties exactly: each chain is flushed on its own (never the table or
-// the ruleset), the result is idempotent, it's a no-op in dry-run, and it
-// persists afterward.
+// ReconcileStructuralChains rebuilds the mark_hosts chain from its canonical
+// definition above, on every boot — not just once at EnsureTable/bootstrap
+// time — mirroring ReconcileMasquerade's safety properties exactly: the
+// chain is flushed on its own (never the table or the ruleset), the result
+// is idempotent, it's a no-op in dry-run, and it persists afterward.
+//
+// A forward saiu daqui (grupos de regras, Fase C1): ela agora depende dos
+// grupos do admin e é reconstruída por ReconcileGroups, que é quem os
+// conhece. Reconciliar as duas em lugares diferentes faria a última a rodar
+// apagar os jumps da outra — quem chama esta função no boot tem que chamar
+// ReconcileGroups também, senão a forward deixa de ser reconciliada.
 //
 // Why this exists (design spec §1/§6): unlike postrouting/input, these two
 // chains were, until now, only ever created once at bootstrap and never
@@ -231,7 +278,8 @@ func markHostsChainRules() [][]string {
 // boot closes that gap the same way it was already closed for masquerade
 // and the NTP input rules: a duplicate cannot outlive the next restart.
 //
-// Every rule in both canonical definitions carries `counter`. Production's
+// Every rule in every canonical definition here — e em forwardChainRules,
+// que hoje mora em ReconcileGroups — carries `counter`. Production's
 // forward-chain drop rules were hand-created in June 2026 already WITH
 // counters (the whole reason Phase A exists is to surface those counts on
 // the panel) — reconciling to a counter-less definition would flush the
@@ -244,14 +292,11 @@ func (s *Service) ReconcileStructuralChains(ctx context.Context) error {
 		return nil
 	}
 
-	if err := s.rebuildChain(ctx, ForwardChain, forwardChainRules()); err != nil {
-		return err
-	}
 	if err := s.rebuildChain(ctx, MarkHostsChain, markHostsChainRules()); err != nil {
 		return err
 	}
 
-	slog.Info("chains estruturais reconciliadas a partir da definição canônica", "chains", []string{ForwardChain, MarkHostsChain})
+	slog.Info("chains estruturais reconciliadas a partir da definição canônica", "chains", []string{MarkHostsChain})
 
 	if err := s.Persist(ctx); err != nil {
 		slog.Warn("chains estruturais reconciliadas, mas não foi possível persistir para o próximo boot", "err", err)

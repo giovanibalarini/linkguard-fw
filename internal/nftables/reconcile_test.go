@@ -2,6 +2,7 @@ package nftables
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,18 @@ type fakeReconcileExec struct {
 	// pre-flight, which never mutates anything but must still be able to
 	// fail in a test).
 	readFailOn func(cmd string) error
+	// readOut lets a test answer a specific read with canned nft output,
+	// keyed by command prefix (the longest matching prefix wins, so the
+	// answer is deterministic no matter how Go orders the map). Anything
+	// not listed keeps the default behavior — empty output and readErr.
+	// Needed by reconciles that first LOOK at the live ruleset before
+	// deciding what to change (listGroupChains).
+	readOut map[string]string
+	// checkScripts holds the body of every temp file handed to `nft -c -f`,
+	// captured at call time (CheckChain deletes it on return). Without this
+	// a test can only see the file's path, which says nothing about what
+	// was actually validated.
+	checkScripts []string
 }
 
 func (e *fakeReconcileExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -39,8 +52,22 @@ func (e *fakeReconcileExec) Execute(_ context.Context, cmd string, args ...strin
 func (e *fakeReconcileExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
 	full := strings.Join(append([]string{cmd}, args...), " ")
 	e.reads = append(e.reads, full)
+	if len(args) >= 3 && args[0] == "-c" && args[1] == "-f" {
+		if body, err := os.ReadFile(args[2]); err == nil {
+			e.checkScripts = append(e.checkScripts, string(body))
+		}
+	}
 	if e.readFailOn != nil {
 		return "", e.readFailOn(full)
+	}
+	best := ""
+	for prefix := range e.readOut {
+		if strings.HasPrefix(full, prefix) && len(prefix) > len(best) {
+			best = prefix
+		}
+	}
+	if best != "" {
+		return e.readOut[best], nil
 	}
 	return "", e.readErr
 }

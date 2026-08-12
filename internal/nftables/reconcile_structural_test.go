@@ -15,29 +15,24 @@ import (
 // duplicated, because nothing ever flushed and rewrote them again. These
 // tests mirror TestReconcileMasquerade*'s safety properties exactly.
 
-func TestReconcileStructuralChainsFlushesForwardBeforeAdding(t *testing.T) {
+// Era TestReconcileStructuralChainsFlushesForwardBeforeAdding. Mudança
+// INTENCIONAL de comportamento (grupos de regras, Fase C1): a forward saiu
+// desta função e passou a ser reconstruída por ReconcileGroups, a única que
+// conhece os grupos do admin. Se as duas continuassem reconciliando a mesma
+// chain, a última a rodar apagaria os jumps escritos pela outra — e é por
+// isso que a expectativa aqui virou o oposto: esta função não pode mais
+// encostar na forward.
+func TestReconcileStructuralChainsLeavesTheForwardToReconcileGroups(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
 
 	if err := s.ReconcileStructuralChains(context.Background()); err != nil {
 		t.Fatalf("ReconcileStructuralChains: %v", err)
 	}
-
-	wantFlush := "nft flush chain inet linkguard forward"
-	if !ranCommand(exec.executed, wantFlush) {
-		t.Errorf("missing %q; ran: %v", wantFlush, exec.executed)
-	}
-	flushIdx, lastAddIdx := -1, -1
-	for i, c := range exec.executed {
-		if c == wantFlush {
-			flushIdx = i
+	for _, c := range exec.executed {
+		if strings.Contains(c, ForwardChain) {
+			t.Errorf("esta função não pode mais mexer na forward (quem reconstrói é ReconcileGroups): %q", c)
 		}
-		if strings.HasPrefix(c, "nft add rule inet linkguard forward") {
-			lastAddIdx = i
-		}
-	}
-	if flushIdx == -1 || lastAddIdx == -1 || flushIdx > lastAddIdx {
-		t.Errorf("forward chain must be flushed before any rule is added; ran: %v", exec.executed)
 	}
 }
 
@@ -81,8 +76,8 @@ func TestReconcileStructuralChainsNeverFlushesTheWholeTable(t *testing.T) {
 		if strings.Contains(c, "flush table") || strings.Contains(c, "flush ruleset") {
 			t.Errorf("must never flush the table/ruleset, ran: %q", c)
 		}
-		if strings.Contains(c, "flush chain") && !strings.Contains(c, "forward") && !strings.Contains(c, "mark_hosts") {
-			t.Errorf("must only ever flush forward/mark_hosts, ran: %q", c)
+		if strings.Contains(c, "flush chain") && !strings.Contains(c, "mark_hosts") {
+			t.Errorf("must only ever flush mark_hosts, ran: %q", c)
 		}
 	}
 }
@@ -125,8 +120,10 @@ func TestReconcileStructuralChainsNoopInDryRun(t *testing.T) {
 // test for the spec's explicit caution (§6): production's forward-chain
 // drop rules were hand-created in June 2026 WITH `counter`, and reconciling
 // to a counter-less definition would silently reset that data to zero on
-// every boot. Every `add rule` this reconcile issues, in both chains, must
-// include `counter`.
+// every boot. Every `add rule` this reconcile issues must include `counter`.
+// Desde a Fase C1 sobrou só a regra do mark_hosts aqui — a cobertura das
+// linhas da forward mudou de casa junto com a chain, para
+// TestForwardChainEveryRuleCarriesCounter.
 func TestReconcileStructuralChainsEveryRuleCarriesCounter(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
@@ -144,37 +141,49 @@ func TestReconcileStructuralChainsEveryRuleCarriesCounter(t *testing.T) {
 			t.Errorf("rule was added without a counter: %q", c)
 		}
 	}
-	if found != 6 {
-		t.Errorf("expected 6 add-rule commands (1 jump + 4 drops in forward, 1 in mark_hosts), got %d: %v", found, exec.executed)
+	if found != 1 {
+		t.Errorf("expected 1 add-rule command (mark_hosts; a forward é do ReconcileGroups), got %d: %v", found, exec.executed)
 	}
 }
 
-// TestReconcileStructuralChainsForwardRuleOrder: nft evaluates top to
-// bottom, so the admin's own rules (reached via jump) must run before the
-// managed blocklist/host-block drops — an admin's explicit accept must
-// never be shadowed by a managed drop that ran first.
-func TestReconcileStructuralChainsForwardRuleOrder(t *testing.T) {
+// Era TestReconcileStructuralChainsForwardRuleOrder, que assertava a ordem
+// ANTIGA: `jump user_rules` primeiro e os bloqueios depois. A intenção
+// continua a mesma — o nft avalia de cima para baixo, então a ordem desta
+// chain é comportamento observável e precisa de teste —, mas a expectativa
+// está invertida de propósito (design spec §3): bloqueio administrativo é
+// avaliado antes dos grupos e sempre vence, porque "bloquear host em 1
+// clique" que perde para uma regra criada meses antes é um bloqueio que
+// mente. E a forward deixou de alcançar user_rules: as regras do admin
+// passaram a morar dentro de grupos.
+func TestForwardChainNoLongerLetsUserRulesShadowTheBlocks(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	groups := []StoredGroup{{ID: "a", Name: "Minhas regras", ChainName: "grp_aaa",
+		Enabled: true, Position: 0, Fallthrough: FallthroughContinue}}
 
-	if err := s.ReconcileStructuralChains(context.Background()); err != nil {
-		t.Fatalf("ReconcileStructuralChains: %v", err)
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("ReconcileGroups: %v", err)
 	}
-	var forwardAdds []string
+	var adds []string
 	for _, c := range exec.executed {
 		if strings.HasPrefix(c, "nft add rule inet linkguard forward") {
-			forwardAdds = append(forwardAdds, c)
+			adds = append(adds, c)
 		}
 	}
-	if len(forwardAdds) != 5 {
-		t.Fatalf("expected 5 rules added to forward, got %d: %v", len(forwardAdds), forwardAdds)
-	}
-	if !strings.Contains(forwardAdds[0], "jump "+UserChain) {
-		t.Errorf("first forward rule must be the jump to user_rules, got %q", forwardAdds[0])
+	if len(adds) != 5 {
+		t.Fatalf("expected 5 rules added to forward (4 blocks + 1 group jump), got %d: %v", len(adds), adds)
 	}
 	for i, want := range []string{"@blocked_hosts", "@blocked_hosts", "@blocklist", "@blocklist"} {
-		if !strings.Contains(forwardAdds[i+1], want) {
-			t.Errorf("forward rule %d = %q, want it to contain %q", i+1, forwardAdds[i+1], want)
+		if !strings.Contains(adds[i], want) {
+			t.Errorf("forward rule %d = %q, want it to contain %q", i, adds[i], want)
+		}
+	}
+	if !strings.Contains(adds[4], "jump grp_aaa") {
+		t.Errorf("last forward rule must be the group jump, got %q", adds[4])
+	}
+	for _, c := range adds {
+		if strings.Contains(c, "jump "+UserChain) {
+			t.Errorf("a forward não pode mais pular para %s: %q", UserChain, c)
 		}
 	}
 }

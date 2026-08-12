@@ -75,7 +75,13 @@ func TestCheckUserRulesRendersTheSameChainReconcileWould(t *testing.T) {
 	if len(exec.reads) != 1 {
 		t.Fatalf("expected exactly 1 read, got %d: %v", len(exec.reads), exec.reads)
 	}
-	script := exec.reads[0]
+	// O script de verdade, não o caminho do arquivo temporário: até a Fase C1
+	// este teste olhava exec.reads[0] ("nft -c -f /tmp/..."), onde nenhuma das
+	// duas asserções abaixo poderia falhar — passava sem provar nada.
+	if len(exec.checkScripts) != 1 {
+		t.Fatalf("expected exactly 1 checked script, got %d", len(exec.checkScripts))
+	}
+	script := exec.checkScripts[0]
 	// The disabled rule must never appear, and order must follow Position
 	// (10.0.0.1 before 10.0.0.2), exactly like ReconcileUserRules.
 	if strings.Contains(script, "10.0.0.3") {
