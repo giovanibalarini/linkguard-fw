@@ -100,10 +100,13 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	b.WriteString("\tchain forward {\n")
 	b.WriteString("\t\ttype filter hook forward priority filter; policy accept;\n")
 	b.WriteString("\t\tcounter jump user_rules\n")
-	b.WriteString("\t\tip saddr @blocked_hosts counter drop\n")
-	b.WriteString("\t\tip daddr @blocked_hosts counter drop\n")
-	b.WriteString("\t\tip daddr @blocklist counter drop\n")
-	b.WriteString("\t\tip saddr @blocklist counter drop\n")
+	// As quatro linhas de bloqueio vêm de administrativeBlockRules
+	// (groups.go) — a mesma fonte que forwardChainRules usa para os dois
+	// grupos do sistema — em vez de uma segunda cópia literal aqui. Ver o
+	// doc-comment de administrativeBlockRules para por que isso importa.
+	for _, tokens := range administrativeBlockRules() {
+		fmt.Fprintf(&b, "\t\t%s\n", strings.Join(tokens, " "))
+	}
 	b.WriteString("\t}\n\n")
 	// The first `hook input` chain in the project (2026-08-11, "serve NTP to
 	// the LAN"). Empty and policy accept on a fresh install, exactly like an

@@ -80,6 +80,33 @@ var systemGroupForwardRules = map[string]func() [][]string{
 	},
 }
 
+// administrativeBlockRules é a forma canônica dos quatro bloqueios
+// administrativos fixos — blocked_hosts primeiro, depois blocklist, a mesma
+// ordem que a migração usa ao criar os dois grupos do sistema (posições 0 e
+// 1) — lida direto de systemGroupForwardRules, a mesma fonte que
+// forwardChainRules usa para os dois kinds de sistema.
+//
+// Existe para dar a buildBootstrapRuleset (bootstrap.go) as MESMAS quatro
+// linhas sem uma segunda cópia literal: antes desta função, forwardChainRules
+// e buildBootstrapRuleset tinham cada uma sua própria cópia das quatro
+// strings, e bootstrap_test.go repetia as mesmas de novo — mudar a forma de
+// uma linha de um lado e atualizar só os testes daquele lado deixava o outro
+// divergindo em silêncio.
+//
+// Os dois consumidores querem formas diferentes do mesmo conteúdo:
+// forwardChainRules quer token sets ([]string por linha, é o que ela mesma
+// devolve), e buildBootstrapRuleset monta texto (um arquivo de ruleset para
+// `nft -f`) — por isso esta função devolve token sets como forwardChainRules
+// já devolve, e quem escreve texto (bootstrap.go) junta cada um com espaço,
+// exatamente como já faz para as regras dos grupos do admin em outros
+// lugares deste pacote.
+func administrativeBlockRules() [][]string {
+	var rules [][]string
+	rules = append(rules, systemGroupForwardRules[GroupKindBlockedHosts]()...)
+	rules = append(rules, systemGroupForwardRules[GroupKindBlocklist]()...)
+	return rules
+}
+
 // IsSystemGroup reporta se o grupo é mantido pelo LinkGuard em vez de criado
 // pelo admin. Deliberadamente uma lista fechada, não "!= admin": um kind
 // desconhecido (banco de uma versão futura, linha editada à mão) é tratado

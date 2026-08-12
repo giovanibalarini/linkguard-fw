@@ -232,6 +232,28 @@ func TestBuildBootstrapRulesetForwardAndMarkHostsCarryCounter(t *testing.T) {
 	}
 }
 
+// Amarra as duas representações das quatro linhas de bloqueio: o texto que
+// buildBootstrapRuleset escreve (para um install do zero) e os token sets que
+// forwardChainRules produz para os dois grupos do sistema (para uma
+// reconciliação normal, com os grupos já migrados). As duas já leem de
+// administrativeBlockRules (groups.go), então isto hoje é redundante com essa
+// unificação — mas é a rede de segurança que m-4 pediu: se algum dia alguém
+// voltar a duplicar a fonte de um lado só, este teste pega a divergência sem
+// precisar saber que administrativeBlockRules existe.
+func TestBootstrapForwardBlocksMatchForwardChainRulesForSystemGroups(t *testing.T) {
+	rs := buildBootstrapRuleset(nil)
+	groups := []StoredGroup{
+		{ID: "h", Kind: GroupKindBlockedHosts, ChainName: SystemChainBlockedHosts, Enabled: true, Position: 0},
+		{ID: "l", Kind: GroupKindBlocklist, ChainName: SystemChainBlocklist, Enabled: true, Position: 1},
+	}
+	for _, toks := range forwardChainRules(groups) {
+		line := strings.Join(toks, " ")
+		if !strings.Contains(rs, line) {
+			t.Errorf("bootstrap ruleset diverge de forwardChainRules para os grupos do sistema: falta %q\n%s", line, rs)
+		}
+	}
+}
+
 func TestBuildBootstrapRulesetSanitizesInterfaces(t *testing.T) {
 	rs := buildBootstrapRuleset([]string{"enp5s0", `evil"; flush ruleset; #`, "enp5s0"})
 	if strings.Contains(rs, "evil") || strings.Contains(rs, "flush ruleset;") {
