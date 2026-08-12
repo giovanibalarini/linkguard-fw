@@ -306,3 +306,110 @@ func TestMigrateDoesNotTouchUserRulesWhenTheForwardCouldNotBeRebuilt(t *testing.
 		}
 	}
 }
+
+// Ignorar o erro de leitura da trava (`flag, _ := s.db.GetSetting(...)`) faz
+// a migração rodar de novo achando que nunca rodou -- e, para uma regra
+// solta que surgiu depois da primeira migração, isso cria um SEGUNDO grupo
+// "Minhas regras" com metade das regras do admin em cada um.
+//
+// A corrupção aqui é cirúrgica de propósito: recria a tabela settings sem a
+// restrição NOT NULL e grava NULL só na linha da trava, o que faz o SELECT
+// (Scan de NULL num *string) falhar, mas deixa ESCRITAS na mesma linha
+// funcionando normalmente depois. Derrubar a tabela inteira (DROP TABLE)
+// não serve de teste: a escrita da trava dentro de MigrateRulesIntoGroup
+// falharia também, e a transação (achado 4) desfaria o grupo novo de
+// qualquer jeito -- mascarando exatamente a diferença que este teste
+// precisa enxergar entre o código certo e o mutante.
+func TestMigrateAbortsInsteadOfRerunningWhenTheGuardCannotBeRead(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateFirewallRule(&storage.FirewallRule{ID: "r1", Position: 0, Enabled: true,
+		Action: "accept", Proto: "tcp", Dport: "22"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, exec := newTestServiceWithExec(t, db)
+	ctx := context.Background()
+
+	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
+		t.Fatalf("primeira migração: %v", err)
+	}
+	groupsBefore, _ := db.ListFirewallGroups()
+	if len(groupsBefore) != 1 {
+		t.Fatalf("esperava 1 grupo depois da primeira migração, obtive %d", len(groupsBefore))
+	}
+
+	// O admin segue usando a máquina: uma regra nova, ainda sem grupo.
+	if err := db.CreateFirewallRule(&storage.FirewallRule{ID: "r2", Enabled: true,
+		Action: "drop", Saddr: "10.0.0.9"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.Conn().Exec(`CREATE TABLE settings_tmp (key TEXT PRIMARY KEY, value TEXT, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatalf("criar settings_tmp: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO settings_tmp SELECT * FROM settings`); err != nil {
+		t.Fatalf("copiar settings: %v", err)
+	}
+	if _, err := db.Conn().Exec(`DROP TABLE settings`); err != nil {
+		t.Fatalf("derrubar settings original: %v", err)
+	}
+	if _, err := db.Conn().Exec(`ALTER TABLE settings_tmp RENAME TO settings`); err != nil {
+		t.Fatalf("renomear settings_tmp: %v", err)
+	}
+	if _, err := db.Conn().Exec(`UPDATE settings SET value = NULL WHERE key = ?`, GroupsMigratedSettingKey); err != nil {
+		t.Fatalf("corromper a trava: %v", err)
+	}
+
+	exec.executed = nil
+	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err == nil {
+		t.Fatal("esperava erro quando a trava não pôde ser lida")
+	}
+
+	groupsAfter, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	if len(groupsAfter) != 1 {
+		t.Fatalf("um erro de leitura da trava não pode disparar uma segunda migração -- esperava continuar com 1 grupo, obtive %d: %+v", len(groupsAfter), groupsAfter)
+	}
+	rules, _ := db.ListFirewallRules()
+	for _, r := range rules {
+		if r.ID == "r2" && r.GroupID != "" {
+			t.Errorf("a regra nova não pode ter sido adotada por uma migração que devia ter abortado no erro de leitura da trava: %+v", r)
+		}
+	}
+	if len(exec.executed) != 0 {
+		t.Errorf("nenhum comando do nft pode ter rodado com a trava ilegível, rodou: %v", exec.executed)
+	}
+}
+
+// A retentativa da remoção da chain legada tem que rodar em TODO boot em que
+// a trava já está gravada -- é o que dá a uma máquina onde o `delete` falhou
+// uma vez (nft ocupado, forward ainda referenciando a user_rules) uma
+// segunda chance, em vez de carregar a chain morta para sempre. Reverter
+// isso para um `return nil` seco no ramo `if flag != ""` não é pego por
+// nenhum outro teste: os demais só olham o resultado da PRIMEIRA migração.
+func TestMigrateRetriesRemovingTheLegacyChainOnEveryBootAfterTheGuardIsSet(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newTestServiceWithExec(t, db)
+	ctx := context.Background()
+
+	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
+		t.Fatalf("primeira migração: %v", err)
+	}
+	exec.executed = nil // só interessa o que roda na SEGUNDA chamada, com a trava já gravada
+
+	if err := svc.MigrateRulesIntoDefaultGroup(ctx); err != nil {
+		t.Fatalf("segunda chamada (trava já gravada): %v", err)
+	}
+
+	found := false
+	for _, cmd := range exec.executed {
+		j := strings.Join(cmd, " ")
+		if strings.HasPrefix(j, "delete chain") && strings.Contains(j, "user_rules") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("com a trava já gravada, a remoção da chain legada tem que ser retentada -- nenhum comando de delete rodou: %v", exec.executed)
+	}
+}
