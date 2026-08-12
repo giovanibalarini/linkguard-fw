@@ -418,3 +418,61 @@ func TestMigrateRulesIntoGroupRollsBackEverythingOnFailure(t *testing.T) {
 		t.Fatalf("a trava não pode ficar gravada numa migração que falhou, obtive %q", flag)
 	}
 }
+
+// TestMigrateRulesIntoGroupRollsBackWhenTheUpdateFails prova que a transação
+// cobre TODOS os três passos, não só o primeiro. O teste acima
+// (TestMigrateRulesIntoGroupRollsBackEverythingOnFailure) injeta a falha no
+// INSERT do grupo -- o primeiro comando -- então o UPDATE e o INSERT da
+// trava nunca chegam a rodar, e o teste passa igualzinho mesmo se
+// MigrateRulesIntoGroup não tivesse transação nenhuma (três db.conn.Exec
+// soltos). Aqui a falha é injetada no SEGUNDO comando, via um trigger
+// BEFORE UPDATE que aborta o UPDATE de group_id. Isso só prova algo se o
+// INSERT do grupo (passo 1, já executado com sucesso antes do trigger
+// disparar) for desfeito -- o que só acontece com uma transação de verdade.
+func TestMigrateRulesIntoGroupRollsBackWhenTheUpdateFails(t *testing.T) {
+	db := newTestDB(t)
+
+	solta := &storage.FirewallRule{Action: "drop", Daddr: "203.0.113.0/24"}
+	if err := db.CreateFirewallRule(solta); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+
+	if _, err := db.Conn().Exec(`
+		CREATE TRIGGER boom_on_group_id_update
+		BEFORE UPDATE OF group_id ON firewall_rules
+		BEGIN
+			SELECT RAISE(ABORT, 'boom');
+		END;`); err != nil {
+		t.Fatalf("criar trigger de teste: %v", err)
+	}
+
+	g := storage.FirewallGroup{ID: "novo-grupo", Name: "Minhas regras",
+		ChainName: "grp_aaaaaaaaaaaa", Enabled: true, Fallthrough: "continue"}
+	if err := db.MigrateRulesIntoGroup(g, "firewall_groups_migrated", "true"); err == nil {
+		t.Fatal("esperava erro do UPDATE abortado pelo trigger")
+	}
+
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	if len(groups) != 0 {
+		t.Errorf("o INSERT do grupo (passo 1) tinha que ter voltado atrás junto com o UPDATE abortado (passo 2): %+v", groups)
+	}
+
+	all, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if all[0].GroupID != "" {
+		t.Errorf("a adoção não pode ter pegado: %+v", all[0])
+	}
+
+	flag, err := db.GetSetting("firewall_groups_migrated")
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if flag != "" {
+		t.Fatalf("a trava (passo 3, nunca chega a rodar) não pode ficar gravada, obtive %q", flag)
+	}
+}
