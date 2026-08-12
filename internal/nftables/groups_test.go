@@ -1,0 +1,100 @@
+package nftables
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestGroupChainNameDerivesFromIDNotName(t *testing.T) {
+	// O nome digitado nunca entra no nome da chain: renomear quebraria o
+	// jump, e um nome com caractere especial viraria injeção no argv do nft.
+	got := GroupChainName("a3f21c08-9d4e-4b1a-8c77-0e5b2d6f1a99")
+	if got != "grp_a3f21c089d4e" {
+		t.Fatalf("nome de chain inesperado: %q", got)
+	}
+	if strings.ContainsAny(got, " ;\"'`$&|") {
+		t.Fatalf("nome de chain com caractere perigoso: %q", got)
+	}
+	// Determinístico entre chamadas.
+	if GroupChainName("a3f21c08-9d4e-4b1a-8c77-0e5b2d6f1a99") != got {
+		t.Fatal("GroupChainName não é determinístico")
+	}
+}
+
+func TestGroupJumpTokensCarriesConditionAndCounter(t *testing.T) {
+	g := StoredGroup{ID: "x", ChainName: "grp_abc123def456",
+		CondIif: "enp0s3", CondSaddr: "192.168.50.0/24"}
+	toks, err := groupJumpTokens(g)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	want := "iifname enp0s3 ip saddr 192.168.50.0/24 counter jump grp_abc123def456"
+	if strings.Join(toks, " ") != want {
+		t.Fatalf("jump inesperado:\n  obtive %q\n  queria %q", strings.Join(toks, " "), want)
+	}
+}
+
+func TestGroupWithoutConditionJumpsUnconditionally(t *testing.T) {
+	g := StoredGroup{ID: "x", ChainName: "grp_abc123def456"}
+	toks, err := groupJumpTokens(g)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if strings.Join(toks, " ") != "counter jump grp_abc123def456" {
+		t.Fatalf("grupo sem condição deveria pular incondicionalmente, obtive %q",
+			strings.Join(toks, " "))
+	}
+}
+
+func TestValidateGroupRejectsBadCondition(t *testing.T) {
+	cases := []struct {
+		name string
+		g    StoredGroup
+	}{
+		{"origem IPv6", StoredGroup{Name: "g", CondSaddr: "2001:db8::1"}},
+		{"origem lixo", StoredGroup{Name: "g", CondSaddr: "nao-e-ip"}},
+		{"destino inválido", StoredGroup{Name: "g", CondDaddr: "999.1.1.1"}},
+		{"interface com espaço", StoredGroup{Name: "g", CondIif: "eth0; rm -rf /"}},
+		{"fallthrough desconhecido", StoredGroup{Name: "g", Fallthrough: "talvez"}},
+		{"sem nome", StoredGroup{Name: "   "}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := ValidateGroup(c.g); err == nil {
+				t.Fatalf("esperava recusa para %+v", c.g)
+			}
+		})
+	}
+}
+
+func TestRenderGroupChainAppendsFallthroughLine(t *testing.T) {
+	rules := []StoredRule{
+		{ID: "r1", Position: 0, Enabled: true, Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "443"}},
+		{ID: "r2", Position: 1, Enabled: false, Fields: RuleFields{Action: "drop", Proto: "udp", Dport: "53"}},
+	}
+	g := StoredGroup{ID: "x", ChainName: "grp_a", Fallthrough: FallthroughDrop, Rules: rules}
+
+	sets, skipped := renderGroupChain(g)
+	if len(skipped) != 0 {
+		t.Fatalf("nada deveria ser pulado, obtive %v", skipped)
+	}
+	if len(sets) != 2 {
+		t.Fatalf("esperava 1 regra ativada + 1 linha de fallthrough, obtive %d: %v", len(sets), sets)
+	}
+	if strings.Join(sets[0], " ") != "tcp dport 443 counter accept" {
+		t.Errorf("regra renderizada errada: %q", strings.Join(sets[0], " "))
+	}
+	if strings.Join(sets[1], " ") != "counter drop" {
+		t.Errorf("linha de fallthrough errada: %q", strings.Join(sets[1], " "))
+	}
+}
+
+func TestRenderGroupChainContinueEmitsNoFinalLine(t *testing.T) {
+	g := StoredGroup{ID: "x", ChainName: "grp_a", Fallthrough: FallthroughContinue,
+		Rules: []StoredRule{{ID: "r1", Enabled: true,
+			Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "22"}}}}
+	sets, _ := renderGroupChain(g)
+	if len(sets) != 1 {
+		t.Fatalf("\"continuar\" não emite linha final; esperava 1 conjunto, obtive %d: %v", len(sets), sets)
+	}
+}
