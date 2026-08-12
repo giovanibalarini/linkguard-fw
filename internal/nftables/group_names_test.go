@@ -135,3 +135,29 @@ func containsAll(s string, subs ...string) bool {
 	}
 	return true
 }
+
+// Both ApplyGroupNames and MergeGroups locate the jump target with
+// strings.LastIndex, and their comments promise the two never disagree —
+// but no fixture had "jump " appearing more than once, so swapping either
+// one to strings.Index went unnoticed. Pin it: the target is the LAST jump
+// on the line, and both functions must agree on that for the same input.
+func TestJumpTargetIsTheLastJumpOnTheLine(t *testing.T) {
+	expr := `ip saddr 10.0.0.0/8 comment "jump antigo" counter jump grp_realalvo1`
+
+	chains := []ChainInfo{{Name: ForwardChain, Rules: []ChainRule{{Expression: expr}}}}
+	ApplyGroupNames(chains, map[string]string{"grp_realalvo1": "Certo", "grp_antigo": "Errado"})
+	if !strings.Contains(chains[0].Rules[0].Description, "Certo") {
+		t.Errorf("ApplyGroupNames pegou o jump errado: %q", chains[0].Rules[0].Description)
+	}
+
+	// MergeGroups tem que enxergar o mesmo alvo, ou uma das duas erra num
+	// caso que a outra acerta.
+	views := MergeGroups(
+		[]StoredGroup{{ID: "a", Name: "Certo", ChainName: "grp_realalvo1", Enabled: true}},
+		map[string]ChainInfo{},
+		ChainInfo{Name: ForwardChain, Rules: []ChainRule{{Expression: expr, Handle: 7}}},
+	)
+	if !views[0].Applied {
+		t.Error("MergeGroups não enxergou o mesmo alvo de jump que ApplyGroupNames")
+	}
+}
