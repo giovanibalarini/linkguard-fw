@@ -67,6 +67,56 @@ const liveTableWithOrphanGroup = `table inet linkguard {
 }
 `
 
+// liveTableAfterReconcile é o mesmo ruleset DEPOIS de uma passada de
+// ReconcileGroups com um único grupo (grp_aaa): a órfã não está mais lá e a
+// forward já é a reconstruída. É o que a segunda passada de um teste de
+// idempotência tem que enxergar — com o fixture estático, ela reveria a
+// órfã e reemitiria o mesmo `delete`, e a igualdade entre as duas passadas
+// seria satisfeita sem provar convergência nenhuma.
+const liveTableAfterReconcile = `table inet linkguard {
+	map host_wan {
+		type ipv4_addr : mark
+		elements = { 192.168.3.10 : 0x00000064 }
+	}
+
+	set blocklist {
+		type ipv4_addr
+		flags interval
+	}
+
+	set blocked_hosts {
+		type ipv4_addr
+	}
+
+	chain user_rules {
+	}
+
+	chain mark_hosts {
+		type filter hook prerouting priority mangle; policy accept;
+		counter packets 12 bytes 900 meta mark set ip saddr map @host_wan
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		ip saddr @blocked_hosts counter packets 0 bytes 0 drop
+		ip daddr @blocked_hosts counter packets 0 bytes 0 drop
+		ip daddr @blocklist counter packets 0 bytes 0 drop
+		ip saddr @blocklist counter packets 0 bytes 0 drop
+		ip saddr 192.168.50.0/24 counter packets 0 bytes 0 jump grp_aaa
+	}
+
+	chain grp_aaa {
+		tcp dport 443 counter packets 0 bytes 0 accept
+		counter packets 0 bytes 0 drop
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname { "enp2s0", "enp5s0" } masquerade
+	}
+}
+`
+
 // liveTableWithForeignGroupChain: a tabela do LinkGuard com uma chain que
 // COMEÇA com grp_ mas não é nossa — `grp_Legado` tem maiúsculas, coisa que
 // o nft aceita e que GroupChainName nunca produz. É o que a reconciliação vê
@@ -850,6 +900,15 @@ func TestReconcileGroupsIgnoresInvalidConditionOnDisabledGroup(t *testing.T) {
 	}
 }
 
+// Idempotência aqui é CONVERGÊNCIA: a segunda passada, sobre o ruleset que
+// a primeira deixou, não pode ter mais nada para limpar e tem que reescrever
+// exatamente o mesmo conteúdo.
+//
+// Com o `readOut` estático que este teste usava, a segunda passada revia a
+// mesma chain órfã e reemitia o mesmo `delete` — a igualdade entre as duas
+// listas era trivialmente satisfeita e não provava nada sobre convergir. O
+// fake agora reflete a remoção: a leitura da segunda passada é o ruleset SEM
+// a órfã.
 func TestReconcileGroupsIsIdempotent(t *testing.T) {
 	groups := []StoredGroup{{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true,
 		CondSaddr: "192.168.50.0/24", Fallthrough: FallthroughDrop,
@@ -864,16 +923,39 @@ func TestReconcileGroupsIsIdempotent(t *testing.T) {
 		t.Fatalf("primeira: %v", err)
 	}
 	first := append([]string(nil), exec.executed...)
+	if !ranCommand(first, "nft delete chain inet linkguard grp_orfa") {
+		t.Fatalf("a primeira passada tinha que remover a órfã: %v", first)
+	}
+
+	// O ruleset vivo agora é o que a primeira passada deixou.
+	exec.readOut["nft list table inet linkguard"] = liveTableAfterReconcile
 	exec.executed = nil
 	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
 		t.Fatalf("segunda: %v", err)
 	}
-	if len(first) != len(exec.executed) {
-		t.Fatalf("a segunda execução emitiu outro conjunto de comandos:\nprimeira=%v\nsegunda=%v", first, exec.executed)
+	second := append([]string(nil), exec.executed...)
+
+	// 1. convergiu: não sobrou nada para remover.
+	for _, c := range second {
+		if strings.HasPrefix(c, "nft delete chain") {
+			t.Errorf("a segunda passada ainda tinha o que apagar (não convergiu): %q", c)
+		}
 	}
-	for i := range first {
-		if first[i] != exec.executed[i] {
-			t.Errorf("comando %d difere entre execuções:\nprimeira=%q\nsegunda=%q", i, first[i], exec.executed[i])
+	// 2. e o conteúdo reescrito é o mesmo — comparado contra a primeira
+	// passada sem os comandos de limpeza, que só existiam por causa da órfã.
+	var firstWithoutCleanup []string
+	for _, c := range first {
+		if strings.HasPrefix(c, "nft delete chain") {
+			continue
+		}
+		firstWithoutCleanup = append(firstWithoutCleanup, c)
+	}
+	if len(firstWithoutCleanup) != len(second) {
+		t.Fatalf("a segunda execução emitiu outro conjunto de comandos:\nprimeira=%v\nsegunda=%v", firstWithoutCleanup, second)
+	}
+	for i := range firstWithoutCleanup {
+		if firstWithoutCleanup[i] != second[i] {
+			t.Errorf("comando %d difere entre execuções:\nprimeira=%q\nsegunda=%q", i, firstWithoutCleanup[i], second[i])
 		}
 	}
 }
