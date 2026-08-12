@@ -48,6 +48,29 @@ type fakeNft struct {
 // inexistente, tanto no comando solto quanto dentro de `nft -c -f`.
 var errNoSuchChain = errors.New("Error: No such file or directory")
 
+// ─── Recusa por CONTEÚDO ──────────────────────────────────────────────────
+//
+// Recusar só por chain faltando prova metade da invariante. A ordem
+// obrigatória de toda mutação é validar campos → pré-voo `nft -c` → gravar no
+// banco → reconciliar, e a metade que importa é a segunda seta: NADA chega ao
+// banco antes de o nft aceitar. Um falso que aprova todo conteúdo nunca chega
+// a exercitá-la — mover a escrita para antes do pré-voo passava pela suíte
+// inteira sem um teste vermelho, porque os testes de "nada foi gravado"
+// morriam uma camada antes, na validação de campo, e nunca alcançavam o nft.
+//
+// nftRefusesToken é um MARCADOR DE TESTE, não a imitação de uma recusa real
+// do nft: o que ele existe para simular é a categoria inteira de recusas
+// semânticas que a validação de campo não pega (o motivo de o pré-voo
+// existir), sem depender de descobrir e fixar aqui uma sintaxe específica que
+// o nft de hoje recusa. Ele passa em reIface (15 caracteres, [a-z]) e em
+// ValidateGroup, então chega intacto até o `nft -c` — é lá, e só lá, que
+// morre. Serve como interface (regra) e como condição de entrada (grupo).
+const nftRefusesToken = "recusadapelonft"
+
+// errNftRefusedContent é a cara de uma recusa de conteúdo do nft: a mensagem
+// crua dele, que o handler propaga para o admin no 400.
+var errNftRefusedContent = errors.New("Error: syntax error, unexpected string")
+
 func newFakeNft() *fakeNft {
 	return &fakeNft{chains: map[string][]string{nftables.ForwardChain: {}}}
 }
@@ -126,6 +149,11 @@ func applyNftCommand(state map[string][]string, args []string) error {
 			return errNoSuchChain
 		}
 		expr := strings.Join(args[5:], " ")
+		if strings.Contains(expr, nftRefusesToken) {
+			// Recusa por CONTEÚDO — a que o pré-voo existe para pegar e que
+			// nenhuma validação de campo alcança.
+			return errNftRefusedContent
+		}
 		if target := jumpTargetOf(expr); target != "" {
 			if _, ok := state[target]; !ok {
 				return errNoSuchChain // o nft recusa jump para chain inexistente
@@ -734,6 +762,74 @@ func TestOverviewClassifiesGroupRulesAsTheAdminsOwn(t *testing.T) {
 		}
 		if r.Description == r.Expression {
 			t.Errorf("a descrição tem que sair em português, não a expressão crua: %+v", r)
+		}
+	}
+}
+
+// ─── A invariante inegociável: nada chega ao banco antes de o nft aceitar ──
+//
+// Validar campos → pré-voo `nft -c` → gravar → reconciliar. Estes dois testes
+// são a rede da segunda seta, a que não tinha nenhuma: eles exercitam uma
+// recusa POR CONTEÚDO (nftRefusesToken), que atravessa a validação de campo
+// inteira e só morre no nft — exatamente o motivo de o pré-voo existir.
+//
+// Prova por mutação (feita, e a repetir quando alguém mexer nesta ordem):
+// mover h.db.CreateFirewallRule / h.db.CreateFirewallGroup para ANTES do
+// pré-voo deixa os dois vermelhos, com a regra/o grupo gravados no banco e
+// ausentes do firewall — a "proteção configurada que não existe" que o
+// projeto chama de inaceitável.
+
+func TestCreateRuleRefusedByNftNeverReachesTheDB(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db, `{"name":"Minhas regras","fallthrough":"continue"}`)
+	exec.executed = nil
+
+	w := doJSON(t, h.CreateRule, "POST", "/api/nftables/rules",
+		`{"group_id":"`+g.ID+`","action":"accept","iif":"`+nftRefusesToken+`","proto":"tcp","dport":"22"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 com a recusa do nft, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), errNftRefusedContent.Error()) {
+		t.Errorf("o 400 tem que carregar a mensagem do próprio nft, obtive %s", w.Body.String())
+	}
+
+	rules, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("a regra chegou ao banco antes de o nft aceitar: %+v", rules)
+	}
+	if exec.ranWith("add rule") {
+		t.Errorf("nada podia ter sido escrito no firewall: %v", exec.executed)
+	}
+	if len(exec.chains[g.ChainName]) != 0 {
+		t.Errorf("a chain do grupo devia continuar vazia, obtive %v", exec.chains[g.ChainName])
+	}
+}
+
+func TestCreateGroupRefusedByNftNeverReachesTheDB(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups",
+		`{"name":"Visitantes","cond_iif":"`+nftRefusesToken+`","fallthrough":"drop"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 com a recusa do nft, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), errNftRefusedContent.Error()) {
+		t.Errorf("o 400 tem que carregar a mensagem do próprio nft, obtive %s", w.Body.String())
+	}
+
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("o grupo chegou ao banco antes de o nft aceitar: %+v", groups)
+	}
+	for name := range exec.chains {
+		if strings.HasPrefix(name, nftables.GroupChainPrefix) {
+			t.Errorf("nenhuma chain de grupo podia ter sido criada, obtive %v", exec.chains)
 		}
 	}
 }
