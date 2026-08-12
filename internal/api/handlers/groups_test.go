@@ -833,3 +833,67 @@ func TestCreateGroupRefusedByNftNeverReachesTheDB(t *testing.T) {
 		}
 	}
 }
+
+// ─── Mover uma regra de grupo ─────────────────────────────────────────────
+//
+// É o group_id do corpo que move a regra (UpdateRule), e é a única coisa que
+// o cliente pode dizer sobre chain nenhuma. Tirar o requireGroup dali deixava
+// a suíte verde: o cliente passava a poder mandar um group_id qualquer, a
+// linha era gravada órfã e a reconciliação a descartava com um slog.Warn —
+// ela sumia do firewall e continuava na tela, sem 400 nenhum. Perda
+// silenciosa, o defeito que este painel existe para não ter.
+
+func TestUpdateRuleMovesTheRuleToAnotherGroup(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	from := createGroupViaAPI(t, h, db, `{"name":"Origem","fallthrough":"continue"}`)
+	to := createGroupViaAPI(t, h, db, `{"name":"Destino","fallthrough":"continue"}`)
+	rule := createRuleViaAPI(t, h, db, `{"group_id":"`+from.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	exec.executed = nil
+
+	w := doJSON(t, h.UpdateRule, "PUT", "/api/nftables/rules",
+		`{"id":"`+rule.ID+`","group_id":"`+to.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mover a regra: status %d, body %s", w.Code, w.Body.String())
+	}
+
+	rules, _ := db.ListFirewallRules()
+	if len(rules) != 1 || rules[0].GroupID != to.ID {
+		t.Fatalf("a regra tinha que estar no grupo destino, obtive %+v", rules)
+	}
+	// O que decide de verdade é onde o kernel avalia a regra, não o banco.
+	if want := "add rule inet linkguard " + to.ChainName + " ip saddr 10.0.0.5 counter drop"; !exec.ranWith(want) {
+		t.Errorf("a regra não foi renderizada na chain do destino; esperava %q em %v", want, exec.executed)
+	}
+	if len(exec.chains[to.ChainName]) != 1 {
+		t.Errorf("a chain do destino tinha que ter a regra, obtive %v", exec.chains[to.ChainName])
+	}
+	if len(exec.chains[from.ChainName]) != 0 {
+		t.Errorf("a chain de origem tinha que ficar vazia, obtive %v", exec.chains[from.ChainName])
+	}
+}
+
+func TestUpdateRuleRefusesAnUnknownGroupAndLeavesTheRuleWhereItWas(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db, `{"name":"Origem","fallthrough":"continue"}`)
+	rule := createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+
+	w := doJSON(t, h.UpdateRule, "PUT", "/api/nftables/rules",
+		`{"id":"`+rule.ID+`","group_id":"fantasma","action":"accept","saddr":"10.0.0.9"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 para grupo inexistente, obtive %d (%s)", w.Code, w.Body.String())
+	}
+
+	rules, _ := db.ListFirewallRules()
+	if len(rules) != 1 {
+		t.Fatalf("esperava a regra intacta, obtive %+v", rules)
+	}
+	if rules[0].GroupID != g.ID {
+		t.Errorf("a regra saiu do grupo dela: group_id=%q, esperado %q", rules[0].GroupID, g.ID)
+	}
+	if rules[0].Action != "drop" || rules[0].Saddr != "10.0.0.5" {
+		t.Errorf("a edição recusada não podia ter mexido no conteúdo: %+v", rules[0])
+	}
+	if got := exec.chains[g.ChainName]; len(got) != 1 || !strings.Contains(got[0], "10.0.0.5") {
+		t.Errorf("a chain do grupo tinha que continuar com a regra original, obtive %v", got)
+	}
+}
