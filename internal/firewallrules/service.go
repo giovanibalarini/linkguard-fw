@@ -350,9 +350,6 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		slog.Error("reconciliação abortada antes de tocar no nft: os grupos do sistema não estão na lista", "err", err)
 		return err
 	}
-	if s.alerter != nil {
-		s.alerter.FirewallSystemGroupsOK()
-	}
 
 	applyErr := s.nft.ReconcileGroups(ctx, groups)
 	s.recordApplyStatus(applyErr)
@@ -380,7 +377,27 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	// (errors.As/errors.Is não servem aqui: os dois percorrem a cadeia de
 	// embrulho e dariam verdadeiro para o caso composto, que é justamente o
 	// que precisa ser fatal.)
-	if _, onlySkipped := applyErr.(*nftables.SkippedRulesError); onlySkipped {
+	_, onlySkipped := applyErr.(*nftables.SkippedRulesError)
+
+	// A recuperação só é anunciada DEPOIS de o apply ter dado certo, e é a
+	// mesma distinção Enabled × Applied que este projeto aplica em todo o
+	// resto. O texto que vai para o Telegram e para o webhook afirma que "a
+	// chain forward foi reconstruída com os bloqueios"; a lista estar
+	// completa não reconstrói nada — quem reconstrói é o ReconcileGroups
+	// acima, e ele pode falhar. Anunciar antes fecharia o alerta crítico e
+	// mandaria um "voltou" para uma máquina cuja forward continua sendo a
+	// antiga.
+	//
+	// Regra pulada não impede o anúncio: ela é uma regra do admin que não
+	// renderizou, e a forward foi reconstruída COM os bloqueios do mesmo
+	// jeito — que é exatamente o que este alerta fala a respeito. (O apply
+	// status já ficou não-ok por causa dela; a faixa do painel é a superfície
+	// certa para isso.)
+	if s.alerter != nil && (applyErr == nil || onlySkipped) {
+		s.alerter.FirewallSystemGroupsOK()
+	}
+
+	if onlySkipped {
 		return nil
 	}
 	return applyErr

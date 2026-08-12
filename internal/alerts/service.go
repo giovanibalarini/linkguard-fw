@@ -614,6 +614,11 @@ func (s *Service) FirewallSystemGroupsMissing(detail string) error {
 // rule mutation), so announcing unconditionally would file a recovery row
 // each time and bury the alert list under history, the same pileup
 // createRecovery's doc comment describes.
+//
+// A mensagem afirma que a chain forward foi reconstruída, então quem chama
+// só pode chamar DEPOIS de o apply ter dado certo — a lista estar completa
+// não reconstrói nada por si só. Ver o comentário no fim de
+// firewallrules.Service.Reconcile.
 func (s *Service) FirewallSystemGroupsOK() {
 	open, err := s.db.GetAlerts(true, 0)
 	if err != nil {

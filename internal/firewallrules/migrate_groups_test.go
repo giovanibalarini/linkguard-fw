@@ -425,6 +425,68 @@ func TestReconcileStaysHealthyAfterTheSystemGroupsAreCreated(t *testing.T) {
 	}
 }
 
+// recordingAlerter conta as duas notificações da invariante, para um teste
+// poder afirmar o que foi ANUNCIADO ao operador — que é diferente do que a
+// função devolveu.
+type recordingAlerter struct {
+	missing []string
+	ok      int
+}
+
+func (a *recordingAlerter) FirewallSystemGroupsMissing(detail string) error {
+	a.missing = append(a.missing, detail)
+	return nil
+}
+func (a *recordingAlerter) FirewallSystemGroupsOK() { a.ok++ }
+
+// O alerta de recuperação afirma, no texto que vai para o Telegram e para o
+// webhook, que "a chain forward foi reconstruída com os bloqueios". Só que a
+// lista estar completa não reconstrói nada: quem reconstrói é o
+// ReconcileGroups da linha seguinte, e ele pode falhar.
+//
+// Anunciar antes do apply fecharia o alerta crítico e mandaria um "voltou"
+// para uma máquina cuja forward continua sendo a antiga — a distinção
+// Enabled × Applied que este projeto aplica em todo o resto.
+func TestReconcileDoesNotAnnounceRecoveryWhenTheApplyItselfFailed(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newBootedService(t, db)
+	alerter := &recordingAlerter{}
+	svc.SetAlerter(alerter)
+	exec.failOn = func(args []string) error {
+		if len(args) > 4 && args[0] == "add" && args[1] == "rule" && args[4] == "forward" {
+			return errors.New("nft: Error: Could not process rule: Device or resource busy")
+		}
+		return nil
+	}
+
+	if err := svc.Reconcile(context.Background()); err == nil {
+		t.Fatal("esperava a recusa do nft ao reconstruir a forward")
+	}
+	if alerter.ok != 0 {
+		t.Errorf("um 'voltou ao normal' foi anunciado %d vez(es) com a forward NÃO reconstruída — é a mentira que o alerta existe para evitar", alerter.ok)
+	}
+}
+
+// O contrapeso do teste acima: quando o apply dá certo de verdade, a
+// recuperação TEM que ser anunciada — senão o alerta crítico fica aberto
+// para sempre e o operador aprende a ignorar a lista.
+func TestReconcileAnnouncesRecoveryOnceTheForwardWasActuallyRebuilt(t *testing.T) {
+	db := newTestDB(t)
+	svc, _ := newBootedService(t, db)
+	alerter := &recordingAlerter{}
+	svc.SetAlerter(alerter)
+
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if alerter.ok != 1 {
+		t.Errorf("esperava exatamente um fechamento do alerta depois do apply bem-sucedido, obtive %d", alerter.ok)
+	}
+	if len(alerter.missing) != 0 {
+		t.Errorf("nenhum alerta crítico podia ter sido aberto: %v", alerter.missing)
+	}
+}
+
 func TestMigrateCreatesDefaultGroupAndAdoptsRulesInOrder(t *testing.T) {
 	db := newTestDB(t)
 	for i, r := range []storage.FirewallRule{
