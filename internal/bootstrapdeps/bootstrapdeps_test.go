@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // fakeExec is a firewall.Executor double that models the only two commands
@@ -344,6 +346,279 @@ func TestEveryBasePackageHasAConsequence(t *testing.T) {
 	for _, pkg := range BasePackages {
 		if strings.TrimSpace(consequences[pkg]) == "" {
 			t.Errorf("base package %s has no consequence text", pkg)
+		}
+	}
+}
+
+// ─── EnsureInstalled (on-demand, feature-triggered) ──────────────────────────
+
+// The fast path: turning a feature on over and over must not run apt on a box
+// that already has the package. This is on the DHCP/DNS apply path, which runs
+// on every save.
+func TestEnsureInstalledIsANoOpWhenThePackageIsAlreadyThere(t *testing.T) {
+	exec := newFakeExec("kea-dhcp4-server", "unbound")
+
+	installed, err := EnsureInstalled(context.Background(), exec, "kea-dhcp4-server", "unbound")
+
+	if err != nil {
+		t.Fatalf("EnsureInstalled: %v", err)
+	}
+	if len(installed) != 0 {
+		t.Errorf("nothing was installed, got %v", installed)
+	}
+	if exec.ran("apt-get") {
+		t.Errorf("must not run apt on a box that already has the packages, got %v", exec.executed)
+	}
+}
+
+// The defect this feature exists to fix: the admin turns DHCP on, the package
+// was never installed, and LinkGuard brings it in itself.
+func TestEnsureInstalledBringsInWhatIsMissing(t *testing.T) {
+	exec := newFakeExec("unbound")
+
+	installed, err := EnsureInstalled(context.Background(), exec, "kea-dhcp4-server", "unbound")
+
+	if err != nil {
+		t.Fatalf("EnsureInstalled: %v", err)
+	}
+	if len(installed) != 1 || installed[0] != "kea-dhcp4-server" {
+		t.Errorf("installed = %v, want [kea-dhcp4-server] (only what was missing)", installed)
+	}
+	if !exec.ran("apt-get install") {
+		t.Errorf("expected an apt-get install, got %v", exec.executed)
+	}
+	if exec.ran("unbound") {
+		t.Errorf("must not reinstall what is already there, got %v", exec.executed)
+	}
+}
+
+// Same stale-index case Ensure handles at boot: a box whose apt lists were
+// never fetched answers "Unable to locate package" until the index is
+// refreshed. One retry is the difference between DHCP working and an error.
+func TestEnsureInstalledRefreshesTheIndexAndRetriesOnce(t *testing.T) {
+	exec := newFakeExec()
+	exec.installFailsUntilUpdate = true
+
+	installed, err := EnsureInstalled(context.Background(), exec, "kea-dhcp4-server")
+
+	if err != nil {
+		t.Fatalf("EnsureInstalled after retry: %v", err)
+	}
+	if !exec.ran("apt-get update") {
+		t.Errorf("expected an apt-get update after the first failure, got %v", exec.executed)
+	}
+	if len(installed) != 1 {
+		t.Errorf("installed = %v, want the package the retry brought in", installed)
+	}
+}
+
+// The honesty requirement (FEATURES.md, "Regra de entrega"): when the package
+// cannot be installed, the caller gets a sentence it can put in front of the
+// admin — which package, why it failed, what stops working, and how to fix it
+// by hand. Never a bare "erro interno do servidor".
+func TestEnsureInstalledExplainsItselfWhenAptCannotInstall(t *testing.T) {
+	exec := newFakeExec()
+	exec.installFails = true
+
+	installed, err := EnsureInstalled(context.Background(), exec, "kea-dhcp4-server")
+
+	if err == nil {
+		t.Fatal("expected an error when the package could not be installed")
+	}
+	if len(installed) != 0 {
+		t.Errorf("nothing was installed, got %v", installed)
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"kea-dhcp4-server",         // which package
+		"Unable to locate package", // why apt failed
+		"DHCP",                     // what stops working
+		"apt-get install -y",       // how to fix it by hand
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message must mention %q, got %q", want, msg)
+		}
+	}
+}
+
+// A partial install must be reported by what is STILL missing, and must still
+// report the package that did make it in (the caller clears its alert with it).
+func TestEnsureInstalledReportsWhatIsStillMissingAfterAPartialInstall(t *testing.T) {
+	exec := newFakeExec()
+	exec.installOnly = map[string]bool{"unbound": true}
+
+	installed, err := EnsureInstalled(context.Background(), exec, "kea-dhcp4-server", "unbound")
+
+	if err == nil {
+		t.Fatal("expected an error: kea-dhcp4-server is still missing")
+	}
+	if !strings.Contains(err.Error(), "kea-dhcp4-server") {
+		t.Errorf("error must name what is still missing, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "unbound —") {
+		t.Errorf("error must not name the package that got installed, got %q", err.Error())
+	}
+	if len(installed) != 1 || installed[0] != "unbound" {
+		t.Errorf("installed = %v, want [unbound]", installed)
+	}
+}
+
+// Dry-run never touches the box: it must not apt-install, and it must not
+// report a failure the admin cannot act on either.
+func TestEnsureInstalledIsANoOpInDryRun(t *testing.T) {
+	exec := newFakeExec()
+	exec.dryRun = true
+
+	installed, err := EnsureInstalled(context.Background(), exec, "kea-dhcp4-server")
+
+	if err != nil {
+		t.Fatalf("dry-run must not fail: %v", err)
+	}
+	if len(installed) != 0 {
+		t.Errorf("dry-run installed nothing, got %v", installed)
+	}
+	if exec.ran("apt-get") {
+		t.Errorf("dry-run must not run apt-get, got %v", exec.executed)
+	}
+}
+
+// Same contract as TestEveryBasePackageHasAConsequence, for the packages
+// installed on demand: naming a package without saying what its absence
+// breaks leaves the admin guessing.
+func TestEveryOnDemandPackageHasAConsequence(t *testing.T) {
+	for _, pkg := range []string{"kea-dhcp4-server", "unbound", "dns-root-data", "chrony"} {
+		if strings.TrimSpace(consequences[pkg]) == "" {
+			t.Errorf("on-demand package %s has no consequence text", pkg)
+		}
+	}
+}
+
+// lockingFakeExec models what dpkg actually does: only one apt-get may hold
+// /var/lib/dpkg/lock-frontend at a time, and a second one fails outright
+// ("Could not get lock ... is another process using it?") instead of waiting.
+type lockingFakeExec struct {
+	mu        sync.Mutex
+	inFlight  int
+	installs  int
+	clashes   int
+	installed map[string]bool
+}
+
+func (e *lockingFakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "dpkg-query" && len(args) > 0 {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.installed[args[len(args)-1]] {
+			return "install ok installed", nil
+		}
+		return "", errors.New("dpkg-query: no packages found")
+	}
+	return "", nil
+}
+
+func (e *lockingFakeExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	if !strings.Contains(strings.Join(args, " "), "apt-get") {
+		return "", nil
+	}
+	e.mu.Lock()
+	e.inFlight++
+	clash := e.inFlight > 1
+	if clash {
+		e.clashes++
+	}
+	e.installs++
+	e.mu.Unlock()
+
+	time.Sleep(20 * time.Millisecond) // apt is not instantaneous
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.inFlight--
+	if clash {
+		return "", errors.New("E: Could not get lock /var/lib/dpkg/lock-frontend")
+	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") || strings.Contains(a, "=") ||
+			a == "apt-get" || a == "install" || a == "systemd-run" {
+			continue
+		}
+		e.installed[a] = true
+	}
+	return "", nil
+}
+
+func (e *lockingFakeExec) IsDryRun() bool { return false }
+
+// Found on the test VM, not in theory: saving the DHCP config arms the
+// debounced auto-apply, the admin also presses "Aplicar agora", and both
+// reach EnsureInstalled at once. Two apt-get runs collided on the dpkg
+// frontend lock, the second died with "Could not get lock", and it burned
+// the single retry that exists for the stale-index case. Only one apt may be
+// in flight at a time, and whoever waits must re-check instead of installing
+// what the other one already brought in.
+func TestEnsureInstalledSerializesConcurrentInstalls(t *testing.T) {
+	exec := &lockingFakeExec{installed: map[string]bool{}}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 4)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = EnsureInstalled(context.Background(), exec, "kea-dhcp4-server", "unbound")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("chamada concorrente %d falhou: %v", i, err)
+		}
+	}
+	if exec.clashes != 0 {
+		t.Errorf("%d apt-get simultâneos: o lock do dpkg não perdoa", exec.clashes)
+	}
+	if exec.installs != 1 {
+		t.Errorf("apt rodou %d vezes, quero 1 (quem esperou tem que reconferir, não reinstalar)", exec.installs)
+	}
+}
+
+// The raw failure from apt is not a message, it is a transcript: on the test
+// VM a single unreachable mirror produced eleven "E: Failed to fetch" lines
+// plus systemd-run's own banner (invocation ID, runtime, CPU time, memory
+// peak) — over two thousand characters, all of it destined for a red banner
+// on the DHCP page. The admin needs the reason, not the transcript; the
+// transcript stays in the journal, which is where a transcript belongs.
+func TestInstallFailureMessageKeepsTheReasonAndDropsTheTranscript(t *testing.T) {
+	raw := errors.New(`command "systemd-run --pipe --wait -- apt-get install -y kea-dhcp4-server" failed: ` +
+		"Running as unit: run-p1494-i1794.service; invocation ID: bb438f09288648c59fc87afcf67e3651\n" +
+		"E: Failed to fetch http://mirror/pool/main/i/isc-kea/kea-common_2.6.3-1_amd64.deb  Unable to connect\n" +
+		"E: Failed to fetch http://mirror/pool/main/i/isc-kea/kea-dhcp4-server_2.6.3-1_amd64.deb  Unable to connect\n" +
+		"E: Failed to fetch http://mirror/pool/main/libe/libevent/libevent-2.1-7t64_2.1.12_amd64.deb  Unable to connect\n" +
+		"E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?\n" +
+		"Finished with result: exit-code\nMain processes terminated with: code=exited, status=100/n/a\n" +
+		"Service runtime: 7.694s\nCPU time consumed: 685ms\nMemory peak: 22.8M (swap: 0B)")
+
+	msg := installFailureMessage([]string{"kea-dhcp4-server"}, raw)
+
+	if !strings.Contains(msg, "Unable to connect") {
+		t.Errorf("o motivo real tem que sobreviver, obtive %q", msg)
+	}
+	for _, noise := range []string{"invocation ID", "Memory peak", "CPU time consumed", "Service runtime"} {
+		if strings.Contains(msg, noise) {
+			t.Errorf("o ruído do systemd-run não pode ir para o painel (%q): %q", noise, msg)
+		}
+	}
+	if n := strings.Count(msg, "Failed to fetch"); n > 2 {
+		t.Errorf("%d linhas de fetch na mensagem; o admin não lê transcrição: %q", n, msg)
+	}
+	if len(msg) > 700 {
+		t.Errorf("mensagem com %d caracteres é banner de painel, não log: %q", len(msg), msg)
+	}
+	// O que o admin precisa continua lá.
+	for _, want := range []string{"kea-dhcp4-server", "DHCP", "apt-get install -y"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("a mensagem tem que citar %q, obtive %q", want, msg)
 		}
 	}
 }

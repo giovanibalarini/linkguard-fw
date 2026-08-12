@@ -29,8 +29,11 @@ package bootstrapdeps
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
@@ -48,11 +51,23 @@ var BasePackages = []string{"nftables", "iproute2", "iptables", "iputils-ping"}
 // filtering anything, which is the most dangerous state it can be in.
 // TestEveryBasePackageHasAConsequence guards this map against drifting from
 // BasePackages.
+//
+// The on-demand entries below (kea-dhcp4-server, unbound, chrony) are not in
+// BasePackages and are never installed at boot — they are brought in by
+// EnsureInstalled when the admin turns the corresponding feature on. Their
+// consequence text lives in the same map because the question the admin asks
+// is identical ("what stops working?") and the sentence is rendered by the
+// same describeMissing. TestEveryOnDemandPackageHasAConsequence guards them.
 var consequences = map[string]string{
 	"nftables":     "sem ele não existe filtro de pacote nenhum: o firewall não bloqueia, o NAT não é aplicado e nenhuma regra do painel tem efeito",
 	"iproute2":     "sem ele o LinkGuard não lê nem escreve rotas: failover, balanceamento entre WANs e direcionamento por host param",
 	"iptables":     "sem ele as regras legadas (compatibilidade e port forward antigo) não podem ser lidas nem aplicadas",
 	"iputils-ping": "sem ele não há sonda de latência/perda: todo link WAN fica sem diagnóstico e o failover deixa de detectar queda",
+
+	"kea-dhcp4-server": "sem ele não existe servidor DHCP: os hosts da LAN não recebem IP, gateway nem DNS automaticamente, e as reservas por MAC não valem",
+	"unbound":          "sem ele não existe resolvedor DNS local: a LAN fica sem o DNS do próprio firewall, e o bloqueio de domínios e o log de consultas deixam de valer",
+	"dns-root-data":    "sem ele o unbound nem sobe: falta a âncora DNSSEC da raiz (/var/lib/unbound/root.key) e o resolvedor aborta na inicialização, deixando a LAN sem DNS",
+	"chrony":           "sem ele o relógio da máquina não sincroniza por NTP: logs, certificados e o próprio agendamento ficam sujeitos a desvio de horário",
 }
 
 // Alerter is the panel-facing side of Ensure. Kept as a local interface (same
@@ -89,7 +104,10 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) {
 	}
 
 	slog.Warn("dependências base ausentes; o LinkGuard vai instalá-las", "pacotes", missing)
-	err := InstallPackages(ctx, exec, missing...)
+	// One apt at a time in this process — see aptMu.
+	aptMu.Lock()
+	defer aptMu.Unlock()
+	err := installPackages(ctx, exec, missing...)
 	if err != nil {
 		// The most common first-boot failure is a machine whose apt index was
 		// never fetched (or is stale enough that the versions on the mirror no
@@ -100,7 +118,7 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) {
 		if uerr := updateIndex(ctx, exec); uerr != nil {
 			slog.Warn("apt-get update também falhou", "err", uerr)
 		}
-		err = InstallPackages(ctx, exec, missing...)
+		err = installPackages(ctx, exec, missing...)
 	}
 
 	still := Missing(ctx, exec, missing...)
@@ -119,6 +137,141 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) {
 	if alerter != nil {
 		_ = alerter.BaseDepsMissing(detail)
 	}
+}
+
+// EnsureInstalled is the on-demand sibling of Ensure: it guarantees the
+// packages a feature needs at the moment the admin turns that feature on,
+// synchronously, on the caller's goroutine — and, unlike Ensure (a boot-time
+// best-effort that must never take the process down), it RETURNS the failure
+// so the handler that is holding an HTTP request open can put it in front of
+// the admin instead of a generic 500.
+//
+// This is what makes "os pacotes opcionais ficam sob demanda" (package doc,
+// FEATURES.md) real rather than aspirational: before this existed, nothing in
+// the codebase installed kea-dhcp4-server or unbound, so enabling DHCP on a
+// bare box died with `open /etc/kea/kea-validate-*.conf: no such file or
+// directory` — /etc/kea existing only because some human had run apt.
+//
+// It returns the packages it actually installed (empty when everything was
+// already present, which is the common case on every apply after the first),
+// so the caller can clear a previously-raised "missing" alert only on the
+// transition, exactly as Ensure does with BaseDepsOK.
+//
+// The retry-after-apt-update is the same one Ensure does, for the same reason
+// (a box whose apt index was never fetched answers "Unable to locate
+// package"). The verdict is a re-detection, never apt's exit code: a partial
+// install must report what is STILL missing.
+//
+// Dry-run installs nothing and reports success — a dry run must not modify
+// the box, and must not invent a failure the admin cannot act on either.
+func EnsureInstalled(ctx context.Context, exec firewall.Executor, pkgs ...string) ([]string, error) {
+	missing := Missing(ctx, exec, pkgs...)
+	if len(missing) == 0 {
+		return nil, nil
+	}
+	if exec.IsDryRun() {
+		slog.Info("dry-run: pacotes ausentes não serão instalados", "pacotes", missing)
+		return nil, nil
+	}
+
+	// Serialize, then look again: the debounced auto-apply and the admin's
+	// own "Aplicar agora" reach this within milliseconds of each other, and
+	// whoever waited must not re-install what the other one just brought in.
+	aptMu.Lock()
+	defer aptMu.Unlock()
+	if missing = Missing(ctx, exec, missing...); len(missing) == 0 {
+		return nil, nil
+	}
+
+	slog.Warn("pacote(s) sob demanda ausentes; o LinkGuard vai instalá-los", "pacotes", missing)
+	err := installPackages(ctx, exec, missing...)
+	if err != nil {
+		slog.Warn("falha ao instalar pacote sob demanda; atualizando o índice do apt e tentando outra vez", "pacotes", missing, "err", err)
+		if uerr := updateIndex(ctx, exec); uerr != nil {
+			slog.Warn("apt-get update também falhou", "err", uerr)
+		}
+		err = installPackages(ctx, exec, missing...)
+	}
+
+	still := Missing(ctx, exec, missing...)
+	installed := installedNow(missing, still)
+	if len(still) > 0 {
+		slog.Error("o LinkGuard não conseguiu instalar pacote(s) sob demanda", "faltando", still, "err", err)
+		return installed, errors.New(installFailureMessage(still, err))
+	}
+	slog.Info("pacote(s) instalados sob demanda pelo LinkGuard", "pacotes", installed)
+	return installed, nil
+}
+
+// installedNow subtracts what is still missing from what was attempted,
+// preserving order — the packages this run actually brought in.
+func installedNow(attempted, still []string) []string {
+	stillSet := make(map[string]bool, len(still))
+	for _, p := range still {
+		stillSet[p] = true
+	}
+	var got []string
+	for _, p := range attempted {
+		if !stillSet[p] {
+			got = append(got, p)
+		}
+	}
+	return got
+}
+
+// installFailureMessage is the sentence an admin reads on the panel when
+// LinkGuard could not install what a feature needs. It answers, in order, the
+// four questions that make the difference between an actionable message and
+// "erro interno do servidor": which package, why apt failed (verbatim — "no
+// space left on device" and "Temporary failure resolving deb.debian.org" call
+// for very different actions), what stops working, and the exact command to
+// run by hand.
+func installFailureMessage(still []string, aptErr error) string {
+	head := "o pacote " + still[0] + " não está instalado e o LinkGuard não conseguiu instalá-lo"
+	if len(still) > 1 {
+		head = "os pacotes " + strings.Join(still, ", ") + " não estão instalados e o LinkGuard não conseguiu instalá-los"
+	}
+	if reason := aptReason(aptErr); reason != "" {
+		head += " (apt: " + reason + ")"
+	}
+	return head + ". " + describeMissing(still)
+}
+
+// aptReason extracts the part of an apt failure an admin can act on. What
+// comes back from the executor is a transcript, not a message: on the test
+// VM one unreachable mirror produced eleven "E: Failed to fetch" lines
+// wrapped in systemd-run's own banner (invocation ID, runtime, CPU time,
+// memory peak) — over two thousand characters headed for a banner on the
+// DHCP page. apt puts everything worth reading on its `E:` lines, so those
+// are what survives, capped at two; the whole transcript is still in the
+// journal (the caller logs it), which is where a transcript belongs.
+//
+// If there is no `E:` line at all (a systemd-run failure, a timeout), the
+// first line of the error is kept — better a rough reason than none.
+func aptReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	const maxLen = 300
+	var errLines []string
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "E:") {
+			errLines = append(errLines, line)
+		}
+	}
+	reason := strings.TrimSpace(strings.Split(err.Error(), "\n")[0])
+	if len(errLines) > 0 {
+		extra := ""
+		if len(errLines) > 2 {
+			extra = fmt.Sprintf(" (+%d erros do apt no log do serviço)", len(errLines)-2)
+			errLines = errLines[:2]
+		}
+		reason = strings.Join(errLines, "; ") + extra
+	}
+	if len(reason) > maxLen {
+		reason = strings.TrimSpace(reason[:maxLen]) + "…"
+	}
+	return reason
 }
 
 // Missing returns, in the given order, the packages dpkg does not report as
@@ -179,6 +332,32 @@ var aptFlags = []string{
 // InstallChrony delegates here, so the "how do we install a package" decision
 // (transient unit, non-interactive flags) lives in exactly one place.
 func InstallPackages(ctx context.Context, exec firewall.Executor, pkgs ...string) error {
+	if len(pkgs) == 0 {
+		return nil
+	}
+	aptMu.Lock()
+	defer aptMu.Unlock()
+	return installPackages(ctx, exec, pkgs...)
+}
+
+// aptMu serializes this process's package-manager runs. dpkg holds
+// /var/lib/dpkg/lock-frontend for a whole transaction and a second apt does
+// not queue behind it — it dies immediately with "Could not get lock ... is
+// another process using it?".
+//
+// This is not hypothetical: on the test VM, saving the DHCP config (which
+// arms the debounced auto-apply) and pressing "Aplicar agora" put two
+// installs in flight at once; the loser failed on the lock AND burned the
+// single retry that exists for the stale-index case, turning a working
+// install into a spurious "não foi possível instalar" in front of the admin.
+// It cannot serialize against apt runs from OTHER processes (unattended-
+// upgrades, an admin on SSH) — nothing in a process can — which is what the
+// retry-after-refresh above is for.
+var aptMu sync.Mutex
+
+// installPackages is InstallPackages without the lock, for callers that
+// already hold aptMu across a detect/install/re-detect sequence.
+func installPackages(ctx context.Context, exec firewall.Executor, pkgs ...string) error {
 	if len(pkgs) == 0 {
 		return nil
 	}
