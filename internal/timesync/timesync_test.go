@@ -596,3 +596,26 @@ func TestReloadConfigSurfacesSkippedServers(t *testing.T) {
 		t.Error("o apply tem que devolver as entradas descartadas para o painel poder mostrar")
 	}
 }
+
+// Quando o /etc/chrony/conf.d não existe (o chrony é instalado sob demanda, e
+// até a correção do preparo do sistema nenhum instalador criava esse
+// diretório), o erro que chega ao last_apply da tela de NTP tem que dizer o
+// que fazer — a mesma dica de reinício que o caminho do DHCP/DNS já tinha.
+func TestReloadConfigExplicaAArmadilhaDoNamespace(t *testing.T) {
+	dir := t.TempDir()
+	// Diretório que não existe: é assim que a armadilha se manifesta para o
+	// processo em execução (ENOENT/EROFS dentro do namespace).
+	confPath := filepath.Join(dir, "conf.d-inexistente", "linkguard.conf")
+	s := &Service{exec: &fakeExec{}, confPath: confPath}
+
+	_, err := s.ReloadConfig(context.Background(), Config{Servers: []string{"c.ntp.br"}})
+	if err == nil {
+		t.Fatal("esperava erro ao escrever num diretório inexistente")
+	}
+	if !strings.Contains(err.Error(), "systemctl restart linkguard-fw") {
+		t.Errorf("o erro do NTP não diz como resolver:\n%s", err)
+	}
+	if !strings.Contains(err.Error(), confPath) {
+		t.Errorf("o erro do NTP não diz qual caminho falhou:\n%s", err)
+	}
+}

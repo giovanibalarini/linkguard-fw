@@ -44,20 +44,32 @@ ProtectSystem=strict
 # unidade. O namespace é montado no START do serviço, então um diretório que
 # não existia naquele instante não vira gravável só porque o apt o criou
 # depois — o processo em execução continua vendo "Read-only file system".
-# Por isso o postinst cria /etc/kea e /etc/unbound/unbound.conf.d vazios: é o
-# que permite instalar o kea/unbound sob demanda (quando o admin liga o
-# DHCP/DNS no painel) e aplicar a config na MESMA execução, sem reiniciar o
-# serviço no meio de uma ação do admin.
+# Por isso os diretórios de config dos pacotes opcionais (/etc/kea,
+# /etc/unbound/unbound.conf.d, /etc/chrony/conf.d) são criados vazios pelo
+# instalador: é o que permite instalar kea/unbound/chrony sob demanda (quando
+# o admin liga o DHCP/DNS/NTP no painel) e aplicar a config na MESMA
+# execução, sem reiniciar o serviço no meio de uma ação do admin.
 #
-# /var/lib/linkguard-fw, /etc/linkguard-fw, /etc/nftables.conf and
-# /etc/sysctl.d are always present (created by this package's own postinst)
-# and stay unprefixed. /etc/nftables.conf is only "always present" BECAUSE
-# the postinst creates it when missing: since the base packages moved from
-# Depends: to Recommends: (so `dpkg -i` on a bare machine configures the
-# package and the service can start), the nftables package — which is what
-# used to ship that file — may not be installed yet on a first boot. Without
-# that safety net the unit dies with 226/NAMESPACE in a restart loop and
-# never reaches the code that installs nftables.
+# QUEM cria: `linkguard-fw --prepare-system`, chamado pelos TRÊS caminhos de
+# instalação (postinst do .deb, deploy/install.sh e `make install`). A lista
+# está em internal/sysprep e cobre /var/lib/linkguard-fw, /etc/linkguard-fw,
+# /etc/nftables.conf, /etc/sysctl.d, /etc/kea, /etc/unbound/unbound.conf.d e
+# /etc/chrony/conf.d. Os testes de empacotamento (internal/sysprep) exigem
+# que TODA entrada sem o prefixo `-` desta linha esteja nessa lista.
+#
+# /etc/nftables.conf e /etc/sysctl.d ficam sem prefixo porque o instalador os
+# garante. Antes disso, /etc/nftables.conf vinha do pacote nftables e
+# /etc/sysctl.d do procps; com a base em Recommends: (para que `dpkg -i` numa
+# máquina pelada configure o pacote e o serviço suba), nenhum dos dois é mais
+# garantido por dependência. Sem essa rede de segurança a unidade morre com
+# 226/NAMESPACE em loop de restart e nunca chega ao código que instala o
+# nftables.
+#
+# Os três caminhos com `-` que o LinkGuard NÃO cria são deliberados:
+# /etc/systemd/network (do pacote systemd, sempre presente),
+# /etc/resolv.conf (sempre presente) e /etc/dhcp (do isc-dhcp-client, que
+# este pacote não declara em lugar nenhum — num box só com WAN estática, ou
+# no Debian 13, ele legitimamente não existe).
 ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/sysctl.d -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp
 ProtectHome=yes
 PrivateTmp=yes

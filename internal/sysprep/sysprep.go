@@ -33,11 +33,13 @@
 package sysprep
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // NftablesConfPath is the ruleset file LinkGuard owns end to end. It used to
@@ -93,6 +95,29 @@ var Entries = []Entry{
 		Path: "/etc/unbound/unbound.conf.d", Dir: true, Mode: 0o755,
 		Why: "config do DNS; mesma razão do /etc/kea",
 	},
+	{
+		// Mesma armadilha do /etc/kea, reproduzida na VM com o serviço no ar
+		// desde antes do chrony existir na máquina:
+		//
+		//   # nsenter -t $(pidof linkguard-fw) -m -- \
+		//       sh -c 'echo > /etc/chrony/conf.d/linkguard.conf'
+		//   sh: cannot create ...: Read-only file system
+		//
+		// O erro chegava ao last_apply da tela de NTP sem nem a dica de
+		// reiniciar o serviço (SandboxHint) que o caminho do DHCP/DNS tem.
+		Path: "/etc/chrony/conf.d", Dir: true, Mode: 0o755,
+		Why: "drop-in do NTP; o chrony é instalado sob demanda e o diretório precisa existir desde o start",
+	},
+	{
+		// Está na unidade SEM o prefixo `-` (é o sysctl drop-in do
+		// conntrack accounting) e não era criado por ninguém: vinha de
+		// graça do pacote procps. Mesma classe de risco do
+		// /etc/nftables.conf — se um dia faltar, a unidade morre em
+		// 226/NAMESPACE. O comentário da unidade já afirmava que o postinst
+		// o criava; agora é verdade.
+		Path: "/etc/sysctl.d", Dir: true, Mode: 0o755,
+		Why: "drop-in de sysctl (conntrack accounting); entrada sem `-` na unidade",
+	},
 }
 
 // Prepare creates whatever is missing, under root (""/"/" for the real
@@ -140,6 +165,40 @@ func Paths() []string {
 		out = append(out, e.Path)
 	}
 	return out
+}
+
+// SandboxHint turns "cannot write there" into something the admin can act
+// on, and is shared by every feature that writes into /etc: the likely cause
+// is specific and non-obvious, and the sentence is identical whether the
+// path is /etc/kea (DHCP), /etc/unbound/unbound.conf.d (DNS) or
+// /etc/chrony/conf.d (NTP).
+//
+// LinkGuard runs under ProtectSystem=strict and systemd builds the unit's
+// mount namespace when the service STARTS — a directory that did not exist
+// at that moment is not in the namespace, so it stays read-only for the
+// running process even after apt creates it. Prepare pre-creates all of them
+// precisely so a first-ever apply does not hit this; the message exists for
+// the installs that bypass it (an old package, a directory removed by hand).
+//
+// Errors that are not that trap (a full disk, a permission problem) get the
+// plain reason: inventing a namespace explanation for them would send the
+// admin to restart a service that will fail exactly the same way.
+func SandboxHint(path string, err error) string {
+	if !isSandboxTrap(err) {
+		return fmt.Sprintf("o LinkGuard não consegue escrever em %s (%v)", path, err)
+	}
+	return fmt.Sprintf("o LinkGuard não consegue escrever em %s (%v). "+
+		"Isso costuma acontecer quando o caminho passou a existir depois que o serviço subiu: "+
+		"o sandbox do systemd (ProtectSystem=strict) só enxerga como gravável o que já existia no start. "+
+		"Reinicie o serviço uma vez — systemctl restart linkguard-fw — e aplique de novo; "+
+		"a configuração não vai valer até isso ser resolvido", path, err)
+}
+
+// isSandboxTrap recognises the two shapes the trap takes: the path is inside
+// a read-only mount (EROFS), or it simply is not there because the namespace
+// never picked it up (ENOENT).
+func isSandboxTrap(err error) bool {
+	return errors.Is(err, syscall.EROFS) || errors.Is(err, fs.ErrNotExist)
 }
 
 // Covers reports whether Prepare guarantees the given path exists: it is one

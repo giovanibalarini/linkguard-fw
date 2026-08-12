@@ -13,6 +13,7 @@ package timesync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/sysprep"
 )
 
 // reChronyServer guards values rendered into the chrony drop-in via string
@@ -310,7 +312,15 @@ func (s *Service) ReloadConfig(ctx context.Context, c Config) ([]string, error) 
 			content, w := GenerateChronyConf(c)
 			warnings = w
 			if err := os.WriteFile(s.confPath, []byte(content), 0o644); err != nil {
-				return warnings, fmt.Errorf("escrever %s: %w", s.confPath, err)
+				// A falha provável aqui é a armadilha do namespace, não uma
+				// falha de escrita comum: o chrony é instalado sob demanda,
+				// e até esta correção o /etc/chrony/conf.d não era criado
+				// por nenhum instalador. Reproduzido na VM com o serviço no
+				// ar desde antes: "Read-only file system". O erro chegava ao
+				// last_apply da tela de NTP sem dizer o que fazer.
+				// SandboxHint devolve a explicação e o comando; para erros
+				// que não são a armadilha, devolve só o motivo cru.
+				return warnings, errors.New(sysprep.SandboxHint(s.confPath, err))
 			}
 		}
 	}

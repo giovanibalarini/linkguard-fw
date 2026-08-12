@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -111,5 +112,25 @@ func TestCovers(t *testing.T) {
 		if got := Covers(path); got != want {
 			t.Errorf("Covers(%q) = %v, esperava %v", path, got, want)
 		}
+	}
+}
+
+func TestSandboxHintSoExplicaOSandboxQuandoEArmadilha(t *testing.T) {
+	trap := SandboxHint("/etc/chrony/conf.d/linkguard.conf", syscall.EROFS)
+	if !strings.Contains(trap, "systemctl restart linkguard-fw") {
+		t.Errorf("read-only file system tem que virar a dica de reinício:\n%s", trap)
+	}
+	if !strings.Contains(trap, "/etc/chrony/conf.d/linkguard.conf") {
+		t.Errorf("a dica tem que dizer qual caminho falhou:\n%s", trap)
+	}
+
+	// Disco cheio não é a armadilha: mandar reiniciar o serviço aqui seria
+	// mandar o admin repetir um erro que vai acontecer igual.
+	other := SandboxHint("/etc/kea", syscall.ENOSPC)
+	if strings.Contains(other, "systemctl restart linkguard-fw") {
+		t.Errorf("erro que não é a armadilha não pode mandar reiniciar:\n%s", other)
+	}
+	if !strings.Contains(other, "/etc/kea") {
+		t.Errorf("o motivo cru tem que dizer o caminho:\n%s", other)
 	}
 }

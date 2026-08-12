@@ -23,6 +23,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
+	"github.com/giovanibalarini/linkguard-fw/internal/sysprep"
 )
 
 const (
@@ -174,21 +175,11 @@ func writableDir(dir string) error {
 	return os.Remove(name)
 }
 
-// sandboxHint turns "cannot write there" into something the admin can act
-// on. The likely cause is specific and non-obvious: LinkGuard runs under
-// ProtectSystem=strict, and systemd builds the unit's mount namespace when
-// the service STARTS — a directory that did not exist at that moment is not
-// in the namespace, so it stays read-only for the running process even after
-// apt creates it. This package's postinst pre-creates /etc/kea and
-// /etc/unbound/unbound.conf.d precisely so a first-ever DHCP apply does not
-// hit this; the message exists for the installs that bypass it (make
-// install, a directory removed by hand).
+// sandboxHint delegates to sysprep.SandboxHint: the sentence is identical
+// for DHCP, DNS and NTP, and it belongs next to the code that pre-creates
+// those directories in the first place (internal/sysprep).
 func sandboxHint(dir string, err error) string {
-	return fmt.Sprintf("o LinkGuard não consegue escrever em %s (%v). "+
-		"Isso costuma acontecer quando o diretório passou a existir depois que o serviço subiu: "+
-		"o sandbox do systemd (ProtectSystem=strict) só enxerga como gravável o que já existia no start. "+
-		"Reinicie o serviço uma vez — systemctl restart linkguard-fw — e aplique de novo; "+
-		"o DHCP/DNS não vai valer até isso ser resolvido", dir, err)
+	return sysprep.SandboxHint(dir, err)
 }
 
 // EnsureResolvConf makes the box actually use its own resolver (unbound on
