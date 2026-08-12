@@ -38,6 +38,23 @@ build-dev:
 # ─── Package ─────────────────────────────────────────────────────────────────
 
 ## deb: build a .deb package for the current architecture (requires dpkg-deb)
+#
+# Nota sobre o control abaixo: NÃO existe campo Depends. A base (nftables,
+# iproute2, iptables, iputils-ping) está em Recommends junto com os pacotes
+# opcionais, de propósito.
+#
+# Com a base em Depends, `dpkg -i` numa máquina pelada para no meio: o pacote
+# fica em `iU` ("dependency problems prevent configuration of linkguard-fw"),
+# o serviço nunca sobe e não sobra painel nenhum para explicar o que houve. E
+# o postinst também não pode resolver isso sozinho — o dpkg segura o
+# /var/lib/dpkg/lock-frontend durante toda a execução, então qualquer apt-get
+# chamado de dentro de um script do pacote morre com "Could not get lock".
+#
+# Em Recommends: `apt install ./linkguard-fw_*.deb` continua instalando tudo
+# (o apt instala Recommends por padrão), e `dpkg -i` puro instala E configura
+# — o serviço sobe e o próprio LinkGuard garante a base no primeiro boot
+# (internal/bootstrapdeps), que é a premissa do produto: instalar o LinkGuard
+# é entregar a máquina a ele.
 deb: build
 	$(eval DEB_VERSION := $(shell echo "$(VERSION)" | sed 's/^v//'))
 	$(eval ARCH        := $(shell dpkg --print-architecture))
@@ -50,7 +67,7 @@ deb: build
 	@install -m 0755 $(BUILD_DIR)/$(BINARY_NAME)            $(PKG_DIR)/usr/local/bin/$(BINARY_NAME)
 	@install -m 0644 deploy/linkguard-fw.service            $(PKG_DIR)/lib/systemd/system/linkguard-fw.service
 	@install -m 0644 deploy/linkguard-notify-down.service    $(PKG_DIR)/lib/systemd/system/linkguard-notify-down.service
-	@printf 'Package: $(BINARY_NAME)\nVersion: $(DEB_VERSION)\nArchitecture: $(ARCH)\nMaintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>\nSection: net\nPriority: optional\nDepends: nftables, iproute2, iptables, iputils-ping\nRecommends: kea-dhcp4-server, unbound, smartmontools, chrony\nHomepage: https://github.com/giovanibalarini/linkguard-fw\nDescription: Linux Firewall Management Tool\n A web-based firewall management tool for Linux.\n' \
+	@printf 'Package: $(BINARY_NAME)\nVersion: $(DEB_VERSION)\nArchitecture: $(ARCH)\nMaintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>\nSection: net\nPriority: optional\nRecommends: nftables, iproute2, iptables, iputils-ping, kea-dhcp4-server, unbound, smartmontools, chrony\nHomepage: https://github.com/giovanibalarini/linkguard-fw\nDescription: Linux Firewall Management Tool\n A web-based firewall management tool for Linux.\n' \
 		> $(PKG_DIR)/DEBIAN/control
 	@cp deploy/deb/postinst $(PKG_DIR)/DEBIAN/postinst && chmod 0755 $(PKG_DIR)/DEBIAN/postinst
 	@cp deploy/deb/prerm    $(PKG_DIR)/DEBIAN/prerm    && chmod 0755 $(PKG_DIR)/DEBIAN/prerm

@@ -10,6 +10,25 @@ case "$1" in
     install -d -m 0750 "${DATA_DIR}"
     install -d -m 0750 "${CONFIG_DIR}"
 
+    # /etc/nftables.conf tem que existir ANTES de o serviço subir. Ele está em
+    # ReadWritePaths= na unidade systemd SEM o prefixo `-`, e um caminho
+    # inexistente ali faz a montagem do namespace falhar: a unidade morre com
+    # 226/NAMESPACE e fica em loop de restart, sem nunca chegar a rodar uma
+    # linha do binário. Até aqui o arquivo vinha de graça porque o pacote
+    # nftables era Depends:; agora a base está em Recommends: (para que
+    # `dpkg -i` numa máquina pelada instale E configure — ver o alvo `deb` no
+    # Makefile), então numa máquina pelada ele não existe. Sem esta linha, o
+    # serviço que deveria instalar o nftables sozinho nunca sobe para fazê-lo.
+    #
+    # Criar vazio é seguro: o LinkGuard é dono deste arquivo (ver README) e o
+    # reescreve por inteiro no primeiro Persist(). O `nft -f` nele é só o
+    # cabeçalho que o próprio Persist() gera.
+    if [ ! -f /etc/nftables.conf ]; then
+      printf '#!/usr/sbin/nft -f\n\n# Arquivo gerenciado pelo LinkGuard FW.\n# Vazio até o primeiro apply de firewall.\n' > /etc/nftables.conf
+      chmod 0644 /etc/nftables.conf
+      echo "[INFO] /etc/nftables.conf criado (vazio) para o serviço poder subir."
+    fi
+
     if [ ! -f "${CONFIG_FILE}" ]; then
       # Generate a random JWT secret (64 hex chars) so the service is not
       # accidentally started with an empty/insecure secret.

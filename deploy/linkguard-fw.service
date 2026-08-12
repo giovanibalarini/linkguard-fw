@@ -42,7 +42,13 @@ ProtectSystem=strict
 # would otherwise never be able to start the firewall manager at all.
 # /var/lib/linkguard-fw, /etc/linkguard-fw, /etc/nftables.conf and
 # /etc/sysctl.d are always present (created by this package's own postinst)
-# and stay unprefixed.
+# and stay unprefixed. /etc/nftables.conf is only "always present" BECAUSE
+# the postinst creates it when missing: since the base packages moved from
+# Depends: to Recommends: (so `dpkg -i` on a bare machine configures the
+# package and the service can start), the nftables package — which is what
+# used to ship that file — may not be installed yet on a first boot. Without
+# that safety net the unit dies with 226/NAMESPACE in a restart loop and
+# never reaches the code that installs nftables.
 ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/sysctl.d -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp
 ProtectHome=yes
 PrivateTmp=yes
