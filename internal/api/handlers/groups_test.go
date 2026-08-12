@@ -1002,3 +1002,34 @@ func TestCreateGroupValidatesTheBodyBeforeReadingTheDB(t *testing.T) {
 		t.Errorf("a resposta tem que dizer o que está errado no corpo, obtive %s", w.Body.String())
 	}
 }
+
+// C-6: o DeleteGroup era o único handler de grupo que não resolvia o id com
+// findGroup, deixando o storage responder pelo "não encontrado". Enquanto o
+// banco responde, dá no mesmo; quando ele NÃO responde, a assimetria aparece:
+// os irmãos (UpdateGroup, ToggleGroup) devolvem 500 — falha do servidor, que é
+// o que é —, e o delete devolvia 400 com o texto cru do erro de banco, ou
+// seja, culpava o cliente por uma pane do servidor e ainda vazava a mensagem
+// interna para a tela.
+func TestDeleteGroupResolvesTheIDLikeItsSiblings(t *testing.T) {
+	h, db, _ := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db, `{"name":"Minhas regras","fallthrough":"continue"}`)
+
+	unknown := doJSON(t, h.DeleteGroup, "DELETE", "/api/nftables/groups", `{"id":"fantasma"}`)
+	if unknown.Code != http.StatusBadRequest {
+		t.Fatalf("id desconhecido é 400, obtive %d (%s)", unknown.Code, unknown.Body.String())
+	}
+	if !strings.Contains(unknown.Body.String(), `grupo \"fantasma\" não encontrado`) {
+		t.Errorf("a resposta tem que nomear o grupo que não existe, obtive %s", unknown.Body.String())
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("fechar o banco: %v", err)
+	}
+	broken := doJSON(t, h.DeleteGroup, "DELETE", "/api/nftables/groups", `{"id":"`+g.ID+`"}`)
+	if broken.Code != http.StatusInternalServerError {
+		t.Fatalf("banco fora do ar é falha do servidor (500), obtive %d (%s)", broken.Code, broken.Body.String())
+	}
+	if strings.Contains(broken.Body.String(), "sql:") {
+		t.Errorf("a mensagem interna do banco não pode vazar para a tela: %s", broken.Body.String())
+	}
+}

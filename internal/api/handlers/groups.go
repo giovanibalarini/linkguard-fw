@@ -252,6 +252,15 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
+	// C-6: resolver o id aqui, como UpdateGroup e ToggleGroup fazem, em vez de
+	// deixar o storage responder pelo "não encontrado". Enquanto o banco
+	// responde, dá no mesmo; quando ele não responde, a assimetria aparece —
+	// os irmãos devolvem 500 (falha do servidor, que é o que é) e este
+	// devolvia 400 com o texto cru do erro de banco, culpando o cliente por
+	// uma pane do servidor e vazando a mensagem interna para a tela.
+	if _, found := h.findGroup(w, id); !found {
+		return
+	}
 	if err := h.db.DeleteFirewallGroup(id); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
