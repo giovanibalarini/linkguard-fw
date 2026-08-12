@@ -543,6 +543,51 @@ git commit -m "feat(nftables): nomear o grupo na descrição do jump da visão g
 - Create: `internal/api/handlers/groups.go`, `internal/api/handlers/groups_test.go`
 - Modify: `internal/api/handlers/nftables.go` (regras passam a carregar `group_id`), `internal/api/server.go` (rotas)
 
+> **Três defeitos ficaram esperando esta tarefa.** Eles não são melhorias:
+> a Task 5 apaga a chain `user_rules`, e sem os dois primeiros o painel fica
+> quebrado em produção. Nenhum deles pode sair desta entrega.
+>
+> **C-1 — o pré-voo `nft -c` de toda mutação de regra quebra.**
+> `CreateRule`, `UpdateRule` e `ToggleRule` (ao reativar) chamam
+> `checkPendingRules` → `firewallrules.CheckPending` → `nftables.CheckUserRules`,
+> que gera um script começando por `flush chain inet linkguard user_rules`.
+> Depois da migração essa chain não existe mais, e o bootstrap não a recria.
+> Verificado ao vivo no nft de produção (Debian 13):
+>
+> ```
+> $ printf 'flush chain inet lgprobe user_rules\n...' | nft -c -f -
+> Error: No such file or directory
+> $ printf 'add chain inet lgprobe user_rules\nflush chain ...' | nft -c -f -
+> (passa limpo)
+> ```
+>
+> Sem correção: **todo POST/PUT de regra e todo "reativar" devolve 400** com a
+> mensagem crua do nft. Delete e reorder continuam funcionando, o que torna o
+> sintoma ainda mais confuso. **Correção:** os handlers passam a validar por
+> `firewallrules.CheckPendingGroups` (criada na Task 5 e hoje sem chamador),
+> que valida as chains dos grupos e a `forward` com o `add chain` no topo.
+>
+> **C-2 — `UpdateRule` zera o `group_id`.** Ele monta o `storage.FirewallRule`
+> sem `GroupID`, e `UpdateFirewallRule` faz `SET group_id=?`. Editar uma regra
+> pelo painel a expulsa do grupo — `storedGroups` a descarta com um
+> `slog.Warn` e ela some do firewall, continuando visível no painel. Perda
+> silenciosa de dado, sem undo. **Correção:** preservar o `group_id` da linha
+> existente (ou aceitá-lo no corpo e validar que o grupo existe).
+>
+> **I-3 — a Visão geral perde as regras desativadas.** `Overview` só chama
+> `MergeUserRules` na chain de nome `UserChain`; apagada a chain, o merge
+> nunca roda, as regras desativadas (que só existem no banco) somem da tela e
+> as chains `grp_` aparecem cruas. **Correção:** `Overview` passa a usar
+> `nftables.MergeGroups` (criada na Task 4, hoje sem chamador), montando o
+> mapa `chain → ChainInfo` e passando a `forward`.
+>
+> **Dois testes foram enfraquecidos de propósito na Task 5** e é aqui que
+> voltam: `TestCreateRuleValidatesFieldsAndReconciles` e
+> `TestUpdateRuleEditsContentAndReconciles` deixaram de provar que o conteúdo
+> da regra chega ao nft (hoje não chega, por causa de C-2) e provam só que o
+> reconcile rodou. Restaure a asserção forte: a regra criada/editada pelo
+> painel tem que aparecer no comando do nft, dentro da chain do grupo dela.
+
 **Interfaces:**
 - Produces, todas gated por `auth.PermFirewallRead`/`PermFirewallWrite`:
   - `GET /api/nftables/groups` → `{ groups: []GroupView, apply_status: *LastApply }`
