@@ -245,6 +245,13 @@ export interface NftManaged {
 export interface FirewallRule {
   id: string;
   position: number;
+  // group_id is the group (nft chain) the rule lives in — required on
+  // create since Fase C1: a rule with no group belongs to no chain and
+  // therefore exists nowhere in the firewall. Position, note, is GLOBAL
+  // across every group, not per group: /api/nftables/rules/reorder expects
+  // the complete list of every rule of every group, in the new global
+  // order, and refuses anything partial.
+  group_id: string;
   enabled: boolean;
   action: 'accept' | 'drop' | 'reject' | string;
   iif: string;
@@ -311,6 +318,56 @@ export interface NftChainInfo {
   priority?: string;
   policy?: string;
   rules: NftChainRule[];
+}
+
+// ─── Grupos de regras (GET /api/nftables/groups, design spec §2) ──────────
+
+// GroupFallthrough is what the group does with traffic that entered it and
+// that none of its rules decided: `continue` emits no final line (the jump
+// returns and evaluation goes on), `accept`/`drop` emit that verdict as the
+// chain's last line. The values are the nft keywords themselves, never
+// translated — same discipline as the rule actions (spec §7.2.1).
+export type GroupFallthrough = 'continue' | 'accept' | 'drop';
+
+// FirewallGroup is one group of rules: a chain of its own (`chain_name`,
+// always derived server-side from the id, never from the typed name),
+// reached from forward by an entry condition + `counter jump`.
+//
+// enabled vs applied is the same honest split as the rules: `enabled` is
+// what the admin asked for, `applied` is whether the jump is really in the
+// live forward chain. has_counter=false means "not measured" and must
+// render as "—", never as a zero (spec §7.3).
+//
+// The counters are the JUMP's own — how much traffic actually entered the
+// group — not the sum of the inner rules, which would overcount whatever
+// matched two conditions and undercount whatever entered and matched none.
+export interface FirewallGroup {
+  id: string;
+  name: string;
+  chain_name: string;
+  position: number;
+  enabled: boolean;
+  cond_saddr: string;
+  cond_daddr: string;
+  cond_iif: string;
+  fallthrough: GroupFallthrough;
+  applied: boolean;
+  handle: number;
+  packets: number;
+  bytes: number;
+  has_counter: boolean;
+  // rules is the group's chain already merged with the live firewall. Watch
+  // out: besides the admin's rules (each with an `id`), it can carry live
+  // lines that have no DB row behind them — chiefly the group's own "e o
+  // que sobrar" verdict, which is the `fallthrough` field above and not a
+  // rule at all. Edit/delete must be gated on the presence of `id`, never
+  // on `managed === false`.
+  rules: NftChainInfo;
+}
+
+export interface FirewallGroupsData {
+  groups: FirewallGroup[];
+  apply_status?: LastApply | null;
 }
 
 export interface PortForward {
