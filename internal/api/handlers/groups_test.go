@@ -1137,3 +1137,83 @@ func TestSystemGroupCannotBeDeletedOrRenamed(t *testing.T) {
 		t.Fatal("o grupo do sistema sumiu do banco")
 	}
 }
+
+// O outro lado da proteção, e ele importa tanto quanto: o que o admin PODE
+// fazer com um grupo do sistema tem que continuar funcionando. Reordenar é a
+// razão de eles terem virado grupos, e desligar é como se testa sem perder a
+// lista de membros. Uma guarda larga demais mataria as duas coisas e ninguém
+// perceberia — o teste de "não pode apagar" continuaria verde.
+func TestSystemGroupCanStillBeReorderedAndToggled(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("listar: %v", err)
+	}
+	var sysID string
+	ids := make([]string, 0, len(groups))
+	for _, g := range groups {
+		ids = append(ids, g.ID)
+		if sysID == "" && nftables.IsSystemGroup(g.Kind) {
+			sysID = g.ID
+		}
+	}
+	if sysID == "" || len(ids) < 2 {
+		t.Fatal("o ambiente de teste precisa dos grupos do sistema criados")
+	}
+
+	// desligar
+	tog := httptest.NewRequest("POST", "/api/nftables/groups/toggle",
+		strings.NewReader(`{"id":"`+sysID+`","enabled":false}`))
+	w := httptest.NewRecorder()
+	h.ToggleGroup(w, tog)
+	if w.Code != http.StatusOK {
+		t.Errorf("desligar grupo do sistema tem que ser permitido, obtive %d: %s", w.Code, w.Body)
+	}
+	after, _ := db.ListFirewallGroups()
+	for _, g := range after {
+		if g.ID == sysID && g.Enabled {
+			t.Error("o grupo do sistema continuou ligado")
+		}
+	}
+
+	// reordenar: manda a lista completa invertida
+	rev := make([]string, len(ids))
+	for i, id := range ids {
+		rev[len(ids)-1-i] = id
+	}
+	body, _ := json.Marshal(map[string]any{"ids": rev})
+	ro := httptest.NewRequest("POST", "/api/nftables/groups/reorder", strings.NewReader(string(body)))
+	w2 := httptest.NewRecorder()
+	h.ReorderGroups(w2, ro)
+	if w2.Code != http.StatusOK {
+		t.Errorf("reordenar com grupo do sistema tem que ser permitido, obtive %d: %s", w2.Code, w2.Body)
+	}
+	reordered, _ := db.ListFirewallGroups()
+	if reordered[0].ID != rev[0] {
+		t.Errorf("a nova ordem não valeu: esperava %q no topo, obtive %q", rev[0], reordered[0].ID)
+	}
+}
+
+// O cliente não pode criar um grupo do sistema: groupBody não tem o campo, e
+// CreateGroup monta a linha sem ele. Se algum dia alguém acrescentar o campo
+// ao corpo "por simetria", isto fica vermelho — e o estrago seria um grupo
+// que o admin não consegue apagar nem renomear, criado por ele mesmo.
+func TestCreateGroupNeverProducesASystemGroup(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+
+	req := httptest.NewRequest("POST", "/api/nftables/groups",
+		strings.NewReader(`{"name":"Tentativa","kind":"blocked_hosts","fallthrough":"continue"}`))
+	w := httptest.NewRecorder()
+	h.CreateGroup(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("criar grupo comum: esperava 200, obtive %d: %s", w.Code, w.Body)
+	}
+
+	groups, _ := db.ListFirewallGroups()
+	for _, g := range groups {
+		if g.Name == "Tentativa" && nftables.IsSystemGroup(g.Kind) {
+			t.Fatalf("o cliente conseguiu criar um grupo do sistema: %+v", g)
+		}
+	}
+}
