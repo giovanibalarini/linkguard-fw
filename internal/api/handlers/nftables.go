@@ -42,12 +42,19 @@ func (h *NftablesHandler) Ruleset(w http.ResponseWriter, r *http.Request) {
 // managed rule) — the structured view behind the unified Firewall overview
 // page (design spec §3). Read-only.
 //
-// The user_rules chain gets one extra step beyond a plain read of nft
-// (Phase B, design spec §4.1): a disabled rule lives only in the DB, never
-// in nft, so a bare ListRuleset would silently omit it. MergeUserRules
-// interleaves the DB's full rule list (in position order) with the live
-// chain so a disabled rule still shows up — with no handle and no counter,
-// honestly marked, never hidden ("mostrar tudo, mentir sobre nada").
+// As chains dos grupos ganham um passo a mais do que a simples leitura do
+// nft (Fase C1, design spec §4.1): uma regra desativada mora só no banco,
+// nunca no nft, então um ListRuleset puro a omitiria em silêncio.
+// MergeGroups intercala a lista completa do banco (na ordem de posição) com
+// a chain viva de cada grupo, e a regra desativada continua aparecendo — sem
+// handle, sem contador, honestamente marcada, nunca escondida ("mostrar
+// tudo, mentir sobre nada").
+//
+// I-3: até esta tarefa esse passo só existia para a chain user_rules
+// (MergeUserRules). A migração da Fase C1 apagou a user_rules e levou as
+// regras para dentro dos grupos: o merge deixou de rodar em qualquer chain,
+// e as regras desativadas simplesmente sumiram da única tela que mostra o
+// firewall inteiro — enquanto as chains grp_ apareciam cruas.
 func (h *NftablesHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	chains, err := h.svc.ListRuleset(r.Context())
 	if err != nil {
@@ -58,26 +65,25 @@ func (h *NftablesHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		chains = []nftables.ChainInfo{}
 	}
 
-	dbRules, err := h.db.ListFirewallRules()
+	groups, err := h.fr.StoredGroups()
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	stored := firewallrules.ToStoredRules(dbRules)
+	byName, forward := indexChains(chains)
+	merged := make(map[string]nftables.ChainInfo, len(groups))
+	for _, v := range nftables.MergeGroups(groups, byName, forward) {
+		merged[v.ChainName] = v.Rules
+	}
 	for i := range chains {
-		if chains[i].Name == nftables.UserChain {
-			chains[i] = nftables.MergeUserRules(stored, chains[i])
+		if m, ok := merged[chains[i].Name]; ok {
+			chains[i] = m
 		}
 	}
 
 	// Nomeia, na descrição de cada jump para um grupo, o nome que o admin deu
 	// a ele — ApplyGroupNames é a única coisa aqui que sabe de grupos;
-	// ListRuleset/MergeUserRules acima não precisam (nem devem) saber.
-	groups, err := h.db.ListFirewallGroups()
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
+	// ListRuleset/MergeGroups acima não precisam (nem devem) saber.
 	groupNames := make(map[string]string, len(groups))
 	for _, g := range groups {
 		groupNames[g.ChainName] = g.Name
@@ -85,6 +91,23 @@ func (h *NftablesHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	nftables.ApplyGroupNames(chains, groupNames)
 
 	writeJSON(w, http.StatusOK, chains)
+}
+
+// indexChains prepara o que MergeGroups precisa do ruleset vivo: cada chain
+// por nome, e a forward em separado (é nela que mora o jump que prova que um
+// grupo está mesmo valendo). Uma forward ausente vira a chain vazia — ou
+// seja, "nenhum grupo aplicado" —, jamais um erro que esconderia a lista
+// inteira do admin: sem forward realmente não há grupo em vigor.
+func indexChains(chains []nftables.ChainInfo) (map[string]nftables.ChainInfo, nftables.ChainInfo) {
+	byName := make(map[string]nftables.ChainInfo, len(chains))
+	forward := nftables.ChainInfo{Name: nftables.ForwardChain, Rules: []nftables.ChainRule{}}
+	for _, c := range chains {
+		byName[c.Name] = c
+		if c.Name == nftables.ForwardChain {
+			forward = c
+		}
+	}
+	return byName, forward
 }
 
 // Managed returns the editable element-level view (host_wan map + sets).
@@ -205,6 +228,7 @@ func (h *NftablesHandler) ListRules(w http.ResponseWriter, r *http.Request) {
 
 type firewallRuleBody struct {
 	ID          string `json:"id"`
+	GroupID     string `json:"group_id"`
 	Action      string `json:"action"`
 	Iif         string `json:"iif"`
 	Oif         string `json:"oif"`
@@ -239,27 +263,89 @@ func validateFirewallRuleBody(b firewallRuleBody) string {
 }
 
 // checkPendingRules is C-1's second layer: before any DB write, it asks nft
-// itself (via a parse-only `nft -c` dry run — see
-// firewallrules.Service.CheckPending) whether the chain that would result
-// from this mutation is actually acceptable. mutate receives the admin's
-// current rules and returns the candidate set the DB would hold right after
-// the in-progress change, without touching anything. Field-level validation
-// (validateFirewallRuleBody/ValidateRuleFields) already catches most bad
-// input, but not everything nft itself would reject — this is the same
-// mechanism the design spec picks for Phase C's own pre-flight, so nft's
-// rejection reaches the admin as a 400 with nft's own message, before the
-// DB (and the live chain) ever changes.
+// itself (via a parse-only `nft -c` dry run) whether the firewall that would
+// result from this mutation is actually acceptable. mutate receives the
+// admin's current rules and returns the candidate set the DB would hold
+// right after the in-progress change, without touching anything.
+// Field-level validation (validateFirewallRuleBody/ValidateRuleFields)
+// already catches most bad input, but not everything nft itself would
+// reject — this is the same mechanism the design spec picks for Phase C's
+// own pre-flight, so nft's rejection reaches the admin as a 400 with nft's
+// own message, before the DB (and the live chain) ever changes.
+//
+// Fase C1 — o que se valida aqui são os GRUPOS (CheckPendingGroups), não
+// mais a chain user_rules (CheckPending). Não é preferência de estilo: a
+// migração desta fase apagou a user_rules do ruleset, e o script que
+// CheckUserRules monta começa por `flush chain inet linkguard user_rules`.
+// Verificado ao vivo no nft (Debian 13), dentro de `nft -c -f` um flush de
+// chain inexistente falha com "No such file or directory" — ou seja, todo
+// POST/PUT de regra e todo "reativar" passaria a devolver 400 com a
+// mensagem crua do nft, enquanto apagar e reordenar continuariam
+// funcionando. CheckGroups valida as chains dos grupos (precedidas do `add
+// chain` que salva o grupo ainda não gravado) e a forward, que é
+// exatamente o que Reconcile renderiza logo depois.
 func (h *NftablesHandler) checkPendingRules(w http.ResponseWriter, r *http.Request, mutate func([]storage.FirewallRule) []storage.FirewallRule) bool {
 	current, err := h.db.ListFirewallRules()
 	if err != nil {
 		writeInternalError(w, err)
 		return false
 	}
-	if err := h.fr.CheckPending(r.Context(), mutate(current)); err != nil {
+	candidate, err := h.fr.StoredGroupsWithRules(mutate(current))
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if err := h.fr.CheckPendingGroups(r.Context(), candidate); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return false
 	}
 	return true
+}
+
+// findRule devolve a linha da regra pelo id, ou 400 se ela não existe — o
+// mesmo status que UpdateFirewallRule já devolvia para um id que não bate
+// com nada, só que antes de qualquer escrita.
+func (h *NftablesHandler) findRule(w http.ResponseWriter, id string) (storage.FirewallRule, bool) {
+	rules, err := h.db.ListFirewallRules()
+	if err != nil {
+		writeInternalError(w, err)
+		return storage.FirewallRule{}, false
+	}
+	for _, row := range rules {
+		if row.ID == id {
+			return row, true
+		}
+	}
+	writeError(w, http.StatusBadRequest, fmt.Sprintf("regra %q não encontrada", id))
+	return storage.FirewallRule{}, false
+}
+
+// requireGroup resolves the group a rule is being written into, rejecting
+// anything that doesn't name an existing one. Since Phase C1 a rule only
+// exists in the firewall inside a group's chain: a row with a group_id that
+// matches nothing is dropped by the reconcile with a slog.Warn (see
+// firewallrules.StoredGroupsWithRules) — it stays on screen and is absent
+// from nft, which is precisely the false confidence this panel exists to
+// eliminate. Refusing it here, before the write, is the only place that can
+// still tell the admin.
+func (h *NftablesHandler) requireGroup(w http.ResponseWriter, groupID string) bool {
+	id := strings.TrimSpace(groupID)
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "a regra precisa pertencer a um grupo (group_id)")
+		return false
+	}
+	groups, err := h.db.ListFirewallGroups()
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	for _, g := range groups {
+		if g.ID == id {
+			return true
+		}
+	}
+	writeError(w, http.StatusBadRequest, fmt.Sprintf("grupo %q não encontrado", id))
+	return false
 }
 
 // reconcileRules re-renders user_rules from the DB and refreshes the live
@@ -288,16 +374,22 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if !h.requireGroup(w, b.GroupID) {
+		return
+	}
+	groupID := strings.TrimSpace(b.GroupID)
 	f := b.fields()
 	row := &storage.FirewallRule{
-		Action: f.Action, Iif: f.Iif, Oif: f.Oif,
+		GroupID: groupID,
+		Action:  f.Action, Iif: f.Iif, Oif: f.Oif,
 		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport,
 		Description: strings.TrimSpace(b.Description),
 	}
 	// C-1 layer 2: validate the resulting chain with nft itself before
 	// anything is written — CreateFirewallRule always appends, so the
 	// candidate is simply every current rule plus this new one, enabled.
-	candidateRow := storage.FirewallRule{Enabled: true, Action: f.Action, Iif: f.Iif, Oif: f.Oif,
+	candidateRow := storage.FirewallRule{Enabled: true, GroupID: groupID,
+		Action: f.Action, Iif: f.Iif, Oif: f.Oif,
 		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport}
 	ok := h.checkPendingRules(w, r, func(current []storage.FirewallRule) []storage.FirewallRule {
 		return append(append([]storage.FirewallRule{}, current...), candidateRow)
@@ -335,9 +427,27 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	// C-2: UpdateFirewallRule escreve `SET group_id=?`, então montar a linha
+	// sem GroupID ZERAVA o grupo da regra a cada edição pelo painel — a
+	// reconciliação a descartava com um slog.Warn (regra órfã não tem chain
+	// onde ser renderizada), ela sumia do firewall e continuava na tela.
+	// Perda silenciosa, sem undo. O grupo é o da linha existente; o corpo só
+	// pode trocá-lo por outro que exista de verdade (é assim que o painel
+	// move uma regra de grupo).
+	existing, found := h.findRule(w, b.ID)
+	if !found {
+		return
+	}
+	groupID := existing.GroupID
+	if id := strings.TrimSpace(b.GroupID); id != "" && id != groupID {
+		if !h.requireGroup(w, id) {
+			return
+		}
+		groupID = id
+	}
 	f := b.fields()
 	row := &storage.FirewallRule{
-		ID: b.ID, Action: f.Action, Iif: f.Iif, Oif: f.Oif,
+		ID: b.ID, GroupID: groupID, Action: f.Action, Iif: f.Iif, Oif: f.Oif,
 		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport,
 		Description: strings.TrimSpace(b.Description),
 	}
@@ -348,6 +458,7 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 		out := make([]storage.FirewallRule, len(current))
 		for i, c := range current {
 			if c.ID == b.ID {
+				c.GroupID = groupID
 				c.Action, c.Iif, c.Oif = f.Action, f.Iif, f.Oif
 				c.Saddr, c.Daddr, c.Proto, c.Dport = f.Saddr, f.Daddr, f.Proto, f.Dport
 			}

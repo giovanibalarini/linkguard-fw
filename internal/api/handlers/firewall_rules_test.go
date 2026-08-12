@@ -16,7 +16,9 @@ import (
 
 // recordingRuleExec is a firewall.Executor that records every mutating
 // command (so a test can assert nft actually got reconciled) and answers
-// `nft -a list chain ... user_rules` / `nft list table ...` harmlessly.
+// `nft -a list table ...` with the ruleset a box looks like after the Phase
+// C1 migration: the forward chain and the fixture group's own chain, and NO
+// user_rules — the migration deleted it.
 type recordingRuleExec struct {
 	executed []string
 }
@@ -26,7 +28,9 @@ func (e *recordingRuleExec) Execute(_ context.Context, cmd string, args ...strin
 	return "", nil
 }
 func (e *recordingRuleExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
-	return "table inet linkguard {\n\tchain user_rules {\n\t}\n}\n", nil
+	return "table inet linkguard {\n" +
+		"\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t}\n" +
+		"\tchain " + testGroupChain + " {\n\t}\n}\n", nil
 }
 func (e *recordingRuleExec) IsDryRun() bool { return false }
 
@@ -48,14 +52,21 @@ func newFirewallRulesTestHandler(t *testing.T) (*handlers.NftablesHandler, *stor
 	return handlers.NewNftablesHandler(nftSvc, db, frSvc), db, exec
 }
 
+// testGroupID/testGroupChain são o grupo fixo destas fixtures. O nome da
+// chain é derivado do id pela mesma função do servidor, então o executor
+// falso pode devolvê-lo no ruleset sem que os dois possam divergir.
+const testGroupID = "a3f21c08-0000-4000-8000-000000000000"
+
+var testGroupChain = nftables.GroupChainName(testGroupID)
+
 // newRuleGroup cria um grupo com o formato de chain que a produção usa. A
 // partir da Fase C1 as regras do admin só existem no firewall dentro de um
 // grupo: uma linha de firewall_rules sem grupo válido é ignorada pela
-// reconciliação (ver firewallrules.Service.storedGroups), então um teste que
+// reconciliação (ver firewallrules.Service.StoredGroups), então um teste que
 // queira ver a regra renderizada no nft precisa colocá-la num grupo.
 func newRuleGroup(t *testing.T, db *storage.DB) storage.FirewallGroup {
 	t.Helper()
-	const id = "a3f21c08-0000-4000-8000-000000000000"
+	const id = testGroupID
 	g := storage.FirewallGroup{
 		ID: id, Name: "Minhas regras", ChainName: nftables.GroupChainName(id),
 		Enabled: true, Fallthrough: nftables.FallthroughContinue,
@@ -131,10 +142,11 @@ func TestListRulesReportsApplyStatusAfterAReconcile(t *testing.T) {
 
 func TestCreateRuleValidatesFieldsAndReconciles(t *testing.T) {
 	h, db, exec := newFirewallRulesTestHandler(t)
+	g := newRuleGroup(t, db)
 
 	// Malicious interface name must be rejected before it ever reaches nft.
 	bad := httptest.NewRequest("POST", "/api/nftables/rules", ruleBodyJSON(t, map[string]any{
-		"action": "accept", "iif": `eth0" ; flush ruleset #`,
+		"group_id": g.ID, "action": "accept", "iif": `eth0" ; flush ruleset #`,
 	}))
 	w := httptest.NewRecorder()
 	h.CreateRule(w, bad)
@@ -147,7 +159,8 @@ func TestCreateRuleValidatesFieldsAndReconciles(t *testing.T) {
 
 	// A well-formed rule is created, persisted, and reconciled into nft.
 	good := httptest.NewRequest("POST", "/api/nftables/rules", ruleBodyJSON(t, map[string]any{
-		"action": "drop", "daddr": "203.0.113.0/24", "description": "bloqueia range suspeito",
+		"group_id": g.ID, "action": "drop", "daddr": "203.0.113.0/24",
+		"description": "bloqueia range suspeito",
 	}))
 	w = httptest.NewRecorder()
 	h.CreateRule(w, good)
@@ -161,21 +174,23 @@ func TestCreateRuleValidatesFieldsAndReconciles(t *testing.T) {
 	if len(all) != 1 || all[0].Daddr != "203.0.113.0/24" || all[0].Description != "bloqueia range suspeito" {
 		t.Fatalf("expected the rule stored with its fields, got %+v", all)
 	}
-	// Fase C1: a criação continua gravando a regra e disparando o
-	// reconcile, mas o handler ainda não escolhe um GRUPO para a regra nova
-	// — e a partir desta fase é o grupo que dá à regra uma chain onde ser
-	// renderizada. Enquanto o handler não for atualizado (a atribuição de
-	// grupo na criação é da tarefa do endpoint de grupos), o que dá para
-	// afirmar aqui é que a regra foi gravada e que o reconcile de verdade
-	// rodou — a forward é reconstruída em toda passada.
-	reconciled := false
+	if all[0].GroupID != g.ID {
+		t.Fatalf("expected the rule created inside its group, got %+v", all[0])
+	}
+	// A asserção forte, que é a única que prova a entrega: o CONTEÚDO da
+	// regra chegou ao nft, dentro da chain do grupo dela. Provar só que
+	// "algum reconcile rodou" deixaria passar exatamente o defeito que
+	// mais custa aqui — a regra gravada no banco, exibida no painel, e
+	// ausente do firewall.
+	want := "nft add rule inet linkguard " + g.ChainName + " ip daddr 203.0.113.0/24 counter drop"
+	found := false
 	for _, c := range exec.executed {
-		if c == "nft flush chain inet linkguard forward" {
-			reconciled = true
+		if c == want {
+			found = true
 		}
 	}
-	if !reconciled {
-		t.Errorf("expected the create to trigger a reconcile, ran: %v", exec.executed)
+	if !found {
+		t.Errorf("expected %q among the reconcile's commands, ran: %v", want, exec.executed)
 	}
 }
 
@@ -240,7 +255,8 @@ func TestUpdateRuleRequiresID(t *testing.T) {
 
 func TestUpdateRuleEditsContentAndReconciles(t *testing.T) {
 	h, db, exec := newFirewallRulesTestHandler(t)
-	row := &storage.FirewallRule{Action: "accept", Saddr: "10.0.0.1"}
+	g := newRuleGroup(t, db)
+	row := &storage.FirewallRule{GroupID: g.ID, Action: "accept", Saddr: "10.0.0.1"}
 	if err := db.CreateFirewallRule(row); err != nil {
 		t.Fatalf("CreateFirewallRule: %v", err)
 	}
@@ -258,18 +274,23 @@ func TestUpdateRuleEditsContentAndReconciles(t *testing.T) {
 	if len(all) != 1 || all[0].Action != "drop" || all[0].Saddr != "10.0.0.9" || all[0].Description != "editada" {
 		t.Fatalf("expected the edit applied, got %+v", all)
 	}
-	// Fase C1: mesma ressalva de TestCreateRuleValidatesFieldsAndReconciles
-	// — a regra desta fixture não está em grupo nenhum, então não há chain
-	// onde ela pudesse ser renderizada. O que se afirma aqui é a edição no
-	// banco e o reconcile disparado.
-	reconciled := false
+	// C-2: editar não pode expulsar a regra do grupo dela — sem o group_id
+	// preservado, a linha vira órfã, é descartada pela reconciliação e some
+	// do firewall continuando visível no painel.
+	if all[0].GroupID != g.ID {
+		t.Fatalf("expected the rule to stay in its group, got %+v", all[0])
+	}
+	// Asserção forte restaurada: o conteúdo EDITADO chegou ao nft, dentro da
+	// chain do grupo da regra.
+	want := "nft add rule inet linkguard " + g.ChainName + " ip saddr 10.0.0.9 counter drop"
+	found := false
 	for _, c := range exec.executed {
-		if c == "nft flush chain inet linkguard forward" {
-			reconciled = true
+		if c == want {
+			found = true
 		}
 	}
-	if !reconciled {
-		t.Errorf("expected the update to trigger a reconcile, ran: %v", exec.executed)
+	if !found {
+		t.Errorf("expected %q among the reconcile's commands, ran: %v", want, exec.executed)
 	}
 }
 
@@ -409,12 +430,17 @@ func TestReorderRulesAppliesValidFullList(t *testing.T) {
 }
 
 // TestOverviewShowsDisabledRuleWithoutHandleOrCounter proves the unified
-// overview (Phase A) represents a disabled rule honestly instead of hiding
-// it: it exists in the DB but was never rendered into nft, so it shows up
-// in user_rules with no handle and no counter — not zero, "not measured".
+// overview represents a disabled rule honestly instead of hiding it: it
+// exists in the DB but was never rendered into nft, so it shows up inside
+// its group's chain with no handle and no counter — not zero, "not
+// measured". Since Phase C1 the chain is the group's (I-3): the merge used
+// to run only on user_rules, and the migration deleted that chain, so the
+// disabled rule disappeared from the only screen that shows the whole
+// firewall.
 func TestOverviewShowsDisabledRuleWithoutHandleOrCounter(t *testing.T) {
 	h, db, _ := newFirewallRulesTestHandler(t)
-	row := &storage.FirewallRule{Action: "drop", Saddr: "10.0.0.42", Description: "em teste"}
+	g := newRuleGroup(t, db)
+	row := &storage.FirewallRule{GroupID: g.ID, Action: "drop", Saddr: "10.0.0.42", Description: "em teste"}
 	if err := db.CreateFirewallRule(row); err != nil {
 		t.Fatalf("CreateFirewallRule: %v", err)
 	}
@@ -435,12 +461,12 @@ func TestOverviewShowsDisabledRuleWithoutHandleOrCounter(t *testing.T) {
 	}
 	var ur *nftables.ChainInfo
 	for i := range chains {
-		if chains[i].Name == "user_rules" {
+		if chains[i].Name == g.ChainName {
 			ur = &chains[i]
 		}
 	}
 	if ur == nil {
-		t.Fatal("user_rules chain missing from overview")
+		t.Fatalf("group chain %s missing from overview: %+v", g.ChainName, chains)
 	}
 	if len(ur.Rules) != 1 {
 		t.Fatalf("expected the disabled rule to still show up, got %+v", ur.Rules)
