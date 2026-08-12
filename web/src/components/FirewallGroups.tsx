@@ -222,6 +222,19 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   // render falls back to its description as "expression", and guessing on
   // that would print an action the rule does not have).
   const ruleById = new Map(allRules.map((r) => [r.id, r]));
+  // noteOf devolve o que o ADMIN escreveu na regra, não a frase que o
+  // backend gera a partir da expressão. MergeUserRules preenche
+  // ChainRule.Description com describeUserRuleExpression() — útil na Visão
+  // geral, onde não há colunas —, mas aqui isso só repetiria "Ação" e "Quando
+  // a regra casa" ao lado delas, e enterraria a anotação que dá o PORQUÊ da
+  // regra ("libera VPN do parceiro X"), que é justamente o que falta quando
+  // se lê um firewall meses depois (spec §4.1). A linha de "e o que sobrar"
+  // não tem id e continua caindo na descrição gerada, que ali é a certa.
+  const noteOf = (r: NftChainRule): string => {
+    const db = r.id ? ruleById.get(r.id) : undefined;
+    return db ? db.description : r.description;
+  };
+
   const actionOf = (r: NftChainRule): Action => {
     const db = r.id ? ruleById.get(r.id)?.action : undefined;
     if (db === 'accept' || db === 'drop' || db === 'reject') return db;
@@ -630,7 +643,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                         <td className="py-2 pr-3 align-top font-mono text-[12px] text-gray-300 break-words">{r.expression}</td>
                         <td className="py-2 pr-3 align-top text-gray-400 text-xs">
                           <span className="flex flex-wrap items-center gap-1.5">
-                            <span className={r.description ? '' : 'text-gray-700'}>{r.description || '—'}</span>
+                            <span className={noteOf(r) ? '' : 'text-gray-700'}>{noteOf(r) || '—'}</span>
                             {disabled && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border border-gray-600 bg-gray-700/40 text-gray-400">
                                 Desativada
