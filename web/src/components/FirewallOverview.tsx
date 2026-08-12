@@ -21,10 +21,16 @@ interface Props {
 // forward's own rules, because that's literally what happens on the wire —
 // forward jumps into user_rules first, then falls through to the
 // blocklist/host-block drops.
-const STAGE_DEFS: { key: string; label: string; hint: string; chainNames: string[] }[] = [
+// chainPrefix cobre as chains de nome dinâmico: cada grupo de regras do
+// admin vira uma chain grp_<hex>, e o nome não dá para listar aqui. Sem
+// isso elas caíam em "Outras chains", com borda amarela e o aviso de
+// "não previstas no agrupamento" — a peça central da tela de grupos
+// apresentada como anomalia. Elas são previstíssimas: a forward pula
+// para elas, e é aí que o pacote passa.
+const STAGE_DEFS: { key: string; label: string; hint: string; chainNames: string[]; chainPrefix?: string }[] = [
   { key: 'input', label: 'Entrada', hint: 'tráfego destinado ao próprio firewall (ex.: proteção de NTP)', chainNames: ['input'] },
   { key: 'mark_hosts', label: 'Marcação', hint: 'direciona um host para uma WAN específica', chainNames: ['mark_hosts'] },
-  { key: 'forward', label: 'Encaminhamento', hint: 'tráfego atravessando: os bloqueios primeiro, depois seus grupos de regras', chainNames: ['forward'] },
+  { key: 'forward', label: 'Encaminhamento', hint: 'tráfego atravessando: os bloqueios primeiro, depois seus grupos de regras', chainNames: ['forward'], chainPrefix: 'grp_' },
   { key: 'postrouting', label: 'NAT de saída', hint: 'mascaramento de origem para as WANs', chainNames: ['postrouting'] },
   { key: 'prerouting_dnat', label: 'Redirecionamento de porta', hint: 'encaminhamento de porta (DNAT)', chainNames: ['prerouting_dnat'] },
 ];
@@ -204,6 +210,10 @@ export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenBlocks
     const stageChains = def.chainNames
       .map((n) => byName.get(n))
       .filter((c): c is NftChainInfo => !!c);
+    if (def.chainPrefix) {
+      const prefix = def.chainPrefix;
+      stageChains.push(...chains.filter((c) => c.name.startsWith(prefix)));
+    }
     stageChains.forEach((c) => usedNames.add(c.name));
     return { ...def, stageChains };
   }).filter((g) => g.stageChains.length > 0);
@@ -246,7 +256,12 @@ export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenBlocks
             {g.stageChains.map((chain) => (
               <div key={chain.name}>
                 <div className="flex items-center gap-2 mb-1.5">
-                  <span className="text-xs font-mono text-gray-500">{CHAIN_LABELS[chain.name] ?? chain.name}</span>
+                  <span className="text-xs font-mono text-gray-500">
+                    {CHAIN_LABELS[chain.name] ?? chain.name}
+                    {chain.name.startsWith('grp_') && (
+                      <span className="ml-2 font-sans text-gray-600">um dos seus grupos de regras</span>
+                    )}
+                  </span>
                   {chain.policy && (
                     <span className="text-[11px] text-gray-600">hook {chain.hook} · priority {chain.priority} · policy {chain.policy}</span>
                   )}
