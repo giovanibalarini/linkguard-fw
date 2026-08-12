@@ -67,6 +67,27 @@ const liveTableWithOrphanGroup = `table inet linkguard {
 }
 `
 
+// liveTableWithForeignGroupChain: a tabela do LinkGuard com uma chain que
+// COMEÇA com grp_ mas não é nossa — `grp_Legado` tem maiúsculas, coisa que
+// o nft aceita e que GroupChainName nunca produz. É o que a reconciliação vê
+// quando alguém criou uma chain à mão dentro da tabela, ou quando uma linha
+// de banco corrompida gerou um nome fora do formato.
+const liveTableWithForeignGroupChain = `table inet linkguard {
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		ip saddr @blocked_hosts counter packets 0 bytes 0 drop
+	}
+
+	chain grp_aaa {
+		tcp dport 443 counter packets 2 bytes 120 accept
+	}
+
+	chain grp_Legado {
+		tcp dport 22 counter packets 7 bytes 420 accept
+	}
+}
+`
+
 func forwardLines(groups []StoredGroup) []string {
 	var lines []string
 	for _, toks := range forwardChainRules(groups) {
@@ -432,6 +453,28 @@ func TestReconcileGroupsOnlyEverDeletesGroupChains(t *testing.T) {
 		if !ranCommand(exec.executed, want) {
 			t.Errorf("faltou %q; rodou: %v", want, exec.executed)
 		}
+	}
+}
+
+// Uma chain que começa com grp_ mas não tem o formato que GroupChainName
+// produz não é nossa e não é apagada: o nome vem de texto parseado do nft e
+// vira argv de um `nft delete chain` — a mesma disciplina que impede um nome
+// de chain vindo do banco de chegar ao nft. Uma chain que alguém criou à mão
+// dentro da tabela sobrevive; a órfã de verdade continua sendo removida.
+func TestReconcileGroupsNeverDeletesAChainNameItCouldNotHaveCreated(t *testing.T) {
+	exec := &fakeReconcileExec{readOut: map[string]string{
+		"nft list table inet linkguard": liveTableWithForeignGroupChain,
+	}}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileGroups(context.Background(), nil); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if ranCommand(exec.executed, "nft delete chain inet linkguard grp_Legado") {
+		t.Errorf("apagou uma chain grp_ que este código nunca poderia ter criado: %v", exec.executed)
+	}
+	if !ranCommand(exec.executed, "nft delete chain inet linkguard grp_aaa") {
+		t.Errorf("a órfã de verdade tinha que ter sido removida: %v", exec.executed)
 	}
 }
 
