@@ -980,3 +980,25 @@ func TestCreateRuleRendersEveryFieldIntoTheNftCommand(t *testing.T) {
 		})
 	}
 }
+
+// C-5: o CreateGroup lia os grupos do banco ANTES de olhar para o corpo da
+// requisição. Além do trabalho jogado fora numa requisição que já nasce
+// inválida, isso produzia o status ERRADO: com o banco fora do ar, um corpo
+// inválido virava 500 ("erro interno do servidor"), escondendo do admin que o
+// problema estava no que ele mandou. Validar primeiro é o que os irmãos
+// (UpdateGroup, CreateRule) já fazem.
+func TestCreateGroupValidatesTheBodyBeforeReadingTheDB(t *testing.T) {
+	h, db, _ := newGroupTestHandlerNft(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("fechar o banco: %v", err)
+	}
+
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups",
+		`{"name":"Visitantes","fallthrough":"talvez"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("corpo inválido tem que ser 400 mesmo se o banco não responder, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "e o que sobrar") {
+		t.Errorf("a resposta tem que dizer o que está errado no corpo, obtive %s", w.Body.String())
+	}
+}

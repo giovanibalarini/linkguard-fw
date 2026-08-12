@@ -131,28 +131,35 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	b = b.trimmed()
 
-	current, err := h.fr.StoredGroups()
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
+	// C-5: validar ANTES de qualquer leitura do banco. A ordem obrigatória
+	// começa em "validar os campos", e ler os grupos primeiro não era só
+	// trabalho jogado fora numa requisição que já nasce inválida: com o banco
+	// fora do ar, um corpo inválido virava 500 e o admin não ficava sabendo
+	// que o problema era o que ele mandou. Nada em ValidateGroup depende da
+	// posição, que é a única coisa aqui que precisa da leitura.
 	id := uuid.NewString()
 	row := &storage.FirewallGroup{
 		ID:          id,
 		Name:        b.Name,
 		ChainName:   nftables.GroupChainName(id),
-		Position:    nextGroupPosition(current),
 		Enabled:     true,
 		CondSaddr:   b.CondSaddr,
 		CondDaddr:   b.CondDaddr,
 		CondIif:     b.CondIif,
 		Fallthrough: b.Fallthrough,
 	}
-	candidate := toStoredGroup(*row)
-	if err := nftables.ValidateGroup(candidate); err != nil {
+	if err := nftables.ValidateGroup(toStoredGroup(*row)); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	current, err := h.fr.StoredGroups()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	row.Position = nextGroupPosition(current)
+	candidate := toStoredGroup(*row)
 	// O candidato é o conjunto COMPLETO que existiria depois desta criação —
 	// é assim que o dry run valida também a forward, reconstruída a partir de
 	// todos os grupos de uma vez.
