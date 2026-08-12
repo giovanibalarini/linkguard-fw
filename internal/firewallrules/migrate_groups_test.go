@@ -154,6 +154,82 @@ func TestEnsureSystemGroupsIsIdempotent(t *testing.T) {
 	}
 }
 
+// A trava é "isto já rodou", e não "a tabela tem grupo do sistema". A
+// diferença entre as duas só aparece quando as LINHAS somem: desligar um
+// grupo (o que o teste acima faz) passa nas duas formulações.
+//
+// Com a segunda formulação o estrago é duplo, e este teste mede os dois: os
+// bloqueios ressuscitam LIGADOS e no topo — desfazendo, a cada boot, a
+// escolha do admin que os apagou — e, pior, cada recriação desloca todos os
+// grupos do admin em +2 (CreateSystemGroups abre espaço no topo), então a
+// lista se reordena sozinha a cada reinicialização.
+//
+// Apagar as duas linhas é um estado alcançável hoje: a API devolve os grupos
+// do sistema como grupo comum, e o DeleteGroup ainda não os recusa.
+func TestEnsureSystemGroupsDoesNotRecreateGroupsDeletedFromTheTable(t *testing.T) {
+	db := newTestDB(t)
+	svc := newTestService(t, db)
+	ctx := context.Background()
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Dois grupos do admin, depois dos bloqueios, como o CRUD real cria.
+	for i, id := range []string{
+		"a0000000-0000-4000-8000-000000000000",
+		"b0000000-0000-4000-8000-000000000000",
+	} {
+		g := storage.FirewallGroup{ID: id, Name: "grupo " + id[:1],
+			ChainName: nftables.GroupChainName(id), Position: 2 + i,
+			Enabled: true, Fallthrough: nftables.FallthroughContinue}
+		if err := db.CreateFirewallGroup(&g); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// O admin apaga os dois bloqueios da lista.
+	for _, g := range systemGroupsIn(t, db) {
+		if err := db.DeleteFirewallGroup(g.ID); err != nil {
+			t.Fatalf("apagar %q: %v", g.Name, err)
+		}
+	}
+	before := adminGroups(t, db)
+
+	if err := svc.EnsureSystemGroups(ctx); err != nil {
+		t.Fatalf("segunda passada: %v", err)
+	}
+
+	if back := systemGroupsIn(t, db); len(back) != 0 {
+		t.Errorf("os grupos do sistema ressuscitaram no boot seguinte, desfazendo o que o admin apagou: %+v", back)
+	}
+	after := adminGroups(t, db)
+	if len(after) != len(before) {
+		t.Fatalf("a lista do admin mudou de tamanho: antes %+v, depois %+v", before, after)
+	}
+	for i := range before {
+		if after[i].ID != before[i].ID || after[i].Position != before[i].Position {
+			t.Errorf("o grupo %q saiu do lugar sem ninguém ter pedido: posição %d -> %d (a cada boot, +2)",
+				before[i].Name, before[i].Position, after[i].Position)
+		}
+	}
+}
+
+// systemGroupsIn devolve as linhas de grupo do sistema que estão na tabela.
+func systemGroupsIn(t *testing.T, db *storage.DB) []storage.FirewallGroup {
+	t.Helper()
+	all, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	var out []storage.FirewallGroup
+	for _, g := range all {
+		if nftables.IsSystemGroup(g.Kind) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 // A defesa NÃO pode ser guardada pela trava. A trava só é gravada quando
 // EnsureSystemGroups conclui com sucesso — então, no cenário que mais
 // importa (a criação dos grupos falhou: erro de banco, transação abortada),
