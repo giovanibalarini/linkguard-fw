@@ -3,6 +3,7 @@ package firewallrules_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,6 +52,26 @@ func newTestDB(t *testing.T) *storage.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
+}
+
+// newTestGroup cria um grupo com o mesmo formato de chain que a produção usa
+// (GroupChainName sobre o id) — um nome fora de grp_[a-z0-9_] faria a
+// reconciliação pular o grupo inteiro, e o teste passaria a medir o filtro
+// de segurança em vez do que ele quer medir.
+func newTestGroup(t *testing.T, db *storage.DB, name string) storage.FirewallGroup {
+	t.Helper()
+	id := fmt.Sprintf("%012x-0000-4000-8000-000000000000", len(name)*7+1)
+	g := storage.FirewallGroup{
+		ID:          id,
+		Name:        name,
+		ChainName:   nftables.GroupChainName(id),
+		Enabled:     true,
+		Fallthrough: nftables.FallthroughContinue,
+	}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatalf("CreateFirewallGroup: %v", err)
+	}
+	return g
 }
 
 // twoRulesFixture mirrors real `nft -a list chain inet linkguard user_rules`
@@ -467,17 +488,23 @@ func TestCheckPendingAcceptsAWellFormedCandidate(t *testing.T) {
 	}
 }
 
-func TestReconcileRendersEnabledDBRulesIntoNft(t *testing.T) {
+// Fase C1: as regras do admin não moram mais na chain user_rules — cada uma
+// mora na chain do SEU grupo, e a forward alcança o grupo por um jump. Este
+// teste é o mesmo de antes traduzido para esse mundo: só a regra ativada é
+// renderizada, e ela é renderizada na chain do grupo dela.
+func TestReconcileRendersEnabledDBRulesIntoTheirGroupChain(t *testing.T) {
 	db := newTestDB(t)
 	exec := &fakeExec{}
 	nft := nftables.NewService(exec)
 	svc := firewallrules.NewService(db, nft)
 
-	enabled := &storage.FirewallRule{Action: "accept", Saddr: "10.0.0.1"}
+	g := newTestGroup(t, db, "Minhas regras")
+
+	enabled := &storage.FirewallRule{GroupID: g.ID, Action: "accept", Saddr: "10.0.0.1"}
 	if err := db.CreateFirewallRule(enabled); err != nil {
 		t.Fatalf("CreateFirewallRule enabled: %v", err)
 	}
-	disabled := &storage.FirewallRule{Action: "drop", Saddr: "10.0.0.2"}
+	disabled := &storage.FirewallRule{GroupID: g.ID, Action: "drop", Saddr: "10.0.0.2"}
 	if err := db.CreateFirewallRule(disabled); err != nil {
 		t.Fatalf("CreateFirewallRule disabled: %v", err)
 	}
@@ -490,28 +517,82 @@ func TestReconcileRendersEnabledDBRulesIntoNft(t *testing.T) {
 	}
 
 	var adds []string
-	flushed := false
+	flushedGroup, jumped := false, false
 	for _, c := range exec.executed {
-		if c == "nft flush chain inet linkguard user_rules" {
-			flushed = true
+		if c == "nft flush chain inet linkguard "+g.ChainName {
+			flushedGroup = true
 		}
-		if strings.HasPrefix(c, "nft add rule inet linkguard user_rules") {
+		if strings.HasPrefix(c, "nft add rule inet linkguard "+g.ChainName) {
 			adds = append(adds, c)
 		}
+		if strings.HasPrefix(c, "nft add rule inet linkguard forward") && strings.Contains(c, "jump "+g.ChainName) {
+			jumped = true
+		}
 	}
-	if !flushed {
-		t.Errorf("expected user_rules to be flushed, ran: %v", exec.executed)
+	if !flushedGroup {
+		t.Errorf("esperava a chain do grupo reconstruída, rodou: %v", exec.executed)
+	}
+	if !jumped {
+		t.Errorf("a forward tem que alcançar o grupo com um jump, rodou: %v", exec.executed)
 	}
 	if len(adds) != 1 {
-		t.Fatalf("expected exactly 1 add-rule command (the enabled one), got %d: %v", len(adds), adds)
+		t.Fatalf("esperava exatamente 1 add-rule (a regra ativada), obtive %d: %v", len(adds), adds)
 	}
 	if !strings.Contains(adds[0], "10.0.0.1") {
-		t.Errorf("expected the enabled rule's saddr rendered, got %q", adds[0])
+		t.Errorf("esperava o saddr da regra ativada renderizado, obtive %q", adds[0])
 	}
 	for _, c := range exec.executed {
 		if strings.Contains(c, "10.0.0.2") {
-			t.Errorf("the disabled rule must never be rendered into nft, ran: %q", c)
+			t.Errorf("a regra desativada nunca pode ser renderizada no nft, rodou: %q", c)
 		}
+	}
+}
+
+// Uma regra cujo group_id não aponta para grupo nenhum não tem chain para
+// onde ir. Renderizá-la em lugar nenhum é o comportamento correto — mas ela
+// não pode ser renderizada na chain de OUTRO grupo, nem reviver a user_rules.
+func TestReconcileLeavesARuleWithoutAValidGroupOutOfTheFirewall(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	g := newTestGroup(t, db, "Minhas regras")
+	if err := db.CreateFirewallRule(&storage.FirewallRule{GroupID: g.ID, Action: "accept", Saddr: "10.0.0.1"}); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+	if err := db.CreateFirewallRule(&storage.FirewallRule{GroupID: "grupo-que-nao-existe", Action: "accept", Saddr: "10.0.0.9"}); err != nil {
+		t.Fatalf("CreateFirewallRule órfã: %v", err)
+	}
+
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "10.0.0.9") {
+			t.Errorf("regra sem grupo válido foi renderizada mesmo assim: %q", c)
+		}
+	}
+}
+
+// O contrato de ReconcileGroups: lista vazia APAGA todas as chains de grupo
+// e reduz a forward aos 4 bloqueios. Um erro de leitura do banco que virasse
+// lista vazia levaria junto o firewall inteiro do admin. Erro de leitura tem
+// que abortar antes de qualquer comando do nft.
+func TestReconcileAbortsOnDBErrorInsteadOfWipingTheFirewall(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	newTestGroup(t, db, "Minhas regras")
+	db.Close() // qualquer leitura a partir daqui falha
+
+	if err := svc.Reconcile(context.Background()); err == nil {
+		t.Fatal("esperava que o erro de leitura do banco abortasse o Reconcile")
+	}
+	if len(exec.executed) != 0 {
+		t.Errorf("nenhum comando do nft pode ter rodado com o banco ilegível, rodou: %v", exec.executed)
 	}
 }
 
@@ -527,11 +608,12 @@ func TestReconcileRecordsNotOKWhenAnEnabledRuleCouldNotBeRendered(t *testing.T) 
 	nft := nftables.NewService(exec)
 	svc := firewallrules.NewService(db, nft)
 
-	bad := &storage.FirewallRule{Action: "accept", Iif: "eth0\" ; flush ruleset #"}
+	g := newTestGroup(t, db, "Minhas regras")
+	bad := &storage.FirewallRule{GroupID: g.ID, Action: "accept", Iif: "eth0\" ; flush ruleset #"}
 	if err := db.CreateFirewallRule(bad); err != nil {
 		t.Fatalf("CreateFirewallRule: %v", err)
 	}
-	if err := db.CreateFirewallRule(&storage.FirewallRule{Action: "drop", Saddr: "10.0.0.5"}); err != nil {
+	if err := db.CreateFirewallRule(&storage.FirewallRule{GroupID: g.ID, Action: "drop", Saddr: "10.0.0.5"}); err != nil {
 		t.Fatalf("CreateFirewallRule: %v", err)
 	}
 
@@ -547,5 +629,93 @@ func TestReconcileRecordsNotOKWhenAnEnabledRuleCouldNotBeRendered(t *testing.T) 
 	}
 	if !strings.Contains(st.Error, bad.ID) {
 		t.Errorf("o status tem que identificar a regra que não foi aplicada, obtive %q", st.Error)
+	}
+}
+
+// forwardFailingExec recusa exatamente os `add rule` da chain forward — o
+// resto (chains de grupo, flushes, leituras) funciona. É como se comporta um
+// nft que rejeita a linha do jump (condição que o kernel recusa, set que
+// sumiu): o firewall fica com as chains dos grupos prontas e a forward
+// vazia, sem alcançar nenhuma delas.
+type forwardFailingExec struct{ fakeExec }
+
+func (f *forwardFailingExec) Execute(ctx context.Context, cmd string, args ...string) (string, error) {
+	joined := strings.Join(args, " ")
+	if strings.HasPrefix(joined, "add rule inet linkguard forward") {
+		f.executed = append(f.executed, cmd+" "+joined)
+		return "", errors.New("nft: Error: Could not process rule: Device or resource busy")
+	}
+	return f.fakeExec.Execute(ctx, cmd, args...)
+}
+
+// ReconcileGroups pode devolver, numa passada só, um erro que embrulha um
+// SkippedRulesError (regra ativada que não renderiza — não fatal, vira faixa
+// no painel) E a recusa do próprio nft (fatal: o firewall NÃO está como o
+// banco manda). Um errors.As ingênuo, herdado do tempo da user_rules, trata
+// os dois como "só uma regra fora" e devolve nil: o chamador acha que
+// aplicou, e a migração — que só remove a user_rules depois de a forward ter
+// sido reconstruída — removeria a chain com a forward ainda quebrada.
+func TestReconcileDoesNotSwallowAnNftRefusalThatArrivesWithASkippedRule(t *testing.T) {
+	db := newTestDB(t)
+	exec := &forwardFailingExec{}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	g := newTestGroup(t, db, "Minhas regras")
+	bad := &storage.FirewallRule{GroupID: g.ID, Action: "accept", Iif: "eth0\" ; flush ruleset #"}
+	if err := db.CreateFirewallRule(bad); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+
+	err := svc.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("a recusa do nft não pode ser engolida só porque veio junto de uma regra pulada")
+	}
+	var skipped *nftables.SkippedRulesError
+	if !errors.As(err, &skipped) {
+		t.Errorf("o erro composto tem que continuar carregando os ids das regras puladas, obtive %q", err)
+	}
+	st := svc.LastApplyStatus()
+	if st == nil || st.OK {
+		t.Errorf("apply_status não pode dizer ok com a forward recusada pelo nft: %+v", st)
+	}
+}
+
+// CheckPendingGroups é o pré-voo (`nft -c`) do mundo dos grupos, espelhando
+// CheckPending: roda ANTES da escrita no banco, e o que o nft recusa nunca
+// chega a ser gravado.
+func TestCheckPendingGroupsRejectsWhatNftWouldReject(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{checkErr: errors.New("nft: Error: could not process rule")}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	candidate := []nftables.StoredGroup{{
+		ID: "a3f21c08-0000-4000-8000-000000000000", Name: "Wi-Fi",
+		ChainName: nftables.GroupChainName("a3f21c08-0000-4000-8000-000000000000"),
+		Enabled:   true, Fallthrough: nftables.FallthroughContinue,
+		Rules: []nftables.StoredRule{{ID: "r1", Enabled: true,
+			Fields: nftables.RuleFields{Action: "accept", Saddr: "10.0.0.1"}}},
+	}}
+	if err := svc.CheckPendingGroups(context.Background(), candidate); err == nil {
+		t.Fatal("esperava que CheckPendingGroups mostrasse a recusa do nft")
+	}
+}
+
+func TestCheckPendingGroupsAcceptsAWellFormedCandidate(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	candidate := []nftables.StoredGroup{{
+		ID: "b3f21c08-0000-4000-8000-000000000000", Name: "Wi-Fi",
+		ChainName: nftables.GroupChainName("b3f21c08-0000-4000-8000-000000000000"),
+		Enabled:   true, Fallthrough: nftables.FallthroughDrop,
+		Rules: []nftables.StoredRule{{ID: "r1", Enabled: true,
+			Fields: nftables.RuleFields{Action: "drop", Daddr: "203.0.113.0/24"}}},
+	}}
+	if err := svc.CheckPendingGroups(context.Background(), candidate); err != nil {
+		t.Fatalf("um candidato bem formado tinha que passar, obtive: %v", err)
 	}
 }

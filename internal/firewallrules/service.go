@@ -8,7 +8,7 @@ package firewallrules
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -176,6 +176,77 @@ func (s *Service) CheckPending(ctx context.Context, candidate []storage.Firewall
 	return s.nft.CheckUserRules(ctx, ToStoredRules(candidate))
 }
 
+// CheckPendingGroups is CheckPending's counterpart for the world of groups
+// (Fase C1): the same parse-only `nft -c` pre-flight, over the candidate set
+// of groups exactly as the DB would read immediately after the mutation the
+// caller is about to make, run BEFORE that mutation's DB write happens.
+//
+// candidate must be the COMPLETE set of groups, not just the one being
+// changed: nftables.CheckGroups validates each group's chain AND the forward
+// chain that reaches them, which is rebuilt from all of them at once — the
+// very same rendering Reconcile applies for real right after the write
+// lands.
+func (s *Service) CheckPendingGroups(ctx context.Context, candidate []nftables.StoredGroup) error {
+	return s.nft.CheckGroups(ctx, candidate)
+}
+
+// storedGroups converte as linhas do banco na visão que internal/nftables
+// entende, encaixando cada regra no seu grupo.
+//
+// Devolver erro aqui é obrigatório e nunca substituível por uma lista vazia:
+// ReconcileGroups trata lista vazia como o comando legítimo "o admin não tem
+// grupo nenhum" e, obedecendo, reduz a forward aos quatro bloqueios e apaga
+// todas as chains grp_. Um SELECT que falhou virando lista vazia seria o
+// firewall inteiro do admin desaparecendo por causa de um erro de leitura
+// (ver o CONTRATO DO CHAMADOR no doc-comment de ReconcileGroups).
+//
+// Regra órfã (group_id que não aponta para grupo nenhum) é deixada de fora e
+// registrada: renderizá-la em chain nenhuma seria mostrá-la no painel sem
+// existir no firewall.
+func (s *Service) storedGroups() ([]nftables.StoredGroup, error) {
+	groups, err := s.db.ListFirewallGroups()
+	if err != nil {
+		return nil, fmt.Errorf("ler os grupos de regras: %w", err)
+	}
+	rules, err := s.db.ListFirewallRules()
+	if err != nil {
+		return nil, fmt.Errorf("ler as regras: %w", err)
+	}
+
+	known := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		known[g.ID] = true
+	}
+	byGroup := make(map[string][]nftables.StoredRule, len(groups))
+	for _, r := range rules {
+		if !known[r.GroupID] {
+			slog.Warn("regra sem grupo válido foi ignorada na reconciliação; ela aparece no painel mas não existe no firewall",
+				"regra", r.ID, "group_id", r.GroupID)
+			continue
+		}
+		byGroup[r.GroupID] = append(byGroup[r.GroupID], nftables.StoredRule{
+			ID:          r.ID,
+			Position:    r.Position,
+			Enabled:     r.Enabled,
+			Description: r.Description,
+			Fields: nftables.RuleFields{
+				Action: r.Action, Iif: r.Iif, Oif: r.Oif,
+				Saddr: r.Saddr, Daddr: r.Daddr, Proto: r.Proto, Dport: r.Dport,
+			},
+		})
+	}
+
+	out := make([]nftables.StoredGroup, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, nftables.StoredGroup{
+			ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
+			Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
+			CondIif: g.CondIif, Fallthrough: g.Fallthrough, Rules: byGroup[g.ID],
+		})
+	}
+	return out, nil
+}
+
 // ApplyStatusKey persists the outcome of the most recent user_rules
 // reconcile (design spec §4.1, C-3). Reconcile is called from two places
 // that never share an HTTP response — the API handlers (CreateRule,
@@ -200,19 +271,31 @@ type ApplyStatus struct {
 	At    int64  `json:"at"` // unix seconds
 }
 
-// Reconcile loads every stored rule (enabled or not, in position order) and
-// re-renders user_rules from it — the DB is the source of truth, nft is the
-// rendered result (design spec §4.1). Safe and cheap to call on every boot
-// and after every mutation, exactly like the other reconciles in this
-// project. The outcome — success or failure, with nft's own error message —
-// is always persisted under ApplyStatusKey (see LastApplyStatus), even when
-// this is called from a boot path with nobody watching synchronously.
+// Reconcile loads every stored group with its rules (enabled or not, in
+// position order) and re-renders the whole group world from it — one chain
+// per group plus the forward chain that reaches them — because the DB is the
+// source of truth and nft is the rendered result (design spec §4.1). Safe
+// and cheap to call on every boot and after every mutation, exactly like the
+// other reconciles in this project. The outcome — success or failure, with
+// nft's own error message — is always persisted under ApplyStatusKey (see
+// LastApplyStatus), even when this is called from a boot path with nobody
+// watching synchronously.
+//
+// Fase C1: this used to render the flat user_rules chain. Since the forward
+// chain left ReconcileStructuralChains, this is the ONLY thing that
+// reconciles forward — a boot that doesn't reach here leaves the forward
+// chain with no owner at all.
 func (s *Service) Reconcile(ctx context.Context) error {
-	rows, err := s.db.ListFirewallRules()
+	groups, err := s.storedGroups()
 	if err != nil {
+		// Abortar antes de qualquer comando do nft: ReconcileGroups com lista
+		// vazia apaga TODAS as chains de grupo e reduz a forward aos
+		// bloqueios. Um erro de leitura não pode ser confundido com "o admin
+		// não tem grupo nenhum".
+		s.recordApplyStatus(err)
 		return err
 	}
-	applyErr := s.nft.ReconcileUserRules(ctx, ToStoredRules(rows))
+	applyErr := s.nft.ReconcileGroups(ctx, groups)
 	s.recordApplyStatus(applyErr)
 
 	// I-8: an enabled rule that doesn't render is recorded as a not-ok
@@ -223,8 +306,22 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	// handler's generic 500 ("erro interno do servidor", details only in
 	// the journal) would report the admin's own successful change as a
 	// failure while telling them less than the banner already does.
-	var skipped *nftables.SkippedRulesError
-	if errors.As(applyErr, &skipped) {
+	//
+	// ATENÇÃO — o teste de identidade abaixo não é estilo. ReconcileGroups
+	// pode devolver, na MESMA passada, um erro que embrulha o
+	// SkippedRulesError e também a recusa do nft (ver o comentário do %w no
+	// fim daquela função). Um errors.As solto — como esta função fazia no
+	// tempo da user_rules — daria verdadeiro nesse caso composto e
+	// converteria em sucesso uma passada em que a chain forward não foi
+	// reconstruída. Quem chama seguiria em frente achando que aplicou; é
+	// exatamente isso que faria a migração remover a chain user_rules com a
+	// forward ainda quebrada. Só é não-fatal quando a ÚNICA coisa que
+	// aconteceu foi regra pulada — isto é, quando o erro devolvido É o
+	// SkippedRulesError, não algo que o embrulha.
+	// (errors.As/errors.Is não servem aqui: os dois percorrem a cadeia de
+	// embrulho e dariam verdadeiro para o caso composto, que é justamente o
+	// que precisa ser fatal.)
+	if _, onlySkipped := applyErr.(*nftables.SkippedRulesError); onlySkipped {
 		return nil
 	}
 	return applyErr

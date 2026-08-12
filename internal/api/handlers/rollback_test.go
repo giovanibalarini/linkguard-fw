@@ -19,10 +19,11 @@ import (
 // must reconcile user_rules from the DB immediately afterwards, the same as
 // every other mutation, so the panel and the firewall never disagree.
 
-func TestRollbackReconcilesUserRulesFromDBAfterRestoring(t *testing.T) {
+func TestRollbackReconcilesGroupsFromDBAfterRestoring(t *testing.T) {
 	h, db, exec := newFirewallRulesTestHandler(t)
 
-	row := &storage.FirewallRule{Action: "accept", Saddr: "10.0.0.55"}
+	g := newRuleGroup(t, db)
+	row := &storage.FirewallRule{GroupID: g.ID, Action: "accept", Saddr: "10.0.0.55"}
 	if err := db.CreateFirewallRule(row); err != nil {
 		t.Fatalf("CreateFirewallRule: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestRollbackReconcilesUserRulesFromDBAfterRestoring(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected the rollback to reconcile user_rules from the DB afterwards (the DB rule's content must be re-rendered), ran: %v", exec.executed)
+		t.Errorf("expected the rollback to reconcile the admin's groups from the DB afterwards (the DB rule's content must be re-rendered), ran: %v", exec.executed)
 	}
 }
 
