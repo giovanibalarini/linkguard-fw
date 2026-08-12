@@ -596,6 +596,46 @@ func TestReconcileAbortsOnDBErrorInsteadOfWipingTheFirewall(t *testing.T) {
 	}
 }
 
+// TestReconcileRecordsApplyStatusOnDBReadError prova que o caminho de erro
+// de leitura de storedGroups grava o apply-status antes de retornar — não só
+// que ele aborta sem rodar comando do nft (já coberto acima). Sem essa
+// asserção, remover o s.recordApplyStatus(err) desse `if err != nil` não é
+// pego por teste nenhum: o Reconcile continua devolvendo erro do mesmo jeito
+// (o caller vê a falha), só o painel é que fica sem explicação nenhuma do
+// que aconteceu.
+//
+// Diferente do teste acima, aqui só a tabela lida (firewall_groups) é
+// derrubada, não o banco inteiro: se fechássemos a conexão como o teste
+// irmão faz, a própria escrita do apply-status em `settings` falharia junto
+// (seria logada como aviso e engolida), e a asserção de LastApplyStatus não
+// provaria nada.
+func TestReconcileRecordsApplyStatusOnDBReadError(t *testing.T) {
+	db := newTestDB(t)
+	exec := &fakeExec{}
+	nft := nftables.NewService(exec)
+	svc := firewallrules.NewService(db, nft)
+
+	newTestGroup(t, db, "Minhas regras")
+	if _, err := db.Conn().Exec(`DROP TABLE firewall_groups`); err != nil {
+		t.Fatalf("derrubar firewall_groups: %v", err)
+	}
+
+	if err := svc.Reconcile(context.Background()); err == nil {
+		t.Fatal("esperava que o erro de leitura do banco abortasse o Reconcile")
+	}
+
+	st := svc.LastApplyStatus()
+	if st == nil {
+		t.Fatal("o erro de leitura do banco tem que ficar registrado no apply-status -- sem isso o painel não mostra nada de errado")
+	}
+	if st.OK {
+		t.Errorf("apply-status não pode dizer ok quando o Reconcile abortou por erro de leitura: %+v", st)
+	}
+	if st.Error == "" {
+		t.Error("apply-status tem que trazer a mensagem do erro de leitura")
+	}
+}
+
 // I-8: uma regra ativada que não pôde ser renderizada (campos inválidos
 // numa linha de banco antiga ou editada à mão) some do firewall sem
 // nenhum aviso: o rebuild da chain termina bem, Reconcile devolvia nil e
