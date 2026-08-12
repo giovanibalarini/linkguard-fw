@@ -25,6 +25,7 @@ about, and do not expect hand-made changes to these to survive:
 | Time sync (chrony) | `/etc/chrony/conf.d/linkguard.conf`; enables the service, and can install it on request |
 | Network interface naming | `.link` files under `/etc/systemd/network` (pins names to MAC addresses) |
 | Its own config & secrets | `/etc/linkguard-fw/` |
+| Its own base packages | installs `nftables`, `iproute2`, `iptables` and `iputils-ping` itself on the first boot if they are missing (see "Installing on a bare machine") |
 
 It never edits the packages' own primary config files (`chrony.conf`,
 `unbound.conf`): it writes drop-ins alongside them, so a package upgrade
@@ -102,10 +103,48 @@ linkguard-fw/
 
 ## Requirements
 
-- **OS**: Debian/Ubuntu Linux (requires `iptables`, `iproute2`)
-- **Go**: 1.21+
+- **OS**: Debian 13 (Trixie) or compatible — a bare install is enough, see below
+- **Go**: 1.21+ (to build from source)
 - **Node.js**: 18+ (for frontend build)
-- **Permissions**: Root or sudo (for iptables and ip route)
+- **Permissions**: Root (it manages nftables, routing and system services)
+
+## Installing on a bare machine
+
+**You do not install the dependencies and then LinkGuard. You install
+LinkGuard, and it brings what it needs.** That is the same premise as
+"LinkGuard takes over the machine" above, applied to the install itself: it
+goes in first, on a machine with nothing on it, and coordinates the rest.
+
+```bash
+# Either of these works on a machine with nothing installed on it:
+sudo apt install ./linkguard-fw_<version>_amd64.deb   # apt resolves everything up front
+sudo dpkg -i ./linkguard-fw_<version>_amd64.deb       # no apt needed; LinkGuard finishes the job
+```
+
+The package declares its base (`nftables`, `iproute2`, `iptables`,
+`iputils-ping`) as `Recommends:`, not `Depends:`, on purpose: with `Depends:`,
+a plain `dpkg -i` on a bare box stops half-way (`iU`, "dependency problems
+prevent configuration"), the service never starts, and there is no panel left
+to explain what went wrong. As `Recommends:` the package always installs *and*
+configures, the service starts, and on its first boot it installs whatever
+base package is missing itself (`internal/bootstrapdeps`) — a running service
+can call apt, a package's own maintainer scripts cannot (dpkg holds its lock
+for the whole run).
+
+The optional packages (`kea-dhcp4-server`, `unbound`, `chrony`,
+`smartmontools`) are **not** installed at boot. They are installed on demand,
+when an admin turns the corresponding feature on in the panel.
+
+**If it cannot install them** (no network, unreachable mirror, broken
+repository), it does not pretend: it retries once after refreshing the apt
+index, then raises a **critical alert on the Alerts screen** naming each
+missing package and what stops working because of it ("without nftables there
+is no packet filter at all: nothing is blocked, NAT is not applied and no rule
+from the panel has any effect"), together with the command to install it by
+hand. The same goes to the journal, and the service keeps running — so there
+is a panel to read the alert on. Fix the repository and restart the service
+(`systemctl restart linkguard-fw`): it tries again and clears the alert by
+itself once it succeeds.
 
 ## Quick Start
 

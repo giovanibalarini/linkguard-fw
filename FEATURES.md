@@ -34,7 +34,33 @@ enriquecimento (nome legível, MAC, reserva estática).
 > gerencia e que estiver disponível na máquina, ele assume: rede, firewall,
 > roteamento, DHCP, DNS, NTP, nomeação de interface.
 
-A consequência prática, que precisa estar clara para quem instala: ele
+Isso começa na própria instalação: **não se instala as dependências e depois
+o LinkGuard — instala-se o LinkGuard, e ele traz o que precisa.** Numa máquina
+pelada ele é o primeiro a entrar e é ele quem coordena as instalações. Na
+prática:
+
+- a base sem a qual o produto não faz nada (`nftables`, `iproute2`,
+  `iptables`, `iputils-ping`) o próprio serviço garante no primeiro boot
+  (`internal/bootstrapdeps`);
+- por isso essa base está em `Recommends:` e não em `Depends:` no pacote:
+  com `Depends:`, um `dpkg -i` numa máquina pelada para no meio (`iU`,
+  "dependency problems prevent configuration"), o serviço nunca sobe e não
+  sobra painel nenhum para explicar o que houve. Um pacote também não
+  consegue chamar o apt dos próprios scripts — o dpkg segura o lock durante
+  toda a execução —, mas um serviço em execução consegue;
+- o que é opcional (`kea-dhcp4-server`, `unbound`, `chrony`,
+  `smartmontools`) continua sendo instalado **sob demanda**, quando o admin
+  liga a funcionalidade no painel. Instalar isso no boot seria assumir
+  serviços que ninguém pediu;
+- **se não conseguir instalar** (sem rede, espelho fora do ar, repositório
+  quebrado), ele tenta de novo uma vez depois de atualizar o índice do apt e,
+  se ainda assim falhar, **não cala**: alerta crítico no painel dizendo quais
+  pacotes faltam, o que deixa de funcionar por causa de cada um e o comando
+  para instalar à mão, mais o mesmo no log. O serviço continua de pé
+  justamente para que exista painel onde ler isso. É a regra do "não finge"
+  abaixo aplicada ao próprio ato de instalar.
+
+A outra consequência prática, que precisa estar clara para quem instala: ele
 **reaplica a própria configuração em todo boot**. Edição feita à mão nos
 arquivos que ele gerencia é sobrescrita — de propósito. É isso que torna o
 painel a fonte de verdade em vez de um amontoado de arquivos editados na
