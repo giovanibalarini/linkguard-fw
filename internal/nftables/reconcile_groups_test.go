@@ -311,6 +311,27 @@ func TestForwardChainKeepsTheFourAdministrativeBlocks(t *testing.T) {
 	}
 }
 
+// A afirmação central desta tarefa: SEM os grupos do sistema na lista, a
+// forward não emite bloqueio administrativo nenhum. Não há mais fallback em
+// código — quem impede essa lista de chegar aqui é
+// internal/firewallrules.ensureSystemGroupsPresent, e é essa garantia que
+// torna aceitável a chain forward ter deixado de ter bloqueio fixo. Sem este
+// teste, um fallback fixo reintroduzido aqui (desfazendo o coração da
+// mudança) passaria pela suíte inteira sem ser notado — foi exatamente o que
+// aconteceu na revisão que pediu este teste (achado m-1).
+func TestForwardChainWithoutSystemGroupsEmitsNoBlocks(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 0,
+			CondSaddr: "192.168.50.0/24"},
+	}
+	lines := forwardLines(groups)
+	for _, l := range lines {
+		if strings.Contains(l, "drop") {
+			t.Errorf("sem grupos de sistema na lista, a forward não pode emitir bloqueio nenhum; achei %q em %v", l, lines)
+		}
+	}
+}
+
 // Toda linha da forward carrega `counter`: reconciliar para uma definição
 // sem counter zeraria, a cada boot, os contadores que o painel exibe (ver o
 // doc-comment de ReconcileStructuralChains).
