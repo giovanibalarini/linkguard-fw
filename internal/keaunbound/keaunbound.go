@@ -15,10 +15,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 )
@@ -34,6 +36,25 @@ const (
 	unboundService         = "unbound"
 	keaBinDefault          = "/usr/sbin/kea-dhcp4"
 	unboundCheckBinDefault = "/usr/sbin/unbound-checkconf"
+
+	// The Debian packages this backend IS. They are Recommends: (not
+	// Depends:) of linkguard-fw on purpose — see the Makefile's deb target —
+	// so a box can legitimately arrive without them, and LinkGuard brings
+	// them in when the admin turns DHCP/DNS on (ensurePackages).
+	keaPackage     = "kea-dhcp4-server"
+	unboundPackage = "unbound"
+
+	// dnsRootDataPackage is named explicitly because the install runs with
+	// --no-install-recommends: Debian's unbound only *recommends*
+	// dns-root-data, but its shipped drop-in
+	// (/etc/unbound/unbound.conf.d/root-auto-trust-anchor-file.conf) points
+	// auto-trust-anchor-file at /var/lib/unbound/root.key unconditionally.
+	// Without the data package that key never materialises and unbound dies
+	// at startup with "module init for module validator failed" — installed,
+	// enabled, and not serving a single query. Measured on the test VM, and
+	// exactly the "configurado ≠ funcionando" state this project treats as
+	// worse than not installing at all.
+	dnsRootDataPackage = "dns-root-data"
 )
 
 // Service is the Kea+unbound Provider. Config paths and the Kea binary are
@@ -82,6 +103,92 @@ func (s *Service) EnsureKeaDirReadable() {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		slog.Warn("could not relax kea config directory permissions; DHCP apply may fail under AppArmor", "path", dir, "err", err)
 	}
+}
+
+// ensurePackages makes the machine able to serve DHCP/DNS before this
+// provider tries to configure it: kea-dhcp4-server and unbound are installed
+// here, on demand, at the moment the admin applies a DHCP/DNS change.
+//
+// Why here and not at boot: installing them at startup would take over
+// services nobody asked for (bootstrapdeps' package doc). Why both at once
+// and not one per feature: ReloadConfigs is a single operation that writes
+// BOTH configs and reloads BOTH daemons — there is no state in which this
+// provider applies one and not the other, so needing one and not the other
+// is not a state that exists either. The apt mechanics (transient unit,
+// non-interactive flags, retry after refreshing the index) live in
+// bootstrapdeps.InstallPackages/EnsureInstalled, the single place in the
+// codebase that knows how a package gets installed.
+//
+// Returns the packages it actually installed — empty on every apply after
+// the first, since the fast path is one dpkg-query per package and no apt
+// call at all.
+//
+// The two failure modes are deliberately different errors with the same
+// shape (*netsvc.PrereqError, an admin-facing sentence):
+//
+//   - apt could not install it: say which package, why, what stops working
+//     and the manual command (bootstrapdeps does that wording);
+//   - the package is there but its config directory is not writable by this
+//     process: the systemd trap, see writableDir.
+func (s *Service) ensurePackages(ctx context.Context) ([]string, error) {
+	if s.exec.IsDryRun() {
+		return nil, nil
+	}
+	installed, err := bootstrapdeps.EnsureInstalled(ctx, s.exec, keaPackage, unboundPackage, dnsRootDataPackage)
+	if err != nil {
+		return installed, &netsvc.PrereqError{Msg: err.Error()}
+	}
+	if len(installed) > 0 {
+		// A freshly installed kea ships /etc/kea as _kea:_kea 0750, which
+		// blocks both this process's config write and kea-dhcp4's own read
+		// (see EnsureKeaDirReadable). Startup already self-heals that, but
+		// the package was just installed *after* startup — fixing it only at
+		// the next boot would mean the first apply after an on-demand
+		// install is the one that fails.
+		s.EnsureKeaDirReadable()
+	}
+	for _, dir := range []string{filepath.Dir(s.keaConf), filepath.Dir(s.unboundConf)} {
+		if err := writableDir(dir); err != nil {
+			return installed, &netsvc.PrereqError{Msg: sandboxHint(dir, err)}
+		}
+	}
+	return installed, nil
+}
+
+// writableDir reports whether this process can create a file in dir — the
+// question that actually matters, answered the same way the code that
+// follows will ask it (os.CreateTemp), instead of inferring it from
+// permission bits that a read-only mount overrides anyway.
+//
+// The probe name deliberately has no ".conf" suffix: this runs inside
+// /etc/unbound/unbound.conf.d, which Debian's unbound.conf pulls in with
+// `include-toplevel: ".../*.conf"` — same reasoning as validateUnbound's own
+// temp file.
+func writableDir(dir string) error {
+	f, err := os.CreateTemp(dir, ".linkguard-write-probe-")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
+}
+
+// sandboxHint turns "cannot write there" into something the admin can act
+// on. The likely cause is specific and non-obvious: LinkGuard runs under
+// ProtectSystem=strict, and systemd builds the unit's mount namespace when
+// the service STARTS — a directory that did not exist at that moment is not
+// in the namespace, so it stays read-only for the running process even after
+// apt creates it. This package's postinst pre-creates /etc/kea and
+// /etc/unbound/unbound.conf.d precisely so a first-ever DHCP apply does not
+// hit this; the message exists for the installs that bypass it (make
+// install, a directory removed by hand).
+func sandboxHint(dir string, err error) string {
+	return fmt.Sprintf("o LinkGuard não consegue escrever em %s (%v). "+
+		"Isso costuma acontecer quando o diretório passou a existir depois que o serviço subiu: "+
+		"o sandbox do systemd (ProtectSystem=strict) só enxerga como gravável o que já existia no start. "+
+		"Reinicie o serviço uma vez — systemctl restart linkguard-fw — e aplique de novo; "+
+		"o DHCP/DNS não vai valer até isso ser resolvido", dir, err)
 }
 
 // EnsureResolvConf makes the box actually use its own resolver (unbound on
@@ -236,7 +343,17 @@ func (s *Service) generateConfigs(c netsvc.Config, res []netsvc.Reservation, blo
 // first (kea-dhcp4 -t) — critical, since a restart with a broken config would
 // take DHCP down. If validation fails, nothing is written or reloaded and the
 // running config is left intact.
+//
+// The first step is ensurePackages: on a machine that never had
+// kea-dhcp4-server/unbound, LinkGuard installs them here rather than failing
+// with an unexplained error about a directory that only exists because the
+// package does (the defect this step was added for — see ensurePackages).
 func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) (netsvc.ApplyResult, error) {
+	installed, err := s.ensurePackages(ctx)
+	if err != nil {
+		return netsvc.ApplyResult{Installed: installed}, err
+	}
+
 	files, warnings, err := s.generateConfigs(c, res, blocked, ntpServer)
 	if err != nil {
 		// I-7: a singular field this config cannot do without (the LAN IP
@@ -244,7 +361,7 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		// validation. Rendering "the rest" would produce a config that is
 		// perfectly valid to unbound-checkconf and silently useless to the
 		// office — nothing is written, nothing is reloaded.
-		return netsvc.ApplyResult{Warnings: warnings}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
+		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
 	}
 
 	// Validate both candidates before touching anything in production —
@@ -263,29 +380,93 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		}
 	}
 	if err := s.validateKea(ctx, keaContent); err != nil {
-		return netsvc.ApplyResult{Warnings: warnings}, fmt.Errorf("config do Kea inválida (nada aplicado): %w", err)
+		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("config do Kea inválida (nada aplicado): %w", err)
 	}
 	if err := s.validateUnbound(ctx, unboundContent); err != nil {
-		return netsvc.ApplyResult{Warnings: warnings}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
+		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
 	}
+
+	// Decided BEFORE the write, while the old file is still on disk: whether
+	// unbound needs a real restart or the graceful reload is enough (see
+	// unboundNeedsRestart).
+	restartUnbound := slices.Contains(installed, unboundPackage) ||
+		unboundNeedsRestart(readFileOrEmpty(s.unboundConf), unboundContent)
 
 	if !s.exec.IsDryRun() {
 		for _, f := range files {
 			if err := os.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
-				return netsvc.ApplyResult{Warnings: warnings}, fmt.Errorf("write %s: %w", f.Path, err)
+				return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("write %s: %w", f.Path, err)
 			}
 		}
 	}
 
 	var out []string
 	for _, svc := range []string{keaService, unboundService} {
-		o, err := s.exec.Execute(ctx, "systemctl", "reload-or-restart", svc)
+		action := "reload-or-restart"
+		if svc == unboundService && restartUnbound {
+			action = "restart"
+		}
+		// Clear a leftover failed state first. systemd gives a unit a limited
+		// number of restarts in an interval; once spent, every later start
+		// answers "Start request repeated too quickly" — which is what the
+		// admin then reads on the panel, instead of whatever was actually
+		// wrong. Seen on the test VM: unbound came up broken once (missing
+		// DNSSEC anchor), and after the cause was fixed the applies kept
+		// failing with that message until someone ran reset-failed over SSH.
+		// This never hides a real problem: if the service is still broken,
+		// the reload right below fails again — with the true error.
+		_, _ = s.exec.Execute(ctx, "systemctl", "reset-failed", svc)
+		o, err := s.exec.Execute(ctx, "systemctl", action, svc)
 		out = append(out, svc+": "+o)
 		if err != nil {
-			return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings}, fmt.Errorf("reload %s: %w", svc, err)
+			return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings, Installed: installed}, fmt.Errorf("reload %s: %w", svc, err)
 		}
 	}
-	return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings}, nil
+	return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings, Installed: installed}, nil
+}
+
+// unboundNeedsRestart reports whether the change between two rendered
+// unbound configs requires a real restart instead of the graceful reload.
+//
+// Debian's unbound.service has `ExecReload=/bin/kill -HUP $MAINPID`, and
+// SIGHUP makes unbound re-read its configuration but NOT re-open its
+// listening sockets. Measured on the test VM: after an on-demand install the
+// daemon was listening only on 127.0.0.1 (the package's own default), the
+// LinkGuard drop-in with `interface: 192.168.3.3` was written, the reload
+// ran, systemd reported success, the panel showed "aplicado" — and the LAN
+// had no DNS at all. `systemctl restart` fixed it instantly. "Config
+// aplicada ≠ funcionando" (FEATURES.md) is exactly this.
+//
+// Restarting on every save would be the easy answer and the wrong one: it
+// drops the resolver (and its cache) for every blocklist entry an admin
+// adds. So only a change in what unbound LISTENS on forces the restart;
+// everything else — blocklist, forwarders, cache tuning — keeps the
+// graceful reload SIGHUP is fine for.
+func unboundNeedsRestart(oldConf, newConf string) bool {
+	return listenLines(oldConf) != listenLines(newConf)
+}
+
+// listenLines reduces an unbound config to its `interface:` directives, in
+// order, as a single comparable string.
+func listenLines(conf string) string {
+	var got []string
+	for _, line := range strings.Split(conf, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "interface:") {
+			got = append(got, strings.Join(strings.Fields(line), " "))
+		}
+	}
+	return strings.Join(got, "\n")
+}
+
+// readFileOrEmpty returns a file's contents, or "" when it cannot be read —
+// which for this caller is the same answer ("nothing is configured yet, so
+// this is a change").
+func readFileOrEmpty(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // validateKea writes the candidate config to a temp file and runs the Kea

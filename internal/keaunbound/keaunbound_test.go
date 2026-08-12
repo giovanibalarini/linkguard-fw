@@ -3,6 +3,7 @@ package keaunbound
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,13 +33,41 @@ type recExec struct {
 	// path the Service holds, not of what the executor answers (I-6).
 	unboundCheckErr  error
 	unboundCheckPath string
+
+	// missingPkgs is dpkg's view of the box: the packages it reports as NOT
+	// installed. Default (nil) is a machine that already has kea and unbound,
+	// so every test that is about the apply itself exercises the apply and
+	// not the install. A test that wants the bare-machine case names the
+	// packages here.
+	//
+	// installFails makes apt-get unable to resolve anything (no network, dead
+	// mirror), which is the honesty path: LinkGuard has to say what is
+	// missing instead of failing opaquely.
+	missingPkgs  map[string]bool
+	installFails bool
 }
 
 func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
-	e.writes = append(e.writes, cmd+" "+strings.Join(args, " "))
+	full := cmd + " " + strings.Join(args, " ")
+	e.writes = append(e.writes, full)
+	if strings.Contains(full, "apt-get install") {
+		if e.installFails {
+			return "", errors.New("E: Unable to locate package")
+		}
+		for _, a := range args {
+			delete(e.missingPkgs, a)
+		}
+	}
 	return "", nil
 }
 func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "dpkg-query" && len(args) > 0 {
+		pkg := args[len(args)-1]
+		if e.missingPkgs[pkg] {
+			return "", fmt.Errorf("dpkg-query: no packages found matching %s", pkg)
+		}
+		return "install ok installed", nil
+	}
 	if cmd == "systemctl" && len(args) == 2 && args[0] == "is-enabled" && args[1] == "unbound" {
 		if e.unboundEnabled {
 			return "enabled\n", nil
@@ -104,8 +133,12 @@ func TestReloadConfigsValidatesWritesAndReloads(t *testing.T) {
 	if !strings.Contains(joined, "systemctl reload-or-restart kea-dhcp4-server") {
 		t.Errorf("missing kea reload-or-restart; writes:\n%s", joined)
 	}
-	if !strings.Contains(joined, "systemctl reload-or-restart unbound") {
-		t.Errorf("missing unbound reload-or-restart; writes:\n%s", joined)
+	// unbound gets a real restart here, not the graceful reload: this apply
+	// is the first time the LinkGuard drop-in exists, so the running daemon
+	// has never had these `interface:` lines — and SIGHUP does not re-open
+	// listening sockets (see unboundNeedsRestart).
+	if !strings.Contains(joined, "systemctl restart unbound") {
+		t.Errorf("missing unbound restart on the first apply; writes:\n%s", joined)
 	}
 }
 
@@ -251,7 +284,7 @@ func TestReloadConfigsProceedsWhenUnboundCheckconfMissing(t *testing.T) {
 		t.Error("unbound config should still be written when the checker is merely absent")
 	}
 	joined := strings.Join(e.writes, "\n")
-	if !strings.Contains(joined, "systemctl reload-or-restart unbound") {
+	if !strings.Contains(joined, "systemctl restart unbound") && !strings.Contains(joined, "systemctl reload-or-restart unbound") {
 		t.Errorf("unbound should still be reloaded when the checker is merely absent; writes:\n%s", joined)
 	}
 }
@@ -871,5 +904,229 @@ func TestReloadConfigsReportsSkippedListEntries(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "forward-addr: 1.1.1.1") || !strings.Contains(string(content), "ads.example.com") {
 		t.Errorf("as entradas válidas têm que continuar sendo renderizadas:\n%s", content)
+	}
+}
+
+// ─── Instalação sob demanda (kea-dhcp4-server / unbound) ─────────────────────
+
+// O defeito que originou esta funcionalidade: numa máquina onde o
+// kea-dhcp4-server nunca foi instalado, ligar o DHCP pelo painel morria em
+// `open /etc/kea/kea-validate-*.conf: no such file or directory` — o
+// diretório só existia se algum humano tivesse rodado apt antes. A premissa
+// do produto (FEATURES.md) é o contrário: instalar o LinkGuard é entregar a
+// máquina a ele, e o pacote opcional entra quando o admin liga a
+// funcionalidade.
+func TestReloadConfigsInstallsMissingPackagesOnDemand(t *testing.T) {
+	e := &recExec{missingPkgs: map[string]bool{keaPackage: true}}
+	s := newTestSvc(t, e)
+
+	res, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("ReloadConfigs numa máquina sem o kea: %v", err)
+	}
+	joined := strings.Join(e.writes, "\n")
+	if !strings.Contains(joined, "apt-get install") || !strings.Contains(joined, keaPackage) {
+		t.Errorf("o pacote ausente tinha que ser instalado; comandos:\n%s", joined)
+	}
+	if len(res.Installed) != 1 || res.Installed[0] != keaPackage {
+		t.Errorf("Installed = %v, quero [%s] (para o painel poder registrar a transição)", res.Installed, keaPackage)
+	}
+	if _, sErr := os.Stat(s.keaConf); sErr != nil {
+		t.Errorf("depois de instalar, a config tinha que ser aplicada na mesma execução: %v", sErr)
+	}
+}
+
+// O caminho normal — todo save de DHCP/DNS passa por aqui. Numa máquina já
+// provisionada isso não pode custar um apt: só um dpkg-query por pacote.
+func TestReloadConfigsDoesNotRunAptWhenThePackagesAreThere(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+
+	res, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	if strings.Contains(strings.Join(e.writes, "\n"), "apt-get") {
+		t.Errorf("nada de apt numa máquina que já tem os pacotes: %v", e.writes)
+	}
+	if len(res.Installed) != 0 {
+		t.Errorf("Installed = %v, quero vazio", res.Installed)
+	}
+}
+
+// A regra do "não finge": se o pacote não está lá e não dá para instalar
+// (sem rede, espelho fora do ar), a resposta tem que dizer o que falta, por
+// quê, o que deixa de funcionar e como resolver na mão — e nada pode ser
+// escrito nem recarregado.
+func TestReloadConfigsExplainsAPackageItCouldNotInstall(t *testing.T) {
+	e := &recExec{missingPkgs: map[string]bool{keaPackage: true}, installFails: true}
+	s := newTestSvc(t, e)
+
+	_, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, "")
+	if err == nil {
+		t.Fatal("aplicar sem o pacote do DHCP tem que falhar, não fingir sucesso")
+	}
+	var pre *netsvc.PrereqError
+	if !errors.As(err, &pre) {
+		t.Fatalf("o erro tem que ser um netsvc.PrereqError (para a API não devolver 'erro interno'), obtive %T: %v", err, err)
+	}
+	msg := err.Error()
+	for _, want := range []string{keaPackage, "Unable to locate package", "DHCP", "apt-get install -y"} {
+		t.Run(want, func(t *testing.T) {
+			if !strings.Contains(msg, want) {
+				t.Errorf("a mensagem tem que citar %q, obtive %q", want, msg)
+			}
+		})
+	}
+	if _, sErr := os.Stat(s.keaConf); sErr == nil {
+		t.Error("nada pode ser escrito quando o pré-requisito falta")
+	}
+	if strings.Contains(strings.Join(e.writes, "\n"), "reload-or-restart") {
+		t.Errorf("nada pode ser recarregado quando o pré-requisito falta: %v", e.writes)
+	}
+}
+
+// A armadilha do systemd: ProtectSystem=strict monta o namespace no start do
+// serviço, então um diretório que não existia naquele momento fica
+// somente-leitura (ou invisível) para o processo em execução mesmo depois de
+// o apt criá-lo. O postinst deste pacote cria /etc/kea e
+// /etc/unbound/unbound.conf.d justamente para que isso não aconteça — mas se
+// acontecer (instalação por `make install`, diretório apagado à mão), o
+// admin tem que ler o que fazer, não um erro de escrita cru.
+func TestReloadConfigsSaysToRestartWhenTheConfigDirIsOutsideTheSandbox(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	s.keaConf = filepath.Join(t.TempDir(), "nao-existe", "kea-dhcp4.conf")
+
+	_, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, "")
+	if err == nil {
+		t.Fatal("escrever num diretório inacessível tem que falhar")
+	}
+	var pre *netsvc.PrereqError
+	if !errors.As(err, &pre) {
+		t.Fatalf("erro = %T (%v), quero um netsvc.PrereqError", err, err)
+	}
+	msg := err.Error()
+	for _, want := range []string{filepath.Dir(s.keaConf), "Reinicie o serviço", "systemctl restart linkguard-fw"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("a mensagem tem que citar %q, obtive %q", want, msg)
+		}
+	}
+}
+
+// Depois de instalar o kea, o /etc/kea recém-criado pelo pacote vem 0750
+// _kea:_kea e o próprio kea-dhcp4 não consegue ler a config lá dentro (bug
+// real de produção, ver EnsureKeaDirReadable). Instalar sob demanda tem que
+// arrumar isso na hora, não só no próximo boot.
+func TestReloadConfigsRelaxesTheKeaDirAfterInstallingIt(t *testing.T) {
+	e := &recExec{missingPkgs: map[string]bool{keaPackage: true}}
+	s := newTestSvc(t, e)
+	dir := filepath.Dir(s.keaConf)
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Errorf("modo do %s = %o, quero 0755 (senão o kea-dhcp4 não lê a própria config)", dir, info.Mode().Perm())
+	}
+}
+
+// Visto na VM: unbound subiu quebrado uma vez (faltava a âncora DNSSEC), o
+// systemd esgotou o contador de restart e, DEPOIS de a causa ser corrigida,
+// todo apply passou a falhar com "Start request repeated too quickly" — uma
+// mensagem que não fala do problema real e que só sai do lugar com um
+// `systemctl reset-failed` no SSH. Limpar o estado de falha antes de
+// recarregar devolve ao admin o erro verdadeiro (ou o serviço no ar).
+func TestReloadConfigsClearsAFailedUnitBeforeReloading(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	joined := strings.Join(e.writes, "\n")
+	for _, svc := range []string{keaService, unboundService} {
+		reset := strings.Index(joined, "systemctl reset-failed "+svc)
+		act := strings.Index(joined, "systemctl reload-or-restart "+svc)
+		if act < 0 {
+			act = strings.Index(joined, "systemctl restart "+svc)
+		}
+		if reset < 0 || act < 0 {
+			t.Errorf("faltou o reset-failed ou a ação em %s; comandos:\n%s", svc, joined)
+			continue
+		}
+		if reset > act {
+			t.Errorf("o reset-failed de %s tem que vir antes de recarregar/reiniciar; comandos:\n%s", svc, joined)
+		}
+	}
+}
+
+// Medido na VM: o unbound recarregado com SIGHUP (o ExecReload que o pacote
+// Debian traz) relê a config mas NÃO reabre os sockets de escuta. Numa
+// instalação nova isso é garantido de dar errado: o pacote sobe o unbound
+// escutando só em 127.0.0.1, o LinkGuard escreve o drop-in com
+// `interface: <IP da LAN>`, recarrega — e o painel diz "aplicado" enquanto a
+// LAN inteira fica sem DNS. Quando o endereço de escuta muda, tem que ser
+// restart de verdade.
+func TestReloadRestartsUnboundWhenTheListenAddressChanges(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	if err := os.WriteFile(s.unboundConf, []byte("server:\n  interface: 10.9.9.9\n"), 0o644); err != nil {
+		t.Fatalf("preparar config antiga: %v", err)
+	}
+
+	c := netsvc.DefaultConfig()
+	c.Gateway = "192.168.3.3"
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, nil, ""); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	joined := strings.Join(e.writes, "\n")
+	if !strings.Contains(joined, "systemctl restart "+unboundService) {
+		t.Errorf("mudou o endereço de escuta: o unbound precisa de restart, não de SIGHUP; comandos:\n%s", joined)
+	}
+}
+
+// ...e o contrário: mexer só na blocklist não pode derrubar o resolvedor (e
+// jogar fora o cache) a cada save. Aí o reload gracioso é o certo.
+func TestReloadKeepsGracefulReloadWhenOnlyTheBlocklistChanges(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	c := netsvc.DefaultConfig()
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, nil, ""); err != nil {
+		t.Fatalf("primeiro apply: %v", err)
+	}
+
+	e.writes = nil
+	if _, err := s.ReloadConfigs(context.Background(), c, nil, []string{"ads.example.com"}, ""); err != nil {
+		t.Fatalf("segundo apply: %v", err)
+	}
+	joined := strings.Join(e.writes, "\n")
+	if strings.Contains(joined, "systemctl restart "+unboundService) {
+		t.Errorf("nada mudou na escuta: derrubar o unbound (e o cache) por uma blocklist é caro demais;\n%s", joined)
+	}
+	if !strings.Contains(joined, "reload-or-restart "+unboundService) {
+		t.Errorf("faltou o reload gracioso do unbound;\n%s", joined)
+	}
+}
+
+// Instalação sob demanda: o pacote acabou de subir o unbound com a config
+// padrão dele (só 127.0.0.1). Mesmo que o arquivo do LinkGuard já estivesse
+// no lugar, o processo em execução não é o que leu esse arquivo.
+func TestReloadRestartsUnboundRightAfterInstallingIt(t *testing.T) {
+	e := &recExec{missingPkgs: map[string]bool{unboundPackage: true}}
+	s := newTestSvc(t, e)
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	if !strings.Contains(strings.Join(e.writes, "\n"), "systemctl restart "+unboundService) {
+		t.Errorf("o unbound recém-instalado tem que ser reiniciado para valer a config do LinkGuard;\n%s", strings.Join(e.writes, "\n"))
 	}
 }

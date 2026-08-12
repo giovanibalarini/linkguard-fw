@@ -83,10 +83,35 @@ type ConfigFile struct {
 // with nothing but a journal line means the panel keeps showing a value
 // the daemon never received. Each warning is a plain-Portuguese sentence,
 // ready to be shown to the admin as-is.
+// Installed names the packages the provider had to install to make this
+// apply possible (kea-dhcp4-server, unbound), empty on every apply after
+// the first. The admin turned a feature on and LinkGuard brought in what it
+// needed — the caller uses this to record/clear the corresponding alert only
+// on the transition, never on every save.
 type ApplyResult struct {
-	Output   string   `json:"output,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
+	Output    string   `json:"output,omitempty"`
+	Warnings  []string `json:"warnings,omitempty"`
+	Installed []string `json:"installed,omitempty"`
 }
+
+// PrereqError is an apply that did not happen because a prerequisite of the
+// machine is missing — the package is not installed and could not be
+// installed, or the directory its config lives in is not writable by this
+// process. Its message is written for the admin, in Portuguese, and says
+// what is missing, why, what stops working and how to fix it by hand.
+//
+// It exists so the API layer can tell this apart from an internal failure:
+// "erro interno do servidor" is the correct answer to a bug, and the wrong
+// answer to "o pacote kea-dhcp4-server não está instalado" — the second is
+// something the admin can act on, and hiding it is the "mentir por omissão"
+// FEATURES.md's delivery rule forbids. Nothing is written and nothing is
+// reloaded when this is returned: the running config is left intact.
+type PrereqError struct {
+	// Msg is the full, admin-facing sentence. Safe to show as-is.
+	Msg string
+}
+
+func (e *PrereqError) Error() string { return e.Msg }
 
 // Provider is implemented by each DHCP/DNS backend.
 type Provider interface {
