@@ -190,7 +190,7 @@ func (s *Service) CheckPendingGroups(ctx context.Context, candidate []nftables.S
 	return s.nft.CheckGroups(ctx, candidate)
 }
 
-// storedGroups converte as linhas do banco na visão que internal/nftables
+// StoredGroups converte as linhas do banco na visão que internal/nftables
 // entende, encaixando cada regra no seu grupo.
 //
 // Devolver erro aqui é obrigatório e nunca substituível por uma lista vazia:
@@ -200,17 +200,31 @@ func (s *Service) CheckPendingGroups(ctx context.Context, candidate []nftables.S
 // firewall inteiro do admin desaparecendo por causa de um erro de leitura
 // (ver o CONTRATO DO CHAMADOR no doc-comment de ReconcileGroups).
 //
-// Regra órfã (group_id que não aponta para grupo nenhum) é deixada de fora e
-// registrada: renderizá-la em chain nenhuma seria mostrá-la no painel sem
-// existir no firewall.
-func (s *Service) storedGroups() ([]nftables.StoredGroup, error) {
-	groups, err := s.db.ListFirewallGroups()
-	if err != nil {
-		return nil, fmt.Errorf("ler os grupos de regras: %w", err)
-	}
+// Exportada porque a API precisa exatamente desta montagem em três lugares
+// (a visão geral, a listagem de grupos e o pré-voo de toda mutação), e uma
+// segunda cópia dela nos handlers divergiria justamente no ponto em que
+// mentir é mais caro: qual regra pertence a qual chain.
+func (s *Service) StoredGroups() ([]nftables.StoredGroup, error) {
 	rules, err := s.db.ListFirewallRules()
 	if err != nil {
 		return nil, fmt.Errorf("ler as regras: %w", err)
+	}
+	return s.StoredGroupsWithRules(rules)
+}
+
+// StoredGroupsWithRules é StoredGroups com o conjunto de regras dado pelo
+// chamador em vez do que está gravado — é o que permite ao pré-voo `nft -c`
+// de uma mutação de REGRA validar o firewall que resultaria dela sem nada
+// ter sido escrito ainda (a ordem obrigatória: validar → conferir com o nft
+// → gravar → reconciliar).
+//
+// Regra órfã (group_id que não aponta para grupo nenhum) é deixada de fora e
+// registrada: renderizá-la em chain nenhuma seria mostrá-la no painel sem
+// existir no firewall.
+func (s *Service) StoredGroupsWithRules(rules []storage.FirewallRule) ([]nftables.StoredGroup, error) {
+	groups, err := s.db.ListFirewallGroups()
+	if err != nil {
+		return nil, fmt.Errorf("ler os grupos de regras: %w", err)
 	}
 
 	known := make(map[string]bool, len(groups))
@@ -286,7 +300,7 @@ type ApplyStatus struct {
 // reconciles forward — a boot that doesn't reach here leaves the forward
 // chain with no owner at all.
 func (s *Service) Reconcile(ctx context.Context) error {
-	groups, err := s.storedGroups()
+	groups, err := s.StoredGroups()
 	if err != nil {
 		// Abortar antes de qualquer comando do nft: ReconcileGroups com lista
 		// vazia apaga TODAS as chains de grupo e reduz a forward aos

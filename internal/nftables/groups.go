@@ -26,17 +26,25 @@ const (
 // independent of internal/storage.FirewallGroup — internal/nftables must
 // not import internal/storage (a cycle), exactly like StoredRule already
 // does. The caller converts before calling.
+//
+// As tags json existem porque GroupView (merge_groups.go) embute este tipo e
+// é o corpo que a API devolve: sem elas o painel receberia as chaves em
+// PascalCase, divergindo de todo o resto da API — e `Rules` colidiria com o
+// `rules` de GroupView, que é a visão honesta (banco + nft vivo) e a única
+// que deve ir para a tela. Daí o `-`: a lista crua de dentro nunca é
+// serializada, para não haver duas listas de regras na mesma resposta,
+// dizendo coisas diferentes.
 type StoredGroup struct {
-	ID          string
-	Name        string
-	ChainName   string
-	Position    int
-	Enabled     bool
-	CondSaddr   string
-	CondDaddr   string
-	CondIif     string
-	Fallthrough string
-	Rules       []StoredRule
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	ChainName   string       `json:"chain_name"`
+	Position    int          `json:"position"`
+	Enabled     bool         `json:"enabled"`
+	CondSaddr   string       `json:"cond_saddr"`
+	CondDaddr   string       `json:"cond_daddr"`
+	CondIif     string       `json:"cond_iif"`
+	Fallthrough string       `json:"fallthrough"`
+	Rules       []StoredRule `json:"-"`
 }
 
 // GroupChainName derives the chain name from the group's id, never from the
