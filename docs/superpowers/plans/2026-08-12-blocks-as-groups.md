@@ -548,6 +548,20 @@ git commit -m "feat(api): grupo do sistema não pode ser apagado nem renomeado"
 
 ### Task 6: Tela — grupos do sistema e a aba de direcionamento
 
+> **Achado da revisão da Task 3, obrigatório aqui:** o botão "bloquear host em
+> 1 clique" passou a poder mentir. `hosts.SetBlocked` insere o IP em
+> `@blocked_hosts` e devolve sucesso sem saber nada do estado do grupo
+> "Hosts bloqueados". Antes isso era seguro, porque os `drop` eram fixos em
+> código; agora o grupo pode estar **desligado** ou **posicionado depois de um
+> grupo que faz `accept`** — e nos dois casos o host aparece bloqueado no
+> painel enquanto o tráfego passa. É exatamente a mentira que a §3 da spec de
+> 2026-08-11 existe para eliminar, agora alcançável pela API.
+>
+> A tela de Hosts tem que cruzar com o estado do grupo: se ele está desligado
+> ou abaixo de um grupo que libera, o bloqueio do host precisa aparecer como
+> **não em vigor**, com o motivo e o caminho para resolver. Sem isso, esta
+> entrega não pode ir para produção.
+
 **Files:**
 - Modify: `web/src/components/FirewallGroups.tsx`, `web/src/pages/Firewall.tsx`, `web/src/types/index.ts`
 - Create: `web/src/components/WanSteering.tsx`
