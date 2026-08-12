@@ -201,11 +201,27 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 		slog.Warn("grupos reconciliados, mas não foi possível persistir para o próximo boot", "err", err)
 	}
 	if len(failures) > 0 {
-		// A recusa do próprio nft é a mensagem mais urgente e já nomeia o que
-		// ficou de fora; as regras puladas por campo inválido vão na linha de
-		// log acima.
-		return fmt.Errorf("%d grupo(s) não puderam ser aplicados por completo (os demais foram aplicados normalmente): %s",
+		// A recusa do próprio nft é a mensagem mais urgente e vem primeiro.
+		// Mas as duas coisas cabem na mesma passada — uma regra que nem
+		// renderiza E outra que o nft recusa —, e o chamador precisa das
+		// duas: internal/firewallrules.Service.Reconcile faz
+		// errors.As(applyErr, &skipped) para nomear no banner as regras que
+		// ficaram de fora. Devolver só o texto das failures fazia esses ids
+		// nunca saírem do journal. Daí o %w no fim: a mensagem continua
+		// sendo uma linha só (é banner), nomeia as regras puladas, e o
+		// errors.As continua achando o SkippedRulesError.
+		//
+		// Atenção para quem for tratar isso: aqui um SkippedRulesError PODE
+		// vir acompanhado de recusa do nft. Quem usa errors.As para decidir
+		// "foi só uma regra fora, o resto aplicou" (é o que Reconcile faz
+		// hoje com user_rules) precisa checar o caso composto antes de
+		// converter isso em sucesso.
+		msg := fmt.Sprintf("%d grupo(s) não puderam ser aplicados por completo (os demais foram aplicados normalmente): %s",
 			len(failures), strings.Join(failures, "; "))
+		if len(skippedAll) > 0 {
+			return fmt.Errorf("%s; %w", msg, &SkippedRulesError{IDs: skippedAll})
+		}
+		return fmt.Errorf("%s", msg)
 	}
 	if len(skippedAll) > 0 {
 		return &SkippedRulesError{IDs: skippedAll}

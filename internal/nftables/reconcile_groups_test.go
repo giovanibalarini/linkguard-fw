@@ -586,6 +586,51 @@ func TestReconcileGroupsDoesNotTouchOrphansWhenTheForwardRebuildFails(t *testing
 	}
 }
 
+// Os dois problemas podem acontecer na mesma passada: uma regra que nem
+// renderiza (linha de banco velha) e outra que o nft recusa. O chamador
+// precisa dos DOIS — internal/firewallrules.Service.Reconcile faz
+// errors.As(applyErr, &skipped) justamente para nomear no banner as regras
+// que ficaram de fora, e se o erro das failures mascarar o
+// SkippedRulesError esses ids nunca chegam à tela, só ao journal.
+func TestReconcileGroupsReportsSkippedRulesEvenWhenNftAlsoRejectedOne(t *testing.T) {
+	exec := &fakeReconcileExec{failOn: func(cmd string) error {
+		if strings.Contains(cmd, "grp_aaa tcp dport 443") {
+			return errors.New("nft: Error: could not process rule")
+		}
+		return nil
+	}}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true,
+		Fallthrough: FallthroughContinue,
+		Rules: []StoredRule{
+			{ID: "recusada-pelo-nft", Position: 0, Enabled: true,
+				Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "443"}},
+			{ID: "nao-renderiza", Position: 1, Enabled: true,
+				Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "80; flush ruleset"}},
+		}}}
+
+	err := s.ReconcileGroups(context.Background(), groups)
+	if err == nil {
+		t.Fatal("esperava erro: o nft recusou uma regra e outra nem renderizou")
+	}
+	var skipped *SkippedRulesError
+	if !errors.As(err, &skipped) {
+		t.Fatalf("o erro das failures engoliu o SkippedRulesError; o banner nunca saberia QUAL regra ficou de fora: %v", err)
+	}
+	if len(skipped.IDs) != 1 || skipped.IDs[0] != "nao-renderiza" {
+		t.Errorf("esperava a regra %q identificada, veio %v", "nao-renderiza", skipped.IDs)
+	}
+	if !strings.Contains(err.Error(), "could not process rule") {
+		t.Errorf("a recusa do próprio nft tinha que continuar na mensagem, veio %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "nao-renderiza") {
+		t.Errorf("a mensagem agregada tem que nomear a regra pulada, veio %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("a mensagem vai para um banner de uma linha, veio multilinha: %q", err.Error())
+	}
+}
+
 // Não conseguir listar as chains vivas é motivo para não limpar órfã nenhuma
 // — nunca para desfazer o que já foi aplicado, e nunca para chutar um
 // `delete` às cegas.
