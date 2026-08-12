@@ -46,8 +46,13 @@ build-dev:
 # .deb oficial (o que chega ao firewall por release e por auto-update) ainda
 # declarava `Depends: nftables, iproute2, iptables, iputils-ping` — ou seja,
 # o artefato entregue continuava com exatamente o defeito que esta mudança
-# existe para eliminar, e sem dns-root-data. TestControlFieldsAreSingleSourced
-# (internal/sysprep) trava a reincidência.
+# existe para eliminar, e sem dns-root-data. Dois testes de internal/sysprep
+# travam a reincidência, cada um de um lado: TestControlFieldsAreSingleSourced
+# (o workflow voltar a montar control próprio) e
+# TestABaseFicaEmRecommendsNuncaEmDepends (um Depends: voltar AQUI). O segundo
+# era vacuoso até a revisão final: o control sai de um `printf` de uma linha
+# só e a regex ancorada em linha não casava nada — hoje ela desescapa o `\n`
+# antes de casar, e o teste falha se não encontrar campo nenhum.
 #
 # NÃO existe campo Depends. A base (nftables, iproute2, iptables,
 # iputils-ping) está em Recommends junto com os pacotes opcionais, de

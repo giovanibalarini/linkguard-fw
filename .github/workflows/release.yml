@@ -85,7 +85,9 @@ jobs:
       # pelada, que é exatamente o defeito que a mudança para Recommends:
       # existe para eliminar. TestControlFieldsAreSingleSourced
       # (internal/sysprep) quebra o build se alguém reintroduzir um control
-      # aqui.
+      # aqui — inclusive se for emitido por um `printf` de uma linha só com
+      # `\n` escapados, a forma que passava despercebida antes da revisão
+      # final.
       - name: Build .deb packages
         run: |
           for ARCH in amd64 arm64; do

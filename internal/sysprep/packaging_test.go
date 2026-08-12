@@ -149,13 +149,37 @@ func TestOsTresInstaladoresPreparamOSistema(t *testing.T) {
 
 var controlFieldRe = regexp.MustCompile(`(?m)^\s*(Depends|Pre-Depends|Recommends):\s*(.+)$`)
 
+// controlFields devolve os campos de relação declarados num arquivo que
+// EMITE um control, não que o contenha.
+//
+// O Makefile monta o DEBIAN/control com um `printf` de UMA linha só, com os
+// `\n` escapados. Com a regex ancorada em linha (`(?m)^`), `Recommends:` no
+// meio daquela linha casava ZERO vezes — o laço de TestABaseFicaEmRecommends
+// nunca inspecionava nada e o guarda que a entrega inteira do empacotamento
+// diz ter era vacuoso: reintroduzir `Depends: nftables, iproute2` no printf
+// deixava a suíte verde (provado por mutação na revisão final). Desescapar o
+// `\n` antes de casar é o que faz o teste enxergar o control como o dpkg vai
+// enxergá-lo.
+func controlFields(s string) [][]string {
+	return controlFieldRe.FindAllStringSubmatch(strings.ReplaceAll(s, `\n`, "\n"), -1)
+}
+
 // A base em Depends: faz `dpkg -i` numa máquina pelada parar em `iU`: o
 // pacote não é configurado, o serviço nunca sobe e não sobra painel para
 // explicar o que houve — e o postinst não pode resolver isso sozinho, porque
 // o dpkg segura o lock durante toda a execução.
 func TestABaseFicaEmRecommendsNuncaEmDepends(t *testing.T) {
 	mk := readRepoFile(t, "Makefile")
-	for _, m := range controlFieldRe.FindAllStringSubmatch(mk, -1) {
+	fields := controlFields(mk)
+	// Sem esta asserção o teste volta a ser vacuoso em silêncio no dia em que
+	// alguém mudar COMO o control é emitido (heredoc, arquivo próprio,
+	// variável) e a regex parar de casar: zero campos passa o laço abaixo
+	// sem uma queixa.
+	if len(fields) == 0 {
+		t.Fatal("nenhum campo de relação encontrado no Makefile: ou o control deixou de declarar " +
+			"Recommends:, ou mudou a forma de emiti-lo e este guarda ficou cego — conferir controlFields")
+	}
+	for _, m := range fields {
 		if m[1] != "Recommends" {
 			t.Errorf("o Makefile declara %s: %s — a base tem que ficar em Recommends:", m[1], m[2])
 		}
@@ -201,7 +225,8 @@ func debRecommends(t *testing.T) map[string]bool {
 func TestControlFieldsAreSingleSourced(t *testing.T) {
 	wf := readRepoFile(t, ".github/workflows/release.yml")
 
-	if m := controlFieldRe.FindStringSubmatch(wf); m != nil {
+	if fields := controlFields(wf); len(fields) > 0 {
+		m := fields[0]
 		t.Errorf("o workflow de release declara %s: %s por conta própria. "+
 			"O control tem uma fonte única (DEB_RECOMMENDS, no Makefile); duas cópias já divergiram "+
 			"uma vez e o .deb oficial ficou parando em `iU` numa máquina pelada", m[1], m[2])
