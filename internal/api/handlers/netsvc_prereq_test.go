@@ -179,3 +179,53 @@ func TestARoutineApplyDoesNotCreateRecoveryNoise(t *testing.T) {
 		t.Errorf("um apply rotineiro não gera alerta nenhum, obtive %+v", all)
 	}
 }
+
+// O outro caminho de fechamento, que não tinha teste: o admin resolveu à mão
+// (apt-get install pelo SSH) e o apply seguinte funciona sem o LinkGuard ter
+// instalado nada. Aí não há recuperação a anunciar — mas o alerta crítico
+// vermelho tem que parar de ser mostrado, senão o painel fica pedindo
+// providência para um problema que não existe mais.
+func TestUmApplyQueDaCertoFechaOAlertaMesmoSemTerInstaladoNada(t *testing.T) {
+	db := newPrereqTestDB(t)
+	alertSvc := alerts.NewService(db)
+
+	failing := NewNetsvcHandler(db, prereqNetsvcProvider{}, alertSvc)
+	if err := failing.doReload(context.Background()); err == nil {
+		t.Fatal("esperava falha de apply sem o pacote")
+	}
+	openBefore, _ := db.GetAlerts(true, 50)
+	if !hasAlert(openBefore, alerts.TypeNetsvcDepsMissing) {
+		t.Fatalf("pré-condição: esperava o alerta aberto, obtive %+v", openBefore)
+	}
+
+	// Nada instalado pelo LinkGuard nesta rodada (Installed vazio), e o
+	// apply funciona.
+	fixed := NewNetsvcHandler(db, fakeNetsvcProvider{}, alertSvc)
+	if err := fixed.doReload(context.Background()); err != nil {
+		t.Fatalf("doReload: %v", err)
+	}
+
+	open, err := db.GetAlerts(true, 50)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	if hasAlert(open, alerts.TypeNetsvcDepsMissing) {
+		t.Errorf("o pacote está lá e o apply funcionou: o alerta tinha que ter sido fechado; %+v", open)
+	}
+	// Fechamento silencioso: quem resolveu foi o admin, não o LinkGuard —
+	// anunciar uma recuperação aqui seria o LinkGuard levando crédito por
+	// algo que não fez, e mais uma notificação para ignorar.
+	all, _ := db.GetAlerts(false, 50)
+	if hasAlert(all, alerts.TypeNetsvcDepsOK) {
+		t.Errorf("fechar um alerta obsoleto não pode gerar alerta de recuperação; %+v", all)
+	}
+}
+
+func hasAlert(as []storage.Alert, typ string) bool {
+	for _, a := range as {
+		if a.Type == typ {
+			return true
+		}
+	}
+	return false
+}
