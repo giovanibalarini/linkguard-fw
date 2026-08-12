@@ -131,16 +131,21 @@ base package is missing itself (`internal/bootstrapdeps`) — a running service
 can call apt, a package's own maintainer scripts cannot (dpkg holds its lock
 for the whole run).
 
-The optional packages (`kea-dhcp4-server`, `unbound`, `chrony`,
-`smartmontools`) are **not** installed at boot. They are installed on demand,
-when an admin turns the corresponding feature on in the panel — saving the
-DHCP or DNS settings brings in `kea-dhcp4-server` and `unbound` and applies
-the configuration in the same action, with **no service restart**. (That
-"no restart" is why this package's postinst creates `/etc/kea` and
-`/etc/unbound/unbound.conf.d` empty: the unit runs under
-`ProtectSystem=strict`, and systemd builds its mount namespace when the
-service *starts* — a directory apt creates later would be read-only to the
-running process.)
+The optional packages are **not** installed at boot — that would take over
+services nobody asked for. What actually installs what, and when:
+
+| Package | Installed by | Trigger |
+|---|---|---|
+| `kea-dhcp4-server`, `unbound`, `dns-root-data` | LinkGuard | saving or applying the DHCP/DNS settings — install **and** apply happen in the same action, with no service restart |
+| `chrony` | LinkGuard | the explicit "install chrony" button on the NTP screen (never automatically) |
+| `smartmontools` | apt, via `Recommends:` | `apt install ./linkguard-fw_*.deb`. LinkGuard does **not** install it; where it is absent, the disk-health check reports "no data" rather than inventing any |
+
+That "no service restart" is why `linkguard-fw --prepare-system` (run by
+every installation path: the .deb's postinst, `deploy/install.sh` and
+`make install`) creates `/etc/kea`, `/etc/unbound/unbound.conf.d` and
+`/etc/chrony/conf.d` empty: the unit runs under `ProtectSystem=strict`, and
+systemd builds its mount namespace when the service *starts* — a directory
+apt creates later would be read-only to the running process.
 
 **If it cannot install them** (no network, unreachable mirror, broken
 repository), it does not pretend: it retries once after refreshing the apt

@@ -48,10 +48,19 @@ prática:
   sobra painel nenhum para explicar o que houve. Um pacote também não
   consegue chamar o apt dos próprios scripts — o dpkg segura o lock durante
   toda a execução —, mas um serviço em execução consegue;
-- o que é opcional (`kea-dhcp4-server`, `unbound`, `chrony`,
-  `smartmontools`) continua sendo instalado **sob demanda**, quando o admin
-  liga a funcionalidade no painel. Instalar isso no boot seria assumir
-  serviços que ninguém pediu;
+- o que é opcional é instalado **sob demanda**, e não no boot — instalar no
+  boot seria assumir serviços que ninguém pediu. Quem faz isso hoje, e
+  exatamente quando:
+  - `kea-dhcp4-server`, `unbound` e `dns-root-data`: ao salvar (ou aplicar) a
+    configuração de DHCP/DNS. O apply instala e configura na mesma ação, sem
+    reiniciar o serviço;
+  - `chrony`: por um botão explícito na tela de NTP ("instalar chrony"). Não
+    entra sozinho ao mexer na configuração de horário;
+  - `smartmontools`: **não** é instalado pelo LinkGuard. Ele está em
+    `Recommends:` do pacote, então quem instala com `apt install
+    ./linkguard-fw_*.deb` (o caminho normal) já o recebe; num box onde ele
+    falte, a checagem de saúde de disco do Vigia simplesmente reporta que não
+    há dado, sem inventar nada;
 - **se não conseguir instalar** (sem rede, espelho fora do ar, repositório
   quebrado), ele tenta de novo uma vez depois de atualizar o índice do apt e,
   se ainda assim falhar, **não cala**: alerta crítico no painel dizendo quais
