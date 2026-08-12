@@ -349,7 +349,30 @@ func (s *Service) rebuildChain(ctx context.Context, chain string, rules [][]stri
 // would execute against chain — flush, then each rule in tokenSets, in
 // order — as an nft script body, for CheckChain's parse-only dry run.
 func renderChainScript(chain string, tokenSets [][]string) string {
+	return renderChainScriptEnsuring(chain, tokenSets, nil)
+}
+
+// renderChainScriptEnsuring is renderChainScript plus one `add chain` line
+// per name in ensure, emitted BEFORE the flush and before any rule — the
+// only form of pre-flight that works for a chain that does not exist yet.
+//
+// Why it is needed (verified live against nft on Debian 13): inside a script
+// handed to `nft -c -f`, both `flush chain … grp_novo` and `add rule …
+// jump grp_novo` fail with "No such file or directory" when grp_novo isn't
+// in the live ruleset — and the group pre-flight runs BEFORE the DB insert,
+// so a brand-new group's chain never is. Prefixing the script with `add
+// chain` makes the whole thing parse clean, and `nft -c` still creates
+// nothing: it is a dry run, the chain is not materialised. `add chain` is
+// idempotent, so a group that already exists is unaffected.
+//
+// ensure is only ever fed chain names the caller has already validated
+// (CheckGroups rejects anything outside validGroupChainName before getting
+// here) — this text goes to nft, exactly like an argv would.
+func renderChainScriptEnsuring(chain string, tokenSets [][]string, ensure []string) string {
 	var b strings.Builder
+	for _, name := range ensure {
+		fmt.Fprintf(&b, "add chain %s %s %s\n", Family, Table, name)
+	}
 	fmt.Fprintf(&b, "flush chain %s %s %s\n", Family, Table, chain)
 	for _, tokens := range tokenSets {
 		fmt.Fprintf(&b, "add rule %s %s %s %s\n", Family, Table, chain, strings.Join(tokens, " "))
@@ -368,6 +391,20 @@ func renderChainScript(chain string, tokenSets [][]string) string {
 // second, chain-specific implementation there would only risk drifting from
 // this one.
 func (s *Service) CheckChain(ctx context.Context, chain string, tokenSets [][]string) error {
+	return s.CheckChainEnsuring(ctx, chain, tokenSets, nil)
+}
+
+// CheckChainEnsuring is CheckChain for a script that references chains which
+// may not exist in the live ruleset yet — the rule-group pre-flight, which
+// by contract runs before the group's row is written (and therefore before
+// its chain is ever created). Each name in ensure gets an idempotent `add
+// chain` at the top of the validated script; see renderChainScriptEnsuring
+// for why nothing less works and why `nft -c` still changes nothing.
+//
+// Kept separate from CheckChain so the chains that have existed since
+// bootstrap (user_rules, forward) keep validating the byte-for-byte script
+// they validate in production today.
+func (s *Service) CheckChainEnsuring(ctx context.Context, chain string, tokenSets [][]string, ensure []string) error {
 	if s.exec.IsDryRun() {
 		return nil
 	}
@@ -376,7 +413,7 @@ func (s *Service) CheckChain(ctx context.Context, chain string, tokenSets [][]st
 		return fmt.Errorf("criar arquivo temporário para validação: %w", err)
 	}
 	defer os.Remove(f.Name())
-	if _, err := f.WriteString(renderChainScript(chain, tokenSets)); err != nil {
+	if _, err := f.WriteString(renderChainScriptEnsuring(chain, tokenSets, ensure)); err != nil {
 		f.Close()
 		return fmt.Errorf("escrever script de validação: %w", err)
 	}

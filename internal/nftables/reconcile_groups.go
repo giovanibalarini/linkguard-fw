@@ -186,15 +186,24 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 // internal/firewallrules.Service.CheckPendingGroups): validação de campo
 // não pega tudo que o nft recusaria, e reconciliar direto numa regra que o
 // nft recusa já custou uma chain truncada em produção.
+//
+// Como roda antes do INSERT, a chain do grupo NOVO ainda não existe no
+// kernel — e no nft (verificado ao vivo) tanto `flush chain` quanto `jump`
+// para chain inexistente falham dentro de um script de `nft -c`. Por isso
+// cada script validado é precedido do `add chain` das chains de grupo que
+// ele usa (CheckChainEnsuring): sem isso, a validação recusaria todo grupo
+// novo — ou seja, criar qualquer grupo devolveria 400.
 func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
+	ensure := make([]string, 0, len(groups))
 	for _, g := range groups {
 		if !validGroupChainName(g.ChainName) {
 			return fmt.Errorf("grupo %q: nome de chain inválido (%q)", g.Name, g.ChainName)
 		}
+		ensure = append(ensure, g.ChainName)
 		tokenSets, _ := renderGroupChain(g)
-		if err := s.CheckChain(ctx, g.ChainName, tokenSets); err != nil {
+		if err := s.CheckChainEnsuring(ctx, g.ChainName, tokenSets, []string{g.ChainName}); err != nil {
 			return fmt.Errorf("grupo %q: %w", g.Name, err)
 		}
 	}
-	return s.CheckChain(ctx, ForwardChain, forwardChainRules(groups))
+	return s.CheckChainEnsuring(ctx, ForwardChain, forwardChainRules(groups), ensure)
 }

@@ -690,6 +690,79 @@ func TestCheckGroupsValidatesEveryGroupChainAndTheForward(t *testing.T) {
 	}
 }
 
+// O pre-flight roda ANTES do INSERT no banco (é o contrato: validar com a
+// ferramenta real antes de gravar), então a chain do grupo NOVO ainda não
+// existe no kernel. Um script que começa com `flush chain … grp_novo` ou que
+// pula para ele é recusado pelo nft com "No such file or directory" — mesmo
+// em `nft -c`, verificado ao vivo na produção — e o resultado seria criar
+// QUALQUER grupo devolver 400. O script tem que garantir a chain (`add
+// chain`, idempotente, e que o `-c` não materializa) antes de usá-la.
+func TestCheckGroupsCreatesTheGroupChainBeforeUsingIt(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "novo", Name: "Wi-Fi visitantes", ChainName: "grp_novo", Enabled: true, Position: 0,
+			CondSaddr: "192.168.50.0/24", Fallthrough: FallthroughDrop,
+			Rules: []StoredRule{{ID: "r", Position: 0, Enabled: true,
+				Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "443"}}}},
+	}
+
+	if err := s.CheckGroups(context.Background(), groups); err != nil {
+		t.Fatalf("CheckGroups: %v", err)
+	}
+	if len(exec.checkScripts) != 2 {
+		t.Fatalf("esperava 2 validações (chain do grupo + forward), vieram %d", len(exec.checkScripts))
+	}
+
+	// 1. no script da própria chain do grupo: add chain antes do flush.
+	own := exec.checkScripts[0]
+	idxAdd := strings.Index(own, "add chain inet linkguard grp_novo\n")
+	idxFlush := strings.Index(own, "flush chain inet linkguard grp_novo\n")
+	if idxAdd < 0 {
+		t.Fatalf("o script de validação não garante a chain do grupo novo:\n%s", own)
+	}
+	if idxFlush < 0 {
+		t.Fatalf("o script de validação não dá flush na chain do grupo:\n%s", own)
+	}
+	if idxAdd > idxFlush {
+		t.Errorf("o `add chain` veio depois do `flush` — o nft já teria recusado:\n%s", own)
+	}
+
+	// 2. no script da forward: add chain antes do jump correspondente.
+	fwd := exec.checkScripts[1]
+	idxAddFwd := strings.Index(fwd, "add chain inet linkguard grp_novo\n")
+	idxJump := strings.Index(fwd, "jump grp_novo")
+	if idxAddFwd < 0 {
+		t.Fatalf("o script da forward pula para uma chain que ainda não existe:\n%s", fwd)
+	}
+	if idxJump < 0 {
+		t.Fatalf("o script da forward não tem o jump do grupo:\n%s", fwd)
+	}
+	if idxAddFwd > idxJump {
+		t.Errorf("o `add chain` veio depois do jump — o nft já teria recusado:\n%s", fwd)
+	}
+}
+
+// O `add chain` extra é só para as chains de GRUPO: CheckChain/CheckUserRules
+// validam chains que existem desde o bootstrap, e emitir `add chain` para
+// elas mudaria o script que hoje está em produção sem necessidade.
+func TestCheckUserRulesScriptStaysExactlyAsItWas(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+
+	if err := s.CheckUserRules(context.Background(), []StoredRule{
+		{ID: "r", Enabled: true, Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "22"}},
+	}); err != nil {
+		t.Fatalf("CheckUserRules: %v", err)
+	}
+	if len(exec.checkScripts) != 1 {
+		t.Fatalf("esperava 1 validação, vieram %d", len(exec.checkScripts))
+	}
+	if strings.Contains(exec.checkScripts[0], "add chain") {
+		t.Errorf("o script de user_rules não pode ganhar `add chain`:\n%s", exec.checkScripts[0])
+	}
+}
+
 func TestCheckGroupsSurfacesNftsOwnRejection(t *testing.T) {
 	exec := &fakeReconcileExec{readErr: errors.New("nft: Error: invalid port range: end before start")}
 	s := &Service{exec: exec}
