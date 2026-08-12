@@ -220,7 +220,7 @@ func MergeUserRules(dbRules []StoredRule, nftChain ChainInfo) ChainInfo {
 				// misattributing a handle/counters that aren't this rule's.
 				// li is deliberately NOT advanced: that live entry stays
 				// available for a later DB row to match.
-				rule = syntheticUserRule(r)
+				rule = syntheticUserRule(r, merged.Name)
 			}
 			rule.ID = r.ID
 			rule.Enabled = &trueVal
@@ -228,7 +228,7 @@ func MergeUserRules(dbRules []StoredRule, nftChain ChainInfo) ChainInfo {
 			continue
 		}
 
-		rule := syntheticUserRule(r)
+		rule := syntheticUserRule(r, merged.Name)
 		rule.ID = r.ID
 		rule.Enabled = &falseVal
 		merged.Rules = append(merged.Rules, rule)
@@ -250,13 +250,20 @@ func MergeUserRules(dbRules []StoredRule, nftChain ChainInfo) ChainInfo {
 // deliberately does not carry a handle or counter: HasCounter stays false,
 // meaning "not measured", the correct honest state for something nft has
 // never seen (design spec §3.1).
-func syntheticUserRule(r StoredRule) ChainRule {
+//
+// C-1: chain is the chain that actually CONTAINS this rule, threaded in from
+// the ChainInfo being merged — never a constant. Since the Fase C1 migration
+// the admin's rules live inside their group's chain (grp_…) and the legacy
+// user_rules chain was deleted from the ruleset altogether; stamping
+// "user_rules" here made every disabled rule claim, in both endpoints the
+// panel reads, to live in a chain that exists nowhere in the firewall.
+func syntheticUserRule(r StoredRule, chain string) ChainRule {
 	expr := r.Description
 	if tokens, err := buildRuleTokens(r.Fields); err == nil {
 		expr = strings.Join(tokens, " ")
 	}
 	return ChainRule{
-		Chain:       UserChain,
+		Chain:       chain,
 		Expression:  expr,
 		Managed:     false,
 		Owner:       RuleOwner{},

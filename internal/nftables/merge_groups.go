@@ -66,7 +66,17 @@ func MergeGroups(groups []StoredGroup, chains map[string]ChainInfo, forward Chai
 		// As regras de dentro reusam integralmente o pareamento por
 		// identidade da Fase B — inclusive a normalização da forma que o nft
 		// imprime (aspas em iifname, /32 comido).
-		v.Rules = MergeUserRules(g.Rules, chains[g.ChainName])
+		//
+		// A chain vem do BANCO quando o nft ainda não a tem (grupo recém-criado,
+		// reconciliação que não rodou): MergeUserRules carimba o nome da chain
+		// em cada regra sintética (C-1), e o zero-value do mapa traria "" —
+		// dizer que a regra não mora em chain nenhuma quando o banco sabe
+		// exatamente qual é.
+		live := chains[g.ChainName]
+		if live.Name == "" {
+			live.Name = g.ChainName
+		}
+		v.Rules = MergeUserRules(g.Rules, live)
 
 		// Mas o pareamento sozinho mente aqui, e MergeUserRules não tem como
 		// saber: ele foi escrito para user_rules, uma chain ligada direto na

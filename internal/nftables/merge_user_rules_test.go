@@ -210,3 +210,50 @@ func TestMergeUserRulesPairsRealNftOutput(t *testing.T) {
 		}
 	}
 }
+
+// ─── C-1: a regra sintética mora na chain que de fato a contém ─────────────
+//
+// A chain user_rules foi APAGADA pela migração da Fase C1 — as regras do
+// admin moram dentro da chain do grupo. Carimbar "user_rules" na regra
+// desativada faz os dois endpoints que o painel vai consumir (a visão geral e
+// a listagem de grupos) afirmarem que ela mora numa chain que não existe mais
+// em lugar nenhum do firewall: um campo que o cliente usa para agrupar,
+// ordenar e clicar apontando para o vazio.
+func TestMergeUserRulesSyntheticRuleCarriesTheContainingChain(t *testing.T) {
+	db := []StoredRule{
+		{ID: "on", Position: 0, Enabled: true, Fields: RuleFields{Action: "drop", Saddr: "10.0.0.5"}},
+		{ID: "off", Position: 1, Enabled: false, Fields: RuleFields{Action: "accept", Saddr: "10.0.0.6"}},
+	}
+	live := ChainInfo{Name: "grp_ef46c5a25b73", Rules: []ChainRule{
+		{Chain: "grp_ef46c5a25b73", Handle: 11, Expression: "ip saddr 10.0.0.5 drop", HasCounter: true},
+	}}
+
+	merged := MergeUserRules(db, live)
+	if len(merged.Rules) != 2 {
+		t.Fatalf("esperava 2 regras, obtive %+v", merged.Rules)
+	}
+	for _, r := range merged.Rules {
+		if r.Chain != "grp_ef46c5a25b73" {
+			t.Errorf("regra %q diz morar em %q; ela está dentro de grp_ef46c5a25b73", r.ID, r.Chain)
+		}
+	}
+}
+
+// Mesmo com a chain do grupo ausente do nft vivo (o grupo acabou de ser
+// criado e a reconciliação ainda não rodou), o banco sabe o nome da chain —
+// e é ele que a resposta tem que trazer, nunca uma chain apagada.
+func TestMergeGroupsSyntheticRuleCarriesTheGroupChainEvenWithoutLiveChain(t *testing.T) {
+	g := StoredGroup{ID: "a", Name: "Minhas regras", ChainName: "grp_aaa", Enabled: true,
+		Fallthrough: FallthroughContinue,
+		Rules: []StoredRule{
+			{ID: "off", Enabled: false, Fields: RuleFields{Action: "accept", Saddr: "10.0.0.6"}},
+		}}
+
+	v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, ChainInfo{Name: ForwardChain})[0]
+	if v.Rules.Name != "grp_aaa" {
+		t.Errorf("a chain da visão do grupo tem que ser a do banco, obtive %q", v.Rules.Name)
+	}
+	if got := v.Rules.Rules[0].Chain; got != "grp_aaa" {
+		t.Errorf("a regra desativada diz morar em %q, e não na chain do grupo", got)
+	}
+}
