@@ -381,6 +381,45 @@ func TestReconcileRefusesToRenderAForwardWithoutTheSystemGroups(t *testing.T) {
 	}
 }
 
+// A defesa olha PRESENÇA na lista, nunca Enabled — e isto é intenção, não
+// descuido. Desligar um bloqueio é escolha explícita do admin (é assim que o
+// toggle do painel vai funcionar), e um grupo desligado continua sendo uma
+// linha na lista.
+//
+// Exigir Enabled aqui é o "conserto" óbvio para quem ler esta verificação
+// pela primeira vez, e o efeito seria absurdo: o admin desligaria um
+// bloqueio e o firewall inteiro pararia de aceitar qualquer mudança — toda
+// reconciliação abortando, apply não-ok permanente, alerta crítico aberto,
+// e nenhuma mutação da API conseguindo passar.
+func TestReconcileAcceptsTheSystemGroupsTurnedOffByTheAdmin(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newBootedService(t, db)
+	ctx := context.Background()
+
+	for _, g := range systemGroupsIn(t, db) {
+		if err := db.SetFirewallGroupEnabled(g.ID, false); err != nil {
+			t.Fatalf("desligar %q: %v", g.Name, err)
+		}
+	}
+
+	if err := svc.Reconcile(ctx); err != nil {
+		t.Fatalf("desligar um bloqueio não pode travar a reconciliação: %v", err)
+	}
+	if st := svc.LastApplyStatus(); st == nil || !st.OK {
+		t.Errorf("o apply tem que ficar ok: %+v", st)
+	}
+	rebuilt := false
+	for _, cmd := range exec.executed {
+		j := strings.Join(cmd, " ")
+		if strings.HasPrefix(j, "flush chain") && strings.HasSuffix(j, " forward") {
+			rebuilt = true
+		}
+	}
+	if !rebuilt {
+		t.Errorf("a forward tinha que ter sido reconstruída normalmente: %v", exec.executed)
+	}
+}
+
 // Criar os dois grupos do sistema não pode custar nada ao firewall que já
 // está valendo: a reconciliação seguinte tem que dar certo, o apply tem que
 // ficar ok e a forward tem que continuar com os quatro bloqueios. Sem esta
