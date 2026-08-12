@@ -221,8 +221,10 @@ func (s *Service) CheckPendingGroups(ctx context.Context, candidate []nftables.S
 //
 // Devolver erro aqui é obrigatório e nunca substituível por uma lista vazia:
 // ReconcileGroups trata lista vazia como o comando legítimo "o admin não tem
-// grupo nenhum" e, obedecendo, reduz a forward aos quatro bloqueios e apaga
-// todas as chains grp_. Um SELECT que falhou virando lista vazia seria o
+// grupo nenhum" e, obedecendo, esvazia a forward — inclusive os bloqueios
+// administrativos, que desde que ela virou uma lista ordenada só também são
+// itens dela — e apaga todas as chains grp_. Um SELECT que falhou virando
+// lista vazia seria o
 // firewall inteiro do admin desaparecendo por causa de um erro de leitura
 // (ver o CONTRATO DO CHAMADOR no doc-comment de ReconcileGroups).
 //

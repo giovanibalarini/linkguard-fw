@@ -155,11 +155,22 @@ func TestReconcileStructuralChainsEveryRuleCarriesCounter(t *testing.T) {
 // clique" que perde para uma regra criada meses antes é um bloqueio que
 // mente. E a forward deixou de alcançar user_rules: as regras do admin
 // passaram a morar dentro de grupos.
+//
+// ATUALIZADO (a forward virou uma lista ordenada só): os quatro bloqueios
+// deixaram de ser literais em código e passaram a ser dois itens da lista,
+// então a lista deste teste é a que a produção tem depois da migração — os
+// dois grupos do sistema nas posições 0 e 1, o grupo do admin depois. A
+// asserção não mudou: bloqueio antes do jump.
 func TestForwardChainNoLongerLetsUserRulesShadowTheBlocks(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
-	groups := []StoredGroup{{ID: "a", Name: "Minhas regras", ChainName: "grp_aaa",
-		Enabled: true, Position: 0, Fallthrough: FallthroughContinue}}
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: true, Position: 1, Fallthrough: FallthroughContinue},
+		{ID: "a", Name: "Minhas regras", ChainName: "grp_aaa", Kind: GroupKindAdmin,
+			Enabled: true, Position: 2, Fallthrough: FallthroughContinue}}
 
 	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
 		t.Fatalf("ReconcileGroups: %v", err)

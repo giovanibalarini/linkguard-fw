@@ -179,9 +179,11 @@ func sanitizeNetworks(in []string) []string {
 // DHCP) is ever touched. When serving is false, or the network list is
 // empty after sanitization, the chain is flushed and left empty — not
 // deleted — so its state is always explicit and idempotent.
-// ForwardChain evaluates the managed blocklist/host-block drops and then
-// jumps into each enabled rule group, in the admin's order (since Phase C1 —
-// see forwardChainRules for why the blocks come first). MarkHostsChain
+// ForwardChain is rendered from a single ordered list — the admin's own —
+// where each item is either a jump into a rule group or the managed
+// blocklist/host-block drops, in the position the admin chose (see
+// forwardChainRules; blocks first is the migration's default, not a code
+// invariant). MarkHostsChain
 // steers a host's forwarded traffic to a specific WAN by fwmark, looked up
 // from the host_wan map. Both are structural — created once at
 // EnsureTable/bootstrap — and reconciled on every boot exactly like
@@ -192,18 +194,35 @@ const (
 	MarkHostsChain = "mark_hosts"
 )
 
-// forwardChainRules é o conteúdo canônico e ordenado da chain forward.
-// Ordem importa — o nft avalia de cima para baixo:
+// forwardChainRules rende a chain forward a partir de UMA lista ordenada —
+// a mesma que o admin vê na tela, na mesma ordem. Antes desta mudança a
+// ordem era fixa em código (os quatro bloqueios, depois os jumps); agora
+// bloqueio é um item da lista como qualquer outro, e a posição dele é
+// escolha do admin.
 //
-//  1. Os bloqueios administrativos (host bloqueado, destino bloqueado)
-//     vêm PRIMEIRO e vencem qualquer regra do admin. Até a Fase B era o
-//     contrário: um "permitir" do usuário anulava a lista de bloqueio, o
-//     que fazia o botão "bloquear host em 1 clique" mentir. Se o bloqueio
-//     não vence, ele não é bloqueio (design spec §3).
-//  2. Depois, um jump por grupo ativado, na ordem que o admin configurou.
-//     A condição de entrada do grupo vai na própria linha do jump: se ela
-//     não casa, o grupo inteiro é pulado sem o kernel olhar as regras de
-//     dentro.
+// Cada item vira uma coisa ou outra, nunca as duas:
+//
+//   - grupo do sistema (host bloqueado, destino bloqueado): as duas linhas
+//     de `drop` do named set correspondente, direto aqui. Ele não tem chain
+//     própria — o conteúdo dele é o set — e o chain_name reservado (sys_…)
+//     nunca vai para o nft.
+//   - grupo do admin: um `jump` para a chain dele. A condição de entrada vai
+//     na própria linha do jump: se ela não casa, o grupo inteiro é pulado sem
+//     o kernel olhar as regras de dentro.
+//
+// O padrão continua sendo bloqueios primeiro (é assim que a migração os cria,
+// nas posições 0 e 1), e continua valendo a razão da §3 da design spec: um
+// "permitir" do admin avaliado antes do bloqueio faz o botão "bloquear host
+// em 1 clique" mentir. O que a Fase C1 eliminou foi a SURPRESA — uma regra
+// antiga anulando um bloqueio sem ninguém ver, porque a ordem era invisível
+// —, não a possibilidade. A ordem agora está na tela, numerada, e mover um
+// bloqueio para baixo de um grupo é uma decisão explícita.
+//
+// ATENÇÃO — não existe mais nenhum bloqueio garantido por código aqui: uma
+// lista sem os grupos do sistema rende uma forward sem `drop` nenhum. Quem
+// chama é que não pode deixar isso acontecer, e não deixa:
+// internal/firewallrules.Service.Reconcile aborta antes de emitir comando
+// (ensureSystemGroupsPresent) quando os dois grupos não estão na lista.
 //
 // Toda linha carrega `counter`: ver ReconcileStructuralChains sobre por que
 // isso não é negociável.
@@ -213,47 +232,47 @@ const (
 // "Minhas regras"), e um jump para uma chain que não é mais a fonte da
 // verdade só poderia divergir dela.
 func forwardChainRules(groups []StoredGroup) [][]string {
-	rules := [][]string{
-		{"ip", "saddr", "@" + BlockedSet, "counter", "drop"},
-		{"ip", "daddr", "@" + BlockedSet, "counter", "drop"},
-		{"ip", "daddr", "@blocklist", "counter", "drop"},
-		{"ip", "saddr", "@blocklist", "counter", "drop"},
-	}
-
 	sorted := make([]StoredGroup, len(groups))
 	copy(sorted, groups)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
 
+	var rules [][]string
 	for _, g := range sorted {
 		if !g.Enabled {
-			continue // desligar = tirar o jump; a chain e as regras continuam guardadas
-		}
-		if IsSystemGroup(g.Kind) {
-			// Os bloqueios do sistema já estão fixos no topo desta função. A
-			// linha de grupo que os representa no banco existe para lhes dar
-			// posição na lista que o admin vê e reordena; ela ainda não decide
-			// o que sai aqui, e o nome de chain reservado dela nunca vai para
-			// o nft. Ver §2.3 da spec de 2026-08-12: a forward passa a ser
-			// percorrida como uma lista única, e é aí que a posição destes
-			// dois passa a valer de verdade.
+			// Desligar = sumir do firewall. Para o grupo do admin, a chain e
+			// as regras dele continuam guardadas no nft; para o do sistema, os
+			// membros do set continuam guardados (o set não é tocado aqui).
 			continue
 		}
-		if !validGroupChainName(g.ChainName) {
-			// Não é paranoia redundante: este nome sai do banco e é
-			// interpolado no argv do nft, que junta os argumentos e parseia
-			// o resultado — a mesma porta que reIface/ValidMark fecham nos
-			// outros geradores deste pacote.
-			slog.Error("grupo ignorado ao montar a chain forward: nome de chain inseguro",
-				"grupo", g.ID, "nome", g.Name, "chain", g.ChainName)
-			continue
+		switch g.Kind {
+		case GroupKindBlockedHosts:
+			rules = append(rules,
+				[]string{"ip", "saddr", "@" + BlockedSet, "counter", "drop"},
+				[]string{"ip", "daddr", "@" + BlockedSet, "counter", "drop"},
+			)
+		case GroupKindBlocklist:
+			rules = append(rules,
+				[]string{"ip", "daddr", "@blocklist", "counter", "drop"},
+				[]string{"ip", "saddr", "@blocklist", "counter", "drop"},
+			)
+		default: // grupo do admin
+			if !validGroupChainName(g.ChainName) {
+				// Não é paranoia redundante: este nome sai do banco e é
+				// interpolado no argv do nft, que junta os argumentos e parseia
+				// o resultado — a mesma porta que reIface/ValidMark fecham nos
+				// outros geradores deste pacote.
+				slog.Error("grupo ignorado ao montar a chain forward: nome de chain inseguro",
+					"grupo", g.ID, "nome", g.Name, "chain", g.ChainName)
+				continue
+			}
+			tokens, err := groupJumpTokens(g)
+			if err != nil {
+				slog.Error("grupo ignorado ao montar a chain forward: condição inválida",
+					"grupo", g.ID, "nome", g.Name, "err", err)
+				continue
+			}
+			rules = append(rules, tokens)
 		}
-		tokens, err := groupJumpTokens(g)
-		if err != nil {
-			slog.Error("grupo ignorado ao montar a chain forward: condição inválida",
-				"grupo", g.ID, "nome", g.Name, "err", err)
-			continue
-		}
-		rules = append(rules, tokens)
 	}
 	return rules
 }

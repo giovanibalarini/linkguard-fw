@@ -58,8 +58,9 @@ func (s *Service) listGroupChains(ctx context.Context) ([]string, error) {
 //  2. Preencher cada chain (flush + regras + linha de "e o que sobrar").
 //     Vale também para grupo desligado: as regras dele continuam guardadas
 //     no nft, só que ninguém pula para lá.
-//  3. Reconstruir a forward: bloqueios primeiro, depois um jump por grupo
-//     ativado, na ordem do admin.
+//  3. Reconstruir a forward: uma lista ordenada só, em que cada item ativado
+//     vira ou o jump do grupo do admin ou as linhas de set do bloqueio, na
+//     posição que o admin escolheu (ver forwardChainRules).
 //  4. Só agora apagar as chains órfãs (grupos que o admin removeu), e só se
 //     o passo 3 tiver dado certo. O nft recusa apagar chain ainda
 //     referenciada (EBUSY) — se isto rodasse antes do passo 3, ou depois de
@@ -69,15 +70,20 @@ func (s *Service) listGroupChains(ctx context.Context) ([]string, error) {
 //
 // CONTRATO DO CHAMADOR — lista vazia apaga tudo. `groups` é o conjunto
 // COMPLETO de grupos que devem existir no firewall, não um delta:
-// ReconcileGroups(ctx, nil) reduz a forward aos 4 bloqueios administrativos
-// e apaga TODAS as chains grp_. Isso é o correto para "o admin não tem
-// grupo nenhum", e é indistinguível, aqui dentro, de um chamador que
-// perguntou ao banco, recebeu erro e passou a lista vazia mesmo assim — o
-// resultado seria o firewall inteiro do admin sumindo por causa de um SELECT
-// que falhou. Quem chama tem que ABORTAR se ListFirewallGroups devolver
-// erro, nunca seguir com lista vazia. (Quando a lista chega vazia com chains
-// grp_ vivas, isto emite um slog.Warn nomeando as chains removidas — é o
-// último aviso possível, não uma proteção.)
+// ReconcileGroups(ctx, nil) esvazia a forward por completo — desde que ela
+// virou uma lista ordenada só, nem os bloqueios administrativos sobram,
+// porque eles também são itens da lista — e apaga TODAS as chains grp_. É o
+// que uma lista vazia literalmente pede, e é indistinguível, aqui dentro, de
+// um chamador que perguntou ao banco, recebeu erro e passou a lista vazia
+// mesmo assim — o resultado seria o firewall inteiro do admin sumindo, agora
+// com os bloqueios junto, por causa de um SELECT que falhou. Quem chama tem
+// que ABORTAR se ListFirewallGroups devolver erro, nunca seguir com lista
+// vazia, e é por isso que internal/firewallrules.Service.Reconcile recusa a
+// passada quando os dois grupos do sistema não estão na lista
+// (ensureSystemGroupsPresent) — a defesa que substitui a garantia que os
+// literais em código davam. (Quando a lista chega vazia com chains grp_
+// vivas, isto emite um slog.Warn nomeando as chains removidas — é o último
+// aviso possível, não uma proteção.)
 //
 // Falha por regra é contida (design spec §8): o nft recusar uma regra de um
 // grupo NÃO interrompe os passos seguintes. Interromper faria uma única

@@ -168,15 +168,93 @@ func indexOfCommand(executed []string, pred func(string) bool) int {
 	return -1
 }
 
+// ─── forwardChainRules: uma lista ordenada só ────────────────────────────
+
+// A chain forward deixa de ter ordem fixa em código: ela é a lista do admin,
+// na ordem dele. Um bloqueio movido para o fim aparece no fim.
+func TestForwardChainFollowsTheSingleOrderedList(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "g", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 0,
+			CondSaddr: "192.168.50.0/24"},
+		{ID: "h", Kind: GroupKindBlockedHosts, Enabled: true, Position: 1},
+		{ID: "b", Kind: GroupKindBlocklist, Enabled: true, Position: 2},
+	}
+	lines := forwardLines(groups)
+	want := []string{
+		"ip saddr 192.168.50.0/24 counter jump grp_aaa",
+		"ip saddr @blocked_hosts counter drop",
+		"ip daddr @blocked_hosts counter drop",
+		"ip daddr @blocklist counter drop",
+		"ip saddr @blocklist counter drop",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("esperava %d linhas, obtive %d: %v", len(want), len(lines), lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("linha %d:\n  obtive %q\n  queria %q", i, lines[i], want[i])
+		}
+	}
+}
+
+// O padrão da migração: bloqueios primeiro. Continua sendo o que sai quando
+// o admin não mexeu em nada.
+func TestForwardChainDefaultOrderIsBlocksFirst(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "h", Kind: GroupKindBlockedHosts, Enabled: true, Position: 0},
+		{ID: "b", Kind: GroupKindBlocklist, Enabled: true, Position: 1},
+		{ID: "g", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 2},
+	}
+	s := renderChainScript(ForwardChain, forwardChainRules(groups))
+	if strings.Index(s, "@blocked_hosts") > strings.Index(s, "jump grp_aaa") {
+		t.Errorf("no padrão os bloqueios vêm primeiro:\n%s", s)
+	}
+}
+
+// Desligar um grupo do sistema tira as linhas dele do firewall; os membros
+// do set continuam guardados (o set não é tocado).
+func TestForwardChainSkipsDisabledSystemGroup(t *testing.T) {
+	groups := []StoredGroup{{ID: "h", Kind: GroupKindBlockedHosts, Enabled: false, Position: 0}}
+	if len(forwardChainRules(groups)) != 0 {
+		t.Error("grupo do sistema desligado não emite linha nenhuma")
+	}
+}
+
+// Grupo do sistema não tem chain própria: as linhas dele moram na forward.
+// Criar uma chain para ele deixaria uma chain vazia e órfã no ruleset.
+func TestReconcileGroupsCreatesNoChainForSystemGroups(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{{ID: "h", Kind: GroupKindBlockedHosts, Enabled: true}}
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	for _, cmd := range exec.executed {
+		if strings.HasPrefix(cmd, "nft add chain") {
+			t.Errorf("grupo do sistema não pode ganhar chain: %q", cmd)
+		}
+	}
+}
+
 // ─── forwardChainRules: a inversão da §3 ─────────────────────────────────
 
 // A inversão da spec §3: bloqueio administrativo é avaliado ANTES dos
 // grupos do admin e sempre vence. Até a Fase B era o contrário — um
 // "permitir" do usuário anulava a lista de bloqueio — e ninguém percebia.
+//
+// ATUALIZADO: a expectativa continua a mesma, a FONTE dela é que mudou. Os
+// bloqueios não são mais quatro linhas fixas em código; são dois itens da
+// lista, e a ordem da §3 vale porque a migração os cria nas posições 0 e 1.
+// A lista deste teste é, por isso, a que a produção realmente tem depois da
+// migração — uma lista sem os grupos do sistema não renderiza bloqueio
+// nenhum, e é a reconciliação que recusa esse caso
+// (firewallrules.ensureSystemGroupsPresent), não esta função.
 func TestForwardChainPutsBlocksBeforeGroupJumps(t *testing.T) {
 	groups := []StoredGroup{
-		{ID: "a", ChainName: "grp_aaa", Enabled: true, Position: 0, CondSaddr: "192.168.50.0/24"},
-		{ID: "b", ChainName: "grp_bbb", Enabled: true, Position: 1},
+		{ID: "h", Kind: GroupKindBlockedHosts, ChainName: SystemChainBlockedHosts, Enabled: true, Position: 0},
+		{ID: "l", Kind: GroupKindBlocklist, ChainName: SystemChainBlocklist, Enabled: true, Position: 1},
+		{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 2, CondSaddr: "192.168.50.0/24"},
+		{ID: "b", Kind: GroupKindAdmin, ChainName: "grp_bbb", Enabled: true, Position: 3},
 	}
 	lines := forwardLines(groups)
 
@@ -203,10 +281,20 @@ func TestForwardChainPutsBlocksBeforeGroupJumps(t *testing.T) {
 	}
 }
 
-// Os quatro bloqueios continuam existindo, na mesma forma que a produção já
-// tem desde junho de 2026 — a inversão muda a POSIÇÃO deles, não o conteúdo.
+// Os quatro bloqueios continuam existindo, byte a byte na mesma forma que a
+// produção já tem desde junho de 2026 — o que mudou foi de onde eles vêm:
+// dos dois itens da lista, não mais de um literal no código.
+//
+// ATUALIZADO: a entrada era `nil`, o que hoje descreveria o comportamento
+// errado — sem os grupos do sistema na lista, a forward sai SEM bloqueio
+// nenhum (por isso a reconciliação recusa esse caso antes de tocar no nft).
+// A entrada passa a ser a lista com os dois grupos do sistema; a expectativa
+// sobre as quatro linhas é idêntica.
 func TestForwardChainKeepsTheFourAdministrativeBlocks(t *testing.T) {
-	lines := forwardLines(nil)
+	lines := forwardLines([]StoredGroup{
+		{ID: "h", Kind: GroupKindBlockedHosts, ChainName: SystemChainBlockedHosts, Enabled: true, Position: 0},
+		{ID: "l", Kind: GroupKindBlocklist, ChainName: SystemChainBlocklist, Enabled: true, Position: 1},
+	})
 	want := []string{
 		"ip saddr @blocked_hosts counter drop",
 		"ip daddr @blocked_hosts counter drop",
@@ -214,7 +302,7 @@ func TestForwardChainKeepsTheFourAdministrativeBlocks(t *testing.T) {
 		"ip saddr @blocklist counter drop",
 	}
 	if len(lines) != len(want) {
-		t.Fatalf("sem grupos a forward deveria ter só os 4 bloqueios, tem %d:\n%v", len(lines), lines)
+		t.Fatalf("só com os grupos do sistema a forward deveria ter os 4 bloqueios, tem %d:\n%v", len(lines), lines)
 	}
 	for i := range want {
 		if lines[i] != want[i] {
@@ -414,9 +502,10 @@ func captureLogs(t *testing.T) *strings.Builder {
 	return &buf
 }
 
-// ReconcileGroups(ctx, nil) reduz a forward aos 4 bloqueios e apaga TODAS as
-// chains de grupo. É o comportamento correto para "o admin não tem nenhum
-// grupo" — e é indistinguível, aqui dentro, de um chamador que engoliu o
+// ReconcileGroups(ctx, nil) esvazia a forward (desde que ela virou uma lista
+// ordenada só, os bloqueios também são itens dela e vão junto) e apaga TODAS
+// as chains de grupo. É o que uma lista vazia literalmente pede — e é
+// indistinguível, aqui dentro, de um chamador que engoliu o
 // erro de ListFirewallGroups e passou lista vazia. Enquanto o contrato do
 // chamador é o que evita o segundo caso (ver o doc-comment de
 // ReconcileGroups), apagar todos os grupos do firewall merece mais que um
@@ -559,16 +648,24 @@ func TestReconcileGroupsKeepsDisabledGroupChainWithItsRules(t *testing.T) {
 }
 
 // A ordem de avaliação vista de ponta a ponta, na sequência real de comandos
-// (não só na função pura): bloqueios primeiro, depois os jumps na ordem que o
-// admin configurou.
+// (não só na função pura): a lista do admin na ordem dele — aqui, a ordem
+// padrão da migração, com os dois grupos do sistema antes dos jumps.
 func TestReconcileGroupsForwardCommandOrder(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	// ATUALIZADO: os dois grupos do sistema entram na lista (posições 0 e 1,
+	// como a migração os cria). Sem eles a forward sairia sem os quatro
+	// bloqueios — não porque a reconciliação os perdeu, mas porque eles
+	// deixaram de ser literais no código e passaram a ser itens desta lista.
 	groups := []StoredGroup{
-		{ID: "b", Name: "Servidores", ChainName: "grp_bbb", Enabled: true, Position: 5,
+		{ID: "b", Name: "Servidores", ChainName: "grp_bbb", Kind: GroupKindAdmin, Enabled: true, Position: 5,
 			CondSaddr: "192.168.3.10", Fallthrough: FallthroughContinue},
-		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true, Position: 1,
+		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Kind: GroupKindAdmin, Enabled: true, Position: 2,
 			CondSaddr: "192.168.50.0/24", Fallthrough: FallthroughDrop},
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: true, Position: 1, Fallthrough: FallthroughContinue},
 	}
 
 	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
@@ -657,12 +754,16 @@ func TestReconcileGroupsStillRebuildsForwardWhenNftRejectsARule(t *testing.T) {
 		},
 	}
 	s := &Service{exec: exec}
+	// ATUALIZADO: o grupo do sistema entra na lista, porque a linha
+	// @blocked_hosts que este teste exige na forward agora vem dele.
 	groups := []StoredGroup{
-		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true, Position: 0,
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Kind: GroupKindAdmin, Enabled: true, Position: 1,
 			Fallthrough: FallthroughContinue,
 			Rules: []StoredRule{{ID: "r1", Enabled: true,
 				Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "443"}}}},
-		{ID: "b", Name: "Servidores", ChainName: "grp_bbb", Enabled: true, Position: 1,
+		{ID: "b", Name: "Servidores", ChainName: "grp_bbb", Kind: GroupKindAdmin, Enabled: true, Position: 2,
 			Fallthrough: FallthroughContinue,
 			Rules: []StoredRule{{ID: "r2", Enabled: true,
 				Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "22"}}}},
@@ -983,12 +1084,20 @@ func TestReconcileGroupsNoopInDryRun(t *testing.T) {
 func TestCheckGroupsValidatesEveryGroupChainAndTheForward(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	// ATUALIZADO: os dois grupos do sistema entram na lista — é deles que
+	// saem, agora, as linhas de set que este teste exige no script validado.
+	// Eles não acrescentam script nenhum (não têm chain própria), então
+	// continuam sendo 3 validações.
 	groups := []StoredGroup{
-		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true, Position: 0,
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: true, Position: 1, Fallthrough: FallthroughContinue},
+		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Kind: GroupKindAdmin, Enabled: true, Position: 2,
 			CondSaddr: "192.168.50.0/24", Fallthrough: FallthroughDrop,
 			Rules: []StoredRule{{ID: "r", Position: 0, Enabled: true,
 				Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "443"}}}},
-		{ID: "b", Name: "Servidores", ChainName: "grp_bbb", Enabled: true, Position: 1,
+		{ID: "b", Name: "Servidores", ChainName: "grp_bbb", Kind: GroupKindAdmin, Enabled: true, Position: 3,
 			Fallthrough: FallthroughContinue},
 	}
 
@@ -1272,5 +1381,40 @@ func TestCheckGroupsDoesNotRejectSystemGroups(t *testing.T) {
 		if strings.Contains(script, SystemChainBlockedHosts) {
 			t.Errorf("o nome de chain reservado entrou no script validado pelo nft:\n%s", script)
 		}
+	}
+}
+
+// CheckGroups renderiza a forward do MESMO jeito que ReconcileGroups — é o
+// motivo de o pré-voo existir. Com a forward virando uma lista ordenada só,
+// isso passa a incluir a POSIÇÃO das linhas de set: se o pré-voo validasse os
+// bloqueios sempre no topo enquanto a reconciliação os escreve no meio, o
+// `nft -c` aprovaria uma chain diferente da que vai ser aplicada — exatamente
+// a divergência que CheckChainEnsuring existe para eliminar.
+func TestCheckGroupsValidatesTheForwardWithTheBlocksInListPosition(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Kind: GroupKindAdmin,
+			Enabled: true, Position: 0, CondSaddr: "192.168.50.0/24",
+			Fallthrough: FallthroughContinue},
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 1,
+			Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.CheckGroups(context.Background(), groups); err != nil {
+		t.Fatalf("CheckGroups: %v", err)
+	}
+	if len(exec.checkScripts) == 0 {
+		t.Fatal("nenhum script foi validado")
+	}
+	fwd := exec.checkScripts[len(exec.checkScripts)-1]
+	idxJump := strings.Index(fwd, "jump grp_aaa")
+	idxBlock := strings.Index(fwd, "@blocked_hosts")
+	if idxJump < 0 || idxBlock < 0 {
+		t.Fatalf("a forward validada não tem o jump e o bloqueio:\n%s", fwd)
+	}
+	if idxBlock < idxJump {
+		t.Errorf("o pré-voo validou os bloqueios no topo, mas a reconciliação os escreveria depois do jump — script validado ≠ script aplicado:\n%s", fwd)
 	}
 }

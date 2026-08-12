@@ -601,7 +601,8 @@ func TestReconcileLeavesARuleWithoutAValidGroupOutOfTheFirewall(t *testing.T) {
 }
 
 // O contrato de ReconcileGroups: lista vazia APAGA todas as chains de grupo
-// e reduz a forward aos 4 bloqueios. Um erro de leitura do banco que virasse
+// e esvazia a forward, bloqueios inclusive (eles são itens da lista desde que
+// a forward virou uma lista ordenada só). Um erro de leitura do banco que virasse
 // lista vazia levaria junto o firewall inteiro do admin. Erro de leitura tem
 // que abortar antes de qualquer comando do nft.
 func TestReconcileAbortsOnDBErrorInsteadOfWipingTheFirewall(t *testing.T) {
