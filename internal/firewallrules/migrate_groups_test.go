@@ -388,6 +388,15 @@ func TestMigrateAbortsInsteadOfRerunningWhenTheGuardCannotBeRead(t *testing.T) {
 // segunda chance, em vez de carregar a chain morta para sempre. Reverter
 // isso para um `return nil` seco no ramo `if flag != ""` não é pego por
 // nenhum outro teste: os demais só olham o resultado da PRIMEIRA migração.
+//
+// A ordem importa tanto quanto a existência da retentativa: o ruleset com
+// que este boot começa é o que foi persistido em /etc/nftables.conf, que
+// pode ter ficado desatualizado (persistência falhou num boot anterior, ou
+// o próprio delete falhou e nada mexeu na forward depois) -- então esta
+// retentativa reconcilia de novo ANTES de tentar remover, exatamente como o
+// ramo de primeira migração já faz. Este teste assere que o `flush chain
+// ... forward` do Reconcile vem antes do `delete chain ... user_rules`, não
+// só que o delete aconteceu.
 func TestMigrateRetriesRemovingTheLegacyChainOnEveryBootAfterTheGuardIsSet(t *testing.T) {
 	db := newTestDB(t)
 	svc, exec := newTestServiceWithExec(t, db)
@@ -402,14 +411,20 @@ func TestMigrateRetriesRemovingTheLegacyChainOnEveryBootAfterTheGuardIsSet(t *te
 		t.Fatalf("segunda chamada (trava já gravada): %v", err)
 	}
 
-	found := false
-	for _, cmd := range exec.executed {
+	idxForward, idxDelete := -1, -1
+	for i, cmd := range exec.executed {
 		j := strings.Join(cmd, " ")
+		if strings.HasPrefix(j, "flush chain") && strings.HasSuffix(j, " forward") {
+			idxForward = i
+		}
 		if strings.HasPrefix(j, "delete chain") && strings.Contains(j, "user_rules") {
-			found = true
+			idxDelete = i
 		}
 	}
-	if !found {
-		t.Errorf("com a trava já gravada, a remoção da chain legada tem que ser retentada -- nenhum comando de delete rodou: %v", exec.executed)
+	if idxDelete < 0 {
+		t.Fatal("com a trava já gravada, a remoção da chain legada tem que ser retentada -- nenhum comando de delete rodou")
+	}
+	if idxForward < 0 || idxDelete < idxForward {
+		t.Errorf("a retentativa tem que reconciliar a forward antes de tentar apagar a user_rules, senão esbarra no mesmo \"Device or resource busy\" que a migração inicial evita (ordem: forward=%d, delete=%d)", idxForward, idxDelete)
 	}
 }

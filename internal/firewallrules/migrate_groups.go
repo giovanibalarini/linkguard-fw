@@ -52,6 +52,22 @@ func (s *Service) MigrateRulesIntoDefaultGroup(ctx context.Context) error {
 		// silencioso) e é a única forma de a máquina onde o `delete` falhou
 		// uma vez — nft ocupado, forward ainda referenciando — ter uma
 		// segunda chance em vez de carregar a chain morta para sempre.
+		//
+		// Reconcilia ANTES de tentar remover: o ruleset com que este boot
+		// começa é o que foi persistido em /etc/nftables.conf, não
+		// necessariamente o que o banco diz agora — se a persistência falhou
+		// num boot anterior, ou se o próprio delete falhou e nada mais
+		// mexeu na forward depois, o `jump user_rules` pode muito bem ainda
+		// estar lá quando chegamos aqui, e o nft recusaria o delete (mesmo
+		// "Device or resource busy" da produção). Mesmo padrão do ramo de
+		// primeira migração abaixo: reconciliar primeiro é o que garante que
+		// a forward já não referencia mais a chain no momento do delete.
+		// Best-effort: um erro aqui não pode impedir a tentativa de remoção
+		// — removeLegacyUserRulesChain já tolera a chain seguir referenciada
+		// (fica só um aviso no log, com nova chance no próximo boot).
+		if err := s.Reconcile(ctx); err != nil {
+			slog.Warn("não foi possível reconciliar antes de retentar a remoção da chain legada user_rules", "err", err)
+		}
 		return s.removeLegacyUserRulesChain(ctx)
 	}
 
