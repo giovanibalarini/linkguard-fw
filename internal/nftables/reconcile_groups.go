@@ -67,6 +67,18 @@ func (s *Service) listGroupChains(ctx context.Context) ([]string, error) {
 //     falharia, mas o `flush` que vem antes dele não, e a órfã ficaria
 //     vazia e ainda referenciada (fail-open — ver o passo 4 no código).
 //
+// CONTRATO DO CHAMADOR — lista vazia apaga tudo. `groups` é o conjunto
+// COMPLETO de grupos que devem existir no firewall, não um delta:
+// ReconcileGroups(ctx, nil) reduz a forward aos 4 bloqueios administrativos
+// e apaga TODAS as chains grp_. Isso é o correto para "o admin não tem
+// grupo nenhum", e é indistinguível, aqui dentro, de um chamador que
+// perguntou ao banco, recebeu erro e passou a lista vazia mesmo assim — o
+// resultado seria o firewall inteiro do admin sumindo por causa de um SELECT
+// que falhou. Quem chama tem que ABORTAR se ListFirewallGroups devolver
+// erro, nunca seguir com lista vazia. (Quando a lista chega vazia com chains
+// grp_ vivas, isto emite um slog.Warn nomeando as chains removidas — é o
+// último aviso possível, não uma proteção.)
+//
 // Falha por regra é contida (design spec §8): o nft recusar uma regra de um
 // grupo NÃO interrompe os passos seguintes. Interromper faria uma única
 // regra ruim tirar da forward os jumps de todos os outros grupos — o admin
@@ -170,6 +182,17 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 		// ninguém desde o passo 3.
 		slog.Warn("não foi possível listar as chains de grupo para limpar as órfãs", "err", err)
 	} else {
+		if len(groups) == 0 && len(live) > 0 {
+			// Lista vazia é um comando legítimo ("o admin não tem grupo
+			// nenhum") e é indistinguível, daqui de dentro, de um chamador
+			// que engoliu o erro de ListFirewallGroups — quem evita o
+			// segundo caso é o contrato no doc-comment acima. O que dá para
+			// fazer aqui é não deixar isso passar como uma linha de info no
+			// meio do boot: apagar todos os grupos do firewall de uma vez é
+			// aviso, e nomeia o que foi embora.
+			slog.Warn("nenhum grupo veio do banco: TODAS as chains de grupo estão sendo removidas do firewall",
+				"chains", live)
+		}
 		for _, name := range live {
 			if wanted[name] || !validGroupChainName(name) {
 				continue

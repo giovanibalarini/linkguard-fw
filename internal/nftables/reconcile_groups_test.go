@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -326,6 +327,80 @@ func TestReconcileGroupsDeletesOrphanChainWithoutEmptyingItFirst(t *testing.T) {
 	}
 	if ranCommand(exec.executed, "nft flush chain inet linkguard grp_orfa") {
 		t.Errorf("esvaziou a chain órfã antes de apagá-la: se o delete falhar, ela sobrevive vazia e o grupo para de bloquear: %v", exec.executed)
+	}
+}
+
+// captureLogs troca o logger padrão por um que escreve num buffer, pelo
+// tempo do teste. É o único jeito de assertar o nível de um slog — e aqui o
+// NÍVEL é o comportamento sob teste: apagar todos os grupos do firewall de
+// uma vez não pode passar como slog.Info no meio do boot.
+func captureLogs(t *testing.T) *strings.Builder {
+	t.Helper()
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// ReconcileGroups(ctx, nil) reduz a forward aos 4 bloqueios e apaga TODAS as
+// chains de grupo. É o comportamento correto para "o admin não tem nenhum
+// grupo" — e é indistinguível, aqui dentro, de um chamador que engoliu o
+// erro de ListFirewallGroups e passou lista vazia. Enquanto o contrato do
+// chamador é o que evita o segundo caso (ver o doc-comment de
+// ReconcileGroups), apagar todos os grupos do firewall merece mais que um
+// slog.Info perdido no boot.
+func TestReconcileGroupsWarnsBeforeDeletingEveryGroupChain(t *testing.T) {
+	logs := captureLogs(t)
+	exec := &fakeReconcileExec{readOut: map[string]string{
+		"nft list table inet linkguard": liveTableWithOrphanGroup,
+	}}
+	s := &Service{exec: exec}
+
+	if err := s.ReconcileGroups(context.Background(), nil); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	warn := warnLineMentioning(logs.String(), GroupChainPrefix)
+	if warn == "" {
+		t.Fatalf("apagar TODAS as chains de grupo tem que ser um aviso, não um info:\n%s", logs.String())
+	}
+	for _, want := range []string{"grp_aaa", "grp_orfa"} {
+		if !strings.Contains(warn, want) {
+			t.Errorf("o aviso tem que nomear as chains que vão embora (%q): %s", want, warn)
+		}
+	}
+}
+
+// warnLineMentioning devolve a primeira linha de log em nível WARN que cita
+// substr — olhar o buffer inteiro confundiria o aviso sob teste com o warn
+// de Persist, que sai em todo teste deste pacote (sem permissão para
+// escrever /etc/nftables.conf).
+func warnLineMentioning(logs, substr string) string {
+	for _, l := range strings.Split(logs, "\n") {
+		if strings.Contains(l, "level=WARN") && strings.Contains(l, substr) {
+			return l
+		}
+	}
+	return ""
+}
+
+// E o aviso é só para o caso "zero grupos": uma remoção de órfã normal, com
+// grupos vivos, não pode ficar avisando a cada apply — aviso que aparece
+// sempre é aviso que ninguém lê.
+func TestReconcileGroupsDoesNotWarnWhenThereAreStillGroups(t *testing.T) {
+	logs := captureLogs(t)
+	exec := &fakeReconcileExec{readOut: map[string]string{
+		"nft list table inet linkguard": liveTableWithOrphanGroup,
+	}}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{{ID: "a", Name: "Wi-Fi", ChainName: "grp_aaa", Enabled: true,
+		Fallthrough: FallthroughContinue}}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if warn := warnLineMentioning(logs.String(), GroupChainPrefix); warn != "" {
+		t.Errorf("remoção de órfã com grupos vivos não é motivo de aviso: %s", warn)
 	}
 }
 
