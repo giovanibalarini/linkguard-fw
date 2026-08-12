@@ -699,3 +699,83 @@ func TestRetryDelayComecaCurtoEEstabiliza(t *testing.T) {
 		t.Errorf("tentativa negativa tem que se comportar como a primeira")
 	}
 }
+
+// O caso mais provável de falha do apt não tem linha `E:` nenhuma: o apt
+// morto pelo prazo. O fallback ingênuo ("primeira linha do erro") devolvia
+// justamente a pior frase possível — o internal/firewall formata os erros
+// como `command "<linha de comando inteira>" failed: ...`, então o admin
+// recebia 253 caracteres de systemd-run/apt-get terminando em "signal:
+// killed", dentro de um banner de ~980 caracteres na tela de DHCP.
+func TestAptReasonNaoDevolveALinhaDeComandoCrua(t *testing.T) {
+	cmdline := `systemd-run --collect --pipe --wait --setenv=DEBIAN_FRONTEND=noninteractive -- ` +
+		`apt-get install -y --no-install-recommends -o Dpkg::Options::=--force-confold ` +
+		`-o Dpkg::Options::=--force-confdef kea-dhcp4-server unbound dns-root-data`
+	err := fmt.Errorf("command %q failed: %s", cmdline, "signal: killed")
+
+	reason := aptReason(err)
+	if strings.Contains(reason, "systemd-run") || strings.Contains(reason, "Dpkg::Options") {
+		t.Errorf("a linha de comando vazou para o painel:\n%s", reason)
+	}
+	if strings.Contains(reason, "signal: killed") {
+		t.Errorf("\"signal: killed\" não diz nada ao admin:\n%s", reason)
+	}
+	if !strings.Contains(reason, "prazo") {
+		t.Errorf("o motivo tem que dizer que o apt foi interrompido por prazo:\n%s", reason)
+	}
+	if !strings.Contains(reason, "ainda estar em curso") {
+		t.Errorf("o apt não morre junto com o cliente; o motivo tem que dizer isso:\n%s", reason)
+	}
+}
+
+// Um erro comum que não é timeout continua chegando cru, mas sem o eco do
+// comando.
+func TestAptReasonMantemOMotivoRealSemOEcoDoComando(t *testing.T) {
+	err := fmt.Errorf("command %q failed: %s", "systemd-run --collect -- apt-get install -y unbound",
+		"Failed to start transient service unit: Access denied")
+
+	reason := aptReason(err)
+	if strings.Contains(reason, "systemd-run") {
+		t.Errorf("o eco do comando continua no motivo:\n%s", reason)
+	}
+	if !strings.Contains(reason, "Access denied") {
+		t.Errorf("o motivo verdadeiro foi perdido:\n%s", reason)
+	}
+}
+
+// O corte existe para o banner do painel continuar legível — a transcrição
+// inteira já vai para o journal. Sem teste, trocar 300 por 1000000 passava.
+func TestAptReasonCortaMotivoLongoDemaisParaOBanner(t *testing.T) {
+	long := "E: " + strings.Repeat("Failed to fetch http://deb.debian.org/debian/pool/main/x ", 40)
+	reason := aptReason(errors.New(long))
+
+	if len(reason) > maxReasonLen+len("…") {
+		t.Errorf("motivo com %d caracteres: não cabe num banner (limite %d)", len(reason), maxReasonLen)
+	}
+	if !strings.HasSuffix(reason, "…") {
+		t.Errorf("um motivo cortado tem que dizer que foi cortado:\n%s", reason)
+	}
+	if maxReasonLen > 500 {
+		t.Errorf("maxReasonLen = %d: um limite deste tamanho não é um limite", maxReasonLen)
+	}
+}
+
+// E o caminho com linhas `E:` continua valendo: elas são o que o apt tem de
+// acionável, e só as duas primeiras vão para a tela.
+func TestAptReasonPrefereAsLinhasEDoApt(t *testing.T) {
+	err := errors.New("command \"systemd-run ...\" failed: Reading package lists...\n" +
+		"E: Failed to fetch http://espelho/a.deb\n" +
+		"E: Failed to fetch http://espelho/b.deb\n" +
+		"E: Failed to fetch http://espelho/c.deb\n" +
+		"E: Unable to fetch some archives")
+
+	reason := aptReason(err)
+	if !strings.Contains(reason, "a.deb") || !strings.Contains(reason, "b.deb") {
+		t.Errorf("as duas primeiras linhas E: têm que aparecer:\n%s", reason)
+	}
+	if strings.Contains(reason, "c.deb") {
+		t.Errorf("só as duas primeiras vão para a tela:\n%s", reason)
+	}
+	if !strings.Contains(reason, "erros do apt no log do serviço") {
+		t.Errorf("o motivo tem que dizer que sobraram erros no log:\n%s", reason)
+	}
+}

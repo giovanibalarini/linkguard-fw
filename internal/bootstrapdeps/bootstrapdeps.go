@@ -279,32 +279,74 @@ func installFailureMessage(still []string, aptErr error) string {
 // are what survives, capped at two; the whole transcript is still in the
 // journal (the caller logs it), which is where a transcript belongs.
 //
-// If there is no `E:` line at all (a systemd-run failure, a timeout), the
-// first line of the error is kept — better a rough reason than none.
+// When there is no `E:` line at all the fallback matters more than the happy
+// path, because that is the most likely case in practice: an apt killed by
+// its deadline prints no `E:` line. The naive fallback ("first line of the
+// error") then produced the WORST possible sentence — internal/firewall
+// formats its errors as `command "<the entire command line>" failed: ...`,
+// so the admin got 253 characters of `systemd-run --collect --pipe --wait
+// --setenv=... apt-get install -y ...` ending in "signal: killed", inside a
+// ~980-character banner on the DHCP page. stripCommandEcho drops the echo,
+// and a killed apt gets a sentence that says what actually happened and what
+// to do — including the fact that the install may well still be running
+// (the transient unit does not die with us).
 func aptReason(err error) string {
 	if err == nil {
 		return ""
 	}
-	const maxLen = 300
 	var errLines []string
 	for _, line := range strings.Split(err.Error(), "\n") {
 		if line = strings.TrimSpace(line); strings.HasPrefix(line, "E:") {
 			errLines = append(errLines, line)
 		}
 	}
-	reason := strings.TrimSpace(strings.Split(err.Error(), "\n")[0])
 	if len(errLines) > 0 {
 		extra := ""
 		if len(errLines) > 2 {
 			extra = fmt.Sprintf(" (+%d erros do apt no log do serviço)", len(errLines)-2)
 			errLines = errLines[:2]
 		}
-		reason = strings.Join(errLines, "; ") + extra
+		return truncateReason(strings.Join(errLines, "; ") + extra)
 	}
-	if len(reason) > maxLen {
-		reason = strings.TrimSpace(reason[:maxLen]) + "…"
+
+	reason := stripCommandEcho(strings.TrimSpace(strings.Split(err.Error(), "\n")[0]))
+	if killedByDeadline(reason) {
+		return "o apt passou do prazo e foi interrompido; a instalação pode ainda estar em curso na máquina — espere alguns minutos e aplique de novo antes de mexer no apt à mão"
 	}
-	return reason
+	return truncateReason(reason)
+}
+
+// maxReasonLen keeps the panel banner readable. The whole transcript is in
+// the journal (the caller logs it), which is where a transcript belongs.
+const maxReasonLen = 300
+
+func truncateReason(s string) string {
+	if len(s) <= maxReasonLen {
+		return s
+	}
+	return strings.TrimSpace(s[:maxReasonLen]) + "…"
+}
+
+// stripCommandEcho removes internal/firewall's `command "<command line>"
+// failed: ` prefix, which is the command LinkGuard ran — never information
+// the admin needs, and always long enough to bury whatever follows it.
+func stripCommandEcho(s string) string {
+	const marker = `" failed: `
+	if strings.HasPrefix(s, `command "`) {
+		if i := strings.Index(s, marker); i >= 0 {
+			return strings.TrimSpace(s[i+len(marker):])
+		}
+	}
+	return s
+}
+
+// killedByDeadline recognises an apt that did not fail but was cut short:
+// exec.CommandContext kills the process on deadline, and what surfaces is
+// "signal: killed" (or the context error itself).
+func killedByDeadline(reason string) bool {
+	return strings.Contains(reason, "signal: killed") ||
+		strings.Contains(reason, "context deadline exceeded") ||
+		strings.Contains(reason, "context canceled")
 }
 
 // Missing returns, in the given order, the packages dpkg does not report as
