@@ -31,10 +31,17 @@ type fakeExec struct {
 	// installOnly, when non-empty, limits which packages a "successful"
 	// install actually provides — used to exercise a partial install.
 	installOnly map[string]bool
+
+	// unitState é o que `systemctl is-enabled <unidade>` responde. Vazio
+	// significa "unidade não existe" (pacote nunca instalado), que é como o
+	// systemd responde de verdade: saída vazia e código != 0. O pacote
+	// nftables do Debian instala a unidade DESABILITADA, então o estado
+	// inicial de uma máquina pelada é "disabled" logo após o apt.
+	unitState map[string]string
 }
 
 func newFakeExec(installed ...string) *fakeExec {
-	e := &fakeExec{installed: map[string]bool{}}
+	e := &fakeExec{installed: map[string]bool{}, unitState: map[string]string{}}
 	for _, p := range installed {
 		e.installed[p] = true
 	}
@@ -49,6 +56,18 @@ func (e *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 		}
 		return "", fmt.Errorf("dpkg-query: no packages found matching %s", pkg)
 	}
+	if cmd == "systemctl" && len(args) == 2 && args[0] == "is-enabled" {
+		state := e.unitState[args[1]]
+		if state == "" {
+			return "", fmt.Errorf("Failed to get unit file state for %s.service: No such file or directory", args[1])
+		}
+		if state != "enabled" {
+			// `systemctl is-enabled` IMPRIME o estado e sai != 0 quando ele
+			// não é "enabled" — a saída é utilizável mesmo com erro.
+			return state + "\n", fmt.Errorf("exit status 1")
+		}
+		return "enabled\n", nil
+	}
 	return "", nil
 }
 
@@ -56,6 +75,16 @@ func (e *fakeExec) Execute(_ context.Context, cmd string, args ...string) (strin
 	full := strings.Join(append([]string{cmd}, args...), " ")
 	e.executed = append(e.executed, full)
 
+	if cmd == "systemctl" && len(args) == 2 && args[0] == "enable" {
+		if e.unitState[args[1]] == "" {
+			return "", fmt.Errorf("Unit %s.service does not exist", args[1])
+		}
+		if e.unitState[args[1]] == "masked" {
+			return "", fmt.Errorf("Unit %s.service is masked", args[1])
+		}
+		e.unitState[args[1]] = "enabled"
+		return "", nil
+	}
 	if strings.Contains(full, "apt-get update") {
 		e.updated = true
 		return "", nil
@@ -77,6 +106,13 @@ func (e *fakeExec) Execute(_ context.Context, cmd string, args ...string) (strin
 			continue
 		}
 		e.installed[a] = true
+		// O pacote nftables do Debian traz a unidade DESABILITADA — o
+		// README.Debian dele diz "you can optionally enable". É o fato que
+		// torna a premissa nova (o LinkGuard instala o nftables sozinho)
+		// diferente da antiga (o apt trazia e o operador habilitava).
+		if a == "nftables" {
+			e.unitState["nftables"] = "disabled"
+		}
 	}
 	return "", nil
 }
@@ -836,5 +872,143 @@ func TestUmaTentativaPosteriorFechaOAlertaSemReiniciarOServico(t *testing.T) {
 	}
 	if len(al.ok) != 0 {
 		t.Errorf("o LinkGuard não instalou nada; não há recuperação a anunciar: %v", al.ok)
+	}
+}
+
+// ─── A unidade do nftables ────────────────────────────────────────────────
+//
+// C-2 da revisão final. Enquanto a base ficava em Depends:, o apt trazia o
+// nftables e o operador habilitava a unidade a mão. Na premissa nova — o
+// LinkGuard instala o nftables sozinho no primeiro boot — a unidade nasce
+// desabilitada (o pacote do Debian a entrega assim) e ninguém a habilita.
+// Numa máquina assim:
+//
+//  1. Persist() reescreve /etc/nftables.conf a cada reconciliação e NADA
+//     nunca lê o arquivo;
+//  2. em todo reboot a tabela não existe, EnsureTable devolve true e o
+//     main.go chama Restore(snapshot), que começa com `flush ruleset` — a
+//     regra de ouro do projeto ("o LinkGuard só mexe na tabela dele") passa
+//     a ser violada a cada boot, destruindo qualquer tabela de terceiro
+//     (docker, libvirt, fail2ban) criada depois do último snapshot;
+//  3. se esse Restore falhar, os sets voltam vazios e as linhas de drop
+//     continuam na forward: a tela diz "bloqueado" com o tráfego passando.
+
+func TestEnsureHabilitaAUnidadeDoNftablesQueEleMesmoInstalou(t *testing.T) {
+	exec := newFakeExec() // máquina pelada: nem pacote, nem unidade
+	alerter := &fakeAlerter{}
+
+	if done := Ensure(context.Background(), exec, alerter); !done {
+		t.Fatalf("Ensure devia ter concluído, executados=%v", exec.executed)
+	}
+
+	if !exec.ran("systemctl enable nftables") {
+		t.Errorf("o LinkGuard instalou o nftables e não habilitou a unidade: "+
+			"/etc/nftables.conf não seria lido em boot nenhum e todo reboot passaria pelo "+
+			"`flush ruleset` do Restore. Executados: %v", exec.executed)
+	}
+	if got := exec.unitState["nftables"]; got != "enabled" {
+		t.Errorf("estado da unidade = %q, esperado \"enabled\"", got)
+	}
+}
+
+// O caso que o postinst sozinho não cobriria: o pacote já está instalado
+// (veio de um apt do operador, ou de uma instalação anterior) e a unidade
+// continua desabilitada. O LinkGuard nunca instala nada nesse boot, então
+// não basta habilitar "depois do apt" — tem que ser verificado sempre.
+func TestEnsureHabilitaAUnidadeMesmoSemInstalarNada(t *testing.T) {
+	exec := newFakeExec(allBase()...)
+	exec.unitState["nftables"] = "disabled"
+	alerter := &fakeAlerter{}
+
+	if done := Ensure(context.Background(), exec, alerter); !done {
+		t.Fatal("Ensure devia ter concluído numa máquina com a base completa")
+	}
+
+	if !exec.ran("systemctl enable nftables") {
+		t.Errorf("pacote instalado e unidade desabilitada: ninguém habilitou. Executados: %v", exec.executed)
+	}
+	if len(alerter.missing) != 0 {
+		t.Errorf("nada faltava; não podia ter alerta: %v", alerter.missing)
+	}
+}
+
+// Numa máquina já provisionada isto não pode virar ruído: a unidade já está
+// habilitada, então não se executa nada.
+func TestEnsureNaoMexeNaUnidadeJaHabilitada(t *testing.T) {
+	exec := newFakeExec(allBase()...)
+	exec.unitState["nftables"] = "enabled"
+
+	Ensure(context.Background(), exec, &fakeAlerter{})
+
+	if exec.ran("systemctl enable") {
+		t.Errorf("a unidade já estava habilitada e o LinkGuard executou algo assim mesmo: %v", exec.executed)
+	}
+}
+
+// Habilitar sim, iniciar NÃO — e isto é uma decisão, não um esquecimento.
+// `systemctl start nftables` roda `nft -f /etc/nftables.conf` por cima do
+// ruleset que o LinkGuard acabou de montar em memória (o arquivo, nesse
+// instante, é no máximo o snapshot do boot anterior). Pior: o unit do Debian
+// declara `ExecStop=/usr/sbin/nft flush ruleset`, então deixar a unidade
+// ATIVA faz com que qualquer stop/restart posterior — um `apt upgrade` do
+// próprio pacote nftables faz exatamente isso — apague o ruleset inteiro da
+// máquina, tabelas de terceiros incluídas, sem um reboot para se recuperar.
+// A unidade só precisa estar habilitada: quem a executa é o próximo boot,
+// onde ela é a única coisa carregando regras e o arquivo é a autoridade.
+func TestEnsureNuncaIniciaAUnidadeDoNftables(t *testing.T) {
+	exec := newFakeExec()
+
+	Ensure(context.Background(), exec, &fakeAlerter{})
+
+	for _, c := range exec.executed {
+		if strings.Contains(c, "systemctl start nftables") ||
+			strings.Contains(c, "systemctl restart nftables") ||
+			strings.Contains(c, "enable --now") {
+			t.Errorf("a unidade do nftables foi INICIADA: %q — isso recarrega "+
+				"/etc/nftables.conf por cima do ruleset vivo e deixa um ExecStop=`nft flush "+
+				"ruleset` armado. Executados: %v", c, exec.executed)
+		}
+	}
+}
+
+// Dry-run não muda a máquina, e habilitar unidade é mudar a máquina.
+func TestEnsureNaoHabilitaNadaEmDryRun(t *testing.T) {
+	exec := newFakeExec(allBase()...)
+	exec.dryRun = true
+	exec.unitState["nftables"] = "disabled"
+
+	Ensure(context.Background(), exec, &fakeAlerter{})
+
+	if exec.ran("systemctl enable") {
+		t.Errorf("dry-run habilitou unidade: %v", exec.executed)
+	}
+}
+
+// Unidade mascarada é decisão explícita de quem administra a máquina (e
+// `systemctl enable` numa unidade mascarada falha de qualquer jeito): não se
+// insiste, não se executa nada.
+func TestEnsureNaoInsisteComUnidadeMascarada(t *testing.T) {
+	exec := newFakeExec(allBase()...)
+	exec.unitState["nftables"] = "masked"
+
+	Ensure(context.Background(), exec, &fakeAlerter{})
+
+	if exec.ran("systemctl enable") {
+		t.Errorf("tentou habilitar uma unidade mascarada: %v", exec.executed)
+	}
+}
+
+// Sem o pacote não existe unidade para habilitar — tentar só produziria um
+// erro no log, no boot em que o admin já está vendo o alerta de base
+// ausente.
+func TestEnsureNaoTentaHabilitarSemOPacote(t *testing.T) {
+	exec := newFakeExec()
+	exec.installFails = true
+
+	if done := Ensure(context.Background(), exec, &fakeAlerter{}); done {
+		t.Fatal("Ensure devia relatar que a base continua incompleta")
+	}
+	if exec.ran("systemctl enable") {
+		t.Errorf("tentou habilitar a unidade sem o pacote instalado: %v", exec.executed)
 	}
 }

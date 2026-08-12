@@ -106,6 +106,7 @@ type Alerter interface {
 func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) bool {
 	missing := Missing(ctx, exec, BasePackages...)
 	if len(missing) == 0 {
+		EnsureNftablesUnitEnabled(ctx, exec)
 		slog.Debug("dependências base presentes", "pacotes", BasePackages)
 		// Fecha um alerta que ficou aberto de uma tentativa anterior (ou de
 		// um boot anterior) e que já não descreve a máquina. Sem isto, quem
@@ -143,6 +144,7 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) bool {
 	}
 
 	still := Missing(ctx, exec, missing...)
+	EnsureNftablesUnitEnabled(ctx, exec)
 	if len(still) == 0 {
 		detail := strings.Join(missing, ", ")
 		slog.Info("dependências base instaladas pelo LinkGuard", "pacotes", missing)
@@ -159,6 +161,101 @@ func Ensure(ctx context.Context, exec firewall.Executor, alerter Alerter) bool {
 		_ = alerter.BaseDepsMissing(detail)
 	}
 	return false
+}
+
+// nftablesUnit é a unidade que carrega /etc/nftables.conf no boot — e também
+// o nome do pacote que a fornece, que é por que o mesmo identificador serve
+// para o dpkg-query e para o systemctl. O pacote do Debian entrega a unidade
+// DESABILITADA de propósito (o README.Debian dele diz "you can optionally
+// enable"): ela não faz nada até alguém habilitá-la.
+const nftablesUnit = "nftables"
+
+// EnsureNftablesUnitEnabled garante que a unidade do nftables está habilitada
+// — habilitada, nunca iniciada.
+//
+// Por que isto virou responsabilidade do LinkGuard: enquanto a base estava em
+// `Depends:`, o apt trazia o nftables e quem preparava a máquina habilitava a
+// unidade. Na premissa nova o LinkGuard instala o nftables sozinho, e nesse
+// caminho ninguém habilita nada. O resultado é uma máquina em que:
+//
+//   - Persist() reescreve /etc/nftables.conf a cada reconciliação e nada
+//     nunca lê o arquivo — persistência que só existe no papel;
+//   - em todo reboot a tabela não existe, EnsureTable devolve true e o boot
+//     cai no Restore(snapshot), que começa com `flush ruleset`. A regra de
+//     ouro do produto ("o LinkGuard só mexe na tabela dele", README) passa a
+//     ser violada uma vez por reboot, apagando toda tabela de terceiro
+//     (docker, libvirt, fail2ban) criada depois do último snapshot;
+//   - se esse Restore falhar, os named sets voltam vazios enquanto as linhas
+//     de drop continuam na forward: o painel afirma "host bloqueado" com o
+//     tráfego passando.
+//
+// Por que aqui, e não no postinst: o postinst roda no instante da instalação,
+// quando o nftables normalmente ainda NÃO está instalado (é o próprio
+// LinkGuard que o instala, minutos depois, já em execução) — ele cobriria
+// justamente o caso que não precisa de cobertura. Aqui a verificação é feita
+// em todo boot, cobre os três instaladores de uma vez e alcança também a
+// máquina em que o pacote já estava instalado e a unidade continuava
+// desabilitada.
+//
+// Habilitar sim, iniciar NÃO, e isso é decisão:
+//
+//  1. `systemctl start` roda `nft -f /etc/nftables.conf`, e nesse instante o
+//     arquivo é no máximo o snapshot do boot anterior — carregá-lo por cima
+//     do ruleset que o LinkGuard acabou de montar em memória não acrescenta
+//     nada e pode reintroduzir estado velho;
+//  2. o unit do Debian declara `ExecStop=/usr/sbin/nft flush ruleset`. Com a
+//     unidade ATIVA, todo stop/restart posterior — e um `apt upgrade` do
+//     próprio pacote nftables faz exatamente isso — apagaria o ruleset
+//     inteiro da máquina, tabelas de terceiros incluídas, sem um reboot para
+//     se recuperar. Ou seja: iniciar agora criaria, em pleno funcionamento, a
+//     mesma violação da regra de ouro que este conserto existe para eliminar.
+//
+// A unidade só precisa estar habilitada: quem a executa é o próximo boot,
+// onde ela é a única coisa carregando regras e o arquivo é a autoridade.
+func EnsureNftablesUnitEnabled(ctx context.Context, exec firewall.Executor) {
+	// Habilitar unidade é mexer na máquina; um dry-run não mexe.
+	if exec.IsDryRun() {
+		return
+	}
+	// Sem o pacote não existe unidade para habilitar. Tentar só produziria um
+	// erro no log, no mesmo boot em que o admin já está vendo o alerta de
+	// base ausente.
+	if !installed(ctx, exec, nftablesUnit) {
+		return
+	}
+	out, err := exec.ExecuteRead(ctx, "systemctl", "is-enabled", nftablesUnit)
+	state := strings.TrimSpace(out)
+	switch {
+	case state == "enabled" || state == "enabled-runtime":
+		// O caso comum de toda máquina já provisionada: nada a fazer, e nada
+		// no log.
+		return
+	case state == "masked" || state == "masked-runtime":
+		// Mascarar é decisão explícita de quem administra a máquina, e
+		// `systemctl enable` numa unidade mascarada falha de qualquer jeito.
+		// Não se insiste — mas também não se finge que está tudo bem.
+		slog.Warn("a unidade nftables está mascarada: /etc/nftables.conf não será carregado no boot, "+
+			"e a cada reinicialização o LinkGuard vai reconstruir o ruleset com um flush",
+			"unidade", nftablesUnit)
+		return
+	case state == "":
+		// Sem saída nenhuma o systemd está dizendo que não conhece a unidade
+		// (pacote sem o unit file, máquina sem systemd, contêiner). Nada a
+		// habilitar.
+		slog.Debug("estado da unidade nftables indisponível", "err", err)
+		return
+	}
+
+	slog.Info("a unidade nftables está desabilitada; o LinkGuard vai habilitá-la para que "+
+		"/etc/nftables.conf seja carregado no boot (sem iniciá-la agora: isso recarregaria o "+
+		"arquivo por cima do ruleset vivo)", "estado", state)
+	if _, err := exec.Execute(ctx, "systemctl", "enable", nftablesUnit); err != nil {
+		slog.Error("não foi possível habilitar a unidade nftables; a cada reboot o LinkGuard vai "+
+			"reconstruir o ruleset com um flush, apagando tabelas de outros programas",
+			"err", err)
+		return
+	}
+	slog.Info("unidade nftables habilitada", "unidade", nftablesUnit)
 }
 
 // retryNotice is the sentence that turns this alert from a dead end into
