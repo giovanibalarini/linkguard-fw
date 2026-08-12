@@ -252,6 +252,9 @@ func TestConfigDriftAlertPairsResolveEachOther(t *testing.T) {
 		{"security-updates", TypeSecurityUpdatesPending,
 			func(s *Service) error { return s.SecurityUpdatesPending("2 pacotes") },
 			func(s *Service) error { return s.SecurityUpdatesNone() }},
+		{"base-deps", TypeBaseDepsMissing,
+			func(s *Service) error { return s.BaseDepsMissing("nftables — sem filtro de pacote") },
+			func(s *Service) error { return s.BaseDepsOK("nftables") }},
 	}
 
 	for _, tc := range cases {
@@ -635,6 +638,40 @@ func TestSecurityUpdatesPendingIsWarningNotCritical(t *testing.T) {
 		if a.Type == TypeSecurityUpdatesPending && a.Severity != SeverityWarning {
 			t.Errorf("severity = %q, want %q", a.Severity, SeverityWarning)
 		}
+	}
+}
+
+// TestBaseDepsMissingIsCriticalAndKeepsTheDetail: an appliance running
+// without nftables has no packet filter at all, so this is Critical — and the
+// row has to carry the detail (which packages, what breaks, how to fix), or
+// the operator has to go read the journal to find out how bad it is.
+func TestBaseDepsMissingIsCriticalAndKeepsTheDetail(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	detail := "nftables — sem ele não existe filtro de pacote nenhum. instale à mão: apt-get install -y nftables"
+	if err := s.BaseDepsMissing(detail); err != nil {
+		t.Fatalf("BaseDepsMissing: %v", err)
+	}
+	open, err := db.GetAlerts(true, 50)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	found := false
+	for _, a := range open {
+		if a.Type != TypeBaseDepsMissing {
+			continue
+		}
+		found = true
+		if a.Severity != SeverityCritical {
+			t.Errorf("severity = %q, want %q", a.Severity, SeverityCritical)
+		}
+		if !strings.Contains(a.Message, detail) {
+			t.Errorf("message = %q, want it to carry the detail", a.Message)
+		}
+	}
+	if !found {
+		t.Fatalf("expected an open %s alert, got %+v", TypeBaseDepsMissing, open)
 	}
 }
 

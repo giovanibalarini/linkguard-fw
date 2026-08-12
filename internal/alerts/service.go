@@ -42,6 +42,8 @@ const (
 	TypeDNSResolverOK          = "dns_resolver_ok"
 	TypeSecurityUpdatesPending = "security_updates_pending"
 	TypeSecurityUpdatesNone    = "security_updates_none"
+	TypeBaseDepsMissing        = "base_deps_missing"
+	TypeBaseDepsOK             = "base_deps_ok"
 
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
@@ -94,6 +96,7 @@ var stateAlertTypes = []string{
 	TypeWANInterfaceMissing,
 	TypeDNSResolverDrift,
 	TypeSecurityUpdatesPending,
+	TypeBaseDepsMissing,
 }
 
 // Service manages alert generation and retrieval.
@@ -531,4 +534,25 @@ func (s *Service) SecurityUpdatesNone() error {
 	s.AutoResolve(TypeSecurityUpdatesPending, "")
 	return s.createRecovery(TypeSecurityUpdatesNone, "Sem atualizações de segurança pendentes",
 		"Não há atualizações de segurança aguardando instalação.", "")
+}
+
+// BaseDepsMissing raises the strongest alert this package has when LinkGuard
+// could not install the packages it cannot work without (internal/bootstrapdeps).
+// Critical, and deliberately the same severity as a NAT drift: the appliance is
+// installed and the panel is up, but with nftables absent there is no packet
+// filter at all — a box that looks alive and protects nothing is exactly the
+// false confidence this product exists to eliminate. The detail carries the
+// package names, what each one breaks, and the command to fix it by hand.
+func (s *Service) BaseDepsMissing(detail string) error {
+	return s.Create(TypeBaseDepsMissing, SeverityCritical, "Dependências base ausentes",
+		"O LinkGuard não conseguiu instalar pacotes essenciais: "+detail, "")
+}
+
+// BaseDepsOK clears BaseDepsMissing and records that LinkGuard installed the
+// base packages itself. Raised only on the transition (a boot that actually
+// had to install something), never on every start — see bootstrapdeps.Ensure.
+func (s *Service) BaseDepsOK(detail string) error {
+	s.AutoResolve(TypeBaseDepsMissing, "")
+	return s.createRecovery(TypeBaseDepsOK, "Dependências base instaladas",
+		"O LinkGuard instalou os pacotes essenciais que faltavam: "+detail, "")
 }

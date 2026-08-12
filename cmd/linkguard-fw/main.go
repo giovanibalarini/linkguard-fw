@@ -22,6 +22,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
+	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -242,6 +243,35 @@ func run() int {
 			balancerSvc.EvictDegraded(ctx, link)
 		}
 	})
+
+	// Guarantee the base packages (nftables, iproute2, iptables,
+	// iputils-ping) before anything below tries to use them. Installing the
+	// LinkGuard is handing it the machine: on a bare box it brings in what it
+	// cannot work without, instead of assuming somebody prepared the ground.
+	//
+	// This is what finishes the install: the .deb declares the base in
+	// Recommends:, not Depends:, so `dpkg -i` on a machine with nothing on it
+	// installs AND configures the package and the service actually starts
+	// (with Depends: it stops at `iU` and there is no panel left to explain
+	// anything). A package's own maintainer scripts cannot do this — dpkg
+	// holds its lock for the whole run — but a running service can.
+	//
+	// Must come before EnsureForwarding/EnsureTable below, which need `ip`
+	// and `nft` to exist. On an already-provisioned box it is one dpkg-query
+	// per package and nothing else, so it does not slow down ordinary boots.
+	// If apt cannot deliver (no network, dead mirror), it does not fail
+	// silently: critical alert on the panel plus a log naming what is missing
+	// and what stops working — and the boot carries on, so the operator has a
+	// panel to read it on.
+	//
+	// It gets an executor of its own because the application's `exec` has a
+	// 30s timeout: plenty for an `nft` or `ip` call, far too short for an
+	// apt-get fetching packages over a bad link.
+	depExec := exec
+	if !cfg.DryRun {
+		depExec = firewall.NewRealExecutor(10 * time.Minute)
+	}
+	bootstrapdeps.Ensure(ctx, depExec, alertSvc)
 
 	// Enable IPv4 forwarding so the box can route between LAN and WAN; it
 	// defaults to 0 on a fresh system and a firewall/router needs it on.

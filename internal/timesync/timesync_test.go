@@ -547,9 +547,21 @@ func TestInstallChronyRunsSystemdRun(t *testing.T) {
 	if err := s.InstallChrony(context.Background()); err != nil {
 		t.Fatalf("InstallChrony: %v", err)
 	}
-	want := "systemd-run --pipe --wait -- apt-get install -y --no-install-recommends chrony"
-	if !containsExecuted(exec.executed, want) {
-		t.Errorf("expected %q, got %v", want, exec.executed)
+	// The exact flags belong to bootstrapdeps.InstallPackages (the single apt
+	// call site) and are asserted there; what this test guards is that
+	// InstallChrony still goes through it, installing exactly chrony via a
+	// transient systemd unit instead of running apt inside our own sandbox.
+	if len(exec.executed) != 1 {
+		t.Fatalf("expected exactly one command, got %v", exec.executed)
+	}
+	got := exec.executed[0]
+	for _, want := range []string{"systemd-run", "--pipe", "--wait", "apt-get install"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in %q", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, " chrony") {
+		t.Errorf("expected the command to install chrony, got %q", got)
 	}
 }
 

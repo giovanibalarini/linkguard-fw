@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
 
@@ -392,14 +393,16 @@ func (s *Service) ListTimezones(ctx context.Context) ([]string, error) {
 	return zones, nil
 }
 
-// InstallChrony asks systemd to run apt-get in its own transient,
-// unhardened unit — never inside this process's own sandbox, which would
-// need ReadWritePaths widened across most of the package-management
-// filesystem (/var/lib/dpkg, /var/cache/apt, /usr, ...) to work. Only ever
-// triggered by an explicit admin action (never automatic/on startup), same
-// safety property EnsureEnabled already relies on for "no silent apt".
+// InstallChrony installs the chrony package on demand. Only ever triggered
+// by an explicit admin action (never automatic/on startup), same safety
+// property EnsureEnabled already relies on for "no silent apt": chrony is an
+// optional package, not part of the base that bootstrapdeps.Ensure guarantees
+// at boot.
+//
+// The apt mechanics themselves (transient systemd unit, so the package
+// manager never runs inside this process's own sandbox) live in
+// bootstrapdeps.InstallPackages — a single call site for every apt install in
+// the codebase. See its doc comment.
 func (s *Service) InstallChrony(ctx context.Context) error {
-	_, err := s.exec.Execute(ctx, "systemd-run", "--pipe", "--wait",
-		"--", "apt-get", "install", "-y", "--no-install-recommends", "chrony")
-	return err
+	return bootstrapdeps.InstallPackages(ctx, s.exec, "chrony")
 }
