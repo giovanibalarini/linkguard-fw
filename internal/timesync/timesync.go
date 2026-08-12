@@ -120,13 +120,28 @@ type StatusInfo struct {
 // Service owns the NTP admin-control surface: applying Config, reporting
 // detailed status, listing timezones, and installing chrony on demand.
 type Service struct {
-	exec     firewall.Executor
-	confPath string // overridden in tests; production uses chronyDropinPath
+	exec firewall.Executor
+	// installExec runs ONLY the on-demand `apt-get install chrony`. Same
+	// reason as keaunbound.Service.installExec: the application executor has
+	// a 30s deadline, right for `timedatectl`/`systemctl` and wrong for a
+	// package download — and when it fires, apt does NOT die with it (the
+	// systemd-run transient unit finishes the transaction), so the panel
+	// would report a failure that is not happening.
+	installExec firewall.Executor
+	confPath    string // overridden in tests; production uses chronyDropinPath
 }
 
 // NewService creates the NTP control service.
 func NewService(exec firewall.Executor) *Service {
-	return &Service{exec: exec, confPath: chronyDropinPath}
+	return &Service{exec: exec, installExec: exec, confPath: chronyDropinPath}
+}
+
+// SetInstallExecutor points the on-demand chrony install at an executor with
+// a deadline sized for a package download. See Service.installExec.
+func (s *Service) SetInstallExecutor(e firewall.Executor) {
+	if e != nil {
+		s.installExec = e
+	}
 }
 
 // isOpenCIDR reports whether a CIDR is the "allow everyone" wildcard —
@@ -414,5 +429,10 @@ func (s *Service) ListTimezones(ctx context.Context) ([]string, error) {
 // bootstrapdeps.InstallPackages — a single call site for every apt install in
 // the codebase. See its doc comment.
 func (s *Service) InstallChrony(ctx context.Context) error {
-	return bootstrapdeps.InstallPackages(ctx, s.exec, "chrony")
+	e := s.installExec
+	if e == nil {
+		// Service literals (tests) may not set it; never nil-deref here.
+		e = s.exec
+	}
+	return bootstrapdeps.InstallPackages(ctx, e, "chrony")
 }

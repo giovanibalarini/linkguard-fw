@@ -80,6 +80,12 @@ type Config struct {
 	WebFS   embed.FS
 	PromReg *prometheus.Registry
 	Version string
+	// PkgExec is the executor for anything that runs a package manager
+	// (today: the on-demand chrony install). Nil falls back to exec, which
+	// is only right for tests — in production a 30s deadline on an apt-get
+	// reports failures that are not happening. See
+	// keaunbound.Service.installExec.
+	PkgExec firewall.Executor
 }
 
 // New creates and wires up the HTTP server.
@@ -357,6 +363,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// input, e a mudança do toggle reaplica o DHCP/DNS para anunciar (ou
 		// deixar de anunciar) a opção ntp-servers.
 		ntpSvc := timesync.NewService(s.exec)
+		ntpSvc.SetInstallExecutor(cfg.PkgExec)
 		ntpH := handlers.NewNTPHandler(s.db, ntpSvc, s.alertSvc, s.nftSvc)
 		handlers.WireNTPDHCPReload(ntpH, netH)
 		r.With(require(auth.PermNTPRead)).Get("/api/ntp", ntpH.GetNTP)

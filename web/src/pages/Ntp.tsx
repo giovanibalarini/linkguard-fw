@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw, Clock, Play, Download, Wifi } from 'lucide-react';
-import client from '../api/client';
+import client, { INSTALL_TIMEOUT_MS, isTimeout } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import Panel from '../components/ui/Panel';
 import type { NTPData, NTPConfig } from '../types';
@@ -49,7 +49,13 @@ export default function Ntp() {
   const run = async (fn: () => Promise<any>, ok: string) => {
     setBusy(true); setMsg('');
     try { await fn(); if (ok) setMsg(ok); await fetchData(); }
-    catch (e: any) { setMsg(`Erro: ${e.response?.data?.error || e.message}`); }
+    catch (e: any) {
+      // Instalar o chrony é um download: desistir de esperar não quer dizer
+      // que falhou (o apt segue numa unidade transiente do systemd).
+      setMsg(isTimeout(e)
+        ? 'A instalação está demorando mais que o normal e continua em segundo plano. Atualize a página em alguns minutos para ver o resultado.'
+        : `Erro: ${e.response?.data?.error || e.message}`);
+    }
     finally { setBusy(false); }
   };
 
@@ -71,7 +77,7 @@ export default function Ntp() {
     }), 'Config de NTP salva — aplicando automaticamente.');
   };
   const apply = () => run(() => client.post('/api/ntp/apply'), 'Aplicado com sucesso.');
-  const installChrony = () => run(() => client.post('/api/ntp/install-chrony'), 'chrony instalado.');
+  const installChrony = () => run(() => client.post('/api/ntp/install-chrony', null, { timeout: INSTALL_TIMEOUT_MS }), 'chrony instalado.');
 
   // Syncs cfg.allowed_networks from the raw text field on blur, so logic
   // that reads cfg (the pending-changes indicator, toggleServeLAN's

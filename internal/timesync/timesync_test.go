@@ -619,3 +619,32 @@ func TestReloadConfigExplicaAArmadilhaDoNamespace(t *testing.T) {
 		t.Errorf("o erro do NTP não diz qual caminho falhou:\n%s", err)
 	}
 }
+
+// Mesma classe do apply de DHCP/DNS: instalar o chrony é um download, não um
+// comando local. No executor de 30s, um prazo estourado não mata o apt (a
+// unidade transiente do systemd-run termina a transação) — só faz o painel
+// dizer que falhou.
+func TestInstallChronyUsaOExecutorDePacote(t *testing.T) {
+	appExec := &fakeExec{}
+	pkgExec := &fakeExec{}
+	s := NewService(appExec)
+	s.SetInstallExecutor(pkgExec)
+
+	if err := s.InstallChrony(context.Background()); err != nil {
+		t.Fatalf("InstallChrony: %v", err)
+	}
+	ranApt := func(e *fakeExec) bool {
+		for _, c := range e.executed {
+			if strings.Contains(c, "apt-get install") {
+				return true
+			}
+		}
+		return false
+	}
+	if !ranApt(pkgExec) {
+		t.Errorf("o apt não saiu pelo executor de pacote: %v", pkgExec.executed)
+	}
+	if ranApt(appExec) {
+		t.Errorf("o apt saiu pelo executor de 30s da aplicação: %v", appExec.executed)
+	}
+}
