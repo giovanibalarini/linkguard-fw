@@ -657,6 +657,11 @@ func TestListGroupsIsHonestAboutWhatIsApplied(t *testing.T) {
 	}
 	// Os dois grupos do sistema vêm na frente em toda máquina; o que este
 	// teste mede é a honestidade da visão dos grupos do ADMIN.
+	//
+	// Eles chegam aqui com applied=false, e isso é um desvio conhecido: um
+	// grupo do sistema não tem chain própria, então MergeGroups não acha
+	// jump nenhum para ele na forward e conclui "não aplicado" — para dois
+	// bloqueios que estão valendo. É da tarefa que arruma o MergeGroups.
 	var admin []groupView
 	for _, g := range body.Groups {
 		if !strings.HasPrefix(g.ChainName, "sys_") {
