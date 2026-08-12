@@ -277,8 +277,19 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 		}
 	}
 
+	// m-7: "aplicados" tinha que dizer quantas CHAINS foram aplicadas, e
+	// len(valid) inclui os dois grupos do sistema — que não têm chain
+	// própria (o conteúdo deles é o named set, nunca tocado aqui). Contar
+	// só quem de fato ganhou uma chain evita o log sugerir uma aplicação
+	// maior do que a que realmente aconteceu.
+	chainsApplied := 0
+	for _, g := range valid {
+		if !IsSystemGroup(g.Kind) {
+			chainsApplied++
+		}
+	}
 	slog.Info("grupos de regras reconciliados a partir do banco",
-		"grupos", len(groups), "aplicados", len(valid),
+		"grupos", len(groups), "chains_aplicadas", chainsApplied,
 		"regras_puladas", len(skippedAll), "falhas", len(failures))
 
 	if err := s.Persist(ctx); err != nil {

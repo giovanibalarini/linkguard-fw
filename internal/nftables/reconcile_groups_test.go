@@ -1155,6 +1155,31 @@ func TestReconcileGroupsIsIdempotent(t *testing.T) {
 	}
 }
 
+// m-7: o log final de ReconcileGroups tinha que contar quantas CHAINS foram
+// aplicadas — e os dois grupos do sistema não têm chain própria (o conteúdo
+// deles é o named set). Com dois grupos do sistema e um do admin, o número
+// certo é 1, não 3.
+func TestReconcileGroupsLogsChainsAppliedExcludingSystemGroups(t *testing.T) {
+	logs := captureLogs(t)
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: true, Position: 1, Fallthrough: FallthroughContinue},
+		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Kind: GroupKindAdmin, Enabled: true, Position: 2,
+			Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if !strings.Contains(logs.String(), "chains_aplicadas=1") {
+		t.Errorf("esperava chains_aplicadas=1 (só o grupo do admin tem chain própria), log:\n%s", logs.String())
+	}
+}
+
 func TestReconcileGroupsNoopInDryRun(t *testing.T) {
 	exec := &fakeReconcileExec{dryRun: true}
 	s := &Service{exec: exec}
