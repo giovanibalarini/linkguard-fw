@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -216,14 +218,43 @@ func (s *Service) ensurePackages(ctx context.Context) ([]string, error) {
 // /etc/unbound/unbound.conf.d, which Debian's unbound.conf pulls in with
 // `include-toplevel: ".../*.conf"` — same reasoning as validateUnbound's own
 // temp file.
+//
+// The name is also fixed rather than random (it used to be os.CreateTemp):
+// a process killed between creating the probe and removing it left the file
+// behind, and nothing ever collected it — one more piece of litter in /etc
+// per unlucky restart. With a fixed name there can only ever be one, and the
+// sweep below removes it (plus anything left by the old random-suffix
+// version) before probing again.
+//
+// Concurrency-safe by construction: two applies racing on the same directory
+// can only make each other's Remove find the file already gone, which is not
+// an error here — the question being answered is "can this process create a
+// file in dir", and it was answered by the create.
 func writableDir(dir string) error {
-	f, err := os.CreateTemp(dir, ".linkguard-write-probe-")
+	for _, leftover := range globQuiet(filepath.Join(dir, writeProbeName+"*")) {
+		_ = os.Remove(leftover)
+	}
+	path := filepath.Join(dir, writeProbeName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	name := f.Name()
 	f.Close()
-	return os.Remove(name)
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// writeProbeName is the fixed name of the write probe. See writableDir.
+const writeProbeName = ".linkguard-write-probe"
+
+func globQuiet(pattern string) []string {
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil
+	}
+	return matches
 }
 
 // sandboxHint delegates to sysprep.SandboxHint: the sentence is identical

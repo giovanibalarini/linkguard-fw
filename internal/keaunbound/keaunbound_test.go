@@ -1267,3 +1267,41 @@ func TestOMarcadorEvitaRestartDesnecessarioNoApplySeguinte(t *testing.T) {
 		t.Errorf("nada mudou na escuta: não pode derrubar o unbound;\n%s", strings.Join(e.writes, "\n"))
 	}
 }
+
+// A sonda de escrita não pode virar lixo em /etc. Com os.CreateTemp, um
+// processo morto entre criar e remover deixava um
+// `.linkguard-write-probe-XXXX` para trás e nada nunca o recolhia.
+func TestASondaDeEscritaNaoDeixaLixo(t *testing.T) {
+	dir := t.TempDir()
+
+	// Restos de versões anteriores (nome aleatório) e da atual.
+	for _, name := range []string{".linkguard-write-probe-123456", ".linkguard-write-probe"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := writableDir(dir); err != nil {
+		t.Fatalf("writableDir: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".linkguard-write-probe") {
+			t.Errorf("sobrou lixo da sonda: %s", e.Name())
+		}
+	}
+}
+
+// E a sonda continua respondendo à pergunta que interessa.
+func TestASondaDeEscritaAindaDetectaDiretorioNaoGravavel(t *testing.T) {
+	if err := writableDir(filepath.Join(t.TempDir(), "nao-existe")); err == nil {
+		t.Error("um diretório inexistente tem que ser reportado como não gravável")
+	}
+	if err := writableDir(t.TempDir()); err != nil {
+		t.Errorf("um diretório gravável não pode ser reportado como falha: %v", err)
+	}
+}
