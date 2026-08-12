@@ -952,3 +952,30 @@ func TestDeleteFirewallGroupUnknownIDIsAnError(t *testing.T) {
 		t.Fatal("apagar grupo inexistente tem que ser erro, não silêncio")
 	}
 }
+
+func TestFirewallGroupKindRoundTrips(t *testing.T) {
+	db := newTestDB(t)
+	g := storage.FirewallGroup{ID: "s1", Name: "Hosts bloqueados", ChainName: "sys_blocked_hosts",
+		Kind: "blocked_hosts", Position: 0, Enabled: true, Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatalf("criar: %v", err)
+	}
+	got, _ := db.ListFirewallGroups()
+	if len(got) != 1 || got[0].Kind != "blocked_hosts" {
+		t.Fatalf("kind não persistiu: %+v", got)
+	}
+}
+
+// Bancos que já existem ganham a coluna com valor vazio, e continuam
+// funcionando: toda linha antiga é grupo do admin.
+func TestMigrateAddsKindToExistingGroups(t *testing.T) {
+	db := newTestDB(t)
+	g := storage.FirewallGroup{ID: "a", Name: "Antigo", ChainName: "grp_aaa", Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.ListFirewallGroups()
+	if got[0].Kind != "" && got[0].Kind != "admin" {
+		t.Errorf("linha sem kind explícito tem que sair vazia ou admin, obtive %q", got[0].Kind)
+	}
+}

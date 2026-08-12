@@ -95,6 +95,9 @@ func (db *DB) migrate() error {
 	if err := db.migrateAddFirewallRuleGroupID(); err != nil {
 		return fmt.Errorf("migrate add firewall_rules.group_id: %w", err)
 	}
+	if err := db.migrateAddFirewallGroupKind(); err != nil {
+		return fmt.Errorf("migrate add firewall_groups.kind: %w", err)
+	}
 
 	return nil
 }
@@ -148,6 +151,33 @@ func (db *DB) migrateAddFirewallRuleGroupID() error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`ALTER TABLE firewall_rules ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna group_id: %w", err)
+	}
+	return tx.Commit()
+}
+
+// migrateAddFirewallGroupKind adiciona firewall_groups.kind em bancos que já
+// existem. Fica vazio nas linhas antigas de propósito: nftables.IsSystemGroup
+// trata kind vazio como grupo do admin, então toda linha criada antes desta
+// coluna existir continua se comportando exatamente como antes. Em
+// transação como toda migração deste projeto (incidente de 2026-07-24).
+func (db *DB) migrateAddFirewallGroupKind() error {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('firewall_groups') WHERE name = 'kind'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar coluna kind: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN kind TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("adicionar coluna kind: %w", err)
 	}
 	return tx.Commit()
 }
@@ -523,6 +553,7 @@ CREATE TABLE IF NOT EXISTS firewall_groups (
     cond_daddr   TEXT NOT NULL DEFAULT '',
     cond_iif     TEXT NOT NULL DEFAULT '',
     fallthrough  TEXT NOT NULL DEFAULT 'continue',
+    kind         TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`

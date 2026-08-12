@@ -142,3 +142,26 @@ func TestGroupChainNameLowercasesHex(t *testing.T) {
 		t.Fatalf("uppercase id produced %q", got)
 	}
 }
+
+func TestIsSystemGroupRecognisesOnlyTheTwoBlockKinds(t *testing.T) {
+	for _, k := range []string{GroupKindBlockedHosts, GroupKindBlocklist} {
+		if !IsSystemGroup(k) {
+			t.Errorf("%q é grupo do sistema", k)
+		}
+	}
+	for _, k := range []string{GroupKindAdmin, "", "qualquer-outra-coisa"} {
+		if IsSystemGroup(k) {
+			t.Errorf("%q NÃO é grupo do sistema; tratá-lo como tal daria a ele proteções que o admin não pediu", k)
+		}
+	}
+}
+
+// Kind vazio é o que toda linha antiga tem depois do ALTER TABLE. Ela é um
+// grupo do admin, e confundir isso com "sistema" travaria a edição de grupos
+// que o admin criou.
+func TestValidateGroupAcceptsEmptyKindAsAdmin(t *testing.T) {
+	g := StoredGroup{Name: "Meu grupo", Fallthrough: FallthroughContinue}
+	if err := ValidateGroup(g); err != nil {
+		t.Fatalf("grupo sem kind tem que valer como do admin: %v", err)
+	}
+}

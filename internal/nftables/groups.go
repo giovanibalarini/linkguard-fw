@@ -22,6 +22,26 @@ const (
 	FallthroughDrop     = "drop"     // counter drop as the last line
 )
 
+// Kind separa os grupos que o admin criou dos dois que o próprio LinkGuard
+// mantém para os named sets de bloqueio. Vazio conta como admin: é o valor
+// que toda linha criada antes desta coluna existir carrega, e tratá-las como
+// "do sistema" daria a elas proteções (não apagar, não renomear) que o admin
+// nunca pediu.
+const (
+	GroupKindAdmin        = "admin"
+	GroupKindBlockedHosts = "blocked_hosts"
+	GroupKindBlocklist    = "blocklist"
+)
+
+// IsSystemGroup reporta se o grupo é mantido pelo LinkGuard em vez de criado
+// pelo admin. Deliberadamente uma lista fechada, não "!= admin": um kind
+// desconhecido (banco de uma versão futura, linha editada à mão) é tratado
+// como do admin, que é o lado seguro — o erro caro seria travar a edição de
+// um grupo que o admin criou.
+func IsSystemGroup(kind string) bool {
+	return kind == GroupKindBlockedHosts || kind == GroupKindBlocklist
+}
+
 // StoredGroup is this package's own view of a rule group, deliberately
 // independent of internal/storage.FirewallGroup — internal/nftables must
 // not import internal/storage (a cycle), exactly like StoredRule already
@@ -44,6 +64,7 @@ type StoredGroup struct {
 	CondDaddr   string       `json:"cond_daddr"`
 	CondIif     string       `json:"cond_iif"`
 	Fallthrough string       `json:"fallthrough"`
+	Kind        string       `json:"kind"`
 	Rules       []StoredRule `json:"-"`
 }
 

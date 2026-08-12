@@ -1655,6 +1655,7 @@ type FirewallGroup struct {
 	CondDaddr   string    `json:"cond_daddr"`
 	CondIif     string    `json:"cond_iif"`
 	Fallthrough string    `json:"fallthrough"` // continue | accept | drop
+	Kind        string    `json:"kind"`        // "" ou "admin" | nftables.GroupKindBlockedHosts | nftables.GroupKindBlocklist
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -1662,7 +1663,7 @@ type FirewallGroup struct {
 func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
 	rows, err := db.conn.Query(`
         SELECT id, name, chain_name, position, enabled, cond_saddr, cond_daddr,
-               cond_iif, fallthrough, created_at, updated_at
+               cond_iif, fallthrough, kind, created_at, updated_at
           FROM firewall_groups ORDER BY position ASC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -1672,7 +1673,7 @@ func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
 	for rows.Next() {
 		var g FirewallGroup
 		if err := rows.Scan(&g.ID, &g.Name, &g.ChainName, &g.Position, &g.Enabled,
-			&g.CondSaddr, &g.CondDaddr, &g.CondIif, &g.Fallthrough,
+			&g.CondSaddr, &g.CondDaddr, &g.CondIif, &g.Fallthrough, &g.Kind,
 			&g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -1686,10 +1687,10 @@ func (db *DB) CreateFirewallGroup(g *FirewallGroup) error {
 	g.CreatedAt, g.UpdatedAt = now, now
 	_, err := db.conn.Exec(`
         INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
-            cond_saddr, cond_daddr, cond_iif, fallthrough, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
-		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.CreatedAt, g.UpdatedAt)
+		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.CreatedAt, g.UpdatedAt)
 	return err
 }
 
@@ -1763,10 +1764,10 @@ func (db *DB) MigrateRulesIntoGroup(g FirewallGroup, settingKey, settingValue st
 	now := time.Now()
 	if _, err := tx.Exec(`
         INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
-            cond_saddr, cond_daddr, cond_iif, fallthrough, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
-		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, now, now); err != nil {
+		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, now, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
