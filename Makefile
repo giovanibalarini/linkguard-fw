@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-backend deb install clean test lint
+.PHONY: all build build-frontend build-backend deb deb-from-binary install clean test lint
 
 BINARY_NAME   := linkguard-fw
 VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -37,11 +37,21 @@ build-dev:
 
 # ─── Package ─────────────────────────────────────────────────────────────────
 
-## deb: build a .deb package for the current architecture (requires dpkg-deb)
+# DEB_RECOMMENDS é a FONTE ÚNICA das relações de dependência do pacote. Ela é
+# usada tanto por `make deb` (build local) quanto pelo release do GitHub —
+# .github/workflows/release.yml chama `make deb-from-binary`, ele NÃO monta
+# mais um control próprio.
 #
-# Nota sobre o control abaixo: NÃO existe campo Depends. A base (nftables,
-# iproute2, iptables, iputils-ping) está em Recommends junto com os pacotes
-# opcionais, de propósito.
+# Isso não é preciosismo: enquanto o workflow tinha a sua própria cópia, o
+# .deb oficial (o que chega ao firewall por release e por auto-update) ainda
+# declarava `Depends: nftables, iproute2, iptables, iputils-ping` — ou seja,
+# o artefato entregue continuava com exatamente o defeito que esta mudança
+# existe para eliminar, e sem dns-root-data. TestControlFieldsAreSingleSourced
+# (internal/sysprep) trava a reincidência.
+#
+# NÃO existe campo Depends. A base (nftables, iproute2, iptables,
+# iputils-ping) está em Recommends junto com os pacotes opcionais, de
+# propósito.
 #
 # Com a base em Depends, `dpkg -i` numa máquina pelada para no meio: o pacote
 # fica em `iU` ("dependency problems prevent configuration of linkguard-fw"),
@@ -55,19 +65,33 @@ build-dev:
 # — o serviço sobe e o próprio LinkGuard garante a base no primeiro boot
 # (internal/bootstrapdeps), que é a premissa do produto: instalar o LinkGuard
 # é entregar a máquina a ele.
+DEB_RECOMMENDS := nftables, iproute2, iptables, iputils-ping, kea-dhcp4-server, unbound, dns-root-data, smartmontools, chrony
+
+# Parâmetros do deb-from-binary. Sobrescritos pelo workflow de release, que
+# cross-compila os dois arcos antes de empacotar.
+DEB_ARCH      ?= $(shell dpkg --print-architecture)
+DEB_BINARY    ?= $(BUILD_DIR)/$(BINARY_NAME)
+
+## deb: build a .deb package for the current architecture (requires dpkg-deb)
 deb: build
+	@$(MAKE) --no-print-directory deb-from-binary VERSION=$(VERSION)
+
+## deb-from-binary: package an already-built binary (no build step).
+## Chamado por `make deb` e pelo workflow de release — é o único lugar do
+## repositório que escreve um DEBIAN/control.
+deb-from-binary:
 	$(eval DEB_VERSION := $(shell echo "$(VERSION)" | sed 's/^v//'))
-	$(eval ARCH        := $(shell dpkg --print-architecture))
-	$(eval PKG         := $(BINARY_NAME)_$(DEB_VERSION)_$(ARCH))
+	$(eval PKG         := $(BINARY_NAME)_$(DEB_VERSION)_$(DEB_ARCH))
 	$(eval PKG_DIR     := $(BUILD_DIR)/deb/$(PKG))
 	@echo ">>> Building $(PKG).deb..."
+	@rm -rf $(PKG_DIR)
 	@mkdir -p $(PKG_DIR)/DEBIAN
 	@mkdir -p $(PKG_DIR)/usr/local/bin
 	@mkdir -p $(PKG_DIR)/lib/systemd/system
-	@install -m 0755 $(BUILD_DIR)/$(BINARY_NAME)            $(PKG_DIR)/usr/local/bin/$(BINARY_NAME)
+	@install -m 0755 $(DEB_BINARY)                          $(PKG_DIR)/usr/local/bin/$(BINARY_NAME)
 	@install -m 0644 deploy/linkguard-fw.service            $(PKG_DIR)/lib/systemd/system/linkguard-fw.service
 	@install -m 0644 deploy/linkguard-notify-down.service    $(PKG_DIR)/lib/systemd/system/linkguard-notify-down.service
-	@printf 'Package: $(BINARY_NAME)\nVersion: $(DEB_VERSION)\nArchitecture: $(ARCH)\nMaintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>\nSection: net\nPriority: optional\nRecommends: nftables, iproute2, iptables, iputils-ping, kea-dhcp4-server, unbound, dns-root-data, smartmontools, chrony\nHomepage: https://github.com/giovanibalarini/linkguard-fw\nDescription: Linux Firewall Management Tool\n A web-based firewall management tool for Linux.\n' \
+	@printf 'Package: $(BINARY_NAME)\nVersion: $(DEB_VERSION)\nArchitecture: $(DEB_ARCH)\nMaintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>\nSection: net\nPriority: optional\nRecommends: $(DEB_RECOMMENDS)\nHomepage: https://github.com/giovanibalarini/linkguard-fw\nDescription: Linux Firewall Management Tool\n A web-based firewall management tool for Linux.\n' \
 		> $(PKG_DIR)/DEBIAN/control
 	@cp deploy/deb/postinst $(PKG_DIR)/DEBIAN/postinst && chmod 0755 $(PKG_DIR)/DEBIAN/postinst
 	@cp deploy/deb/prerm    $(PKG_DIR)/DEBIAN/prerm    && chmod 0755 $(PKG_DIR)/DEBIAN/prerm

@@ -77,46 +77,23 @@ jobs:
               ./cmd/linkguard-fw/
           done
 
+      # O empacotamento é delegado ao Makefile de propósito: ele é a fonte
+      # única do DEBIAN/control (ver DEB_RECOMMENDS lá). Enquanto este passo
+      # montava o próprio control, o .deb oficial — o que chega ao firewall
+      # por release e por auto-update — continuava declarando
+      # `Depends: nftables, iproute2, ...`, parando em `iU` numa máquina
+      # pelada, que é exatamente o defeito que a mudança para Recommends:
+      # existe para eliminar. TestControlFieldsAreSingleSourced
+      # (internal/sysprep) quebra o build se alguém reintroduzir um control
+      # aqui.
       - name: Build .deb packages
         run: |
-            VERSION_CLEAN="${{ steps.version.outputs.deb_version }}"
-
-            for ARCH in amd64 arm64; do
-            PKG="linkguard-fw_${VERSION_CLEAN}_${ARCH}"
-            PKG_DIR="dist/deb/${PKG}"
-
-            mkdir -p "${PKG_DIR}/DEBIAN"
-            mkdir -p "${PKG_DIR}/usr/local/bin"
-            mkdir -p "${PKG_DIR}/lib/systemd/system"
-
-            cp "dist/linkguard-fw-linux-${ARCH}" "${PKG_DIR}/usr/local/bin/linkguard-fw"
-            chmod 0755 "${PKG_DIR}/usr/local/bin/linkguard-fw"
-
-            cp deploy/linkguard-fw.service "${PKG_DIR}/lib/systemd/system/linkguard-fw.service"
-            cp deploy/linkguard-notify-down.service "${PKG_DIR}/lib/systemd/system/linkguard-notify-down.service"
-
-            cat > "${PKG_DIR}/DEBIAN/control" <<EOF
-            Package: linkguard-fw
-            Version: ${VERSION_CLEAN}
-            Architecture: ${ARCH}
-            Maintainer: giovanibalarini <giovanibalarini@users.noreply.github.com>
-            Section: net
-            Priority: optional
-            Depends: nftables, iproute2, iptables, iputils-ping
-            Recommends: kea-dhcp4-server, unbound, smartmontools, chrony
-            Homepage: https://github.com/giovanibalarini/linkguard-fw
-            Description: Linux Firewall Management Tool
-             LinkGuard FW is a web-based firewall management tool for Linux
-             that provides a modern UI to manage iptables rules, static routes,
-             failover policies, and network monitoring.
-            EOF
-
-            install -m 0755 deploy/deb/postinst "${PKG_DIR}/DEBIAN/postinst"
-            install -m 0755 deploy/deb/prerm    "${PKG_DIR}/DEBIAN/prerm"
-
-            dpkg-deb --build --root-owner-group "${PKG_DIR}" "dist/${PKG}.deb"
-            echo ">>> Created: dist/${PKG}.deb"
-            done
+          for ARCH in amd64 arm64; do
+            make deb-from-binary \
+              VERSION="${{ steps.version.outputs.deb_version }}" \
+              DEB_ARCH="${ARCH}" \
+              DEB_BINARY="dist/linkguard-fw-linux-${ARCH}"
+          done
 
       - name: Generate checksums
         run: |
