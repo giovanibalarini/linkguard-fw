@@ -247,18 +247,23 @@ func TestReconcileGroupsCreatesNoChainForSystemGroups(t *testing.T) {
 
 // ─── forwardChainRules: a inversão da §3 ─────────────────────────────────
 
-// A inversão da spec §3: bloqueio administrativo é avaliado ANTES dos
-// grupos do admin e sempre vence. Até a Fase B era o contrário — um
-// "permitir" do usuário anulava a lista de bloqueio — e ninguém percebia.
+// m-6: renomeado de TestForwardChainPutsBlocksBeforeGroupJumps. Aquele nome
+// prometia uma garantia estrutural que deixou de existir — desde que os
+// bloqueios viraram itens de uma lista como qualquer outro, forwardChainRules
+// não "põe" bloqueio antes de jump nenhum: ela segue a POSIÇÃO que a lista
+// já trazia. O que este teste de fato prova é que, com a lista que a
+// migração cria (grupos do sistema nas posições 0 e 1, antes dos grupos do
+// admin), o resultado sai bloqueios-primeiro — é a lista sendo seguida, não
+// uma proteção viva contra uma lista que viesse na ordem contrária. Ver
+// TestForwardChainFollowsTheSingleOrderedList para a prova de que a ordem é
+// mesmo arbitrária (bloqueio movido para o fim aparece no fim).
 //
-// ATUALIZADO: a expectativa continua a mesma, a FONTE dela é que mudou. Os
-// bloqueios não são mais quatro linhas fixas em código; são dois itens da
-// lista, e a ordem da §3 vale porque a migração os cria nas posições 0 e 1.
-// A lista deste teste é, por isso, a que a produção realmente tem depois da
-// migração — uma lista sem os grupos do sistema não renderiza bloqueio
-// nenhum, e é a reconciliação que recusa esse caso
-// (firewallrules.ensureSystemGroupsPresent), não esta função.
-func TestForwardChainPutsBlocksBeforeGroupJumps(t *testing.T) {
+// Até a Fase B a garantia ERA estrutural — bloqueio administrativo avaliado
+// antes dos grupos do admin, sempre, em código. A migração preserva esse
+// COMPORTAMENTO por escolha de posição (§3 da spec), não por invariante de
+// código; é essa distinção que o nome atual tenta deixar impossível de ler
+// como proteção.
+func TestForwardChainRendersMigrationDefaultOrderBlocksBeforeAdminJumps(t *testing.T) {
 	groups := []StoredGroup{
 		{ID: "h", Kind: GroupKindBlockedHosts, ChainName: SystemChainBlockedHosts, Enabled: true, Position: 0},
 		{ID: "l", Kind: GroupKindBlocklist, ChainName: SystemChainBlocklist, Enabled: true, Position: 1},
