@@ -47,6 +47,11 @@ type recExec struct {
 	missingPkgs  map[string]bool
 	installFails bool
 
+	// installFailsFor faz o apt-get falhar só quando o comando menciona um
+	// destes pacotes — o caso real em que um pacote específico não está no
+	// espelho (ou o índice está velho) e os outros entrariam sem problema.
+	installFailsFor map[string]bool
+
 	// failOn faz Execute falhar em qualquer comando que contenha esta
 	// substring — usado para reproduzir o apply que escreve os arquivos e
 	// morre no reload do kea.
@@ -62,6 +67,11 @@ func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string
 	if strings.Contains(full, "apt-get install") {
 		if e.installFails {
 			return "", errors.New("E: Unable to locate package")
+		}
+		for _, a := range args {
+			if e.installFailsFor[a] {
+				return "", errors.New("E: Unable to locate package " + a)
+			}
 		}
 		for _, a := range args {
 			delete(e.missingPkgs, a)
@@ -1171,7 +1181,7 @@ func TestInstalacaoSobDemandaUsaOExecutorDePacote(t *testing.T) {
 	s := newTestSvc(t, appExec)
 	s.SetInstallExecutor(pkgExec)
 
-	if _, err := s.ensurePackages(context.Background()); err != nil {
+	if _, _, err := s.ensurePackages(context.Background()); err != nil {
 		t.Fatalf("ensurePackages: %v", err)
 	}
 
@@ -1303,5 +1313,87 @@ func TestASondaDeEscritaAindaDetectaDiretorioNaoGravavel(t *testing.T) {
 	}
 	if err := writableDir(t.TempDir()); err != nil {
 		t.Errorf("um diretório gravável não pode ser reportado como falha: %v", err)
+	}
+}
+
+// ─── dns-root-data: pré-requisito de instalar o unbound, não de aplicar ───
+//
+// I-2 da revisão final. ReloadConfigs começa em ensurePackages, que exigia
+// kea + unbound + dns-root-data; faltando QUALQUER um, devolvia PrereqError e
+// nada era escrito nem recarregado. Numa máquina em que kea e unbound estão
+// instalados e servindo, mas dns-root-data não está, o admin ficava sem
+// conseguir aplicar mudança nenhuma de DHCP/DNS enquanto o apt não pudesse
+// instalar — e a hora em que se mexe em DHCP/DNS costuma ser exatamente a
+// hora em que a WAN está ruim.
+func TestFaltaDeDnsRootDataNaoImpedeOApplyComUnboundJaInstalado(t *testing.T) {
+	e := &recExec{
+		missingPkgs:  map[string]bool{dnsRootDataPackage: true},
+		installFails: true, // o apt não consegue trazer nada: WAN ruim
+	}
+	s := newTestSvc(t, e)
+
+	res, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("o apply tinha que acontecer mesmo sem dns-root-data: %v", err)
+	}
+
+	// Aplicou de verdade: os dois daemons foram recarregados.
+	joined := strings.Join(e.writes, "\n")
+	for _, svc := range []string{keaService, unboundService} {
+		if !strings.Contains(joined, svc) {
+			t.Errorf("o serviço %s não foi recarregado; comandos: %s", svc, joined)
+		}
+	}
+	// E o admin fica sabendo — sem aviso isto vira exatamente a "config
+	// aplicada que não está funcionando" que o produto não aceita.
+	if !slices.ContainsFunc(res.Warnings, func(w string) bool { return strings.Contains(w, dnsRootDataPackage) }) {
+		t.Errorf("o apply passou calado sobre o dns-root-data ausente; avisos=%v", res.Warnings)
+	}
+}
+
+// O outro lado: quando é o LinkGuard que vai instalar o unbound AGORA, o
+// dns-root-data continua obrigatório. Um unbound recém-instalado sem a
+// âncora DNSSEC da raiz nem sobe ("module init for module validator
+// failed"): instalar um e não o outro entrega um resolvedor habilitado que
+// não responde uma consulta — pior do que não instalar.
+func TestDnsRootDataContinuaObrigatorioQuandoOLinkguardInstalaOUnbound(t *testing.T) {
+	e := &recExec{
+		missingPkgs:     map[string]bool{keaPackage: true, unboundPackage: true, dnsRootDataPackage: true},
+		installFailsFor: map[string]bool{dnsRootDataPackage: true},
+	}
+	s := newTestSvc(t, e)
+
+	_, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, "")
+	if err == nil {
+		t.Fatal("instalar o unbound sem o dns-root-data tinha que abortar o apply")
+	}
+	var prereq *netsvc.PrereqError
+	if !errors.As(err, &prereq) {
+		t.Fatalf("o erro tinha que ser um PrereqError (acionável pelo admin), obtive %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), dnsRootDataPackage) {
+		t.Errorf("a mensagem tem que nomear o pacote que faltou: %v", err)
+	}
+}
+
+// E o caminho normal continua sendo o que era: máquina pelada, apt
+// funcionando, os três pacotes entram e o apply segue.
+func TestMaquinaPeladaInstalaOsTresPacotesESegue(t *testing.T) {
+	e := &recExec{missingPkgs: map[string]bool{
+		keaPackage: true, unboundPackage: true, dnsRootDataPackage: true,
+	}}
+	s := newTestSvc(t, e)
+
+	res, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("ReloadConfigs: %v", err)
+	}
+	for _, pkg := range []string{keaPackage, unboundPackage, dnsRootDataPackage} {
+		if !slices.Contains(res.Installed, pkg) {
+			t.Errorf("%s tinha que constar como instalado nesta passada; installed=%v", pkg, res.Installed)
+		}
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("nada faltou; não podia haver aviso: %v", res.Warnings)
 	}
 }

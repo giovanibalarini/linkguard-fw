@@ -184,14 +184,50 @@ func (s *Service) EnsureKeaDirReadable() {
 //     and the manual command (bootstrapdeps does that wording);
 //   - the package is there but its config directory is not writable by this
 //     process: the systemd trap, see writableDir.
-func (s *Service) ensurePackages(ctx context.Context) ([]string, error) {
+//
+// dns-root-data é o único que NÃO é pré-requisito duro sempre (I-2 da
+// revisão final). Ele é obrigatório quando é o LinkGuard que vai instalar o
+// unbound nesta passada: um unbound recém-instalado sem a âncora DNSSEC da
+// raiz nem sobe, e entregar um resolvedor habilitado que não responde uma
+// consulta é pior do que não instalar. Numa máquina onde o unbound JÁ está
+// instalado e servindo, ele deixa de ser condição para aplicar: exigi-lo ali
+// trancava o admin fora de toda mudança de DHCP/DNS enquanto o apt não
+// pudesse instalar — e a hora de mexer em DHCP/DNS costuma ser exatamente a
+// hora em que a WAN está ruim. Vira aviso no ApplyResult, que a tela mostra
+// junto do "aplicado".
+func (s *Service) ensurePackages(ctx context.Context) ([]string, []string, error) {
 	if s.exec.IsDryRun() {
-		return nil, nil
+		return nil, nil, nil
 	}
-	installed, err := bootstrapdeps.EnsureInstalled(ctx, s.installExec, keaPackage, unboundPackage, dnsRootDataPackage)
+	// A âncora só é indispensável agora se o unbound vai nascer nesta
+	// passada — e nesse caso os três entram num apt só.
+	required := []string{keaPackage, unboundPackage}
+	freshUnbound := len(bootstrapdeps.Missing(ctx, s.exec, unboundPackage)) > 0
+	if freshUnbound {
+		required = append(required, dnsRootDataPackage)
+	}
+
+	installed, err := bootstrapdeps.EnsureInstalled(ctx, s.installExec, required...)
 	if err != nil {
-		return installed, &netsvc.PrereqError{Msg: err.Error()}
+		return installed, nil, &netsvc.PrereqError{Msg: err.Error()}
 	}
+
+	var warnings []string
+	if !freshUnbound {
+		// Já instalado é o caso comum e custa um dpkg-query. Ausente, tenta
+		// trazer — e se não der, o apply segue com o aviso.
+		got, derr := bootstrapdeps.EnsureInstalled(ctx, s.installExec, dnsRootDataPackage)
+		installed = append(installed, got...)
+		if derr != nil {
+			slog.Warn("dns-root-data ausente e não instalável; DHCP/DNS aplicado assim mesmo", "err", derr)
+			warnings = append(warnings, "O pacote "+dnsRootDataPackage+" não está instalado e o LinkGuard não "+
+				"conseguiu instalá-lo agora. A configuração foi aplicada e o DNS continua respondendo, mas "+
+				"falta a âncora DNSSEC da raiz (/var/lib/unbound/root.key): se o unbound for reiniciado sem "+
+				"ela, pode não voltar a subir e a LAN fica sem DNS. Instale quando a máquina tiver rede: "+
+				"apt-get install -y "+dnsRootDataPackage+".")
+		}
+	}
+
 	if len(installed) > 0 {
 		// A freshly installed kea ships /etc/kea as _kea:_kea 0750, which
 		// blocks both this process's config write and kea-dhcp4's own read
@@ -203,10 +239,10 @@ func (s *Service) ensurePackages(ctx context.Context) ([]string, error) {
 	}
 	for _, dir := range []string{filepath.Dir(s.keaConf), filepath.Dir(s.unboundConf)} {
 		if err := writableDir(dir); err != nil {
-			return installed, &netsvc.PrereqError{Msg: sandboxHint(dir, err)}
+			return installed, warnings, &netsvc.PrereqError{Msg: sandboxHint(dir, err)}
 		}
 	}
-	return installed, nil
+	return installed, warnings, nil
 }
 
 // writableDir reports whether this process can create a file in dir — the
@@ -422,12 +458,17 @@ func (s *Service) generateConfigs(c netsvc.Config, res []netsvc.Reservation, blo
 // with an unexplained error about a directory that only exists because the
 // package does (the defect this step was added for — see ensurePackages).
 func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) (netsvc.ApplyResult, error) {
-	installed, err := s.ensurePackages(ctx)
+	installed, prereqWarnings, err := s.ensurePackages(ctx)
 	if err != nil {
-		return netsvc.ApplyResult{Installed: installed}, err
+		return netsvc.ApplyResult{Warnings: prereqWarnings, Installed: installed}, err
 	}
 
 	files, warnings, err := s.generateConfigs(c, res, blocked, ntpServer)
+	// Um pré-requisito que degradou para aviso (dns-root-data ausente com o
+	// unbound já instalado) vale para o apply inteiro, inclusive quando ele
+	// falha mais adiante por outro motivo: os dois avisos são fatos
+	// independentes sobre a mesma passada.
+	warnings = append(prereqWarnings, warnings...)
 	if err != nil {
 		// I-7: a singular field this config cannot do without (the LAN IP
 		// unbound binds to, the subnet it answers for) did not survive
