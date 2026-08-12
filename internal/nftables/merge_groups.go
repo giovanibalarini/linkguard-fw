@@ -67,6 +67,28 @@ func MergeGroups(groups []StoredGroup, chains map[string]ChainInfo, forward Chai
 		// identidade da Fase B — inclusive a normalização da forma que o nft
 		// imprime (aspas em iifname, /32 comido).
 		v.Rules = MergeUserRules(g.Rules, chains[g.ChainName])
+
+		// Mas o pareamento sozinho mente aqui, e MergeUserRules não tem como
+		// saber: ele foi escrito para user_rules, uma chain ligada direto na
+		// forward, onde "existe no nft" implica "é alcançada". A chain de um
+		// grupo não: ReconcileGroups deixa a chain de um grupo desligado viva
+		// e preenchida de propósito (as regras ficam guardadas para quando
+		// ele voltar), e só remove o jump. Sem esta correção, todo grupo
+		// desligado com regras — o caso normal, não uma borda — exibiria as
+		// regras de dentro como aplicadas, com contador real, ao lado de um
+		// grupo marcado como não aplicado.
+		//
+		// Alcançabilidade é transitiva: se nada pula para a chain, nada
+		// dentro dela está em vigor, por mais que o nft a liste. Os
+		// contadores são preservados porque são medição verdadeira — do
+		// tempo em que o grupo estava ligado —, e apagá-los seria inventar
+		// um "não medido" onde houve medição; quem exibe é que decide como
+		// apresentar histórico de uma regra que hoje não é alcançada.
+		if !v.Applied {
+			for i := range v.Rules.Rules {
+				v.Rules.Rules[i].Applied = false
+			}
+		}
 		out = append(out, v)
 	}
 	return out

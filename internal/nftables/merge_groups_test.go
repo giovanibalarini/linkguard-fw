@@ -61,3 +61,72 @@ func TestMergeGroupsEnabledWithoutJumpIsUnapplied(t *testing.T) {
 		t.Error("grupo ligado sem jump vivo NÃO está aplicado")
 	}
 }
+
+// A chain de um grupo desligado continua viva e preenchida no nft de
+// propósito (ReconcileGroups guarda as regras para quando ele voltar); só o
+// jump some. Sem propagar isso, MergeUserRules — escrito para user_rules,
+// onde "existe no nft" implica "é alcançada" — marca as regras de dentro
+// como aplicadas, e o painel exibiria regra em vigor dentro de um grupo que
+// ele mesmo mostra como não aplicado. É a confusão Enabled-vs-Applied que
+// já foi achado crítico neste projeto, um nível abaixo.
+//
+// Este é o estado NORMAL de todo grupo desligado com regras, não uma borda.
+func TestMergeGroupsDisabledGroupInnerRulesAreNotApplied(t *testing.T) {
+	g := StoredGroup{ID: "a", Name: "Testes", ChainName: "grp_aaa", Enabled: false,
+		Fallthrough: FallthroughContinue,
+		Rules: []StoredRule{{ID: "r1", Enabled: true,
+			Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "22"}}}}
+	chains := map[string]ChainInfo{"grp_aaa": {Name: "grp_aaa", Rules: []ChainRule{
+		{Expression: "tcp dport 22 accept", Handle: 9, HasCounter: true, Packets: 3, Bytes: 300},
+	}}}
+
+	v := MergeGroups([]StoredGroup{g}, chains, ChainInfo{Name: ForwardChain})[0]
+	if v.Applied {
+		t.Fatal("grupo desligado não tem jump e não está aplicado")
+	}
+	if v.Rules.Rules[0].Applied {
+		t.Error("nada pula para a chain deste grupo: a regra de dentro NÃO está em vigor")
+	}
+	// O contador é medição verdadeira de quando o grupo estava ligado —
+	// apagá-lo inventaria um "não medido" onde houve medição.
+	if !v.Rules.Rules[0].HasCounter || v.Rules.Rules[0].Packets != 3 {
+		t.Errorf("o contador medido tem que ser preservado, obtive %+v", v.Rules.Rules[0])
+	}
+}
+
+// Mesmo raciocínio para o grupo LIGADO cujo jump sumiu do firewall: é o
+// estado que o selo "Configurada, não aplicada" existe para expor, e ele
+// vale para o grupo e para tudo que está dentro dele.
+func TestMergeGroupsEnabledWithoutJumpAlsoUnappliesInnerRules(t *testing.T) {
+	g := StoredGroup{ID: "a", Name: "Servidores", ChainName: "grp_aaa", Enabled: true,
+		Fallthrough: FallthroughContinue,
+		Rules: []StoredRule{{ID: "r1", Enabled: true,
+			Fields: RuleFields{Action: "accept", Proto: "tcp", Dport: "22"}}}}
+	chains := map[string]ChainInfo{"grp_aaa": {Name: "grp_aaa", Rules: []ChainRule{
+		{Expression: "tcp dport 22 accept", Handle: 9, HasCounter: true, Packets: 3},
+	}}}
+
+	v := MergeGroups([]StoredGroup{g}, chains, ChainInfo{Name: ForwardChain})[0]
+	if v.Applied || v.Rules.Rules[0].Applied {
+		t.Errorf("sem jump vivo, nem o grupo nem as regras estão em vigor: %+v", v)
+	}
+}
+
+// A ordem exibida tem que ser a que o admin configurou — a ordem em que o
+// kernel avalia os grupos. Sem isto, o painel mostraria uma ordem de
+// avaliação que não é a real.
+func TestMergeGroupsSortsByPosition(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "c", Name: "terceiro", ChainName: "grp_ccc", Position: 20},
+		{ID: "a", Name: "primeiro", ChainName: "grp_aaa", Position: 1},
+		{ID: "b", Name: "segundo", ChainName: "grp_bbb", Position: 10},
+	}
+	views := MergeGroups(groups, map[string]ChainInfo{}, ChainInfo{Name: ForwardChain})
+	got := []string{views[0].Name, views[1].Name, views[2].Name}
+	want := []string{"primeiro", "segundo", "terceiro"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ordem por Position não respeitada: %v", got)
+		}
+	}
+}
