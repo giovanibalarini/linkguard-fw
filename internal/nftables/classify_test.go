@@ -255,3 +255,45 @@ func TestDescribeRuleDistinguishesBlockDirection(t *testing.T) {
 		}
 	}
 }
+
+// ─── C-2: a chain de um grupo é do ADMIN, como a user_rules era ────────────
+//
+// Depois da migração da Fase C1 as regras do admin moram nas chains grp_.
+// Sem reconhecer o prefixo, a MESMA regra do MESMO admin, no MESMO grupo,
+// voltava classificada de dois jeitos: a ativada (lida do nft vivo) como
+// "gerenciada pelo LinkGuard" e com a expressão crua no lugar da descrição; a
+// desativada (sintética, montada pelo merge) como do admin e em português. Na
+// tela isso vira uma lista esquizofrênica — e, pior, o painel oferecendo "esta
+// regra vem do LinkGuard" para uma regra que o admin escreveu à mão.
+func TestClassifyRuleGroupChainIsNeverManaged(t *testing.T) {
+	for _, chain := range []string{"grp_ef46c5a25b73", GroupChainPrefix + "0"} {
+		managed, owner := classifyRule(chain, "ip saddr 10.0.0.5 drop")
+		if managed {
+			t.Errorf("chain %s: a regra é do admin, nunca gerenciada pelo LinkGuard", chain)
+		}
+		if owner.Key != "" || owner.Label != "" {
+			t.Errorf("chain %s: regra do admin não tem dono, obtive %+v", chain, owner)
+		}
+	}
+}
+
+// Uma chain que só PARECE de grupo (sem o separador do prefixo) continua
+// sendo de terceiro/do LinkGuard: o prefixo é a marca que a reconciliação usa
+// para saber o que é dela, e afrouxá-lo aqui chamaria de "do admin" o que não
+// é — o único erro que classifyRule não pode cometer.
+func TestClassifyRuleLookalikeChainIsStillManaged(t *testing.T) {
+	if managed, _ := classifyRule("grpfoo", "ip saddr 10.0.0.5 drop"); !managed {
+		t.Error("chain fora do prefixo grp_ não é do admin")
+	}
+}
+
+func TestDescribeRuleGroupChainSpeaksPortuguese(t *testing.T) {
+	got := describeRule("grp_ef46c5a25b73", "ip saddr 10.0.0.6 accept")
+	want := describeUserRuleExpression("ip saddr 10.0.0.6 accept")
+	if got != want {
+		t.Errorf("a regra do admin dentro de um grupo tem que ser descrita pelo mesmo caminho das outras: obtive %q, esperava %q", got, want)
+	}
+	if !strings.Contains(got, "Permite") || !strings.Contains(got, "10.0.0.6") {
+		t.Errorf("descrição não saiu em português: %q", got)
+	}
+}

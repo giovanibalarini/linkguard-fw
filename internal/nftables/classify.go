@@ -8,28 +8,51 @@ import (
 
 // RuleOwner identifies which higher-level LinkGuard control produced a
 // managed rule, so the panel can offer "this rule comes from X → open" (see
-// the design spec, §2). Both fields are empty for an admin-owned rule
-// (chain user_rules). Key is also empty — Label still isn't — for a managed
-// rule this package does not specifically recognise: better an honest
-// generic "gerenciado pelo LinkGuard" than a guessed, possibly wrong, owner.
+// the design spec, §2). Both fields are empty for an admin-owned rule (a
+// chain isAdminRuleChain recognises). Key is also empty — Label still isn't —
+// for a managed rule this package does not specifically recognise: better an
+// honest generic "gerenciado pelo LinkGuard" than a guessed, possibly wrong,
+// owner.
 type RuleOwner struct {
 	Key   string `json:"key,omitempty"`
 	Label string `json:"label"`
 }
 
+// isAdminRuleChain reports whether chain holds rules the ADMIN wrote, as
+// opposed to rules LinkGuard derives from a higher-level control. Since the
+// Fase C1 migration that means every group chain (GroupChainPrefix) — the
+// legacy user_rules is still listed because a box that has not migrated yet
+// (or one being read from an old snapshot) must not have its rules suddenly
+// reclassified as LinkGuard's.
+//
+// The prefix is matched exactly as reconciliation matches it to decide which
+// chains are its own to delete: loosening it here would call "the admin's"
+// something that isn't, the one mistake classifyRule must never make.
+func isAdminRuleChain(chain string) bool {
+	return chain == UserChain || strings.HasPrefix(chain, GroupChainPrefix)
+}
+
 // classifyRule decides whether a rule is managed by LinkGuard (derived from
-// a higher-level control, reconciled, not hand-editable here) or the
-// admin's own (chain user_rules — the only chain this ever returns
+// a higher-level control, reconciled, not hand-editable here) or the admin's
+// own (an isAdminRuleChain chain — the only ones this ever returns
 // managed=false for). Every other chain, known or not, is LinkGuard's, so
 // an unrecognised rule still reports managed=true with a generic owner —
 // the one thing this function must never do is call something the admin's
 // when it isn't.
+//
+// C-2: the group chains had to be added here, not just to user_rules. A rule
+// read from the live grp_ chain and the synthetic entry MergeUserRules builds
+// for its disabled sibling are the same admin's rules, in the same group;
+// classifying them differently made a single group's list contradict itself,
+// and offered "this rule comes from LinkGuard" for a rule the admin typed.
 func classifyRule(chain, expr string) (managed bool, owner RuleOwner) {
 	const genericLabel = "LinkGuard"
 
-	switch chain {
-	case UserChain:
+	if isAdminRuleChain(chain) {
 		return false, RuleOwner{}
+	}
+
+	switch chain {
 	case masqueradeChain: // postrouting
 		return true, RuleOwner{Key: "nat", Label: "NAT (WANs)"}
 	case MarkHostsChain:
@@ -87,10 +110,15 @@ func extractSetText(raw string) string {
 // expression for anything it doesn't specifically recognise — better honest
 // than a wrong guess.
 func describeRule(chain, expr string) string {
-	switch chain {
-	case UserChain:
+	// C-2: an admin rule reads the same in plain Portuguese wherever it lives
+	// — the group chain it lives in today, or the legacy user_rules. Leaving
+	// the grp_ chains out let the raw nft expression through as the
+	// "description" for exactly the rules the panel most needs to explain.
+	if isAdminRuleChain(chain) {
 		return describeUserRuleExpression(expr)
+	}
 
+	switch chain {
 	case masqueradeChain: // postrouting
 		if strings.Contains(expr, "masquerade") {
 			if m := reOifnameSet.FindStringSubmatch(expr); m != nil {

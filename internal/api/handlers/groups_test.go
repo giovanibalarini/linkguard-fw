@@ -686,3 +686,54 @@ func TestOverviewKeepsDisabledRulesInsideTheGroupChain(t *testing.T) {
 		}
 	}
 }
+
+// C-2, no payload de verdade: as duas regras do MESMO admin, no MESMO grupo,
+// precisam voltar classificadas do mesmo jeito. Antes, a ativada (lida do nft
+// vivo, chain grp_) vinha managed=true / owner "LinkGuard" / descrição crua, e
+// a desativada (sintética) vinha do admin e em português — lado a lado, na
+// mesma lista.
+func TestOverviewClassifiesGroupRulesAsTheAdminsOwn(t *testing.T) {
+	h, db, _ := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db, `{"name":"Minhas regras","fallthrough":"continue"}`)
+	createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	off := createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"accept","saddr":"10.0.0.6"}`)
+	if w := doJSON(t, h.ToggleRule, "POST", "/api/nftables/rules/toggle",
+		`{"id":"`+off.ID+`","enabled":false}`); w.Code != http.StatusOK {
+		t.Fatalf("desativar a regra: %d %s", w.Code, w.Body.String())
+	}
+
+	w := doJSON(t, h.Overview, "GET", "/api/nftables/overview", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("Overview: status %d, body %s", w.Code, w.Body.String())
+	}
+	var chains []nftables.ChainInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &chains); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, w.Body.String())
+	}
+	var grp *nftables.ChainInfo
+	for i := range chains {
+		if chains[i].Name == g.ChainName {
+			grp = &chains[i]
+		}
+	}
+	if grp == nil {
+		t.Fatalf("a chain do grupo sumiu da visão geral: %+v", chains)
+	}
+	if len(grp.Rules) != 2 {
+		t.Fatalf("esperava as 2 regras do grupo, obtive %+v", grp.Rules)
+	}
+	for _, r := range grp.Rules {
+		if r.Chain != g.ChainName {
+			t.Errorf("regra diz morar em %q, e não na chain do grupo %q: %+v", r.Chain, g.ChainName, r)
+		}
+		if r.Managed {
+			t.Errorf("regra do admin marcada como gerenciada pelo LinkGuard: %+v", r)
+		}
+		if r.Owner.Key != "" || r.Owner.Label != "" {
+			t.Errorf("regra do admin não tem dono, obtive %+v", r.Owner)
+		}
+		if r.Description == r.Expression {
+			t.Errorf("a descrição tem que sair em português, não a expressão crua: %+v", r)
+		}
+	}
+}
