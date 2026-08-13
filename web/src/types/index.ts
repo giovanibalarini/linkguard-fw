@@ -3,6 +3,13 @@
 export type LinkStatus = 'online' | 'offline' | 'degraded' | 'unknown';
 export type AlertSeverity = 'info' | 'warning' | 'critical';
 
+// MsgLevel é como uma mensagem de tela deve SOAR. Os dois primeiros já
+// existiam implicitamente (verde, ou vermelho quando o texto começa com
+// "Erro"); 'warn' existe porque há um recado que não é nenhum dos dois: "o
+// prazo acabou sem confirmação e a alteração foi revertida" não é uma boa
+// notícia — em verde, ele induz o operador a achar que a mudança dele valeu.
+export type MsgLevel = 'ok' | 'warn' | 'error';
+
 export interface WanLink {
   id: string;
   name: string;
@@ -374,10 +381,15 @@ export interface FirewallPendingChange {
   summary: string;
   applied_by: string;
   // expires_at é o instante em que o LinkGuard reverte sozinho, em hora do
-  // SERVIDOR. A contagem regressiva sai daqui e nunca de um contador local:
-  // recarregar a página não pode reiniciar o relógio, senão o operador acha
-  // que tem 90 segundos quando tem 5.
+  // SERVIDOR. É a verdade persistida da janela.
   expires_at: string;
+  // seconds_left é quanto falta, medido pelo relógio DO SERVIDOR e recalculado
+  // a cada resposta. A contagem da tela parte daqui, e não de
+  // `expires_at - Date.now()`: aquela conta mistura a hora do firewall com a da
+  // estação do operador, e um relógio deslocado erra o número na mesma medida —
+  // "45 s" quando restam 5 é o caso ruim, porque é esse número que ele usa para
+  // decidir se ainda dá tempo de testar o SSH.
+  seconds_left: number;
   created_at: string;
   reverting: boolean;
   reverting_at?: string;

@@ -11,7 +11,7 @@ import PortForwarding from '../components/PortForwarding';
 import FirewallOverview from '../components/FirewallOverview';
 import FirewallGroups from '../components/FirewallGroups';
 import WanSteering from '../components/WanSteering';
-import type { IptablesBackup, NftChainInfo, SystemMetrics } from '../types';
+import type { IptablesBackup, MsgLevel, NftChainInfo, SystemMetrics } from '../types';
 
 // A aba "blocks" (Bloqueios e direcionamento) se dissolveu: os dois bloqueios
 // viraram grupos do sistema, dentro de "Grupos de regras", e o direcionamento
@@ -26,6 +26,16 @@ const TABS = [
 ] as const;
 
 type Tab = (typeof TABS)[number][0];
+
+// O âmbar do aviso é o mesmo da faixa do confirmar-ou-reverte (o `warn` do
+// design system), e não por acaso: a mensagem "o prazo acabou e a alteração foi
+// revertida" é o epílogo daquela faixa, e ler as duas com a mesma cor é ler a
+// mesma história.
+const MSG_STYLES: Record<MsgLevel, string> = {
+  ok: 'border-green-500/30 bg-green-500/10 text-green-400',
+  warn: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+  error: 'border-red-500/30 bg-red-500/10 text-red-400',
+};
 
 function isTab(v: string | null): v is Tab {
   return !!v && TABS.some(([id]) => id === v);
@@ -45,7 +55,17 @@ export default function Firewall() {
   const [backups, setBackups] = useState<IptablesBackup[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState('');
+  // A faixa de mensagem tem TRÊS tons, não dois. O terceiro nasceu de um recado
+  // concreto: "o prazo acabou sem confirmação e a alteração foi revertida" não
+  // é sucesso nem erro — é um aviso, e em verde ele diz ao operador o oposto do
+  // que aconteceu com a mudança dele.
+  //
+  // Quem não passa o tom continua caindo na regra antiga (texto começando com
+  // "Erro" é vermelho, o resto é verde), então as outras abas que compartilham
+  // esta faixa não mudam de comportamento.
+  const [msg, setMsg] = useState<{ text: string; level: MsgLevel }>({ text: '', level: 'ok' });
+  const notify = (text: string, level: MsgLevel = text.startsWith('Erro') ? 'error' : 'ok') =>
+    setMsg({ text, level });
 
   const tabParam = params.get('tab');
   const activeTab: Tab = isTab(tabParam) ? tabParam : 'overview';
@@ -80,13 +100,13 @@ export default function Firewall() {
 
   const run = async (fn: () => Promise<any>, ok: string) => {
     setBusy(true);
-    setMsg('');
+    notify('');
     try {
       await fn();
-      if (ok) setMsg(ok);
+      if (ok) notify(ok);
       await fetchData();
     } catch (e: any) {
-      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+      notify(`Erro: ${e.response?.data?.error || e.message}`);
     } finally {
       setBusy(false);
     }
@@ -117,8 +137,8 @@ export default function Firewall() {
       {/* O aviso de "a última reconciliação falhou" mora agora dentro de
           FirewallGroups, que é quem lê /api/nftables/groups e, portanto,
           quem tem o apply_status junto do que ele descreve. */}
-      {msg && (
-        <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>
+      {msg.text && (
+        <div className={`card border text-sm ${MSG_STYLES[msg.level]}`}>{msg.text}</div>
       )}
 
       <div className="flex gap-2 border-b border-gray-800 overflow-x-auto">
@@ -139,11 +159,11 @@ export default function Firewall() {
           onOpenPortForwardTab={() => setActiveTab('portforward')}
         />
       ) : activeTab === 'groups' ? (
-        <FirewallGroups ifaces={ifaces} canWrite={canWrite} onMsg={setMsg} />
+        <FirewallGroups ifaces={ifaces} canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'steering' ? (
-        <WanSteering canWrite={canWrite} onMsg={setMsg} />
+        <WanSteering canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'portforward' ? (
-        <PortForwarding ifaces={ifaces} canWrite={canWrite} onMsg={setMsg} />
+        <PortForwarding ifaces={ifaces} canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'ruleset' ? (
         <Panel className="p-0 overflow-hidden">
           <div className="px-4 py-2 border-b border-gray-800 flex items-center gap-2 text-xs text-gray-500"><Terminal className="w-3.5 h-3.5" /><span className="font-mono">nft list ruleset</span></div>
