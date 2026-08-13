@@ -3,7 +3,7 @@ import type { DragEvent } from 'react';
 import {
   Plus, Pencil, Trash2, Check, Ban, Slash, GripVertical, Power, PowerOff,
   Layers, CornerDownRight, ShieldAlert, RefreshCw, Lock, X, AlertTriangle,
-  ArrowRightLeft, Server, Timer, HelpCircle, RotateCcw,
+  ArrowRightLeft, Server, Timer, HelpCircle, RotateCcw, Zap, DoorOpen,
 } from 'lucide-react';
 import client from '../api/client';
 import Modal from './ui/Modal';
@@ -17,8 +17,8 @@ import { anchorFrom, claimFullBanner, countdownNow, formatCountdown } from '../l
 import type { CountdownAnchor } from '../lib/pendingWindow';
 import type {
   FirewallGroup, FirewallGroupsData, FirewallPendingChange, FirewallPendingResponse,
-  FirewallRule, FirewallRulesData, GroupFallthrough, GroupScope, LastApply, MsgLevel, NetHost,
-  NftChainRule, NftManaged,
+  FirewallRule, FirewallRulesData, GroupConnState, GroupFallthrough, GroupScope, LastApply,
+  MsgLevel, NetHost, NftChainRule, NftManaged,
 } from '../types';
 
 interface Props {
@@ -145,6 +145,59 @@ function groupScope(g: { scope?: GroupScope; kind?: string }): 'forward' | 'inpu
   return g.scope === 'input' ? 'input' : 'forward';
 }
 
+/**
+ * CONN_STATES é "para quais conexões o grupo vale" — o campo `conn_state`.
+ *
+ * A diferença é dita em termos do que acontece com o que JÁ ESTÁ DE PÉ, que é
+ * como o operador vive o problema ("quero cortar o que esse host tenta abrir,
+ * sem derrubar a transferência que ele já está fazendo"), e não em termos de
+ * conntrack — quem precisa da palavra `ct state new` a encontra em `expr`,
+ * na linha exata que vai para o firewall.
+ *
+ * `expr` é o token do nftables e não se traduz: é o que o admin vai achar no
+ * `nft list ruleset`, e é ele que a pré-visualização mostra em font-mono.
+ * "toda conexão" não acrescenta token nenhum — é a linha de sempre, byte a
+ * byte, que é o que protege toda máquina já instalada.
+ */
+const CONN_STATES: Record<'any' | 'new', {
+  title: string;
+  hint: string;
+  expr: string;
+  color: string;
+  ring: string;
+  Icon: typeof Check;
+}> = {
+  any: {
+    title: 'toda conexão',
+    hint: 'decide na hora, inclusive sobre o que já está em curso: a transferência que o host já estava fazendo cai junto',
+    expr: '',
+    color: 'text-gray-300',
+    ring: 'border-gray-500 bg-gray-700/40',
+    Icon: Zap,
+  },
+  new: {
+    title: 'só conexões novas',
+    hint: 'não derruba a transferência que já está em curso; vale para o que for aberto daqui em diante',
+    expr: 'ct state new',
+    color: 'text-sky-300',
+    ring: 'border-sky-500 bg-sky-500/10',
+    Icon: DoorOpen,
+  },
+};
+
+// groupConnState normaliza o que veio do banco, como GroupConnState faz no
+// backend: vazio — e qualquer valor que esta tela não conheça — é "toda
+// conexão", que é o que toda máquina em produção faz hoje. O lado seguro é
+// este: mostrar "só conexões novas" onde o kernel derruba tudo seria a tela
+// prometendo uma transferência preservada que não está preservada.
+function groupConnState(g: { conn_state?: GroupConnState; kind?: string }): 'any' | 'new' {
+  // Grupo do sistema fica de fora da escolha (é lista fechada, renderizada por
+  // um mapa próprio, e bloqueio de host é justamente onde se quer a marreta):
+  // o backend ignora a coluna dele, e a tela não pode dizer o contrário.
+  if (g.kind && isSystemGroup(g.kind)) return 'any';
+  return g.conn_state === 'new' ? 'new' : 'any';
+}
+
 type Unit = 'bytes' | 'bits';
 
 const emptyRuleModal = {
@@ -155,10 +208,16 @@ const emptyRuleModal = {
 // O escopo padrão do modal é forward, e é o padrão certo: quem cria um grupo
 // está quase sempre filtrando tráfego que atravessa, e é o único dos dois que
 // não pode trancar ninguém para fora. Escolher input é uma decisão explícita.
+// E "toda conexão" é o padrão da escolha de conexões pela mesma razão que
+// pesa mais: é o que TODO grupo já gravado significa, e é o que o firewall
+// vivo de toda máquina instalada faz hoje. Restringir a conexões novas é uma
+// decisão explícita — inclusive porque ela desarma o teste de acesso da janela
+// de 90 segundos.
 const emptyGroupModal = {
   open: false, id: '', name: '', cond_saddr: '', cond_daddr: '', cond_iif: '',
   fallthrough: 'continue' as GroupFallthrough, chain_name: '',
   scope: 'forward' as 'forward' | 'input',
+  conn_state: 'any' as 'any' | 'new',
 };
 
 type RuleLike = Pick<FirewallRule, 'iif' | 'oif' | 'saddr' | 'daddr' | 'proto' | 'dport'>;
@@ -194,11 +253,21 @@ function previewNft(m: typeof emptyRuleModal): string {
 // condition followed by `counter jump <chain>`. Field order matches the
 // backend's groupJumpTokens so the preview is the real line, not a
 // paraphrase of it.
-function jumpLine(g: { cond_iif: string; cond_saddr: string; cond_daddr: string; chain_name: string }): string {
+//
+// `ct state new` entra DEPOIS da condição de entrada e ANTES do counter, que é
+// exatamente onde groupJumpTokens o põe: a condição decide se o grupo é sequer
+// considerado, e o counter tem que contar o que efetivamente saltou. A ordem
+// aqui não é estética — é a mesma linha, ou a pré-visualização vira paráfrase.
+function jumpLine(g: {
+  cond_iif: string; cond_saddr: string; cond_daddr: string; chain_name: string;
+  conn_state?: GroupConnState; kind?: string;
+}): string {
   const t: string[] = [];
   if (g.cond_iif) t.push('iifname', g.cond_iif);
   if (g.cond_saddr) t.push('ip saddr', g.cond_saddr);
   if (g.cond_daddr) t.push('ip daddr', g.cond_daddr);
+  const expr = CONN_STATES[groupConnState(g)].expr;
+  if (expr) t.push(expr);
   t.push('counter', 'jump', g.chain_name || 'grp_…');
   return t.join(' ');
 }
@@ -612,6 +681,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     open: true, id: g.id, name: g.name, cond_saddr: g.cond_saddr, cond_daddr: g.cond_daddr,
     cond_iif: g.cond_iif, fallthrough: g.fallthrough || 'continue', chain_name: g.chain_name,
     scope: groupScope(g),
+    conn_state: groupConnState(g),
   });
   const closeGroupModal = () => setGroupModal((m) => ({ ...m, open: false }));
   const saveGroup = () => {
@@ -625,6 +695,12 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       // aqui faria trocar o escopo na tela não fazer nada — com HTTP 200 e o
       // operador achando que trocou.
       scope: groupModal.scope,
+      // E a escolha de conexões vai SEMPRE pelo mesmo motivo, com o sinal
+      // trocado: `conn_state` ausente também é "mantenha o gravado" (a
+      // proteção contra o cliente antigo que AFROUXARIA um grupo restrito de
+      // propósito). Omiti-lo aqui faria a troca na tela não acontecer, com
+      // HTTP 200 — o defeito exato que o campo `scope` já teve neste projeto.
+      conn_state: groupModal.conn_state,
     };
     const req = groupModal.id
       ? client.put('/api/nftables/groups', { id: groupModal.id, ...payload })
@@ -862,6 +938,27 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                   ? 'o prazo acabou e a reversão automática está a caminho.'
                   : 'o LinkGuard reverte sozinho quando o prazo acabar.'}
               </p>
+              {/* O aviso da spec §5, e a razão de esta feature poder existir.
+                  Um grupo restrito a `ct state new` NÃO derruba a sessão do
+                  operador: ele testaria na aba que já estava aberta, veria
+                  tudo funcionando, confirmaria — e descobriria o bloqueio na
+                  próxima reconexão, quando já não há rede de proteção
+                  nenhuma. Aqui ele ganha caixa própria, e não mais uma linha
+                  na mesma parede de texto âmbar, porque é a única frase desta
+                  faixa que contradiz o que o operador acabou de testar.
+
+                  E ele NÃO aparece numa janela comum (o servidor decide, em
+                  new_connections_only): ali a sessão cai de verdade e o teste
+                  vale sozinho — um aviso em toda janela vira ruído e ninguém
+                  lê. */}
+              {pending.new_connections_only && (
+                <div className="mt-2 rounded-lg border border-amber-400/60 bg-amber-400/10 px-3 py-2 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" aria-hidden="true" />
+                  <p className="text-xs text-amber-50">
+                    Este grupo vale só para conexões novas. <strong className="font-semibold">A sua sessão atual não é afetada</strong> — abra uma conexão nova (outro terminal SSH, uma aba anônima) para testar de verdade antes de confirmar.
+                  </p>
+                </div>
+              )}
               {/* O que a reversão desfaz, dito antes de alguém apertar
                   qualquer botão: o snapshot cobre `groups` e `rules` e mais
                   nada. Acreditar numa volta completa que não aconteceu é o
@@ -1039,6 +1136,13 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 // sobrevive à barra azul do item selecionado) e o ⚠ ao lado do
                 // nome — os dois, porque só a cor não diz o que significa.
                 const inputScope = groupScope(g) === 'input';
+                // Marca da escolha de conexões: dois grupos com o MESMO nome,
+                // a mesma condição e as mesmas regras se comportam de formas
+                // diferentes conforme este campo — um derruba a transferência
+                // em curso, o outro não. Sem a marca na lista, a diferença só
+                // existe dentro do modal, e é assim que o operador começa a
+                // desconfiar do software.
+                const newOnly = groupConnState(g) === 'new';
                 return (
                   <li
                     key={g.id}
@@ -1079,12 +1183,23 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                               aria-label="grupo de tráfego destinado ao firewall"
                             />
                           )}
+                          {newOnly && (
+                            <DoorOpen
+                              className="w-3 h-3 shrink-0 text-sky-300"
+                              aria-label="grupo que vale só para conexões novas"
+                            />
+                          )}
                         </span>
                         <span className="block text-[11px] text-gray-500 font-mono truncate">
                           {n} {noun} · {g.has_counter ? formatCount(g.bytes, unit) : '—'}
                         </span>
                         {inputScope && (
                           <span className="block text-[11px] text-orange-400/90">destinado ao firewall · alterar pede confirmação</span>
+                        )}
+                        {newOnly && (
+                          <span className="block text-[11px] text-sky-300/90">
+                            só conexões novas · <span className="font-mono">ct state new</span>
+                          </span>
                         )}
                         {!g.enabled && !staleOff && <span className="block text-[11px] text-gray-500">desligado</span>}
                         {staleOff && <span className="block text-[11px] text-yellow-500">desligado, ainda no firewall</span>}
@@ -1288,6 +1403,14 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                     <AlertTriangle className="w-3 h-3" aria-hidden="true" /> destinado ao firewall
                   </span>
                 )}
+                {groupConnState(selected) === 'new' && (
+                  <span
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-sky-500/40 bg-sky-500/10 text-sky-300"
+                    title="Este grupo só decide sobre conexões NOVAS: a linha de jump dele carrega `ct state new`. O que já está estabelecido segue até terminar sem passar por ele — inclusive a sessão de quem acabou de ser bloqueado."
+                  >
+                    <DoorOpen className="w-3 h-3" aria-hidden="true" /> só conexões novas
+                  </span>
+                )}
                 {!selected.enabled && (
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-400">
                     Desligado
@@ -1342,6 +1465,16 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                     {SCOPES[groupScope(selected)].title}
                   </span>
                   <span className="text-gray-600 mx-1.5 font-mono text-xs">chain {SCOPES[groupScope(selected)].chain}</span>
+                  {/* "Para quais conexões" só aparece quando há o que dizer:
+                      em "toda conexão" ele repetiria, em toda tela, o
+                      comportamento que o produto sempre teve. */}
+                  {groupConnState(selected) === 'new' && (
+                    <>
+                      <span className="text-gray-600 mx-2">·</span>
+                      <span className="text-gray-500 text-xs uppercase tracking-wide mr-2">Quais conexões</span>
+                      <span className="text-sky-300">{CONN_STATES.new.title}</span>
+                    </>
+                  )}
                 </div>
                 <div className="text-xs font-mono text-gray-400 shrink-0">
                   {selected.has_counter
@@ -1349,7 +1482,14 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                     : <span className="text-gray-600">sem contador · —</span>}
                 </div>
               </div>
+              {/* A linha de verdade, com o `ct state new` no meio quando ele
+                  existe: a tela não esconde o que vai para o firewall. */}
               <p className="mt-1.5 text-[11px] font-mono text-gray-600 break-all">{jumpLine(selected)}</p>
+              {groupConnState(selected) === 'new' && (
+                <p className="mt-1.5 text-[11px] text-sky-300/90">
+                  Só decide sobre conexões novas: {CONN_STATES.new.hint}.
+                </p>
+              )}
               {/* Alcançabilidade é transitiva: se nada pula para a chain,
                   nada dentro dela está em vigor. Dizer isso uma vez aqui é
                   mais honesto — e muito menos ruidoso — do que carimbar
@@ -1619,6 +1759,56 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
             <p className="text-[11px] text-gray-600 mt-1.5">
               Sem condição, {groupModal.scope === 'input' ? 'todo o tráfego destinado ao firewall' : 'todo o tráfego que atravessa o firewall'} entra no grupo. Só IPv4 por enquanto.
             </p>
+          </div>
+
+          {/* Para quais conexões — o campo `conn_state`. Vem logo depois da
+              condição de entrada porque é ela que ele qualifica: o mesmo
+              "origem 192.168.50.0/24" vale para tudo o que casar, ou só para o
+              que estiver começando agora. */}
+          <div>
+            <p className="label mb-2">Para quais conexões este grupo vale</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {(['any', 'new'] as const).map((c) => {
+                const meta = CONN_STATES[c];
+                const active = groupModal.conn_state === c;
+                return (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setGroupModal({ ...groupModal, conn_state: c })}
+                    className={`flex items-start gap-2 rounded-lg border p-3 text-left transition ${active ? meta.ring : 'border-gray-700 bg-gray-800/40 hover:border-gray-600'}`}
+                  >
+                    <meta.Icon className={`w-4 h-4 shrink-0 mt-0.5 ${active ? meta.color : 'text-gray-400'}`} aria-hidden="true" />
+                    <span className="min-w-0">
+                      <span className={`block text-xs font-medium ${active ? meta.color : 'text-gray-300'}`}>{meta.title}</span>
+                      <span className="block text-[10px] text-gray-500 leading-tight mt-0.5">{meta.hint}</span>
+                      {/* O token do nftables, quando existe. "toda conexão" não
+                          acrescenta nada à linha — e dizer isso é mais honesto
+                          do que inventar uma expressão para ela. */}
+                      <span className="block text-[10px] font-mono text-gray-600 mt-1">
+                        {meta.expr || 'sem `ct state` na linha'}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {/* O aviso que a escolha obriga, e que é a razão de a Fase C2 e
+                esta feature conviverem: num grupo de escopo input, "só
+                conexões novas" desarma o teste dos 90 segundos — a sessão do
+                operador NÃO cai, então ela não prova nada. Dito aqui, antes de
+                salvar, e repetido na faixa depois. */}
+            {groupModal.conn_state === 'new' && groupModal.scope === 'input' && (
+              <div className="mt-2 rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-sky-300 shrink-0 mt-0.5" aria-hidden="true" />
+                <div className="text-[11px] text-sky-100/90 space-y-1">
+                  <p className="font-medium text-sky-100">A sua sessão atual não vai cair — nem se este grupo bloquear você.</p>
+                  <p>
+                    Nos 90 segundos de confirmação, testar o acesso na aba que já está aberta (ou no SSH já conectado) vai funcionar de qualquer jeito. Para testar de verdade, abra uma conexão nova: outro terminal SSH, uma aba anônima.
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
           <div>

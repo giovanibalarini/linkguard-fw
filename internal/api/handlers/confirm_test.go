@@ -39,6 +39,10 @@ type pendingJSON struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 	SecondsLeft int       `json:"seconds_left"`
 	Reverting   bool      `json:"reverting"`
+	// NewConnectionsOnly é o sinalizador do aviso da spec §5 — o que a faixa
+	// usa para dizer que a sessão atual do operador NÃO é afetada e que o
+	// teste dos 90 segundos, sozinho, não prova nada.
+	NewConnectionsOnly bool `json:"new_connections_only"`
 }
 
 type pendingBody struct {
@@ -1091,4 +1095,138 @@ func TestChangingConnStateOfAForwardGroupDoesNotOpenTheWindow(t *testing.T) {
 	if p := getPending(t, h); p != nil {
 		t.Fatalf("GET devolveu janela aberta depois de uma mutação de forward: %+v", p)
 	}
+}
+
+// ─── O aviso que torna esta feature aceitável (spec §5) ───────────────────
+//
+// Um grupo de escopo input restrito a "só conexões novas" que bloqueie o
+// painel NÃO derruba a sessão do operador — é a promessa da feature. O teste
+// de acesso dos 90 segundos, que existe justamente porque a sessão CAI quando
+// alguém se tranca para fora, passa a mentir para essa combinação: ele testa
+// na aba que já estava aberta, vê tudo funcionando, confirma, e descobre o
+// bloqueio na próxima reconexão, quando não há mais reversão automática
+// nenhuma.
+//
+// O sinalizador abaixo é o que a faixa usa para dizer isso com todas as
+// letras. Sem ele a rede de proteção vira teatro, e é melhor não ter a
+// feature.
+
+// wantNewOnlyFlag confere o sinalizador nas DUAS pontas, e as duas importam:
+// o corpo da própria mutação é o que faz a faixa aparecer no instante do
+// salvar (o painel adota o pendente que veio no 200), e o GET é o que o poll
+// de 3 s relê logo em seguida, sobrescrevendo o que estava na tela. Um
+// sinalizador certo só numa delas é um aviso que pisca e some.
+func wantNewOnlyFlag(t *testing.T, h *handlers.NftablesHandler, w *httptest.ResponseRecorder, want bool, what string) {
+	t.Helper()
+	p := pendingOf(t, w)
+	if p == nil {
+		t.Fatalf("%s: a mutação tinha que abrir a janela: %s", what, w.Body.String())
+	}
+	if p.NewConnectionsOnly != want {
+		t.Errorf("%s: no corpo da mutação, new_connections_only=%v, queria %v (%s)",
+			what, p.NewConnectionsOnly, want, w.Body.String())
+	}
+	g := getPending(t, h)
+	if g == nil {
+		t.Fatalf("%s: o GET tinha que devolver a janela aberta", what)
+	}
+	if g.NewConnectionsOnly != want {
+		t.Errorf("%s: no GET /api/nftables/pending, new_connections_only=%v, queria %v", what, g.NewConnectionsOnly, want)
+	}
+}
+
+// O caso central: criar um grupo de escopo input restrito a conexões novas.
+func TestWindowOfANewOnlyInputGroupCarriesTheWarning(t *testing.T) {
+	h, _, exec := newGroupTestHandlerNft(t)
+
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups",
+		`{"name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"drop","conn_state":"new"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("CreateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	// O ponto de partida é real, não suposto: a linha viva na chain input
+	// nasceu com a restrição. Sem isto o teste poderia estar medindo o aviso
+	// de uma restrição que nunca chegou ao firewall.
+	var created storage.FirewallGroup
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode do grupo criado: %v (body %s)", err, w.Body.String())
+	}
+	if line := jumpLineTo(t, exec, nftables.InputChain, created.ChainName); !strings.Contains(line, "ct state new") {
+		t.Fatalf("a restrição não chegou à chain input viva: %q", line)
+	}
+
+	wantNewOnlyFlag(t, h, w, true, "criação de grupo input restrito")
+}
+
+// E o contrapeso, que é o que impede o aviso de virar ruído: a janela de um
+// grupo COMUM de escopo input não o mostra. Ali a sessão do operador cai
+// mesmo, e o teste dos 90 segundos vale sozinho — dizer "a sua sessão atual
+// não é afetada" seria falso, e na direção que mais dói.
+func TestWindowOfAPlainInputGroupDoesNotCarryTheWarning(t *testing.T) {
+	h, _ := newGroupTestHandler(t)
+
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups", inputGroupBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("CreateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	wantNewOnlyFlag(t, h, w, false, "criação de grupo input comum")
+}
+
+// O aviso é sobre ESTA mudança, não sobre o que já existia na máquina. Um
+// grupo restrito que ninguém tocou não muda nada para quem está testando o
+// acesso agora, e um aviso que aparece em toda janela é um aviso que o
+// operador aprende a pular — que é exatamente o defeito que ele existe para
+// não ter.
+func TestAnUntouchedNewOnlyGroupDoesNotWarnOnSomeoneElsesWindow(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+	createGroupViaAPI(t, h, db,
+		`{"name":"Só conexões novas","scope":"input","cond_saddr":"192.168.50.0/24","fallthrough":"drop","conn_state":"new"}`)
+	confirmWindow(t, h)
+
+	// Outro grupo, comum, de escopo input: a janela é dele.
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups", inputGroupBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("CreateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	wantNewOnlyFlag(t, h, w, false, "grupo comum com um restrito já existente na máquina")
+}
+
+// SOLTAR a restrição (new → any) NÃO avisa: ali o grupo volta a derrubar o que
+// já está de pé, a sessão do operador cai junto se for atingida, e o teste dos
+// 90 segundos volta a valer sozinho. Avisar aqui diria "a sua sessão atual não
+// é afetada" para a única edição desta feature que a afeta de novo.
+func TestLooseningANewOnlyInputGroupDoesNotWarn(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+	g := createGroupViaAPI(t, h, db,
+		`{"name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"drop","conn_state":"new"}`)
+	confirmWindow(t, h)
+
+	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+g.ID+`","name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"drop","conn_state":"any"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	if after := adminGroups(t, db)[0]; after.ConnState != nftables.ConnStateAny {
+		t.Fatalf("a soltura não chegou ao banco; o teste mediria outra coisa: %+v", after)
+	}
+	wantNewOnlyFlag(t, h, w, false, "soltura da restrição")
+}
+
+// O caso mais perigoso da feature, e o que um sinalizador ingênuo (só a linha
+// do grupo) deixaria passar: a regra que bloqueia o painel é acrescentada
+// DENTRO de um grupo restrito que já existia. A linha de jump do grupo não
+// muda uma vírgula — o que muda é o que ele faz com quem entra nele —, e a
+// sessão aberta do operador continua de pé afirmando que está tudo bem.
+func TestARuleAddedInsideANewOnlyInputGroupCarriesTheWarning(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+	g := createGroupViaAPI(t, h, db,
+		`{"name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"continue","conn_state":"new"}`)
+	confirmWindow(t, h)
+
+	w := doJSON(t, h.CreateRule, "POST", "/api/nftables/rules",
+		`{"group_id":"`+g.ID+`","action":"drop","proto":"tcp","dport":"9997","description":"bloqueia o painel"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("CreateRule: status %d, body %s", w.Code, w.Body.String())
+	}
+	wantNewOnlyFlag(t, h, w, true, "regra nova dentro de um grupo input restrito")
 }

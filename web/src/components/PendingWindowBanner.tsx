@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Timer, Check, RotateCcw, HelpCircle } from 'lucide-react';
+import { Timer, Check, RotateCcw, HelpCircle, AlertTriangle } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { anchorFrom, countdownNow, formatCountdown, fullBannerShown, subscribeFullBanner } from '../lib/pendingWindow';
@@ -161,6 +161,22 @@ export default function PendingWindowBanner() {
           Uma alteração no tráfego destinado ao próprio firewall aguarda confirmação —{' '}
           <span className="text-amber-200/80 break-words">{pending.summary}</span>. Teste o acesso que importa (SSH, este painel) antes de confirmar.
         </p>
+        {/* O aviso que torna esta janela honesta (spec §5). Um grupo restrito a
+            `ct state new` não derruba a conexão que já está de pé: testar o
+            acesso na aba aberta, ou no SSH já conectado, passa mesmo com o
+            bloqueio valendo — e ele morde na próxima reconexão, quando não há
+            mais reversão automática nenhuma. Ele só aparece quando o servidor
+            diz que é esse o caso: numa janela comum a sessão cai de verdade, o
+            teste vale sozinho, e um aviso em toda faixa é um aviso que o
+            operador aprende a pular. */}
+        {pending.new_connections_only && (
+          <p className="mt-1 flex items-start gap-1.5 text-amber-50">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" aria-hidden="true" />
+            <span>
+              Este grupo vale só para conexões novas. <strong className="font-semibold">A sua sessão atual não é afetada</strong> — abra uma conexão nova (outro terminal SSH, uma aba anônima) para testar de verdade antes de confirmar.
+            </span>
+          </p>
+        )}
         {err && <p className="text-xs text-red-300 mt-1">Erro: {err}</p>}
         {unknown && (
           <p className="text-xs text-amber-200/70 mt-1">

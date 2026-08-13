@@ -22,6 +22,8 @@ package handlers
 // aqui, porque o operador acredita que o estado anterior voltou inteiro.
 
 import (
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -67,15 +69,29 @@ import (
 // seconds_left persistido seria a contagem de quando a linha foi escrita. E
 // ExpiresAt continua no corpo — é a verdade persistida, e é dela que este campo
 // sai.
+//
+// NewConnectionsOnly é o que torna esta janela honesta para a escolha "só
+// conexões novas" (spec §5), e é o único campo daqui que não descreve o
+// pendente e sim o ESTADO que ele está protegendo. Ver newConnectionsOnly
+// logo abaixo: a faixa que ele liga é a única coisa que separa o teste de 90
+// segundos de um teatro, porque um grupo de escopo input restrito a
+// `ct state new` não derruba a sessão do operador — ele testa na conexão que
+// já estava de pé, vê tudo funcionando, confirma, e descobre o bloqueio na
+// próxima reconexão, quando já não há rede de proteção nenhuma.
+//
+// SEM omitempty, de propósito: `false` é uma afirmação ("esta janela derruba
+// a sua sessão se ela for atingida — o teste vale"), não a ausência de
+// informação, e um cliente que não vê o campo não pode distinguir as duas.
 type pendingView struct {
-	ID          string     `json:"id"`
-	Summary     string     `json:"summary"`
-	AppliedBy   string     `json:"applied_by"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	SecondsLeft int        `json:"seconds_left"`
-	CreatedAt   time.Time  `json:"created_at"`
-	Reverting   bool       `json:"reverting"`
-	RevertingAt *time.Time `json:"reverting_at,omitempty"`
+	ID                 string     `json:"id"`
+	Summary            string     `json:"summary"`
+	AppliedBy          string     `json:"applied_by"`
+	ExpiresAt          time.Time  `json:"expires_at"`
+	SecondsLeft        int        `json:"seconds_left"`
+	CreatedAt          time.Time  `json:"created_at"`
+	Reverting          bool       `json:"reverting"`
+	RevertingAt        *time.Time `json:"reverting_at,omitempty"`
+	NewConnectionsOnly bool       `json:"new_connections_only"`
 }
 
 // pendingView desenha a janela para o painel. É método do handler, e não uma
@@ -93,12 +109,121 @@ func (h *NftablesHandler) pendingView(p *storage.PendingChange) *pendingView {
 		SecondsLeft: h.fr.SecondsLeft(p),
 		CreatedAt:   p.CreatedAt,
 		Reverting:   p.Reverting(),
+		// Calculado a cada resposta, como SecondsLeft, e pela mesma razão: ele
+		// descreve o estado de AGORA, e o estado de agora muda (a reversão o
+		// desfaz). Um valor gravado com a janela seria a resposta de quando a
+		// linha foi escrita.
+		NewConnectionsOnly: h.newConnectionsOnly(p.Snapshot),
 	}
 	if p.Reverting() {
 		at := p.RevertingAt
 		v.RevertingAt = &at
 	}
 	return v
+}
+
+// windowSnapshot é a parte do snapshot da janela que este arquivo lê: o estado
+// ANTERIOR dos grupos e das regras, como firewallrules.stateSnapshot o
+// serializa. Declarado aqui porque aquele tipo é privado do outro pacote, e o
+// que se compara são os mesmos dois campos com as mesmas tags.
+type windowSnapshot struct {
+	Groups []storage.FirewallGroup `json:"groups"`
+	Rules  []storage.FirewallRule  `json:"rules"`
+}
+
+// newConnectionsOnly diz se esta janela deixou valendo um grupo de escopo
+// input restrito a "só conexões novas" — isto é, se o teste de acesso dos 90
+// segundos MENTE para esta mudança (spec §5).
+//
+// A pergunta não é "existe algum grupo assim na máquina", e a diferença é o
+// que separa o aviso de virar ruído: um grupo restrito que já estava lá e que
+// esta mudança não tocou não muda nada para quem está testando agora, e um
+// aviso que aparece em toda janela é um aviso que ninguém lê. A pergunta é
+// "algum grupo restrito de input passou a valer, ou passou a valer DIFERENTE,
+// por causa desta mudança" — o que se responde comparando o estado de agora
+// com o snapshot que a própria janela guarda.
+//
+// Ela olha só para o lado de AGORA, e por isso SOLTAR a restrição (new → any)
+// não liga o aviso: ali o grupo volta a derrubar o que já está de pé, a sessão
+// do operador cai junto se for atingida, e o teste dos 90 segundos volta a ser
+// verdade. Avisar seria dizer "a sua sessão atual não é afetada" para uma
+// mudança que a afeta — o erro na direção perigosa.
+//
+// Erro de leitura devolve TRUE, e não false: sem saber, o mínimo honesto é
+// mandar o operador testar com uma conexão nova. O custo disso é ele abrir um
+// segundo SSH à toa; o custo do contrário é ele confirmar um bloqueio que a
+// sessão aberta escondeu.
+func (h *NftablesHandler) newConnectionsOnly(snapshot string) bool {
+	only, err := h.newConnectionsOnlyOrError(snapshot)
+	if err != nil {
+		slog.Error("não foi possível decidir se esta janela é de um grupo restrito a conexões novas; a faixa vai avisar por precaução", "err", err)
+		return true
+	}
+	return only
+}
+
+func (h *NftablesHandler) newConnectionsOnlyOrError(snapshot string) (bool, error) {
+	var before windowSnapshot
+	if err := json.Unmarshal([]byte(snapshot), &before); err != nil {
+		return false, fmt.Errorf("snapshot da janela ilegível: %w", err)
+	}
+	groups, err := h.db.ListFirewallGroups()
+	if err != nil {
+		return false, fmt.Errorf("ler os grupos: %w", err)
+	}
+	rules, err := h.db.ListFirewallRules()
+	if err != nil {
+		return false, fmt.Errorf("ler as regras: %w", err)
+	}
+	was := newOnlyInputSignatures(before.Groups, before.Rules)
+	for id, sig := range newOnlyInputSignatures(groups, rules) {
+		if was[id] != sig {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// newOnlyInputSignatures resume, por grupo, TUDO o que decide o que um grupo
+// de escopo input restrito a `ct state new` corta: a linha de jump dele
+// (posição na chain, condição de entrada, escopo, a escolha de conexões e o
+// que ele faz com o que sobrar) e as regras de dentro dele, na ordem.
+//
+// As regras entram porque elas são metade da resposta: acrescentar um
+// `drop tcp dport 9997` DENTRO de um grupo restrito que já existia é o caso
+// mais perigoso desta feature — a linha do grupo não muda uma vírgula, o
+// painel passa a ser bloqueado para conexões novas, e a sessão do operador
+// continua de pé mentindo que está tudo bem.
+//
+// Ficam de fora, de propósito: nome, descrição e carimbos de tempo. Renomear
+// um grupo não muda uma linha do firewall, e UpdatedAt muda em toda edição —
+// os dois diriam "mudou" onde nada mudou para quem está testando o acesso.
+//
+// Grupo desligado não entra: ele não põe linha nenhuma na chain, então não
+// corta nada. É também o que faz DESLIGAR um grupo restrito não ligar o aviso.
+func newOnlyInputSignatures(groups []storage.FirewallGroup, rules []storage.FirewallRule) map[string]string {
+	byGroup := make(map[string][]storage.FirewallRule, len(groups))
+	for _, r := range rules {
+		byGroup[r.GroupID] = append(byGroup[r.GroupID], r)
+	}
+	out := make(map[string]string, len(groups))
+	for _, g := range groups {
+		if !g.Enabled || !groupReachesInput(g) {
+			continue
+		}
+		if nftables.GroupConnState(toStoredGroup(g)) != nftables.ConnStateNew {
+			continue
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d|%s|%s|%s|%s|%s|%s",
+			g.Position, g.Scope, g.ConnState, g.CondIif, g.CondSaddr, g.CondDaddr, g.Fallthrough)
+		for _, r := range byGroup[g.ID] {
+			fmt.Fprintf(&b, "\n%s|%t|%d|%s|%s|%s|%s|%s|%s|%s",
+				r.ID, r.Enabled, r.Position, r.Action, r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport)
+		}
+		out[g.ID] = b.String()
+	}
+	return out
 }
 
 // pendingResponse é o corpo do GET. O campo é um ponteiro SEM omitempty: sem
@@ -282,6 +407,12 @@ type armedWindow struct {
 	armed bool
 	id    string
 	view  *pendingView
+	// snapshot é o estado ANTERIOR que a janela guardou, copiado aqui no
+	// arme. Ele é o outro lado da comparação de newConnectionsOnly, que
+	// reconcileArmed refaz DEPOIS da escrita no banco — guardá-lo evita uma
+	// segunda leitura do pendente e, mais que isso, evita comparar contra a
+	// janela errada se outra tiver sido aberta no meio do caminho.
+	snapshot string
 }
 
 // openConfirmWindow arma a janela ANTES de a mudança ser aplicada — pré-voo
@@ -343,7 +474,11 @@ func (h *NftablesHandler) openConfirmWindow(w http.ResponseWriter, r *http.Reque
 		slog.Warn("a janela armada por esta mutação já não é a que está aberta; a resposta vai sem a faixa", "armada", id)
 		return armedWindow{armed: true, id: id}, true
 	}
-	return armedWindow{armed: true, id: id, view: h.pendingView(p)}, true
+	win := armedWindow{armed: true, id: id, view: h.pendingView(p)}
+	if p != nil {
+		win.snapshot = p.Snapshot
+	}
+	return win, true
 }
 
 // discardArmedWindow desfaz a janela quando a mutação falhou na ESCRITA NO
@@ -432,6 +567,16 @@ func (h *NftablesHandler) reconcileArmed(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 	saveNftSnapshot(r.Context(), h.db, h.svc)
+	// O aviso de "só conexões novas" é reavaliado AQUI, e não onde a janela foi
+	// armada, porque a ordem obrigatória é armar ANTES de aplicar: lá o banco
+	// ainda é o estado anterior, e a resposta sairia dizendo que nada mudou
+	// justamente para a mutação que acabou de restringir o grupo. `win.view` é
+	// ponteiro, então o campo corrigido aqui é o que vai no corpo do 200 — a
+	// faixa aparece com o aviso no mesmo instante em que o operador salva, e
+	// não no poll seguinte.
+	if win.armed && win.view != nil {
+		win.view.NewConnectionsOnly = h.newConnectionsOnly(win.snapshot)
+	}
 	if !win.armed {
 		// Esta mutação pode ter passado pela trava porque havia uma reversão
 		// cujo trabalho no BANCO já tinha terminado e cuja única pendência era

@@ -364,6 +364,21 @@ export type FirewallGroupKind = '' | 'admin' | 'blocked_hosts' | 'blocklist';
 // chain errada.
 export type GroupScope = '' | 'forward' | 'input';
 
+// GroupConnState diz PARA QUAIS CONEXÕES o grupo vale (espelha
+// internal/nftables/groups.go):
+//
+//   - 'any': toda conexão que casar com a condição de entrada, esteja ela
+//     começando agora ou já em curso. É a marreta, e é o padrão;
+//   - 'new': só as conexões NOVAS. A linha de jump do grupo ganha
+//     `ct state new`, e o que já está estabelecido segue até terminar sem
+//     passar por ele.
+//
+// String vazia conta como 'any': é o valor de toda linha gravada antes desta
+// coluna existir, e é o que toda máquina em produção faz hoje. A normalização
+// é a mesma do backend (GroupConnState), e as duas não podem discordar — do
+// contrário a tela mostraria uma escolha que o kernel não está fazendo.
+export type GroupConnState = '' | 'any' | 'new';
+
 // FirewallPendingChange é a janela de confirmação em aberto, como GET
 // /api/nftables/pending a devolve (handlers.pendingView).
 //
@@ -393,6 +408,17 @@ export interface FirewallPendingChange {
   created_at: string;
   reverting: boolean;
   reverting_at?: string;
+  // new_connections_only é o aviso que torna esta janela honesta: a mudança
+  // que está sendo testada deixou valendo um grupo de escopo input restrito a
+  // `ct state new`, e um grupo desses NÃO derruba a sessão do operador. O
+  // teste de 90 segundos feito na aba que já estava aberta, ou no SSH que já
+  // estava conectado, passa mesmo quando o bloqueio existe — ele só morde na
+  // próxima conexão, quando já não há reversão automática nenhuma.
+  //
+  // Quando é `false`, a faixa NÃO mostra o aviso: ali a sessão cai de verdade
+  // se o operador se trancar para fora, o teste vale sozinho, e um aviso em
+  // toda janela é um aviso que ninguém lê.
+  new_connections_only: boolean;
 }
 
 // FirewallPendingResponse é o corpo do GET. `pending` é null explícito quando
@@ -431,6 +457,10 @@ export interface FirewallGroup {
   // scope decide em qual chain o jump deste grupo é escrito (ver GroupScope).
   // Vem vazio em todo grupo criado antes da Fase C2, e vazio é 'forward'.
   scope: GroupScope;
+  // conn_state decide se a linha de jump carrega `ct state new` (ver
+  // GroupConnState). Vem vazio em todo grupo anterior a esta escolha existir,
+  // e vazio é 'any' — a marreta de sempre.
+  conn_state: GroupConnState;
   applied: boolean;
   handle: number;
   packets: number;
