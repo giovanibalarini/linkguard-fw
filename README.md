@@ -154,9 +154,12 @@ missing package and what stops working because of it ("without nftables there
 is no packet filter at all: nothing is blocked, NAT is not applied and no rule
 from the panel has any effect"), together with the command to install it by
 hand. The same goes to the journal, and the service keeps running — so there
-is a panel to read the alert on. Fix the repository and restart the service
-(`systemctl restart linkguard-fw`): it tries again and clears the alert by
-itself once it succeeds.
+is a panel to read the alert on. **No restart is needed**: LinkGuard retries
+on its own every few minutes (30s, 2min, 5min, then every 15min), so a box
+that simply had no WAN yet at boot heals itself; and if you install the
+packages by hand over SSH, the next attempt notices and closes the alert.
+That is what the alert body says too — the two used to disagree, and this
+one was the wrong one.
 
 ## Quick Start
 
