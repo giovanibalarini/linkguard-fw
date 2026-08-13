@@ -503,14 +503,30 @@ func installed(ctx context.Context, exec firewall.Executor, pkg string) bool {
 //
 // The conffile options are not defensive boilerplate: they were added after
 // installing nftables on a bare box aborted with "end of file on stdin at
-// conffile prompt". LinkGuard's own postinst creates /etc/nftables.conf so
-// the service can start at all (see the unit's ReadWritePaths and that
-// postinst's comment), so when the nftables package arrives later, dpkg finds
-// a file it does not own and asks whom to believe. --force-confold answers
-// it, and answers it the right way round: /etc/nftables.conf belongs to
-// LinkGuard (README), and dpkg still leaves the maintainer's version next to
-// it as .dpkg-dist. --force-confdef lets dpkg take the default silently
-// wherever there is no local change to preserve.
+// conffile prompt". They are still required, and the reason is worth stating
+// precisely, because the mechanism moved:
+//
+// /etc/nftables.conf has to exist before linkguard-fw.service starts (it is an
+// unprefixed ReadWritePaths= entry; missing, the unit dies in 226/NAMESPACE).
+// No INSTALLER creates it — the postinst deliberately does not, since creating
+// a conffile of another package from inside the dpkg transaction is what made
+// `apt install ./linkguard-fw_*.deb` stop at the prompt in the first place
+// (see deploy/deb/postinst and sysprep.Stage). What creates it is the unit's
+// own ExecStartPre=-+ `--prepare-system-at-start`, i.e. sysprep.Prepare with
+// StageServiceStart, outside any dpkg transaction.
+//
+// That is EARLIER than this code runs: the file is on disk, owned by no
+// package, by the time the service reaches an `apt install nftables` here. So
+// dpkg still finds a conffile it did not write and still asks whom to believe
+// — same prompt, one creator later. --force-confold answers it, and answers it
+// the right way round: /etc/nftables.conf belongs to LinkGuard (README), and
+// dpkg still leaves the maintainer's version next to it as .dpkg-dist.
+// --force-confdef lets dpkg take the default silently wherever there is no
+// local change to preserve.
+//
+// Removing these flags therefore needs more than "the postinst no longer
+// creates the file": it needs /etc/nftables.conf to be absent when this runs,
+// which the unit's pre-start guarantees it is not.
 var aptFlags = []string{
 	"-y",
 	"--no-install-recommends",
