@@ -237,6 +237,16 @@ func newGroupTestHandlerNft(t *testing.T) (*handlers.NftablesHandler, *storage.D
 	t.Cleanup(func() { db.Close() })
 	exec := newFakeNft()
 	svc := nftables.NewService(exec)
+	// m3 da revisão da Fase C2: sem uma fonte de NTP ligada, a reconciliação
+	// da chain input agora devolve erro (fechou o fail-open de fonte não
+	// ligada) em vez do antigo "NTP desligado" silencioso — o que faria todo
+	// CRUD de grupo destes testes responder 500 só por causa da chain input,
+	// que nenhum deles exercita. Declara a intenção explicitamente: nenhum
+	// grupo de escopo input, NTP desligado.
+	svc.SetInputChainSources(
+		func() ([]nftables.StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, nil },
+	)
 	fr := firewallrules.NewService(db, svc)
 	// Como no boot: sem os dois grupos do sistema na lista, o Reconcile de
 	// toda mutação se recusa a reconstruir a chain forward.

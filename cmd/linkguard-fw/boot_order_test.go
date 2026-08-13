@@ -158,6 +158,19 @@ func TestMainWiresTheInputChainSources(t *testing.T) {
 // sozinha — então o custo não é o firewall, é o log de boot de um firewall de
 // produção sendo lido na próxima emergência com um erro que não é erro.
 //
+// m1 da revisão: nftSvc.ReconcileNTPInput deixou de rodar solto depois de
+// frSvc.Reconcile e passou a ficar preso ao ramo de erro dele (frSvc.Reconcile
+// → ReconcileGroups já reconstrói a chain input inteira no caminho feliz; ver
+// o comentário em main.go). A garantia de ordem original — a input nunca é
+// reconciliada por este caminho antes de as chains grp_ existirem — continua
+// tendo que valer, então o teste mantém a checagem de posição. Mas agora
+// também verifica a condição: a chamada tem que estar DENTRO do bloco
+// `if err := frSvc.Reconcile(ctx); err != nil { ... }`, nunca solta depois
+// dele — um retrocesso para a chamada incondicional reabriria a duplicação de
+// reconciliação que m1 fechou (duas janelas de chain-input-vazia por boot,
+// dois Persist) sem que nenhum outro teste deste pacote perceba, já que os
+// testes de unidade de internal/nftables não enxergam a sequência de main.go.
+//
 // Guarda de deriva sobre a árvore sintática, como os dois acima.
 func TestNTPInputIsReconciledAfterTheGroupChainsExist(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -173,7 +186,29 @@ func TestNTPInputIsReconciledAfterTheGroupChainsExist(t *testing.T) {
 	}
 
 	reconcileGroups, reconcileNTP := -1, -1
+	var errBranch *ast.BlockStmt // corpo do `if err := frSvc.Reconcile(ctx); err != nil { ... }`
 	ast.Inspect(file, func(n ast.Node) bool {
+		// Localiza o próprio `if` cujo Init chama frSvc.Reconcile, para saber
+		// os limites do bloco de erro dele -- não basta achar a chamada solta,
+		// porque o que muda de comportamento aqui é justamente estar dentro ou
+		// fora deste bloco.
+		if ifStmt, isIf := n.(*ast.IfStmt); isIf {
+			if assign, isAssign := ifStmt.Init.(*ast.AssignStmt); isAssign && len(assign.Rhs) == 1 {
+				if call, isCall := assign.Rhs[0].(*ast.CallExpr); isCall {
+					if sel, isSel := call.Fun.(*ast.SelectorExpr); isSel {
+						if recv, isIdent := sel.X.(*ast.Ident); isIdent && recv.Name == "frSvc" && sel.Sel.Name == "Reconcile" {
+							if reconcileGroups == -1 {
+								reconcileGroups = int(call.Pos())
+							}
+							if errBranch == nil {
+								errBranch = ifStmt.Body
+							}
+						}
+					}
+				}
+			}
+		}
+
 		call, isCall := n.(*ast.CallExpr)
 		if !isCall {
 			return true
@@ -186,15 +221,8 @@ func TestNTPInputIsReconciledAfterTheGroupChainsExist(t *testing.T) {
 		if !isIdent {
 			return true
 		}
-		switch {
-		case recv.Name == "frSvc" && sel.Sel.Name == "Reconcile":
-			if reconcileGroups == -1 {
-				reconcileGroups = int(call.Pos())
-			}
-		case recv.Name == "nftSvc" && sel.Sel.Name == "ReconcileNTPInput":
-			if reconcileNTP == -1 {
-				reconcileNTP = int(call.Pos())
-			}
+		if recv.Name == "nftSvc" && sel.Sel.Name == "ReconcileNTPInput" && reconcileNTP == -1 {
+			reconcileNTP = int(call.Pos())
 		}
 		return true
 	})
@@ -205,6 +233,12 @@ func TestNTPInputIsReconciledAfterTheGroupChainsExist(t *testing.T) {
 	}
 	if reconcileNTP < reconcileGroups {
 		t.Errorf("nftSvc.ReconcileNTPInput tem que vir DEPOIS de frSvc.Reconcile: as chains grp_ que os jumps de escopo input alcançam são criadas lá, e emitir o jump antes disso enche o log de boot de erro que não é erro")
+	}
+	if errBranch == nil {
+		t.Fatal("não encontrei o bloco `if err := frSvc.Reconcile(ctx); err != nil { ... }` em main.go -- se a forma mudou, este guarda precisa mudar junto (m1 da revisão)")
+	}
+	if !(int(errBranch.Pos()) <= reconcileNTP && reconcileNTP <= int(errBranch.End())) {
+		t.Errorf("nftSvc.ReconcileNTPInput tem que estar DENTRO do bloco de erro de frSvc.Reconcile, não solto depois dele: frSvc.Reconcile já reconstrói a chain input no caminho feliz (m1 da revisão) -- chamar de novo fora do ramo de erro volta a duplicar a reconciliação e a janela de chain-input-vazia por boot")
 	}
 }
 

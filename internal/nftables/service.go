@@ -58,19 +58,21 @@ func NewService(exec firewall.Executor) *Service {
 //
 // Ligar isto é obrigatório em produção, e cmd/linkguard-fw/main.go o faz
 // junto da construção dos serviços (guardado por
-// TestMainWiresTheInputChainSources). Sem a fonte do NTP, salvar um grupo
-// reconstruiria a chain input sem as regras de proteção do serviço de hora —
-// por isso a ausência dela é slog.Error, não silêncio.
+// TestMainWiresTheInputChainSources). Sem a fonte do NTP, ntpInputState
+// devolve erro (m3 da revisão) — não mais um slog.Error e um silêncio que
+// deixava ReconcileGroups seguir como se "servir NTP" fosse desligado.
 //
-// AS DUAS FONTES DEVOLVEM ERRO, e pela mesma razão (I-1 da revisão da Fase
-// C2): quem lê "não consegui ler" NÃO pode tratar isso como "está
-// desligado"/"não existe". Uma leitura de settings que falha (banco travado,
-// IO, JSON corrompido) devolvendo "servir NTP: não" faria ReconcileGroups dar
-// flush na chain input e reescrevê-la só com os jumps — as duas linhas de
-// udp/123 sumiriam do firewall vivo, o painel continuaria mostrando o toggle
-// ligado, e o apply seria reportado ok. Fail-open silencioso. Com o erro
-// explícito, quem reconcilia ABORTA sem tocar na chain, exatamente como já
-// fazia do lado dos grupos.
+// AS DUAS FONTES DEVOLVEM ERRO, e pela mesma razão (I-1 e m3 da revisão da
+// Fase C2): quem lê "não consegui ler" NÃO pode tratar isso como "está
+// desligado"/"não existe" — nem quando o motivo é a leitura em si falhar,
+// nem quando o motivo é a fonte nunca ter sido ligada. Uma leitura de
+// settings que falha (banco travado, IO, JSON corrompido) ou uma fonte
+// ausente devolvendo "servir NTP: não" faria ReconcileGroups dar flush na
+// chain input e reescrevê-la só com os jumps — as duas linhas de udp/123
+// sumiriam do firewall vivo, o painel continuaria mostrando o toggle ligado,
+// e o apply seria reportado ok. Fail-open silencioso. Com o erro explícito
+// nos dois casos, quem reconcilia ABORTA sem tocar na chain, exatamente
+// como já fazia do lado dos grupos.
 func (s *Service) SetInputChainSources(groups func() ([]StoredGroup, error), ntpInput func() ([]string, bool, error)) {
 	s.groupsSource = groups
 	s.ntpInputSource = ntpInput
@@ -88,19 +90,31 @@ func (s *Service) inputChainGroups() ([]StoredGroup, error) {
 }
 
 // ntpInputState devolve o estado de "servir NTP para a LAN" para quem vai
-// reconstruir a chain input sem tê-lo recebido por parâmetro. Erro é
-// propagado (o chamador aborta sem tocar na chain); fonte não ligada devolve
-// "desligado" com alarme.
+// reconstruir a chain input sem tê-lo recebido por parâmetro. As duas formas
+// de não conseguir responder — ERRO DE LEITURA e fonte NÃO LIGADA — levam ao
+// mesmo tratamento: erro propagado, chamador aborta sem tocar na chain.
 //
-// A diferença entre as duas saídas é deliberada. Fonte NÃO LIGADA é um erro
-// de programação deste binário, visível em todo boot e guardado por teste de
-// deriva; ERRO DE LEITURA é uma máquina em produção com o banco momentanea-
-// mente fora do ar, e obedecer ao valor zero dele apagaria da chain viva uma
-// proteção que o admin ligou — por isso ele nunca vira "desligado".
+// Antes desta correção (achado m3 da revisão) as duas eram tratadas de forma
+// diferente: erro de leitura virava erro, fonte não ligada virava
+// (nil, false, nil) com só um slog.Error de aviso. Essa segunda forma é
+// exatamente o fail-open que a primeira existe para fechar (I-1) — só que
+// pelo lado da "fonte nunca foi ligada" em vez do lado "SELECT falhou": os
+// dois casos fazem ReconcileGroups/ReconcileNTPInput dar flush na chain input
+// vivendo e reescrevê-la só com os jumps, apagando as duas linhas de udp/123
+// do firewall vivo enquanto o painel continua mostrando o toggle ligado e o
+// apply é reportado ok. Fonte não ligada é bug de binário mal montado (falta
+// a chamada a SetInputChainSources, guardada por
+// TestMainWiresTheInputChainSources em cmd/linkguard-fw), não estado de
+// produção — mas um guarda de deriva na AST é defesa fraca sozinha para um
+// firewall: se o binário de produção algum dia rodar sem essa ligação (build
+// alternativo, teste que constrói Service direto, refactor que remove a
+// chamada sem que o teste de deriva pegue), o silêncio anterior apagava a
+// proteção do NTP sem avisar. Agora aborta, como o erro de leitura já fazia.
 func (s *Service) ntpInputState() ([]string, bool, error) {
 	if s.ntpInputSource == nil {
-		slog.Error("nenhuma fonte de configuração do NTP ligada ao serviço de nftables: a chain input será reconstruída SEM as regras de proteção do NTP (ver SetInputChainSources)")
-		return nil, false, nil
+		err := fmt.Errorf("nenhuma fonte de configuração do NTP ligada ao serviço de nftables (SetInputChainSources nunca foi chamado)")
+		slog.Error("a chain input NÃO será tocada: " + err.Error())
+		return nil, false, err
 	}
 	return s.ntpInputSource()
 }

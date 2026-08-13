@@ -82,6 +82,30 @@ func ranCommand(executed []string, want string) bool {
 	return false
 }
 
+// wireNoInputExtras liga um Service de teste a duas fontes vazias e
+// explícitas — nenhum grupo, NTP desligado — para os testes deste pacote cuja
+// asserção é sobre a chain forward (ou sobre a chain input de outro jeito) e
+// não têm nada a dizer sobre grupos de escopo input ou sobre o estado do NTP.
+//
+// Existe por causa de m3 da revisão da Fase C2: antes, um Service construído
+// sem SetInputChainSources tratava a fonte do NTP ausente como "desligado" em
+// silêncio (ntpInputState devolvia (nil, false, nil)), e ReconcileGroups
+// seguia em frente reconstruindo a chain input vazia — o mesmo fail-open que
+// I-1 já tinha fechado do lado do erro de leitura, só que pelo lado da fonte
+// nunca ligada. Depois da correção, fonte ausente é erro, e um teste que
+// constrói `&Service{exec: exec}` sem ligar nada faz ReconcileGroups (e
+// CheckGroups) devolver erro só por causa da chain input.
+//
+// Os testes que legitimamente exercitam ESSE erro (fonte não ligada, ou
+// leitura que falha) continuam construindo o Service à mão, sem passar por
+// aqui — este helper é só para quem quer a chain input fora do caminho.
+func wireNoInputExtras(s *Service) {
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, nil },
+	)
+}
+
 // TestReconcileMasqueradeFlushesBeforeAdding is the regression test for the
 // real production bug this feature exists to fix: `nft -f` on the persisted
 // ruleset ADDS rules instead of replacing them, so a stale masquerade line

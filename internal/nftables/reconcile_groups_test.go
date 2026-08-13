@@ -234,6 +234,7 @@ func TestForwardChainSkipsDisabledSystemGroup(t *testing.T) {
 func TestReconcileGroupsCreatesNoChainForSystemGroups(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{{ID: "h", Kind: GroupKindBlockedHosts, Enabled: true}}
 	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -432,6 +433,7 @@ func TestReconcileGroupsNeverFlushesRulesetOrTable(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{{ID: "a", Name: "Wi-Fi", ChainName: "grp_aaa", Enabled: true,
 		Fallthrough: FallthroughContinue,
 		Rules: []StoredRule{{ID: "r", Enabled: true,
@@ -466,6 +468,7 @@ func TestReconcileGroupsOrdersCreateBeforeJumpAndDeleteAfter(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{{ID: "a", Name: "Wi-Fi", ChainName: "grp_aaa", Enabled: true,
 		Fallthrough: FallthroughContinue}}
 
@@ -517,6 +520,7 @@ func TestReconcileGroupsDeletesOrphanChainWithoutEmptyingItFirst(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{{ID: "a", Name: "Wi-Fi", ChainName: "grp_aaa", Enabled: true,
 		Fallthrough: FallthroughContinue}}
 
@@ -558,6 +562,7 @@ func TestReconcileGroupsWarnsBeforeDeletingEveryGroupChain(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 
 	if err := s.ReconcileGroups(context.Background(), nil); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -611,6 +616,7 @@ func TestReconcileGroupsLogsErrorWhenForwardEndsUpWithoutAnyBlock(t *testing.T) 
 	logs := captureLogs(t)
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Kind: GroupKindAdmin, Enabled: true, Position: 0,
 			Fallthrough: FallthroughContinue},
@@ -630,6 +636,7 @@ func TestReconcileGroupsDoesNotLogTheNoBlockAlarmWhenSystemGroupsArePresent(t *t
 	logs := captureLogs(t)
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
 			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
@@ -657,6 +664,7 @@ func TestReconcileGroupsDoesNotLogTheNoBlockAlarmWhenTheAdminTurnedBothBlocksOff
 	logs := captureLogs(t)
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
 			Kind: GroupKindBlockedHosts, Enabled: false, Position: 0, Fallthrough: FallthroughContinue},
@@ -679,6 +687,7 @@ func TestReconcileGroupsLogsTheAlarmWhenOnlyOneSystemGroupIsInTheList(t *testing
 	logs := captureLogs(t)
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
 			Kind: GroupKindBlockedHosts, Enabled: false, Position: 0, Fallthrough: FallthroughContinue},
@@ -705,6 +714,7 @@ func TestReconcileGroupsDoesNotWarnWhenThereAreStillGroups(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{{ID: "a", Name: "Wi-Fi", ChainName: "grp_aaa", Enabled: true,
 		Fallthrough: FallthroughContinue}}
 
@@ -724,6 +734,7 @@ func TestReconcileGroupsOnlyEverDeletesGroupChains(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 
 	if err := s.ReconcileGroups(context.Background(), nil); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -757,6 +768,7 @@ func TestReconcileGroupsNeverDeletesAChainNameItCouldNotHaveCreated(t *testing.T
 		"nft list table inet linkguard": liveTableWithForeignGroupChain,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 
 	if err := s.ReconcileGroups(context.Background(), nil); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
@@ -777,6 +789,7 @@ func TestReconcileGroupsKeepsDisabledGroupChainWithItsRules(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{{ID: "a", Name: "Wi-Fi", ChainName: "grp_aaa", Enabled: false,
 		Fallthrough: FallthroughDrop,
 		Rules: []StoredRule{{ID: "r", Enabled: true,
@@ -805,6 +818,7 @@ func TestReconcileGroupsKeepsDisabledGroupChainWithItsRules(t *testing.T) {
 func TestReconcileGroupsForwardCommandOrder(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	// ATUALIZADO: os dois grupos do sistema entram na lista (posições 0 e 1,
 	// como a migração os cria). Sem eles a forward sairia sem os quatro
 	// bloqueios — não porque a reconciliação os perdeu, mas porque eles
@@ -858,6 +872,7 @@ func TestReconcileGroupsForwardCommandOrder(t *testing.T) {
 func TestReconcileGroupsRendersGroupChainContent(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true,
 		Fallthrough: FallthroughDrop,
 		Rules: []StoredRule{
@@ -1058,6 +1073,7 @@ func TestReconcileGroupsReportsSkippedRulesEvenWhenNftAlsoRejectedOne(t *testing
 func TestReconcileGroupsSurvivesAFailingChainListing(t *testing.T) {
 	exec := &fakeReconcileExec{readErr: errors.New("nft: command not found")}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{{ID: "a", Name: "Visitantes", ChainName: "grp_aaa", Enabled: true,
 		Fallthrough: FallthroughContinue}}
 
@@ -1143,6 +1159,7 @@ func TestReconcileGroupsReportsEnabledGroupWithoutAJump(t *testing.T) {
 func TestReconcileGroupsIgnoresInvalidConditionOnDisabledGroup(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "a", Name: "Wi-Fi visitantes", ChainName: "grp_aaa", Enabled: false, Position: 0,
 			CondSaddr: "192.168.50.0/33", Fallthrough: FallthroughDrop},
@@ -1172,6 +1189,7 @@ func TestReconcileGroupsIsIdempotent(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
 		t.Fatalf("primeira: %v", err)
 	}
@@ -1221,6 +1239,7 @@ func TestReconcileGroupsLogsChainsAppliedExcludingSystemGroups(t *testing.T) {
 	logs := captureLogs(t)
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
 			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
@@ -1536,6 +1555,7 @@ func TestReconcileGroupsGivesSystemGroupsNoChainAndNoFailure(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
 			Kind: GroupKindBlockedHosts, Position: 0, Enabled: true, Fallthrough: FallthroughContinue},
@@ -1732,6 +1752,7 @@ func TestSystemGroupsStayInForwardEvenWithAnInputScopeRow(t *testing.T) {
 func TestInputChainPolicyIsAlwaysAccept(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	if err := s.ReconcileGroups(context.Background(), []StoredGroup{
 		{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii", Enabled: true},
 	}); err != nil {
@@ -1872,6 +1893,7 @@ func TestInputChainIsRebuiltBeforeOrphanChainsAreDeleted(t *testing.T) {
 		"nft list table inet linkguard": liveTableWithOrphanGroup,
 	}}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 0,
 			CondSaddr: "192.168.50.0/24"},
@@ -1914,6 +1936,40 @@ func TestReconcileGroupsDoesNotTouchTheInputChainWhenTheNTPStateCannotBeRead(t *
 	})
 	if err == nil {
 		t.Fatal("ler o estado do NTP falhou e mesmo assim o apply foi reportado ok")
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "flush chain inet linkguard input") ||
+			strings.HasPrefix(c, "nft add rule inet linkguard input") {
+			t.Errorf("a chain input foi mexida sem saber o estado do NTP: %q", c)
+		}
+	}
+	// A forward não é refém disso: a contenção de falha deste pacote é por
+	// chain, e o grupo do admin continua sendo aplicado.
+	if indexOfCommand(exec.executed, func(c string) bool {
+		return c == "nft flush chain inet linkguard forward"
+	}) == -1 {
+		t.Errorf("a forward deixou de ser reconciliada por causa de um erro que é só da input: %v", exec.executed)
+	}
+}
+
+// m3 da revisão da Fase C2 — o mesmo fail-open do teste acima, mas pelo lado
+// da fonte NUNCA ligada em vez do lado do SELECT que falhou. Antes desta
+// correção, um Service que nunca passou por SetInputChainSources tratava a
+// ausência da fonte do NTP como "desligado" (ntpInputState devolvia
+// (nil, false, nil), só com um slog.Error de aviso), e ReconcileGroups seguia
+// em frente reconstruindo a chain input SEM as regras de proteção do NTP —
+// apagando-as do firewall vivo se já estivessem lá, com o apply reportado ok.
+// Espelha TestReconcileGroupsDoesNotTouchTheInputChainWhenTheNTPStateCannotBeRead
+// trocando "erro de leitura" por "fonte nunca ligada".
+func TestReconcileGroupsDoesNotTouchTheInputChainWhenTheNTPSourceWasNeverWired(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec} // SetInputChainSources deliberadamente não chamado
+
+	err := s.ReconcileGroups(context.Background(), []StoredGroup{
+		{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 0},
+	})
+	if err == nil {
+		t.Fatal("a fonte do NTP nunca foi ligada e mesmo assim o apply foi reportado ok")
 	}
 	for _, c := range exec.executed {
 		if strings.Contains(c, "flush chain inet linkguard input") ||

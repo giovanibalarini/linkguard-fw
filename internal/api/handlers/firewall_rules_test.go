@@ -44,6 +44,16 @@ func newFirewallRulesTestHandler(t *testing.T) (*handlers.NftablesHandler, *stor
 	t.Cleanup(func() { db.Close() })
 	exec := &recordingRuleExec{}
 	nftSvc := nftables.NewService(exec)
+	// m3 da revisão da Fase C2: sem uma fonte de NTP ligada, a reconciliação
+	// da chain input agora devolve erro (fechou o fail-open de fonte não
+	// ligada) em vez do antigo "NTP desligado" silencioso — o que faria toda
+	// mutação de regra/grupo destes testes responder 500 só por causa da
+	// chain input, que nenhum deles exercita. Declara a intenção
+	// explicitamente: nenhum grupo de escopo input, NTP desligado.
+	nftSvc.SetInputChainSources(
+		func() ([]nftables.StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, nil },
+	)
 	frSvc := firewallrules.NewService(db, nftSvc)
 	// Mesma ordem do boot (cmd/linkguard-fw/main.go): os dois grupos do
 	// sistema primeiro, porque é a lista de grupos que passa a decidir se os

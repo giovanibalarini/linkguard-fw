@@ -62,8 +62,21 @@ func newTestDB(t *testing.T) *storage.DB {
 // uma forward montada a partir de uma lista sem os grupos do sistema sairia
 // sem os bloqueios administrativos. Um teste que reconcilia sem esse passo
 // não estaria testando um estado que a produção alcança.
+//
+// Também liga nft a uma fonte de NTP explícita e vazia (m3 da revisão da
+// Fase C2): antes, um *nftables.Service sem SetInputChainSources tratava a
+// ausência da fonte como "NTP desligado" em silêncio; agora é erro, e faria
+// todo teste que passa por aqui (praticamente todos os deste arquivo) falhar
+// só por causa da chain input, que nenhum deles está exercitando. A fonte
+// devolve "desligado, sem grupos" — a mesma coisa que o silêncio antigo
+// fingia, só que declarada explicitamente por quem constrói o Service em vez
+// de herdada de um default perigoso.
 func newTestService(t *testing.T, db *storage.DB, nft *nftables.Service) *firewallrules.Service {
 	t.Helper()
+	nft.SetInputChainSources(
+		func() ([]nftables.StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, nil },
+	)
 	svc := firewallrules.NewService(db, nft)
 	if err := svc.EnsureSystemGroups(context.Background()); err != nil {
 		t.Fatalf("criar os grupos do sistema: %v", err)

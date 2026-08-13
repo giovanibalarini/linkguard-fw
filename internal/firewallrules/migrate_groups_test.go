@@ -50,7 +50,18 @@ func newTestDB(t *testing.T) *storage.DB {
 func newTestServiceWithExec(t *testing.T, db *storage.DB) (*Service, *migrateExec) {
 	t.Helper()
 	exec := &migrateExec{}
-	return NewService(db, nftables.NewService(exec)), exec
+	nft := nftables.NewService(exec)
+	// m3 da revisão da Fase C2: sem uma fonte de NTP ligada, ntpInputState
+	// agora devolve erro (fechou o fail-open de fonte não ligada) em vez do
+	// antigo "desligado" silencioso — o que faria todo teste que reconcilia
+	// grupos por aqui falhar só por causa da chain input, que nenhum destes
+	// testes exercita. A fonte abaixo declara a intenção explicitamente:
+	// nenhum grupo de escopo input, NTP desligado.
+	nft.SetInputChainSources(
+		func() ([]nftables.StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, nil },
+	)
+	return NewService(db, nft), exec
 }
 
 func newTestService(t *testing.T, db *storage.DB) *Service {

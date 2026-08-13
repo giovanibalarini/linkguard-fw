@@ -164,6 +164,7 @@ func TestReconcileStructuralChainsEveryRuleCarriesCounter(t *testing.T) {
 func TestForwardChainNoLongerLetsUserRulesShadowTheBlocks(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}
+	wireNoInputExtras(s)
 	groups := []StoredGroup{
 		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
 			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},

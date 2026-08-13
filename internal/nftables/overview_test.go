@@ -334,7 +334,7 @@ func TestParseTableRulesetReadsTheNTPLinesInTheCounterFormWeNowEmit(t *testing.T
 	fixture := `table inet linkguard {
 	chain input {
 		type filter hook input priority filter; policy accept;
-		udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } counter packets 5 bytes 380 accept # handle 14
+		udp dport 123 ip saddr { 10.20.0.0/24, 192.168.3.0/24 } counter packets 5 bytes 380 accept # handle 14
 		udp dport 123 counter packets 2 bytes 152 drop # handle 15
 		ip saddr 192.168.50.0/24 counter packets 0 bytes 0 jump grp_a3f21c08 # handle 16
 	}
@@ -352,10 +352,10 @@ func TestParseTableRulesetReadsTheNTPLinesInTheCounterFormWeNowEmit(t *testing.T
 	if accept.Handle != 14 || !accept.HasCounter || accept.Packets != 5 || accept.Bytes != 380 {
 		t.Errorf("handle/contador da linha de accept não foram lidos: %+v", accept)
 	}
-	if accept.Expression != "udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } accept" {
+	if accept.Expression != "udp dport 123 ip saddr { 10.20.0.0/24, 192.168.3.0/24 } accept" {
 		t.Errorf("a cláusula counter vazou para a expressão: %q", accept.Expression)
 	}
-	if accept.Owner.Key != "ntp" || accept.Description != "Aceita NTP vindo de 192.168.3.0/24, 10.20.0.0/24" {
+	if accept.Owner.Key != "ntp" || accept.Description != "Aceita NTP vindo de 10.20.0.0/24, 192.168.3.0/24" {
 		t.Errorf("linha de accept do NTP mal classificada/descrita: %+v", accept)
 	}
 
