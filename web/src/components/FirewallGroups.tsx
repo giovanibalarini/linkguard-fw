@@ -10,6 +10,11 @@ import Modal from './ui/Modal';
 import IconButton from './ui/IconButton';
 import { useAuth } from '../context/AuthContext';
 import { adminGroupsAbove as groupsAbove, isSystemGroup, KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../lib/blockGroups';
+// A contagem regressiva mora em lib/pendingWindow desde que ela passou a ser
+// desenhada também pela faixa global do Layout (M-5): duas cópias divergiriam
+// justamente no número que decide se ainda dá tempo de testar o SSH.
+import { anchorFrom, claimFullBanner, countdownNow, formatCountdown } from '../lib/pendingWindow';
+import type { CountdownAnchor } from '../lib/pendingWindow';
 import type {
   FirewallGroup, FirewallGroupsData, FirewallPendingChange, FirewallPendingResponse,
   FirewallRule, FirewallRulesData, GroupFallthrough, GroupScope, LastApply, MsgLevel, NetHost,
@@ -266,54 +271,6 @@ function splitGroupRules(g: FirewallGroup): { rules: NftChainRule[]; extras: Nft
   return { rules, extras, fall };
 }
 
-/**
- * countdownAnchor é o ponto de partida da contagem regressiva: quantos segundos
- * o SERVIDOR disse que faltavam, e o instante local em que essa resposta
- * chegou.
- *
- * A âncora existe porque quem conta é o servidor e quem desenha é o navegador.
- * O relógio local só mede o INTERVALO desde a resposta (uma duração, que não
- * depende de os dois relógios concordarem); o valor absoluto vem sempre de
- * `seconds_left`, e cada resposta do poll re-ancora. Um relógio de estação
- * adiantado em 40 segundos deixou de errar o número.
- *
- * `left` null é "não sei" — a faixa mostra como não sabido, nunca como zero,
- * que afirmaria que o prazo acabou.
- */
-interface countdownAnchor {
-  at: number;
-  left: number | null;
-}
-
-/**
- * anchorFrom lê a contagem que o servidor mandou. `expires_at` é a reserva para
- * um corpo sem `seconds_left` (servidor mais velho que este painel): pior que a
- * contagem do servidor, melhor que nenhuma contagem.
- */
-function anchorFrom(p: FirewallPendingChange): countdownAnchor {
-  const now = Date.now();
-  if (Number.isFinite(p.seconds_left)) {
-    return { at: now, left: Math.max(0, Math.trunc(p.seconds_left)) };
-  }
-  const t = Date.parse(p.expires_at);
-  return { at: now, left: Number.isNaN(t) ? null : Math.max(0, Math.round((t - now) / 1000)) };
-}
-
-// countdownNow desconta localmente o tempo passado desde a âncora — é o que dá
-// a suavidade de segundo a segundo entre dois polls. O servidor corrige o ponto
-// de partida; daqui até a próxima resposta, quem anda é o relógio local.
-function countdownNow(a: countdownAnchor, now: number): number | null {
-  if (a.left === null) return null;
-  return Math.max(0, a.left - Math.max(0, Math.round((now - a.at) / 1000)));
-}
-
-// formatCountdown escreve o prazo do jeito que se lê de relance: segundos
-// enquanto cabem em segundos, m:ss depois disso.
-function formatCountdown(s: number): string {
-  if (s < 60) return `${s} s`;
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
-
 function errMsg(e: unknown): string {
   const ax = e as { response?: { data?: { error?: string } }; message?: string };
   return ax?.response?.data?.error || ax?.message || 'falha na operação';
@@ -380,8 +337,8 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const [pendingUnknown, setPendingUnknown] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   // A âncora da contagem regressiva, recolocada a cada resposta do servidor
-  // (ver countdownAnchor). Sem pendente ela não é lida.
-  const [anchor, setAnchor] = useState<countdownAnchor>({ at: Date.now(), left: null });
+  // (ver CountdownAnchor). Sem pendente ela não é lida.
+  const [anchor, setAnchor] = useState<CountdownAnchor>({ at: Date.now(), left: null });
   // pendingRef acompanha o último pendente visto para que o poll saiba
   // distinguir "continua igual" de "sumiu" sem depender do estado do React.
   const pendingRef = useRef<FirewallPendingChange | null>(null);
@@ -499,6 +456,11 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   refreshRef.current = refreshPending;
 
   useEffect(() => { load(); refreshPending(); }, []);
+  // Enquanto esta tela está montada, a faixa COMPLETA daqui é a que o operador
+  // vê; a faixa compacta do Layout se esconde sozinha (ver lib/pendingWindow).
+  // A declaração é por componente montado, e não pela rota, porque esta tela é
+  // uma ABA: nas outras abas do firewall quem tem de aparecer é a do Layout.
+  useEffect(() => claimFullBanner(), []);
   // As permissões chegam depois da primeira renderização (/api/auth/me é
   // assíncrono). Sem este efeito, numa navegação direta para esta aba o
   // inventário nunca seria lido e a lista de hosts bloqueados apareceria sem

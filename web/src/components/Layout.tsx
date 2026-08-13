@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import PendingWindowBanner from './PendingWindowBanner';
 import { useUIMode } from '../context/UIModeContext';
 import { useI18n } from '../i18n';
 import {
@@ -262,6 +263,13 @@ export default function Layout() {
             </button>
           </div>
         )}
+
+        {/* A faixa do confirmar-ou-reverte segue o operador por qualquer tela
+            (M-5): os 90 segundos correm onde ele estiver, e conferir se a rede
+            continua de pé — em Hosts, no Painel — é justamente o que se pede a
+            ele antes de confirmar. Ela se esconde sozinha na tela de firewall,
+            onde a faixa completa já existe. */}
+        <PendingWindowBanner />
 
         <main className="flex-1 overflow-auto">
           <Outlet />
