@@ -26,6 +26,66 @@ func NewNftablesHandler(svc *nftables.Service, db *storage.DB, fr *firewallrules
 	return &NftablesHandler{svc: svc, db: db, fr: fr}
 }
 
+// confirmWindowBlocks é a TRAVA do confirmar-ou-reverte (Fase C2, spec §5.3):
+// devolve true — e já respondeu ao cliente — quando a mutação que está
+// começando não pode acontecer porque há uma janela de confirmação em aberto.
+//
+// Por que travar: uma janela aberta significa que uma mudança está APLICADA e
+// ainda não se provou boa, com o estado anterior guardado para voltar. Aceitar
+// uma segunda mutação em cima dela faz "reverter ao estado anterior" perder a
+// resposta — anterior a qual das duas? —, e o pendente é um só (a tabela aceita
+// uma linha). O operador ficaria empilhando alteração arriscada sobre alteração
+// que ainda não se provou boa, que é exatamente o que os 90 segundos existem
+// para impedir.
+//
+// ONDE ela é chamada em toda mutação de grupo e de regra: depois da validação
+// dos campos e antes de qualquer acesso ao banco. As duas metades da posição
+// têm motivo:
+//
+//   - depois da validação porque ela mesma precisa LER o banco, e um corpo
+//     inválido com o banco fora do ar tem que continuar respondendo 400 com o
+//     que está errado nele (C-5), não 500 por causa do SELECT do pendente;
+//   - antes de qualquer leitura ou escrita porque uma mutação recusada não
+//     pode ter tocado em nada — nem no banco, nem no nft.
+//
+// Erro de leitura do pendente TRAVA a mutação (fail closed) e vira 500. As
+// duas metades importam: liberar a mutação por não conseguir ler o pendente
+// seria a trava falhando justamente na hora em que ela existe para agir (é a
+// mesma armadilha que fez firewallrules.PendingChangeOrError não ter a forma
+// que engolia o erro), e devolver 400 com o texto cru do banco seria culpar o
+// cliente por uma pane do servidor e vazar o erro interno para a tela.
+//
+// O que ela NÃO trava, e não pode travar: confirmar e reverter. São as duas
+// saídas da janela, e uma trava larga demais prenderia o operador dentro dela
+// — o oposto do objetivo. Também não trava o que não mexe em grupo nem em
+// regra (bloqueios por host, port forwards, toggle de NTP): a spec §5.3 fala
+// de mutação de grupo e de regra, e nenhuma dessas outras muda o que o
+// snapshot da janela guarda, então nenhuma delas torna a reversão ambígua.
+func (h *NftablesHandler) confirmWindowBlocks(w http.ResponseWriter, _ *http.Request) bool {
+	p, err := h.fr.PendingChangeOrError()
+	if err != nil {
+		writeInternalError(w, err)
+		return true
+	}
+	if p == nil {
+		return false
+	}
+	if p.Reverting() {
+		// Estado "revertendo": o estado anterior já voltou ao banco e o que
+		// falta é o firewall vivo aceitar. Confirmar já é recusado lá dentro, e
+		// mutar aqui escreveria por cima de um estado que o LinkGuard ainda não
+		// conseguiu impor.
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"a reversão da mudança %q está em andamento e ainda não terminou no firewall; espere ela concluir antes de alterar grupos ou regras",
+			p.Summary))
+		return true
+	}
+	writeError(w, http.StatusConflict, fmt.Sprintf(
+		"há uma mudança de firewall aguardando confirmação (%q, aplicada por %s): confirme ou reverta antes de aplicar outra",
+		p.Summary, p.AppliedBy))
+	return true
+}
+
 // Ruleset returns the full live nftables ruleset.
 func (h *NftablesHandler) Ruleset(w http.ResponseWriter, r *http.Request) {
 	rs, err := h.svc.Ruleset(r.Context())
@@ -390,6 +450,11 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
+		return
+	}
 	if !h.requireGroup(w, b.GroupID) {
 		return
 	}
@@ -465,6 +530,11 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	// Perda silenciosa, sem undo. O grupo é o da linha existente; o corpo só
 	// pode trocá-lo por outro que exista de verdade (é assim que o painel
 	// move uma regra de grupo).
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
+		return
+	}
 	existing, found := h.findRule(w, b.ID)
 	if !found {
 		return
@@ -539,6 +609,11 @@ func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
+		return
+	}
 	// A linha é resolvida ANTES de ser apagada porque é ela que diz em qual
 	// grupo a regra mora — depois do DELETE não há mais como saber se o que
 	// acabou de sair do firewall era da chain input. Id inexistente continua
@@ -585,6 +660,11 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(b.ID) == "" {
 		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
 		return
 	}
 	// C-1 layer 2: re-enabling a rule can newly introduce it into the
@@ -657,6 +737,11 @@ func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
 		return
 	}
 	current, err := h.db.ListFirewallRules()

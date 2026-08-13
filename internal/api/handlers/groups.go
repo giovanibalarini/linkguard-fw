@@ -163,6 +163,11 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
+		return
+	}
 	current, err := h.fr.StoredGroups()
 	if err != nil {
 		writeInternalError(w, err)
@@ -212,6 +217,11 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	b = b.trimmed()
 	if b.ID == "" {
 		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
 		return
 	}
 	existing, found := h.findGroup(w, b.ID)
@@ -308,6 +318,11 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
+		return
+	}
 	// C-6: resolver o id aqui, como UpdateGroup e ToggleGroup fazem, em vez de
 	// deixar o storage responder pelo "não encontrado". Enquanto o banco
 	// responde, dá no mesmo; quando ele não responde, a assimetria aparece —
@@ -364,6 +379,11 @@ func (h *NftablesHandler) ToggleGroup(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(b.ID)
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
 		return
 	}
 	g, found := h.findGroup(w, id)
@@ -433,6 +453,11 @@ func (h *NftablesHandler) ReorderGroups(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
+	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
+	if h.confirmWindowBlocks(w, r) {
 		return
 	}
 	current, err := h.db.ListFirewallGroups()

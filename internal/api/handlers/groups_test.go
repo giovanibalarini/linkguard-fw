@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
@@ -1316,4 +1317,178 @@ func TestUpdateRuleRefusesToMoveARuleIntoASystemGroup(t *testing.T) {
 	if got := exec.chains[g.ChainName]; len(got) != 1 || !strings.Contains(got[0], "10.0.0.5") {
 		t.Errorf("a regra sumiu do firewall com a edição recusada, chain=%v", got)
 	}
+}
+
+// ─── A janela trava a edição (Fase C2, spec §5.3) ─────────────────────────
+
+// openWindow abre uma janela de confirmação pelo SERVIÇO, sem passar por
+// handler nenhum. É de propósito: o que estes testes medem é a trava, e abrir
+// a janela por uma mutação misturaria dois defeitos possíveis num resultado só
+// — uma trava quebrada e um arme quebrado dariam o mesmo vermelho.
+func openWindow(t *testing.T, fr *firewallrules.Service) {
+	t.Helper()
+	snap, err := fr.SnapshotState()
+	if err != nil {
+		t.Fatalf("SnapshotState: %v", err)
+	}
+	if err := fr.OpenConfirmWindow(context.Background(), snap, "admin", "regra de escopo input aplicada"); err != nil {
+		t.Fatalf("OpenConfirmWindow: %v", err)
+	}
+}
+
+// Com janela aberta, nenhuma mutação de grupo ou regra é aceita. Sem isso,
+// "reverter ao estado anterior" vira ambíguo — anterior a qual mudança? — e
+// o admin pode empilhar uma segunda alteração arriscada sobre uma que ainda
+// não se provou boa.
+func TestEveryMutationIsRefusedWhileAConfirmWindowIsOpen(t *testing.T) {
+	h, db, exec, fr := newGroupTestHandlerFR(t)
+	g := createGroupViaAPI(t, h, db, `{"name":"LAN","cond_saddr":"192.168.3.0/24","fallthrough":"continue"}`)
+	createGroupViaAPI(t, h, db, `{"name":"Convidados","fallthrough":"continue"}`)
+	rule := createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	second := createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"drop","saddr":"10.0.0.6"}`)
+
+	openWindow(t, fr)
+	exec.executed = nil
+
+	for _, c := range []struct {
+		name string
+		call func() *httptest.ResponseRecorder
+	}{
+		{"criar grupo", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups", `{"name":"Novo","fallthrough":"continue"}`)
+		}},
+		{"editar grupo", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+				`{"id":"`+g.ID+`","name":"Outro nome","fallthrough":"continue"}`)
+		}},
+		{"apagar grupo", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.DeleteGroup, "DELETE", "/api/nftables/groups", `{"id":"`+g.ID+`"}`)
+		}},
+		{"ligar/desligar grupo", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.ToggleGroup, "POST", "/api/nftables/groups/toggle", `{"id":"`+g.ID+`","enabled":false}`)
+		}},
+		{"reordenar grupos", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.ReorderGroups, "POST", "/api/nftables/groups/reorder",
+				`{"ids":`+reversedGroupIDsJSON(t, db)+`}`)
+		}},
+		{"criar regra", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.CreateRule, "POST", "/api/nftables/rules",
+				`{"group_id":"`+g.ID+`","action":"drop","saddr":"10.0.0.9"}`)
+		}},
+		{"editar regra", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.UpdateRule, "PUT", "/api/nftables/rules",
+				`{"id":"`+rule.ID+`","group_id":"`+g.ID+`","action":"accept","saddr":"10.0.0.5"}`)
+		}},
+		{"apagar regra", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.DeleteRule, "DELETE", "/api/nftables/rules", `{"id":"`+rule.ID+`"}`)
+		}},
+		{"ligar/desligar regra", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.ToggleRule, "POST", "/api/nftables/rules/toggle", `{"id":"`+rule.ID+`","enabled":false}`)
+		}},
+		{"reordenar regras", func() *httptest.ResponseRecorder {
+			return doJSON(t, h.ReorderRules, "POST", "/api/nftables/rules/reorder",
+				`{"ids":["`+second.ID+`","`+rule.ID+`"]}`)
+		}},
+	} {
+		w := c.call()
+		if w.Code != http.StatusConflict {
+			t.Errorf("%s: esperava 409 com janela aberta, obtive %d (%s)", c.name, w.Code, w.Body.String())
+		}
+	}
+
+	// A recusa é ANTES da escrita, e antes do nft: nada mudou no banco e
+	// nenhum comando foi emitido. Um 409 depois de já ter gravado seria a
+	// pior versão possível desta trava.
+	groups := adminGroups(t, db)
+	if len(groups) != 2 {
+		t.Errorf("a janela aberta tinha que impedir toda escrita de grupo, obtive %+v", groups)
+	}
+	rules, _ := db.ListFirewallRules()
+	if len(rules) != 2 {
+		t.Errorf("a janela aberta tinha que impedir toda escrita de regra, obtive %+v", rules)
+	}
+	if len(exec.executed) != 0 {
+		t.Errorf("nenhuma mutação recusada podia ter tocado o nft: %v", exec.executed)
+	}
+}
+
+// Confirmar e reverter TÊM que funcionar com a janela aberta — são as duas
+// saídas dela. Uma trava larga demais prenderia o admin dentro da janela: ele
+// receberia 409 ao confirmar, 409 ao reverter, e só sairia dali quando o
+// prazo vencesse sozinho — sem escolha nenhuma sobre a própria mudança.
+func TestConfirmAndRevertAreAllowedWhileTheWindowIsOpen(t *testing.T) {
+	// Confirmar.
+	h, _, _, fr := newGroupTestHandlerFR(t)
+	openWindow(t, fr)
+	w := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirmar com a janela aberta: esperava 200, obtive %d (%s)", w.Code, w.Body.String())
+	}
+
+	// Reverter, em uma máquina limpa (a janela é uma só por vez).
+	h2, _, _, fr2 := newGroupTestHandlerFR(t)
+	openWindow(t, fr2)
+	w = doJSON(t, h2.RevertPendingChange, "POST", "/api/nftables/pending/revert", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("reverter com a janela aberta: esperava 200, obtive %d (%s)", w.Code, w.Body.String())
+	}
+
+	// E ler o pendente também: é o GET que alimenta a faixa da contagem
+	// regressiva. Travá-lo esconderia da tela justamente a explicação de por
+	// que a edição está travada.
+	h3, _, _, fr3 := newGroupTestHandlerFR(t)
+	openWindow(t, fr3)
+	w = doJSON(t, h3.PendingChange, "GET", "/api/nftables/pending", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("ler o pendente com a janela aberta: esperava 200, obtive %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// Uma reversão que começou e ainda não terminou no firewall também tranca a
+// edição, e com outra mensagem: o estado anterior já voltou ao banco e o que
+// falta é o nft aceitar. Mutar aqui escreveria por cima de um estado que o
+// LinkGuard ainda não conseguiu impor.
+func TestMutationIsRefusedWhileARevertIsUnderway(t *testing.T) {
+	h, db, _, fr := newGroupTestHandlerFR(t)
+	openWindow(t, fr)
+	p, err := fr.PendingChangeOrError()
+	if err != nil || p == nil {
+		t.Fatalf("esperava a janela aberta: %+v, %v", p, err)
+	}
+	if err := db.MarkPendingReverting(p.ID, time.Now()); err != nil {
+		t.Fatalf("MarkPendingReverting: %v", err)
+	}
+
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups", `{"name":"Novo","fallthrough":"continue"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("esperava 409 durante a reversão, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "revers") {
+		t.Errorf("a mensagem tem que dizer que a reversão está em curso, obtive %s", w.Body.String())
+	}
+	if len(adminGroups(t, db)) != 0 {
+		t.Errorf("nada podia ter sido gravado durante a reversão")
+	}
+}
+
+// reversedGroupIDsJSON devolve TODOS os ids de grupo (inclusive os do
+// sistema) na ordem inversa, como o corpo do /groups/reorder pede. A lista
+// completa importa: ReorderGroups recusa uma lista parcial com 400, e um 400
+// passaria por engano no teste da trava, que espera 409 — o caso mediria a
+// validação da lista, não a trava.
+func reversedGroupIDsJSON(t *testing.T, db *storage.DB) string {
+	t.Helper()
+	all, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	ids := make([]string, 0, len(all))
+	for i := len(all) - 1; i >= 0; i-- {
+		ids = append(ids, all[i].ID)
+	}
+	out, err := json.Marshal(ids)
+	if err != nil {
+		t.Fatalf("marshal dos ids: %v", err)
+	}
+	return string(out)
 }
