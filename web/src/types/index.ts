@@ -341,6 +341,54 @@ export type GroupFallthrough = 'continue' | 'accept' | 'drop';
 // nunca `kind !== 'admin'`.
 export type FirewallGroupKind = '' | 'admin' | 'blocked_hosts' | 'blocklist';
 
+// GroupScope diz PARA QUAL TRÁFEGO o grupo vale, e é o que decide em qual
+// chain o `jump` dele é escrito (Fase C2, espelha internal/nftables/groups.go):
+//
+//   - 'forward': tráfego ATRAVESSANDO o firewall — a LAN saindo para a
+//     internet, uma VLAN falando com outra;
+//   - 'input': tráfego DESTINADO ao próprio firewall — SSH, o painel, DNS,
+//     Samba. É o escopo que pode trancar o operador para fora da máquina, e
+//     por isso toda mudança nele abre a janela de confirmação de 90 segundos.
+//
+// String vazia conta como 'forward': é o valor de toda linha criada antes
+// desta coluna existir, e todo grupo anterior à Fase C2 é de tráfego
+// atravessando. É a mesma normalização de GroupScope no backend, e as duas não
+// podem discordar — tratar vazio como input mostraria na tela um grupo na
+// chain errada.
+export type GroupScope = '' | 'forward' | 'input';
+
+// FirewallPendingChange é a janela de confirmação em aberto, como GET
+// /api/nftables/pending a devolve (handlers.pendingView).
+//
+// `id` NÃO é decoração: confirmar e reverter o exigem no corpo, e ele é
+// conferido contra a janela atual — sem ele, um admin confirmando cancelaria a
+// rede de proteção de uma mudança de outro admin que ele nunca viu.
+//
+// `reverting` separa os dois estados possíveis, e a faixa PRECISA dos dois
+// porque os botões que cabem são outros em cada um: aguardando confirmação
+// cabem "Confirmar acesso" e "Reverter agora"; com a reversão já em curso não
+// cabe nenhum dos dois (o backend recusa confirmar), e o texto tem que dizer
+// que a reversão está acontecendo.
+export interface FirewallPendingChange {
+  id: string;
+  summary: string;
+  applied_by: string;
+  // expires_at é o instante em que o LinkGuard reverte sozinho, em hora do
+  // SERVIDOR. A contagem regressiva sai daqui e nunca de um contador local:
+  // recarregar a página não pode reiniciar o relógio, senão o operador acha
+  // que tem 90 segundos quando tem 5.
+  expires_at: string;
+  created_at: string;
+  reverting: boolean;
+  reverting_at?: string;
+}
+
+// FirewallPendingResponse é o corpo do GET. `pending` é null explícito quando
+// não há janela — a ausência do campo nunca deve ser lida como "não há nada".
+export interface FirewallPendingResponse {
+  pending: FirewallPendingChange | null;
+}
+
 // FirewallGroup is one group of rules: a chain of its own (`chain_name`,
 // always derived server-side from the id, never from the typed name),
 // reached from forward by an entry condition + `counter jump`.
@@ -368,6 +416,9 @@ export interface FirewallGroup {
   // uma lista de regras, e ele não tem chain própria — as linhas de drop dele
   // moram na própria forward, e `applied` vem de todas elas estarem vivas lá.
   kind: FirewallGroupKind;
+  // scope decide em qual chain o jump deste grupo é escrito (ver GroupScope).
+  // Vem vazio em todo grupo criado antes da Fase C2, e vazio é 'forward'.
+  scope: GroupScope;
   applied: boolean;
   handle: number;
   packets: number;

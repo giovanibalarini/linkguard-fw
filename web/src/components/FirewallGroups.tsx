@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import {
   Plus, Pencil, Trash2, Check, Ban, Slash, GripVertical, Power, PowerOff,
   Layers, CornerDownRight, ShieldAlert, RefreshCw, Lock, X, AlertTriangle,
+  ArrowRightLeft, Server, Timer, HelpCircle, RotateCcw,
 } from 'lucide-react';
 import client from '../api/client';
 import Modal from './ui/Modal';
@@ -10,8 +11,9 @@ import IconButton from './ui/IconButton';
 import { useAuth } from '../context/AuthContext';
 import { adminGroupsAbove as groupsAbove, isSystemGroup, KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../lib/blockGroups';
 import type {
-  FirewallGroup, FirewallGroupsData, FirewallRule, FirewallRulesData,
-  GroupFallthrough, LastApply, NetHost, NftChainRule, NftManaged,
+  FirewallGroup, FirewallGroupsData, FirewallPendingChange, FirewallPendingResponse,
+  FirewallRule, FirewallRulesData, GroupFallthrough, GroupScope, LastApply, NetHost,
+  NftChainRule, NftManaged,
 } from '../types';
 
 interface Props {
@@ -83,6 +85,56 @@ const SYSTEM_KINDS: Record<string, {
   },
 };
 
+/**
+ * SCOPES é "onde o grupo age" — o campo `scope` da Fase C2, que decide em qual
+ * chain o `jump` do grupo é escrito.
+ *
+ * `chain` são os nomes de chain do próprio nftables (forward, input): não se
+ * traduzem, aparecem em font-mono e são o que o admin vai achar no `nft list
+ * ruleset`. A frase em português ao lado carrega o significado, do mesmo jeito
+ * que ACTIONS e FALLTHROUGH fazem com os keywords deles.
+ *
+ * O escopo input é o único que pode trancar o operador para fora da máquina —
+ * daí a cor de alerta dele, a mesma que a tela usa para avisar ANTES de salvar,
+ * para marcar o grupo na lista e para a faixa da contagem regressiva.
+ */
+const SCOPES: Record<'forward' | 'input', {
+  chain: string;
+  title: string;
+  hint: string;
+  color: string;
+  ring: string;
+  Icon: typeof Check;
+}> = {
+  forward: {
+    chain: 'forward',
+    title: 'atravessando o firewall',
+    hint: 'a LAN saindo para a internet, uma VLAN falando com outra',
+    color: 'text-gray-300',
+    ring: 'border-gray-500 bg-gray-700/40',
+    Icon: ArrowRightLeft,
+  },
+  input: {
+    chain: 'input',
+    title: 'destinado ao firewall',
+    hint: 'SSH, este painel, DNS, Samba — o que chega na própria máquina',
+    color: 'text-orange-300',
+    ring: 'border-orange-500 bg-orange-500/10',
+    Icon: Server,
+  },
+};
+
+// groupScope normaliza o que veio do banco, exatamente como GroupScope faz no
+// backend: vazio é forward (todo grupo anterior à Fase C2), e qualquer coisa
+// que não seja input também. Ler a coluna crua aqui faria a tela desenhar um
+// grupo numa chain em que ele não está.
+function groupScope(g: { scope?: GroupScope; kind?: string }): 'forward' | 'input' {
+  // Grupo do sistema é sempre forward, qualquer que seja a coluna — as linhas
+  // dele são de um named set de tráfego atravessando (GroupHostChain).
+  if (g.kind && isSystemGroup(g.kind)) return 'forward';
+  return g.scope === 'input' ? 'input' : 'forward';
+}
+
 type Unit = 'bytes' | 'bits';
 
 const emptyRuleModal = {
@@ -90,9 +142,13 @@ const emptyRuleModal = {
   iif: '', oif: '', saddr: '', daddr: '', proto: '', dport: '', description: '',
 };
 
+// O escopo padrão do modal é forward, e é o padrão certo: quem cria um grupo
+// está quase sempre filtrando tráfego que atravessa, e é o único dos dois que
+// não pode trancar ninguém para fora. Escolher input é uma decisão explícita.
 const emptyGroupModal = {
   open: false, id: '', name: '', cond_saddr: '', cond_daddr: '', cond_iif: '',
   fallthrough: 'continue' as GroupFallthrough, chain_name: '',
+  scope: 'forward' as 'forward' | 'input',
 };
 
 type RuleLike = Pick<FirewallRule, 'iif' | 'oif' | 'saddr' | 'daddr' | 'proto' | 'dport'>;
@@ -137,12 +193,19 @@ function jumpLine(g: { cond_iif: string; cond_saddr: string; cond_daddr: string;
   return t.join(' ');
 }
 
-function describeCondition(g: { cond_iif: string; cond_saddr: string; cond_daddr: string }): string {
+function describeCondition(g: { cond_iif: string; cond_saddr: string; cond_daddr: string; scope?: GroupScope; kind?: string }): string {
   const parts: string[] = [];
   if (g.cond_iif) parts.push(`entrada ${g.cond_iif}`);
   if (g.cond_saddr) parts.push(`origem ${g.cond_saddr}`);
   if (g.cond_daddr) parts.push(`destino ${g.cond_daddr}`);
-  return parts.length ? parts.join(' · ') : 'todo o tráfego que atravessa o firewall';
+  if (parts.length) return parts.join(' · ');
+  // Sem condição, o "tudo" de um grupo de input é outro tudo: não é o tráfego
+  // que atravessa o firewall, é o que chega nele. Repetir a frase da forward
+  // aqui descreveria o grupo errado — e é justamente o grupo que pode cortar o
+  // acesso do operador.
+  return groupScope(g) === 'input'
+    ? 'todo o tráfego destinado ao firewall'
+    : 'todo o tráfego que atravessa o firewall';
 }
 
 function moveItem<T>(arr: T[], from: number, to: number): T[] {
@@ -196,6 +259,31 @@ function splitGroupRules(g: FirewallGroup): { rules: NftChainRule[]; extras: Nft
   const fall = g.fallthrough !== 'continue' && tail.length > 0 ? tail[tail.length - 1] : undefined;
   const extras = fall ? tail.slice(0, -1) : tail;
   return { rules, extras, fall };
+}
+
+/**
+ * secondsLeft é quanto falta para o LinkGuard reverter sozinho, medido contra
+ * o `expires_at` que o SERVIDOR mandou — nunca contra um contador local que
+ * começa em 90 quando a faixa aparece.
+ *
+ * A diferença aparece na hora que importa: recarregando a página aos 85
+ * segundos, um contador local mostraria 90 de novo e o operador acharia que
+ * tem um minuto e meio para testar o acesso quando tem cinco segundos.
+ *
+ * Data inválida devolve null — "não sei", que a faixa mostra como não sabido,
+ * e não como zero (que afirmaria que o prazo acabou).
+ */
+function secondsLeft(expiresAt: string, now: number): number | null {
+  const t = Date.parse(expiresAt);
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.round((t - now) / 1000));
+}
+
+// formatCountdown escreve o prazo do jeito que se lê de relance: segundos
+// enquanto cabem em segundos, m:ss depois disso.
+function formatCountdown(s: number): string {
+  if (s < 60) return `${s} s`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 function errMsg(e: unknown): string {
@@ -254,8 +342,34 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const [groupModal, setGroupModal] = useState(emptyGroupModal);
   const [newCidr, setNewCidr] = useState('');
   const [hostPicker, setHostPicker] = useState({ open: false, filter: '' });
+  // pending é a janela de confirmação em aberto (null = não há nenhuma).
+  // pendingUnknown é o terceiro estado, e ele existe porque os outros dois não
+  // cobrem "o GET falhou": a faixa sumindo por causa de um GET que não
+  // respondeu seria a tela AFIRMANDO que não há nada aguardando, no minuto em
+  // que confirmar é a única coisa que devolve o acesso do operador. Estado
+  // desconhecido se mostra como desconhecido.
+  const [pending, setPending] = useState<FirewallPendingChange | null>(null);
+  const [pendingUnknown, setPendingUnknown] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  // pendingRef acompanha o último pendente visto para que o poll saiba
+  // distinguir "continua igual" de "sumiu" sem depender do estado do React.
+  const pendingRef = useRef<FirewallPendingChange | null>(null);
+  // resolvedRef guarda o id da janela que NÓS acabamos de confirmar ou
+  // reverter: sem ele, o poll seguinte veria o pendente sumir e anunciaria uma
+  // reversão automática que não houve.
+  const resolvedRef = useRef('');
+  // expiredRef marca a janela cujo vencimento já disparou uma releitura, para
+  // que o relógio chegando a zero peça o estado ao servidor uma vez, e não a
+  // cada segundo.
+  const expiredRef = useRef('');
 
-  const load = async () => {
+  // `quiet` existe para um caso só: o recarregar que acontece DEPOIS de uma
+  // operação que já falhou. Ali a falha desta leitura é secundária, e deixá-la
+  // escrever na mesma faixa trocaria a mensagem específica do backend ("não
+  // foi possível concluir a reversão; o LinkGuard vai tentar de novo sozinho")
+  // pelo genérico "erro interno do servidor" — perdendo justamente o que o
+  // operador precisa saber.
+  const load = async (quiet = false) => {
     try {
       const [gr, rl, mg] = await Promise.all([
         client.get<FirewallGroupsData>('/api/nftables/groups'),
@@ -267,7 +381,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       setAllRules(rl.data?.rules ?? []);
       setManaged(mg.data ?? { wan_hosts: [], blocklist: [], blocked_hosts: [] });
     } catch (e) {
-      onMsg('Erro: ' + errMsg(e));
+      if (!quiet) onMsg('Erro: ' + errMsg(e));
     } finally {
       setLoading(false);
     }
@@ -286,12 +400,89 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  /**
+   * refreshPending lê a janela de confirmação — a fonte do id que confirmar e
+   * reverter exigem, e da contagem regressiva.
+   *
+   * Três coisas que ela faz de propósito:
+   *
+   *  - falha NÃO vira `null`. Vira pendingUnknown, com o último pendente
+   *    conhecido ainda na tela (regra do projeto: nada de dado falso, e "não
+   *    há nada aguardando" é um dado);
+   *  - o pendente que SUMIU sem que a gente tenha confirmado ou revertido só
+   *    pode ter sido o prazo vencendo — o operador precisa saber que a
+   *    alteração foi desfeita, e a tela precisa recarregar para mostrar os
+   *    grupos como voltaram a ser;
+   *  - ela nunca chama a si mesma via load(): load() recarrega grupos, regras
+   *    e membros, e só o poll e as ações chamam as duas.
+   */
+  const refreshPending = async () => {
+    try {
+      const { data } = await client.get<FirewallPendingResponse>('/api/nftables/pending');
+      const next = data?.pending ?? null;
+      const prev = pendingRef.current;
+      pendingRef.current = next;
+      setPending(next);
+      setPendingUnknown(false);
+      if (prev && !next) {
+        // A janela fechou. Só a MENSAGEM depende de quem a fechou; o recarregar
+        // é incondicional, e a diferença é visível: uma reversão que a gente
+        // pediu mas que só terminou depois (o firewall vivo demorou a aceitar,
+        // ou o watchdog concluiu por nós) deixava na tela um grupo que já não
+        // existia mais no banco — a tela afirmando uma regra de firewall que
+        // não está lá.
+        if (resolvedRef.current === prev.id) {
+          resolvedRef.current = '';
+        } else {
+          onMsg('O prazo acabou sem confirmação: a alteração foi revertida e os grupos e as regras voltaram ao estado anterior.');
+        }
+        await load();
+      }
+    } catch {
+      // Sem `setPending(null)` aqui, e é o ponto inteiro deste ramo.
+      setPendingUnknown(true);
+    }
+  };
+
+  useEffect(() => { load(); refreshPending(); }, []);
   // As permissões chegam depois da primeira renderização (/api/auth/me é
   // assíncrono). Sem este efeito, numa navegação direta para esta aba o
   // inventário nunca seria lido e a lista de hosts bloqueados apareceria sem
   // nome, sem MAC e sem como desbloquear.
   useEffect(() => { loadHosts(); }, [canReadHosts]);
+
+  // O pendente é lido a cada 3 s — o mesmo intervalo da faixa de confirmação
+  // das Interfaces, que resolve o mesmo problema. Ele é o que faz a faixa
+  // aparecer quando OUTRO admin aplicou a mudança, e o que faz ela sumir
+  // quando a janela se fecha por qualquer caminho.
+  useEffect(() => {
+    let alive = true;
+    const t = setInterval(() => { if (alive) refreshPending(); }, 3000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  // O relógio da tela só corre quando há o que contar. `hasPending` (e não o
+  // objeto `pending`) é a dependência de propósito: o poll devolve um objeto
+  // novo a cada 3 s, e depender dele reiniciaria o intervalo a cada volta.
+  const hasPending = !!pending;
+  useEffect(() => {
+    if (!hasPending) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [hasPending]);
+
+  const pendingSeconds = pending ? secondsLeft(pending.expires_at, now) : null;
+
+  // Prazo vencido com a página aberta: pede o estado ao servidor na hora, em
+  // vez de esperar o próximo poll de 3 s olhando uma faixa que já morreu. Uma
+  // vez por janela (expiredRef) — a reversão do watchdog leva o tempo que
+  // levar, e o relógio continua em zero enquanto ela não termina.
+  useEffect(() => {
+    if (!pending || pending.reverting || pendingSeconds === null || pendingSeconds > 0) return;
+    if (expiredRef.current === pending.id) return;
+    expiredRef.current = pending.id;
+    refreshPending();
+  }, [pending, pendingSeconds]);
 
   const selected = groups.find((g) => g.id === selectedId) ?? groups[0];
 
@@ -324,20 +515,79 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   // when the server took it: the backend refuses IPv6, bad CIDRs and
   // anything `nft -c` rejects, and closing on failure would throw away what
   // the admin typed along with the chance to fix it.
+  // adoptPending pega a janela que a PRÓPRIA mutação armou: toda mutação de
+  // grupo ou regra que abre uma janela devolve o pendente no corpo do 200. Sem
+  // isto, a faixa só apareceria no próximo poll — até 3 segundos em que o
+  // operador acabou de aplicar uma mudança que pode cortar o acesso dele e a
+  // tela não mostra nem o relógio nem o botão de confirmar.
+  const adoptPending = (res: unknown) => {
+    const p = (res as { data?: { pending?: FirewallPendingChange | null } } | undefined)?.data?.pending;
+    if (!p) return;
+    pendingRef.current = p;
+    setPending(p);
+    setPendingUnknown(false);
+    setNow(Date.now());
+  };
+
   const run = async (fn: () => Promise<unknown>, ok: string): Promise<boolean> => {
     setBusy(true);
     onMsg('');
     try {
-      await fn();
+      const res = await fn();
+      adoptPending(res);
       onMsg(ok);
       await load();
+      await refreshPending();
       return true;
     } catch (e) {
       onMsg('Erro: ' + errMsg(e));
+      // Uma mutação que falhou não deixa a tela como estava: a reversão que
+      // não conclui, por exemplo, já restaurou o BANCO e devolve 500 — sem
+      // este load a lista continuaria mostrando o grupo que acabou de deixar
+      // de existir. E o pendente é relido porque a recusa pode ter sido
+      // justamente a trava (409): é o que troca o "Erro: ..." solto pela faixa
+      // com o relógio e os dois botões.
+      await load(true);
+      await refreshPending();
       return false;
     } finally {
       setBusy(false);
     }
+  };
+
+  // ─── Confirmar-ou-reverte ──────────────────────────────────────────────
+  // locked é a trava do backend refletida na tela: com uma janela aberta,
+  // TODA mutação de grupo e de regra responde 409. Um 409 cru numa tela sem
+  // explicação é pior que um botão desabilitado que diz por quê — daí
+  // lockReason, que vai no `title` de cada controle desabilitado e no texto ao
+  // lado deles.
+  //
+  // O estado "revertendo" também tranca aqui, ainda que o backend libere
+  // mutações nele (o banco já voltou; falta o firewall vivo): oferecer edição
+  // no meio de uma reconciliação em curso convidaria o operador a empilhar
+  // mudança em cima de um firewall que ainda não é o que a tela mostra.
+  const locked = !!pending;
+  const lockReason = pending?.reverting
+    ? 'A reversão de uma alteração de escopo input está em curso. A edição volta quando ela terminar.'
+    : 'Há uma alteração aguardando confirmação. Confirme o acesso ou reverta agora, na faixa no topo, para voltar a editar.';
+  const editDisabled = busy || locked;
+
+  const confirmPending = () => {
+    const p = pending;
+    if (!p) return;
+    resolvedRef.current = p.id;
+    // O id vai no corpo porque a janela tem dono: sem ele, confirmar agiria
+    // sobre a janela que estiver aberta no instante da chamada — que pode ser
+    // a de outro admin, com uma mudança que este operador nunca viu.
+    run(() => client.post('/api/nftables/pending/confirm', { id: p.id }),
+      'Acesso confirmado: a alteração passa a valer e não será mais revertida.');
+  };
+  const revertPending = () => {
+    const p = pending;
+    if (!p) return;
+    resolvedRef.current = p.id;
+    run(() => client.post('/api/nftables/pending/revert', { id: p.id }),
+      'Alteração revertida: os grupos e as regras voltaram ao estado anterior.');
   };
 
   // ─── Grupos ────────────────────────────────────────────────────────────
@@ -345,6 +595,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const openEditGroup = (g: FirewallGroup) => setGroupModal({
     open: true, id: g.id, name: g.name, cond_saddr: g.cond_saddr, cond_daddr: g.cond_daddr,
     cond_iif: g.cond_iif, fallthrough: g.fallthrough || 'continue', chain_name: g.chain_name,
+    scope: groupScope(g),
   });
   const closeGroupModal = () => setGroupModal((m) => ({ ...m, open: false }));
   const saveGroup = () => {
@@ -352,6 +603,12 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       name: groupModal.name.trim(), cond_saddr: groupModal.cond_saddr.trim(),
       cond_daddr: groupModal.cond_daddr.trim(), cond_iif: groupModal.cond_iif.trim(),
       fallthrough: groupModal.fallthrough,
+      // O escopo vai SEMPRE, inclusive quando é forward. O backend trata
+      // `scope` ausente como "mantenha o gravado" (proteção contra cliente
+      // antigo que rebaixaria um grupo de input em silêncio), então omiti-lo
+      // aqui faria trocar o escopo na tela não fazer nada — com HTTP 200 e o
+      // operador achando que trocou.
+      scope: groupModal.scope,
     };
     const req = groupModal.id
       ? client.put('/api/nftables/groups', { id: groupModal.id, ...payload })
@@ -362,6 +619,11 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       // created it to put rules in it.
       const created = (res.data as FirewallGroup | undefined)?.id;
       if (!groupModal.id && created) setSelectedId(created);
+      // A resposta volta para o `run`, que tira dela o pendente que ESTA
+      // mutação armou (adoptPending): é o que faz a faixa da contagem
+      // regressiva aparecer no mesmo instante em que o grupo de escopo input
+      // é salvo, sem esperar o poll.
+      return res;
     }, groupModal.id ? 'Grupo atualizado.' : 'Grupo criado.').then((ok) => { if (ok) closeGroupModal(); });
   };
   // A mensagem diz o que continua guardado, e um grupo do sistema não guarda
@@ -431,9 +693,13 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     setBusy(true);
     onMsg('');
     client.post('/api/nftables/groups/reorder', { ids: next.map((g) => g.id) })
-      .then(() => load())
+      .then((res) => { adoptPending(res); return load(); })
+      // Reordenar também pode armar a janela (mover um grupo de escopo input
+      // muda a ordem da chain input) e também pode levar 409 da trava: as duas
+      // pontas passam por uma releitura do pendente, senão a tela mostraria a
+      // ordem nova sem a faixa, ou o 409 sem o motivo.
       .catch((e) => { setGroups(previous); onMsg('Erro: ' + errMsg(e)); })
-      .finally(() => setBusy(false));
+      .finally(() => { setBusy(false); refreshPending(); });
   };
 
   // I-6 (Fase B): Firefox will not start an HTML5 drag session unless
@@ -511,9 +777,9 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     setBusy(true);
     onMsg('');
     client.post('/api/nftables/rules/reorder', { ids: globalOrder })
-      .then(() => load())
+      .then((res) => { adoptPending(res); return load(); })
       .catch((e) => { setGroups(previous); onMsg('Erro: ' + errMsg(e)); })
-      .finally(() => setBusy(false));
+      .finally(() => { setBusy(false); refreshPending(); });
   };
   const onRuleDragStart = (e: DragEvent, i: number) => {
     if (!canWrite) return;
@@ -543,6 +809,120 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
 
   return (
     <div className="space-y-4">
+      {/* ─── Faixa do confirmar-ou-reverte (spec §5) ────────────────────────
+          A mudança de escopo input já está APLICADA quando esta faixa
+          aparece: em 90 segundos o LinkGuard a desfaz sozinho, a menos que
+          alguém confirme aqui. É a única parte da tela que sabe o id da
+          janela, e confirmar e reverter o exigem — sem ela, a única saída
+          seria uma chamada direta à API.
+
+          Três estados, e nenhum deles é "a faixa some": aguardando
+          confirmação, revertendo, e desconhecido (o GET falhou). */}
+      {pending && !pending.reverting && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+            <div className="flex items-center gap-2 shrink-0">
+              <Timer className="w-5 h-5 text-amber-400" aria-hidden="true" />
+              {/* O relógio diz "reverte em", nunca "expira em": ele informa o
+                  que vai acontecer, não que um prazo terminou. E o número sai
+                  de expires_at, hora do servidor — recarregar a página não
+                  reinicia nada. */}
+              <span className="text-xs text-amber-300/80">reverte em</span>
+              <span className="font-mono text-2xl font-semibold text-amber-300 tabular-nums" aria-live="off">
+                {pendingSeconds === null ? '—' : formatCountdown(pendingSeconds)}
+              </span>
+            </div>
+            <div className="min-w-0 flex-1 text-sm text-amber-100">
+              <p className="font-medium">Esta alteração mexe no tráfego destinado ao próprio firewall e aguarda confirmação.</p>
+              <p className="text-amber-200/80 mt-0.5 break-words">
+                {pending.summary}
+                <span className="text-amber-200/50"> · aplicada por </span>
+                <span className="font-mono">{pending.applied_by || 'desconhecido'}</span>
+              </p>
+              <p className="text-amber-200/70 text-xs mt-1.5">
+                Teste o acesso que importa — SSH, este painel — antes de confirmar. Se ficou de fora, não faça nada:{' '}
+                {pendingSeconds === 0
+                  ? 'o prazo acabou e a reversão automática está a caminho.'
+                  : 'o LinkGuard reverte sozinho quando o prazo acabar.'}
+              </p>
+              {/* O que a reversão desfaz, dito antes de alguém apertar
+                  qualquer botão: o snapshot cobre `groups` e `rules` e mais
+                  nada. Acreditar numa volta completa que não aconteceu é o
+                  pior resultado possível aqui. */}
+              <p className="text-amber-200/60 text-xs mt-1.5">
+                A reversão desfaz apenas <span className="text-amber-200">grupos e regras</span>. Bloqueios por host, encaminhamentos de porta e o NTP não voltam atrás — o que você mudou neles durante a janela continua valendo.
+              </p>
+            </div>
+          </div>
+          {canWrite ? (
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button
+                onClick={confirmPending}
+                disabled={busy}
+                className="btn-primary text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Check className="w-4 h-4" aria-hidden="true" /> Confirmar acesso
+              </button>
+              <button
+                onClick={revertPending}
+                disabled={busy}
+                className="btn-secondary text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <RotateCcw className="w-4 h-4" aria-hidden="true" /> Reverter agora
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-amber-200/70">
+              Confirmar e reverter exigem permissão de escrita no firewall. Chame quem tem — ou espere o prazo, que reverte sozinho.
+            </p>
+          )}
+          {pendingUnknown && (
+            <p className="text-xs text-amber-200/70 flex items-start gap-1.5">
+              <HelpCircle className="w-3.5 h-3.5 shrink-0 mt-px" aria-hidden="true" />
+              <span>O painel não conseguiu reler o estado desta janela agora — o que está acima é a última leitura boa. Continua tentando.</span>
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Revertendo: o estado anterior JÁ voltou ao banco e o que falta é o
+          firewall vivo aceitar — o LinkGuard repete até conseguir. Aqui não
+          cabe nenhum dos dois botões (confirmar é recusado pelo backend), e o
+          texto tem que dizer que a reversão está em curso, não perguntar. */}
+      {pending?.reverting && (
+        <div className="rounded-xl border border-blue-500/40 bg-blue-500/10 p-4 flex flex-col sm:flex-row sm:items-start gap-3">
+          <RotateCcw className="w-5 h-5 text-blue-400 shrink-0 animate-spin" aria-hidden="true" />
+          <div className="min-w-0 flex-1 text-sm text-blue-100">
+            <p className="font-medium">A reversão está em curso.</p>
+            <p className="text-blue-200/80 mt-0.5 break-words">{pending.summary}</p>
+            <p className="text-blue-200/70 text-xs mt-1.5">
+              Os grupos e as regras já voltaram ao estado anterior aqui no LinkGuard; falta o firewall aceitar a reconfiguração, e ele repete a tentativa até conseguir. Não há o que confirmar: esta alteração não vai mais valer.
+            </p>
+            <p className="text-blue-200/60 text-xs mt-1.5">
+              A reversão desfaz apenas grupos e regras. Bloqueios por host, encaminhamentos de porta e o NTP continuam como estão.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Desconhecido: a leitura falhou e NÃO há última leitura para mostrar.
+          Sumir seria a tela afirmando "não há nada aguardando" — e o operador
+          concluindo que já confirmou, quando o relógio pode estar correndo. */}
+      {!pending && pendingUnknown && (
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-4 flex flex-col sm:flex-row sm:items-start gap-3">
+          <HelpCircle className="w-5 h-5 text-yellow-400 shrink-0" aria-hidden="true" />
+          <div className="min-w-0 flex-1 text-sm text-yellow-100">
+            <p className="font-medium">Não foi possível saber se há alguma alteração aguardando confirmação.</p>
+            <p className="text-yellow-200/70 text-xs mt-1">
+              A consulta ao LinkGuard falhou. Isto não quer dizer que não há nada pendente — quer dizer que não sabemos. Se você acabou de aplicar uma alteração de escopo input, ela pode estar contando os 90 segundos agora.
+            </p>
+          </div>
+          <button onClick={() => refreshPending()} className="btn-secondary text-xs shrink-0 flex items-center justify-center gap-2">
+            <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" /> Tentar de novo
+          </button>
+        </div>
+      )}
+
       {/* apply_status: the last DB→nft reconcile can fail on its own — a
           boot-time one has no HTTP response for anyone to see — so this is a
           standing banner, not a transient message. */}
@@ -581,14 +961,28 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               {groups.length} grupo{groups.length === 1 ? '' : 's'}
             </span>
             <div className="flex items-center gap-1">
-              <IconButton icon={RefreshCw} onClick={load} label="Atualizar grupos" className="min-w-[32px] min-h-[32px]" />
+              <IconButton icon={RefreshCw} onClick={() => { load(); refreshPending(); }} label="Atualizar grupos" className="min-w-[32px] min-h-[32px]" />
               {canWrite && (
-                <button onClick={openNewGroup} className="btn-primary flex items-center gap-1.5 text-xs px-2.5 py-1.5">
+                <button
+                  onClick={openNewGroup}
+                  disabled={editDisabled}
+                  title={locked ? lockReason : undefined}
+                  className="btn-primary flex items-center gap-1.5 text-xs px-2.5 py-1.5 disabled:opacity-50"
+                >
                   <Plus className="w-3.5 h-3.5" /> Novo
                 </button>
               )}
             </div>
           </div>
+
+          {/* A razão de os controles estarem desabilitados, escrita onde eles
+              estão — um botão apagado sem explicação é só um painel quebrado. */}
+          {canWrite && locked && (
+            <p className="px-3 py-2 text-[11px] text-amber-300/80 bg-amber-500/5 border-b border-gray-800 flex items-start gap-1.5">
+              <Lock className="w-3 h-3 shrink-0 mt-0.5" aria-hidden="true" />
+              <span>{lockReason}</span>
+            </p>
+          )}
 
           {groups.length === 0 ? (
             <p className="text-gray-600 text-sm px-3 py-6 text-center">
@@ -616,15 +1010,21 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 // põe linha na forward, então não entra na conta — seria
                 // alarme falso.
                 const above = sys ? adminGroupsAbove(i) : [];
+                // Marca do escopo input: quem arrasta, liga/desliga ou edita
+                // este item dispara a janela de 90 segundos, e precisa saber
+                // disso ANTES de encostar nele. Daí a borda (ring, que
+                // sobrevive à barra azul do item selecionado) e o ⚠ ao lado do
+                // nome — os dois, porque só a cor não diz o que significa.
+                const inputScope = groupScope(g) === 'input';
                 return (
                   <li
                     key={g.id}
-                    draggable={canWrite && !busy}
+                    draggable={canWrite && !busy && !locked}
                     onDragStart={(e) => onGroupDragStart(e, i)}
                     onDragOver={(e) => { if (dragGroup !== null) e.preventDefault(); }}
                     onDrop={() => onGroupDrop(i)}
                     onDragEnd={() => setDragGroup(null)}
-                    className={`group relative ${dragGroup === i ? 'opacity-30' : ''}`}
+                    className={`group relative ${dragGroup === i ? 'opacity-30' : ''} ${inputScope ? 'ring-1 ring-inset ring-orange-500/40 bg-orange-500/[0.03]' : ''}`}
                   >
                     <button
                       onClick={() => setSelectedId(g.id)}
@@ -650,10 +1050,19 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                               aria-label="grupo do sistema"
                             />
                           )}
+                          {inputScope && (
+                            <AlertTriangle
+                              className="w-3 h-3 shrink-0 text-orange-400"
+                              aria-label="grupo de tráfego destinado ao firewall"
+                            />
+                          )}
                         </span>
                         <span className="block text-[11px] text-gray-500 font-mono truncate">
                           {n} {noun} · {g.has_counter ? formatCount(g.bytes, unit) : '—'}
                         </span>
+                        {inputScope && (
+                          <span className="block text-[11px] text-orange-400/90">destinado ao firewall · alterar pede confirmação</span>
+                        )}
                         {!g.enabled && !staleOff && <span className="block text-[11px] text-gray-500">desligado</span>}
                         {staleOff && <span className="block text-[11px] text-yellow-500">desligado, ainda no firewall</span>}
                         {notApplied && <span className="block text-[11px] text-yellow-500">configurado, não aplicado</span>}
@@ -708,7 +1117,8 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 {canWrite && (
                   <button
                     onClick={() => toggleGroup(selected)}
-                    disabled={busy}
+                    disabled={editDisabled}
+                    title={locked ? lockReason : undefined}
                     className="btn-secondary flex items-center gap-1.5 text-xs px-2.5 py-1.5 disabled:opacity-50"
                   >
                     {selected.enabled ? <><PowerOff className="w-3.5 h-3.5" /> Desligar</> : <><Power className="w-3.5 h-3.5" /> Ligar</>}
@@ -716,6 +1126,13 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 )}
               </div>
             </div>
+
+            {canWrite && locked && (
+              <p className="text-[11px] text-amber-300/80 flex items-start gap-1.5">
+                <Lock className="w-3 h-3 shrink-0 mt-0.5" aria-hidden="true" />
+                <span>{lockReason}</span>
+              </p>
+            )}
 
             {/* O que ele faz, as linhas exatas que ele põe na forward e
                 quanto elas descartaram. */}
@@ -840,6 +1257,14 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 <p className="text-[11px] text-gray-600 font-mono truncate">chain {selected.chain_name}</p>
               </div>
               <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                {groupScope(selected) === 'input' && (
+                  <span
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-orange-500/40 bg-orange-500/10 text-orange-300"
+                    title="Este grupo filtra o tráfego destinado ao próprio firewall (chain input): SSH, este painel, DNS. Qualquer alteração nele abre a janela de 90 segundos."
+                  >
+                    <AlertTriangle className="w-3 h-3" aria-hidden="true" /> destinado ao firewall
+                  </span>
+                )}
                 {!selected.enabled && (
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-400">
                     Desligado
@@ -857,17 +1282,25 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                   <>
                     <button
                       onClick={() => toggleGroup(selected)}
-                      disabled={busy}
+                      disabled={editDisabled}
+                      title={locked ? lockReason : undefined}
                       className="btn-secondary flex items-center gap-1.5 text-xs px-2.5 py-1.5 disabled:opacity-50"
                     >
                       {selected.enabled ? <><PowerOff className="w-3.5 h-3.5" /> Desligar</> : <><Power className="w-3.5 h-3.5" /> Ligar</>}
                     </button>
-                    <IconButton icon={Pencil} onClick={() => openEditGroup(selected)} disabled={busy} label="Editar grupo" />
-                    <IconButton icon={Trash2} onClick={() => removeGroup(selected)} disabled={busy} label="Remover grupo" variant="danger" />
+                    <IconButton icon={Pencil} onClick={() => openEditGroup(selected)} disabled={editDisabled} label="Editar grupo" title={locked ? lockReason : undefined} />
+                    <IconButton icon={Trash2} onClick={() => removeGroup(selected)} disabled={editDisabled} label="Remover grupo" title={locked ? lockReason : undefined} variant="danger" />
                   </>
                 )}
               </div>
             </div>
+
+            {canWrite && locked && (
+              <p className="text-[11px] text-amber-300/80 flex items-start gap-1.5">
+                <Lock className="w-3 h-3 shrink-0 mt-0.5" aria-hidden="true" />
+                <span>{lockReason}</span>
+              </p>
+            )}
 
             {/* Faixa da condição de entrada, com o contador do próprio jump:
                 quanto tráfego de fato ENTROU no grupo — não a soma das
@@ -879,7 +1312,13 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                   <span className="text-gray-200">{describeCondition(selected)}</span>
                   <span className="text-gray-600 mx-2">·</span>
                   <span className="text-gray-500 text-xs uppercase tracking-wide mr-2">Onde</span>
-                  <span className="text-gray-200">atravessando</span>
+                  {/* "Onde" era um texto fixo dizendo "atravessando" — com o
+                      escopo da Fase C2 isso vira mentira na tela justamente no
+                      grupo que pode cortar o acesso do operador. */}
+                  <span className={groupScope(selected) === 'input' ? 'text-orange-300' : 'text-gray-200'}>
+                    {SCOPES[groupScope(selected)].title}
+                  </span>
+                  <span className="text-gray-600 mx-1.5 font-mono text-xs">chain {SCOPES[groupScope(selected)].chain}</span>
                 </div>
                 <div className="text-xs font-mono text-gray-400 shrink-0">
                   {selected.has_counter
@@ -939,7 +1378,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                     return (
                       <tr
                         key={r.id || `x-${i}`}
-                        draggable={canWrite && !busy && !!r.id}
+                        draggable={canWrite && !busy && !locked && !!r.id}
                         onDragStart={(e) => onRuleDragStart(e, i)}
                         onDragOver={(e) => { if (dragRule !== null) e.preventDefault(); }}
                         onDrop={() => onRuleDrop(selected, detail.rules, i)}
@@ -992,13 +1431,14 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                                 <IconButton
                                   icon={disabled ? PowerOff : Power}
                                   onClick={() => toggleRule(r)}
-                                  disabled={busy}
+                                  disabled={editDisabled}
+                                  title={locked ? lockReason : undefined}
                                   label={disabled ? 'Ativar regra' : 'Desativar regra'}
                                   variant={disabled ? 'custom' : 'default'}
                                   className={`min-w-[32px] min-h-[32px] ${disabled ? 'text-yellow-500 hover:text-yellow-400' : ''}`}
                                 />
-                                <IconButton icon={Pencil} onClick={() => openEditRule(selected, r)} disabled={busy} label="Editar regra" className="min-w-[32px] min-h-[32px]" />
-                                <IconButton icon={Trash2} onClick={() => removeRule(r)} disabled={busy} label="Excluir regra" variant="danger" className="min-w-[32px] min-h-[32px]" />
+                                <IconButton icon={Pencil} onClick={() => openEditRule(selected, r)} disabled={editDisabled} title={locked ? lockReason : undefined} label="Editar regra" className="min-w-[32px] min-h-[32px]" />
+                                <IconButton icon={Trash2} onClick={() => removeRule(r)} disabled={editDisabled} title={locked ? lockReason : undefined} label="Excluir regra" variant="danger" className="min-w-[32px] min-h-[32px]" />
                               </div>
                             ) : (
                               <span className="block text-right text-[10px] text-gray-600">não é sua regra</span>
@@ -1052,7 +1492,12 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
             </div>
 
             {canWrite && (
-              <button onClick={() => openNewRule(selected)} disabled={busy} className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50">
+              <button
+                onClick={() => openNewRule(selected)}
+                disabled={editDisabled}
+                title={locked ? lockReason : undefined}
+                className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50"
+              >
                 <Plus className="w-4 h-4" /> Nova regra neste grupo
               </button>
             )}
@@ -1080,6 +1525,55 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
             />
           </div>
 
+          {/* Onde o grupo age — o campo `scope`. Vem ANTES da condição de
+              entrada de propósito: é ele que muda o significado de tudo o que
+              vem depois (a mesma condição "origem 10.0.0.0/8" quer dizer
+              coisas diferentes na forward e na input). */}
+          <div>
+            <p className="label mb-2">Onde este grupo age</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {(['forward', 'input'] as const).map((s) => {
+                const meta = SCOPES[s];
+                const active = groupModal.scope === s;
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setGroupModal({ ...groupModal, scope: s })}
+                    className={`flex items-start gap-2 rounded-lg border p-3 text-left transition ${active ? meta.ring : 'border-gray-700 bg-gray-800/40 hover:border-gray-600'}`}
+                  >
+                    <meta.Icon className={`w-4 h-4 shrink-0 mt-0.5 ${active ? meta.color : 'text-gray-400'}`} aria-hidden="true" />
+                    <span className="min-w-0">
+                      <span className={`block text-xs font-medium ${active ? meta.color : 'text-gray-300'}`}>{meta.title}</span>
+                      <span className="block text-[10px] text-gray-500 leading-tight mt-0.5">{meta.hint}</span>
+                      {/* O nome da chain é do nftables e não se traduz: é o
+                          que o admin vai achar no `nft list ruleset`. */}
+                      <span className="block text-[10px] font-mono text-gray-600 mt-1">chain {meta.chain}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {/* O aviso da janela de 90 segundos aparece AQUI, no instante em
+                que o escopo input é escolhido, e não depois de salvar: quem
+                está prestes a mexer no acesso à própria máquina tem que saber
+                disso antes de clicar. */}
+            {groupModal.scope === 'input' && (
+              <div className="mt-2 rounded-lg border border-orange-500/40 bg-orange-500/10 p-3 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" aria-hidden="true" />
+                <div className="text-[11px] text-orange-200/90 space-y-1">
+                  <p className="font-medium text-orange-200">Salvar vai abrir uma janela de 90 segundos.</p>
+                  <p>
+                    Este grupo passa a filtrar o que chega no próprio firewall — SSH, este painel, DNS. A alteração é aplicada na hora e, se ninguém confirmar em 90 segundos, o LinkGuard desfaz os grupos e as regras sozinho.
+                  </p>
+                  <p className="text-orange-200/70">
+                    Enquanto a janela estiver aberta, a edição de grupos e regras fica bloqueada. Tenha um segundo acesso à máquina à mão se puder.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div>
             <p className="label mb-2">Quando entrar neste grupo (condição de entrada)</p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -1099,7 +1593,9 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 <input className="input w-full" placeholder="qualquer" value={groupModal.cond_daddr} onChange={(e) => setGroupModal({ ...groupModal, cond_daddr: e.target.value })} />
               </div>
             </div>
-            <p className="text-[11px] text-gray-600 mt-1.5">Sem condição, todo o tráfego que atravessa o firewall entra no grupo. Só IPv4 por enquanto.</p>
+            <p className="text-[11px] text-gray-600 mt-1.5">
+              Sem condição, {groupModal.scope === 'input' ? 'todo o tráfego destinado ao firewall' : 'todo o tráfego que atravessa o firewall'} entra no grupo. Só IPv4 por enquanto.
+            </p>
           </div>
 
           <div>
@@ -1123,12 +1619,25 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
           </div>
 
           <div className="rounded-lg border border-gray-700 bg-gray-950/60 p-3">
-            <p className="text-xs text-gray-400 mb-1">Linha que este grupo põe na chain forward:</p>
+            {/* A chain nomeada aqui é a de verdade: a linha é a mesma nos dois
+                escopos, o que muda é ONDE ela é escrita. Dizer "forward" num
+                grupo de input mandaria o admin procurar a linha na chain
+                errada. */}
+            <p className="text-xs text-gray-400 mb-1">
+              Linha que este grupo põe na chain <span className="font-mono">{SCOPES[groupModal.scope].chain}</span>:
+            </p>
             <p className="font-mono text-[11px] text-gray-500 break-all">{jumpLine(groupModal)}</p>
           </div>
         </div>
         <div className="px-6 py-4 border-t border-gray-800 flex gap-3">
-          <button onClick={saveGroup} disabled={busy || !groupModal.name.trim()} className="btn-primary flex-1 disabled:opacity-50">{busy ? 'Salvando...' : 'Salvar'}</button>
+          <button
+            onClick={saveGroup}
+            disabled={editDisabled || !groupModal.name.trim()}
+            title={locked ? lockReason : undefined}
+            className="btn-primary flex-1 disabled:opacity-50"
+          >
+            {busy ? 'Salvando...' : groupModal.scope === 'input' ? 'Salvar e iniciar os 90 s' : 'Salvar'}
+          </button>
           <button onClick={closeGroupModal} className="btn-secondary flex-1">Cancelar</button>
         </div>
       </Modal>
@@ -1219,7 +1728,14 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
           </div>
         </div>
         <div className="px-6 py-4 border-t border-gray-800 flex gap-3">
-          <button onClick={saveRule} disabled={busy} className="btn-primary flex-1 disabled:opacity-50">{busy ? 'Salvando...' : 'Salvar'}</button>
+          <button
+            onClick={saveRule}
+            disabled={editDisabled}
+            title={locked ? lockReason : undefined}
+            className="btn-primary flex-1 disabled:opacity-50"
+          >
+            {busy ? 'Salvando...' : 'Salvar'}
+          </button>
           <button onClick={closeRuleModal} className="btn-secondary flex-1">Cancelar</button>
         </div>
       </Modal>
