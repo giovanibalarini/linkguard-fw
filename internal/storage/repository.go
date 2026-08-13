@@ -1700,27 +1700,31 @@ func (db *DB) CreateFirewallGroup(g *FirewallGroup) error {
 	return err
 }
 
-// UpdateFirewallGroup NÃO atualiza scope (Fase C2): hoje o escopo é escolhido
-// na criação, nenhum handler aceita alterá-lo, e este UPDATE gravar uma coluna
-// que ninguém edita só daria a impressão de um caminho de escrita que não
-// existe.
+// UpdateFirewallGroup grava também o scope (Fase C2). As duas pontas mudaram
+// JUNTAS, e é isso que este comentário existe para registrar: o handler passou
+// a aceitar `scope` no corpo (internal/api/handlers.UpdateGroup) na mesma
+// entrega em que a coluna entrou nesta lista.
 //
-// ATENÇÃO PARA QUEM FOR EXPOR O CAMPO NA API: as duas pontas mudam JUNTAS. O
-// único chamador de hoje (internal/api/handlers.UpdateGroup) faz `row :=
-// existing` — a struct nasce da linha lida do banco e só os campos editáveis
-// são sobrescritos, então row.Scope já carrega o valor gravado e nada é
-// rebaixado por esta lista. O perigo real é o oposto: um handler futuro que
-// passe a ler `scope` do corpo da requisição e NÃO mexa aqui produz o pior
-// tipo de bug de painel — o admin muda o escopo na tela, a resposta é 200, a
-// tela mostra o valor novo até o próximo F5, e o banco (e portanto o firewall)
-// continua exatamente como estava. Mudei na tela e não aconteceu nada.
+// Enquanto o campo não existia na API, ele ficava DE FORA daqui de propósito —
+// o chamador faz `row := existing`, a struct nasce da linha lida do banco e só
+// os campos editáveis são sobrescritos, então nada era rebaixado. O perigo era
+// o oposto e continua valendo como aviso para o próximo campo: um handler que
+// leia um campo do corpo e NÃO mexa aqui produz o pior tipo de bug de painel —
+// o admin muda o valor na tela, a resposta é 200, a tela mostra o valor novo
+// até o próximo F5, e o banco (e portanto o firewall) continua exatamente como
+// estava. Mudei na tela e não aconteceu nada.
+//
+// Quem chama é responsável por não rebaixar o escopo sem querer: g.Scope é
+// gravado como veio. O handler resolve "campo ausente no corpo" mantendo o
+// valor já gravado, porque um cliente que não conhece o campo transformaria um
+// grupo de input em forward em silêncio — mudando de chain as regras dele.
 func (db *DB) UpdateFirewallGroup(g *FirewallGroup) error {
 	g.UpdatedAt = time.Now()
 	res, err := db.conn.Exec(`
         UPDATE firewall_groups
-           SET name=?, cond_saddr=?, cond_daddr=?, cond_iif=?, fallthrough=?, updated_at=?
+           SET name=?, cond_saddr=?, cond_daddr=?, cond_iif=?, fallthrough=?, scope=?, updated_at=?
          WHERE id=?`,
-		g.Name, g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.UpdatedAt, g.ID)
+		g.Name, g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Scope, g.UpdatedAt, g.ID)
 	if err != nil {
 		return err
 	}

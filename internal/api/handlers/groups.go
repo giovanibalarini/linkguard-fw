@@ -34,6 +34,13 @@ import (
 // o argv do `nft`. Aceitá-lo do cliente seria injeção de comando — a mesma
 // porta que reIface e ValidMark fecham nos geradores de internal/nftables.
 // Um `chain_name` no corpo é silenciosamente ignorado por não existir aqui.
+//
+// Scope é o campo que a Fase C2 acrescenta, e é o que decide em qual chain o
+// grupo é alcançado: "forward" (ou vazio, que é toda linha anterior à Fase C2)
+// para tráfego ATRAVESSANDO o firewall, "input" para tráfego DESTINADO a ele —
+// SSH, painel, DNS, Samba. Um valor que não seja um desses três é recusado por
+// ValidateGroup: normalizá-lo para forward colocaria na chain de tráfego
+// atravessando um grupo escrito para outra coisa.
 type groupBody struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -41,6 +48,7 @@ type groupBody struct {
 	CondDaddr   string `json:"cond_daddr"`
 	CondIif     string `json:"cond_iif"`
 	Fallthrough string `json:"fallthrough"`
+	Scope       string `json:"scope"`
 }
 
 func (b groupBody) trimmed() groupBody {
@@ -51,6 +59,7 @@ func (b groupBody) trimmed() groupBody {
 		CondDaddr:   strings.TrimSpace(b.CondDaddr),
 		CondIif:     strings.TrimSpace(b.CondIif),
 		Fallthrough: strings.TrimSpace(b.Fallthrough),
+		Scope:       strings.TrimSpace(b.Scope),
 	}
 }
 
@@ -147,6 +156,7 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		CondDaddr:   b.CondDaddr,
 		CondIif:     b.CondIif,
 		Fallthrough: b.Fallthrough,
+		Scope:       b.Scope,
 	}
 	if err := nftables.ValidateGroup(toStoredGroup(*row)); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -167,6 +177,12 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// O snapshot do estado ANTERIOR sai daqui, antes da escrita: depois dela o
+	// estado anterior não existe mais em lugar nenhum para ser copiado.
+	arm, ok := h.prepareConfirmWindow(w, groupReachesInput(*row), fmt.Sprintf("criação do grupo %q (escopo input)", row.Name))
+	if !ok {
+		return
+	}
 	if err := h.db.CreateFirewallGroup(row); err != nil {
 		writeInternalError(w, err)
 		return
@@ -175,7 +191,11 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, row)
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, createdGroupResult{FirewallGroup: row, Pending: pending})
 }
 
 // UpdateGroup edita o conteúdo de um grupo (nome, condição de entrada e o
@@ -211,6 +231,15 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	row := existing
 	row.Name, row.CondSaddr, row.CondDaddr = b.Name, b.CondSaddr, b.CondDaddr
 	row.CondIif, row.Fallthrough = b.CondIif, b.Fallthrough
+	// Escopo ausente no corpo é "mantenha o que está gravado", nunca "volte
+	// para forward". Um cliente antigo (ou qualquer chamada que não conheça o
+	// campo) rebaixaria em silêncio um grupo de input para forward, movendo as
+	// regras dele para outra chain e aplicando-as a um tráfego que ninguém
+	// pediu — com HTTP 200 e nada na tela mudando. Para tirar um grupo da chain
+	// input o cliente manda "forward" explicitamente, que é o que a tela faz.
+	if b.Scope != "" {
+		row.Scope = b.Scope
+	}
 	if err := nftables.ValidateGroup(toStoredGroup(row)); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -221,11 +250,25 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 			if g.ID == b.ID {
 				g.Name, g.CondSaddr, g.CondDaddr = row.Name, row.CondSaddr, row.CondDaddr
 				g.CondIif, g.Fallthrough = row.CondIif, row.Fallthrough
+				// O escopo entra no candidato porque é ele que decide em qual
+				// chain o jump é renderizado: validar o conjunto com o escopo
+				// antigo seria validar outra coisa que não a que vai ser
+				// aplicada — exatamente o que o pré-voo existe para não fazer.
+				g.Scope = row.Scope
 			}
 			out[i] = g
 		}
 		return out
 	})
+	if !ok {
+		return
+	}
+	// Os DOIS lados da edição contam: o grupo que JÁ era de input (mexer nele
+	// pode trancar o acesso) e o que está PASSANDO a ser (é aí que ele ganha
+	// esse poder). Sair de input para forward também abre janela — não custa
+	// nada além de 90 segundos, e "na dúvida, abre" é a regra deste mecanismo.
+	arm, ok := h.prepareConfirmWindow(w, groupReachesInput(existing) || groupReachesInput(row),
+		fmt.Sprintf("edição do grupo %q (escopo input)", row.Name))
 	if !ok {
 		return
 	}
@@ -237,7 +280,11 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, okResult(pending))
 }
 
 // DeleteGroup remove o grupo E as regras de dentro dele (na mesma transação,
@@ -283,6 +330,10 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 			"este é um grupo do sistema e não pode ser removido; para desativá-lo, use o botão de ligar/desligar")
 		return
 	}
+	arm, ok := h.prepareConfirmWindow(w, groupReachesInput(g), fmt.Sprintf("remoção do grupo %q (escopo input)", g.Name))
+	if !ok {
+		return
+	}
 	if err := h.db.DeleteFirewallGroup(id); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -291,7 +342,11 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, okResult(pending))
 }
 
 // ToggleGroup liga e desliga um grupo inteiro de uma vez — desligar é tirar
@@ -311,7 +366,8 @@ func (h *NftablesHandler) ToggleGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	if _, found := h.findGroup(w, id); !found {
+	g, found := h.findGroup(w, id)
+	if !found {
 		return
 	}
 	// Só religar precisa de pré-voo: é o que acrescenta um jump (e, com ele,
@@ -332,6 +388,18 @@ func (h *NftablesHandler) ToggleGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Desligar um grupo de input não pode trancar ninguém (a chain nasce e
+	// permanece com policy accept, então tirar linhas dela só libera), mas
+	// abre janela do mesmo jeito: religar depois é o caminho perigoso, e "na
+	// dúvida, abre" custa 90 segundos contra o risco de errar o julgamento.
+	summary := fmt.Sprintf("desativação do grupo %q (escopo input)", g.Name)
+	if b.Enabled {
+		summary = fmt.Sprintf("ativação do grupo %q (escopo input)", g.Name)
+	}
+	arm, ok := h.prepareConfirmWindow(w, groupReachesInput(g), summary)
+	if !ok {
+		return
+	}
 	if err := h.db.SetFirewallGroupEnabled(id, b.Enabled); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -344,7 +412,11 @@ func (h *NftablesHandler) ToggleGroup(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, okResult(pending))
 }
 
 // ReorderGroups define, numa requisição só, a ordem em que os grupos são
@@ -389,6 +461,22 @@ func (h *NftablesHandler) ReorderGroups(w http.ResponseWriter, r *http.Request) 
 		}
 		seen[id] = true
 	}
+	// A ordem dos grupos de input é a ordem de avaliação da chain input, e
+	// trocá-la muda qual regra decide primeiro sobre o SSH e o painel. Abre
+	// janela quando o ÍNDICE de algum grupo de input muda — critério de
+	// propósito mais largo do que "a ordem relativa entre os de input mudou".
+	// currentIDs sai da lista já ordenada por posição que o banco devolveu.
+	currentIDs := make([]string, len(current))
+	isInput := make(map[string]bool, len(current))
+	for i, g := range current {
+		currentIDs[i] = g.ID
+		isInput[g.ID] = groupReachesInput(g)
+	}
+	arm, ok := h.prepareConfirmWindow(w, inputOrderChanged(currentIDs, b.IDs, isInput),
+		"reordenação dos grupos (há grupo de escopo input entre eles)")
+	if !ok {
+		return
+	}
 	if err := h.db.ReorderFirewallGroups(b.IDs); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -397,7 +485,11 @@ func (h *NftablesHandler) ReorderGroups(w http.ResponseWriter, r *http.Request) 
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, okResult(pending))
 }
 
 // nextGroupPosition põe o grupo novo no fim da ordem de avaliação, com a

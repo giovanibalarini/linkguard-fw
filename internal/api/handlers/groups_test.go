@@ -229,6 +229,17 @@ func newGroupTestHandler(t *testing.T) (*handlers.NftablesHandler, *storage.DB) 
 
 func newGroupTestHandlerNft(t *testing.T) (*handlers.NftablesHandler, *storage.DB, *fakeNft) {
 	t.Helper()
+	h, db, exec, _ := newGroupTestHandlerFR(t)
+	return h, db, exec
+}
+
+// newGroupTestHandlerFR devolve também o firewallrules.Service — é por ele que
+// um teste abre a janela de confirmação sem passar por um handler (openWindow),
+// que é o único jeito de medir a TRAVA isoladamente: se abrir a janela
+// dependesse de uma mutação, um defeito na trava e um defeito no arme dela
+// ficariam indistinguíveis.
+func newGroupTestHandlerFR(t *testing.T) (*handlers.NftablesHandler, *storage.DB, *fakeNft, *firewallrules.Service) {
+	t.Helper()
 	dir := t.TempDir()
 	db, err := storage.Open(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -253,7 +264,7 @@ func newGroupTestHandlerNft(t *testing.T) (*handlers.NftablesHandler, *storage.D
 	if err := fr.EnsureSystemGroups(context.Background()); err != nil {
 		t.Fatalf("EnsureSystemGroups: %v", err)
 	}
-	return handlers.NewNftablesHandler(svc, db, fr), db, exec
+	return handlers.NewNftablesHandler(svc, db, fr), db, exec, fr
 }
 
 // adminGroups são os grupos que o admin criou. Toda máquina carrega também

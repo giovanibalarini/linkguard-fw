@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -92,12 +91,8 @@ func enabledWANInterfaces(db *storage.DB) ([]string, error) {
 
 // auditAction records who performed a mutating action, for the audit log.
 func auditAction(db *storage.DB, r *http.Request, action, resource, details string) {
-	user := "unknown"
-	if c := auth.ClaimsFromContext(r.Context()); c != nil {
-		user = c.Username
-	}
 	_ = db.CreateAuditLog(&storage.AuditLog{
-		User:     user,
+		User:     actingUser(r),
 		Action:   action,
 		Resource: resource,
 		Details:  details,

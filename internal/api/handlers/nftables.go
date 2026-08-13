@@ -413,6 +413,17 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Uma regra dentro de um grupo de escopo input é escrita na chain que
+	// decide sobre o SSH e o painel desta máquina: é aqui que a rede de
+	// proteção dos 90 segundos é armada (Fase C2, spec §5).
+	inGroup, ok := h.anyGroupReachesInput(w, groupID)
+	if !ok {
+		return
+	}
+	arm, ok := h.prepareConfirmWindow(w, inGroup, "criação de uma regra em grupo de escopo input")
+	if !ok {
+		return
+	}
 	if err := h.db.CreateFirewallRule(row); err != nil {
 		writeInternalError(w, err)
 		return
@@ -424,7 +435,11 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, row)
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, createdRuleResult{FirewallRule: row, Pending: pending})
 }
 
 // UpdateRule edits a rule's content in place, by id — its position and
@@ -485,6 +500,17 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Os dois grupos contam: o de onde a regra sai e o para onde ela vai. Mover
+	// uma regra PARA um grupo de input é ganhar poder sobre o acesso ao
+	// firewall; tirá-la de lá muda a chain input do mesmo jeito.
+	inGroup, ok := h.anyGroupReachesInput(w, existing.GroupID, groupID)
+	if !ok {
+		return
+	}
+	arm, ok := h.prepareConfirmWindow(w, inGroup, "edição de uma regra em grupo de escopo input")
+	if !ok {
+		return
+	}
 	if err := h.db.UpdateFirewallRule(row); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -493,7 +519,11 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, okResult(pending))
 }
 
 // DeleteRule removes a rule permanently, by id.
@@ -509,6 +539,22 @@ func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
+	// A linha é resolvida ANTES de ser apagada porque é ela que diz em qual
+	// grupo a regra mora — depois do DELETE não há mais como saber se o que
+	// acabou de sair do firewall era da chain input. Id inexistente continua
+	// sendo 400, como o DELETE do storage já respondia.
+	existing, found := h.findRule(w, b.ID)
+	if !found {
+		return
+	}
+	inGroup, ok := h.anyGroupReachesInput(w, existing.GroupID)
+	if !ok {
+		return
+	}
+	arm, ok := h.prepareConfirmWindow(w, inGroup, "remoção de uma regra em grupo de escopo input")
+	if !ok {
+		return
+	}
 	if err := h.db.DeleteFirewallRule(b.ID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -517,7 +563,11 @@ func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, okResult(pending))
 }
 
 // ToggleRule enables or disables a rule without deleting it — the
@@ -558,6 +608,24 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Mesma resolução do DeleteRule, e pela mesma razão: só a linha existente
+	// diz em qual grupo a regra mora.
+	existing, found := h.findRule(w, b.ID)
+	if !found {
+		return
+	}
+	inGroup, ok := h.anyGroupReachesInput(w, existing.GroupID)
+	if !ok {
+		return
+	}
+	summary := "desativação de uma regra em grupo de escopo input"
+	if b.Enabled {
+		summary = "ativação de uma regra em grupo de escopo input"
+	}
+	arm, ok := h.prepareConfirmWindow(w, inGroup, summary)
+	if !ok {
+		return
+	}
 	if err := h.db.SetFirewallRuleEnabled(b.ID, b.Enabled); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -570,7 +638,11 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, okResult(pending))
 }
 
 // ReorderRules sets the evaluation order for every one of the admin's rules
@@ -612,6 +684,32 @@ func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[id] = true
 	}
+	// Reordenar regras muda quem decide primeiro dentro da chain do grupo — e,
+	// num grupo de escopo input, quem decide primeiro sobre o SSH e o painel.
+	// Mesmo critério largo de ReorderGroups: basta o índice de uma regra de
+	// grupo input mudar.
+	groups, err := h.db.ListFirewallGroups()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	inputGroup := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		if groupReachesInput(g) {
+			inputGroup[g.ID] = true
+		}
+	}
+	currentIDs := make([]string, len(current))
+	isInput := make(map[string]bool, len(current))
+	for i, row := range current {
+		currentIDs[i] = row.ID
+		isInput[row.ID] = inputGroup[row.GroupID]
+	}
+	arm, ok := h.prepareConfirmWindow(w, inputOrderChanged(currentIDs, b.IDs, isInput),
+		"reordenação das regras (há regra em grupo de escopo input)")
+	if !ok {
+		return
+	}
 	if err := h.db.ReorderFirewallRules(b.IDs); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -620,7 +718,11 @@ func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 	if !h.reconcileRules(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	pending, ok := h.armConfirmWindow(w, r, arm)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, okResult(pending))
 }
 
 func validCIDRorIP(s string) bool {

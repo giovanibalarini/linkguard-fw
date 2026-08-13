@@ -255,6 +255,20 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/groups", nftH.DeleteGroup)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/groups/toggle", nftH.ToggleGroup)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/groups/reorder", nftH.ReorderGroups)
+		// Confirmar-ou-reverte (Fase C2, spec §5): toda mutação que envolve um
+		// grupo de escopo input é aplicada com prazo de 90 segundos para o
+		// operador confirmar que ainda tem acesso; sem confirmação, o LinkGuard
+		// reverte sozinho. O GET é o que o painel lê para desenhar a faixa com
+		// a contagem regressiva, e os dois POSTs são as saídas da janela.
+		//
+		// Confirmar e reverter são PermFirewallWrite porque mudam o firewall
+		// que vai valer daqui em diante; ler o pendente é PermFirewallRead,
+		// como toda outra leitura de firewall. Ler não pode ser mais restrito
+		// que isso: um operador que enxerga o painel precisa enxergar a faixa
+		// que explica por que a edição está travada.
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/pending", nftH.PendingChange)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/pending/confirm", nftH.ConfirmPendingChange)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/pending/revert", nftH.RevertPendingChange)
 
 		// Port forwarding (DNAT)
 		pfH := handlers.NewPortForwardHandler(s.db, s.nftSvc)
