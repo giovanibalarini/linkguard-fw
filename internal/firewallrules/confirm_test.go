@@ -520,6 +520,121 @@ func TestOpeningASecondWindowIsRefused(t *testing.T) {
 	}
 }
 
+// Todo conflito com o ESTADO da janela sai marcado como tal, e falha de
+// servidor não sai. É essa marca que o handler HTTP usa para escolher entre
+// 409 (com a mensagem escrita aqui, para o operador ler) e 500 genérico.
+//
+// Sem ela, o handler classificava pelo pendente que tinha lido ANTES de
+// chamar — e o estado muda entre as duas coisas justamente no caso que mais
+// importa: o operador aperta "Confirmar" um segundo depois do prazo, o
+// watchdog já reverteu, e a resposta certa ("tarde demais: a mudança %q foi
+// revertida automaticamente porque...") virava "erro interno do servidor".
+func TestWindowConflictsAreMarkedAsConflictsAndServerFailuresAreNot(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("abrir com uma janela já aberta", func(t *testing.T) {
+		db := newTestDB(t)
+		svc, _ := newBootedService(t, db)
+		snapshot, err := svc.SnapshotState()
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+		if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "primeira"); err != nil {
+			t.Fatalf("abrir a primeira janela: %v", err)
+		}
+		err = svc.OpenConfirmWindow(ctx, snapshot, "admin", "segunda")
+		if err == nil || !IsWindowConflict(err) {
+			t.Errorf("a segunda requisição simultânea precisa levar CONFLITO (409 sem ter tocado no firewall), obtive %v", err)
+		}
+	})
+
+	t.Run("confirmar sem janela nenhuma", func(t *testing.T) {
+		db := newTestDB(t)
+		svc, _ := newBootedService(t, db)
+		err := svc.ConfirmPending(ctx)
+		if err == nil || !IsWindowConflict(err) {
+			t.Errorf("confirmar sem janela é conflito de estado, obtive %v", err)
+		}
+	})
+
+	t.Run("confirmar tarde demais, depois da reversão automática", func(t *testing.T) {
+		db := newTestDB(t)
+		svc, _ := newBootedService(t, db)
+		clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+		clock.wire(svc)
+		inputGroup(t, db, "g-tarde", "Trava SSH")
+		snapshot, err := svc.SnapshotState()
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+		if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "grupo Trava SSH aplicado"); err != nil {
+			t.Fatalf("abrir janela: %v", err)
+		}
+		clock.advance(ConfirmWindow + time.Second)
+		if err := svc.CheckPendingExpired(ctx); err != nil {
+			t.Fatalf("a reversão automática falhou: %v", err)
+		}
+		err = svc.ConfirmPending(ctx)
+		if err == nil || !IsWindowConflict(err) {
+			t.Fatalf("confirmar um segundo depois do prazo é conflito, obtive %v", err)
+		}
+		// E a mensagem tem que ser a que conta o que aconteceu com a mudança
+		// dele — é a informação que mais importa nesse minuto.
+		if !strings.Contains(err.Error(), "tarde demais") {
+			t.Errorf("o operador precisa saber que a mudança foi revertida: %v", err)
+		}
+	})
+
+	t.Run("confirmar uma reversão em andamento", func(t *testing.T) {
+		db := newTestDB(t)
+		svc, _ := newBootedService(t, db)
+		snapshot, err := svc.SnapshotState()
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+		if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "grupo X"); err != nil {
+			t.Fatalf("abrir janela: %v", err)
+		}
+		p := pending(t, svc)
+		if err := db.MarkPendingReverting(p.ID, time.Now()); err != nil {
+			t.Fatalf("MarkPendingReverting: %v", err)
+		}
+		err = svc.ConfirmPending(ctx)
+		if err == nil || !IsWindowConflict(err) {
+			t.Errorf("confirmar uma reversão já começada é conflito de estado, obtive %v", err)
+		}
+	})
+
+	t.Run("reverter sem janela nenhuma", func(t *testing.T) {
+		db := newTestDB(t)
+		svc, _ := newBootedService(t, db)
+		err := svc.RevertPending(ctx)
+		if err == nil || !IsWindowConflict(err) {
+			t.Errorf("reverter sem janela é conflito de estado (409), não 500, obtive %v", err)
+		}
+	})
+
+	t.Run("reversão que o nft não aceita NÃO é conflito", func(t *testing.T) {
+		db := newTestDB(t)
+		svc, exec := newBootedService(t, db)
+		snapshot, err := svc.SnapshotState()
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+		if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "grupo X"); err != nil {
+			t.Fatalf("abrir janela: %v", err)
+		}
+		exec.failOn = func([]string) error { return errors.New("nft fora do ar") }
+		err = svc.RevertPending(ctx)
+		if err == nil {
+			t.Fatal("a reversão tinha que falhar com o nft fora do ar")
+		}
+		if IsWindowConflict(err) {
+			t.Errorf("uma pane do servidor não pode virar 409 na tela do operador: %v", err)
+		}
+	})
+}
+
 // A contagem regressiva do painel sai daqui: expires_at é do servidor e vale
 // 90 segundos (spec §5). Um relógio local reiniciaria a cada F5 e mentiria
 // sobre quanto tempo ainda resta para confirmar.

@@ -48,6 +48,15 @@ func NewNftablesHandler(svc *nftables.Service, db *storage.DB, fr *firewallrules
 //   - antes de qualquer leitura ou escrita porque uma mutação recusada não
 //     pode ter tocado em nada — nem no banco, nem no nft.
 //
+// O que ela NÃO é: a serialização. Ler o pendente aqui e armar a janela lá na
+// frente são dois momentos distintos, e duas requisições simultâneas passam as
+// duas por esta leitura. Quem serializa de verdade é o ARME (openConfirmWindow
+// → OpenConfirmWindow, sob mutex e com a tabela de uma linha só), que devolve
+// 409 à segunda antes de ela escrever qualquer coisa. Esta função existe para
+// dar a recusa CEDO e com a mensagem completa — a mudança pendente, quem a
+// aplicou —, e para cobrir a mutação que não abre janela nenhuma e por isso
+// nunca chegaria ao arme.
+//
 // Erro de leitura do pendente TRAVA a mutação (fail closed) e vira 500. As
 // duas metades importam: liberar a mutação por não conseguir ler o pendente
 // seria a trava falhando justamente na hora em que ela existe para agir (é a
@@ -424,21 +433,6 @@ func (h *NftablesHandler) requireGroup(w http.ResponseWriter, groupID string) bo
 	return false
 }
 
-// reconcileRules re-renders user_rules from the DB and refreshes the live
-// snapshot, shared by every mutation below so nft never lags what the
-// panel/DB show. A reconcile failure is surfaced to the caller as an error
-// (the DB write already landed; only a subsequent successful reconcile —
-// the next mutation, or the next boot — will pick it up), rather than
-// silently reporting success while nft has fallen out of sync.
-func (h *NftablesHandler) reconcileRules(w http.ResponseWriter, r *http.Request) bool {
-	if err := h.fr.Reconcile(r.Context()); err != nil {
-		writeInternalError(w, err)
-		return false
-	}
-	saveNftSnapshot(r.Context(), h.db, h.svc)
-	return true
-}
-
 // CreateRule adds a new rule, always appended after every existing one.
 func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	var b firewallRuleBody
@@ -485,26 +479,22 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	arm, ok := h.prepareConfirmWindow(w, inGroup, "criação de uma regra em grupo de escopo input")
+	win, ok := h.openConfirmWindow(w, r, inGroup, "criação de uma regra em grupo de escopo input")
 	if !ok {
 		return
 	}
 	if err := h.db.CreateFirewallRule(row); err != nil {
-		writeInternalError(w, err)
+		h.abortArmedWindow(w, r, win, err)
 		return
 	}
 	// I-2: audit the DB mutation itself, not just a successful apply — a
 	// reconcile that fails afterwards must still leave an audit trail of
 	// what was written.
 	auditAction(h.db, r, "nft.rule.add", "user_rules:"+row.ID, b.Action)
-	if !h.reconcileRules(w, r) {
+	if !h.reconcileArmed(w, r, win) {
 		return
 	}
-	pending, ok := h.armConfirmWindow(w, r, arm)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, createdRuleResult{FirewallRule: row, Pending: pending})
+	writeJSON(w, http.StatusOK, createdRuleResult{FirewallRule: row, Pending: win.view})
 }
 
 // UpdateRule edits a rule's content in place, by id — its position and
@@ -577,23 +567,22 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	arm, ok := h.prepareConfirmWindow(w, inGroup, "edição de uma regra em grupo de escopo input")
+	win, ok := h.openConfirmWindow(w, r, inGroup, "edição de uma regra em grupo de escopo input")
 	if !ok {
 		return
 	}
+	// Erro de banco é 500: o id já foi resolvido por findRule e os campos já
+	// passaram por ValidateRuleFields, então o que sobra é pane do servidor — e
+	// o 400 com o texto cru levava a mensagem interna do SQLite para a tela.
 	if err := h.db.UpdateFirewallRule(row); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		h.abortArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.update", "user_rules:"+b.ID, b.Action)
-	if !h.reconcileRules(w, r) {
+	if !h.reconcileArmed(w, r, win) {
 		return
 	}
-	pending, ok := h.armConfirmWindow(w, r, arm)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(pending))
+	writeJSON(w, http.StatusOK, okResult(win.view))
 }
 
 // DeleteRule removes a rule permanently, by id.
@@ -626,23 +615,21 @@ func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	arm, ok := h.prepareConfirmWindow(w, inGroup, "remoção de uma regra em grupo de escopo input")
+	win, ok := h.openConfirmWindow(w, r, inGroup, "remoção de uma regra em grupo de escopo input")
 	if !ok {
 		return
 	}
+	// Id inexistente já morreu em findRule; o que chega aqui é pane do banco,
+	// que é 500 e não 400 com o texto cru dele.
 	if err := h.db.DeleteFirewallRule(b.ID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		h.abortArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.del", "user_rules:"+b.ID, "")
-	if !h.reconcileRules(w, r) {
+	if !h.reconcileArmed(w, r, win) {
 		return
 	}
-	pending, ok := h.armConfirmWindow(w, r, arm)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(pending))
+	writeJSON(w, http.StatusOK, okResult(win.view))
 }
 
 // ToggleRule enables or disables a rule without deleting it — the
@@ -667,6 +654,13 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 	if h.confirmWindowBlocks(w, r) {
 		return
 	}
+	// Mesma resolução do DeleteRule, e pela mesma razão: só a linha existente
+	// diz em qual grupo a regra mora. Vem ANTES do pré-voo porque um id que não
+	// existe não merece um dry run inteiro de `nft -c` para ser recusado.
+	existing, found := h.findRule(w, b.ID)
+	if !found {
+		return
+	}
 	// C-1 layer 2: re-enabling a rule can newly introduce it into the
 	// rendered chain (a disabled rule is never checked while disabled — see
 	// ValidateRuleFields at create/update time, which normally already
@@ -688,12 +682,6 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Mesma resolução do DeleteRule, e pela mesma razão: só a linha existente
-	// diz em qual grupo a regra mora.
-	existing, found := h.findRule(w, b.ID)
-	if !found {
-		return
-	}
 	inGroup, ok := h.anyGroupReachesInput(w, existing.GroupID)
 	if !ok {
 		return
@@ -702,12 +690,12 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 	if b.Enabled {
 		summary = "ativação de uma regra em grupo de escopo input"
 	}
-	arm, ok := h.prepareConfirmWindow(w, inGroup, summary)
+	win, ok := h.openConfirmWindow(w, r, inGroup, summary)
 	if !ok {
 		return
 	}
 	if err := h.db.SetFirewallRuleEnabled(b.ID, b.Enabled); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		h.abortArmedWindow(w, r, win, err)
 		return
 	}
 	action := "nft.rule.disable"
@@ -715,14 +703,10 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 		action = "nft.rule.enable"
 	}
 	auditAction(h.db, r, action, "user_rules:"+b.ID, "")
-	if !h.reconcileRules(w, r) {
+	if !h.reconcileArmed(w, r, win) {
 		return
 	}
-	pending, ok := h.armConfirmWindow(w, r, arm)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(pending))
+	writeJSON(w, http.StatusOK, okResult(win.view))
 }
 
 // ReorderRules sets the evaluation order for every one of the admin's rules
@@ -790,24 +774,20 @@ func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 		currentIDs[i] = row.ID
 		isInput[row.ID] = inputGroup[row.GroupID]
 	}
-	arm, ok := h.prepareConfirmWindow(w, inputOrderChanged(currentIDs, b.IDs, isInput),
+	win, ok := h.openConfirmWindow(w, r, inputOrderChanged(currentIDs, b.IDs, isInput),
 		"reordenação das regras (há regra em grupo de escopo input)")
 	if !ok {
 		return
 	}
 	if err := h.db.ReorderFirewallRules(b.IDs); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		h.abortArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.reorder", "user_rules", fmt.Sprintf("%d regras", len(b.IDs)))
-	if !h.reconcileRules(w, r) {
+	if !h.reconcileArmed(w, r, win) {
 		return
 	}
-	pending, ok := h.armConfirmWindow(w, r, arm)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(pending))
+	writeJSON(w, http.StatusOK, okResult(win.view))
 }
 
 func validCIDRorIP(s string) bool {
@@ -855,6 +835,20 @@ func (h *NftablesHandler) ListBackups(w http.ResponseWriter, r *http.Request) {
 }
 
 // Rollback restores a stored ruleset snapshot via nft.
+//
+// REGISTRADO, NÃO CORRIGIDO (revisão da Fase C2). Este é o único endpoint de
+// mutação que reescreve o firewall INTEIRO — Service.Restore emite `flush
+// ruleset`, a dívida conhecida deste projeto — e é também o único que NÃO
+// consulta confirmWindowBlocks. Não é furo do arme da janela (o rollback não
+// mexe em grupo nem em regra do banco, então ele não abre janela nenhuma e não
+// deixa reversão pela metade), mas é a operação que mais briga com uma reversão
+// em andamento: um rollback disparado enquanto o watchdog tenta restaurar o
+// estado anterior escreve por cima do que ele acabou de impor, e o Reconcile
+// que vem logo abaixo — a única coisa que devolve o banco ao comando — falha em
+// silêncio, com um slog.Warn e um HTTP 200 na tela. Travá-lo com a janela
+// aberta, e transformar aquele Warn em erro visível, é trabalho de uma tarefa
+// própria: ele mexe no ruleset inteiro, inclusive nas partes que o snapshot da
+// janela não cobre.
 func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		BackupID string `json:"backup_id"`

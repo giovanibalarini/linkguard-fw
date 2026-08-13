@@ -168,10 +168,58 @@ func joinPT(items []string) string {
 	}
 }
 
-// OpenConfirmWindow grava o pendente: a mudança JÁ FOI aplicada, e a partir
-// daqui ela tem 90 segundos para ser confirmada.
+// windowConflictError marca o erro que é um CONFLITO DE ESTADO com a janela —
+// "já há uma janela aberta", "não há nenhuma", "a reversão desta já começou" —
+// e não uma pane do servidor.
 //
-// Não toca no nft. Quem aplica é a mutação que veio antes; esta função é só
+// A distinção existe para quem responde HTTP: sem ela, o handler classificava
+// pelo estado que tinha lido ANTES de chamar, e o estado pode ter mudado entre
+// as duas chamadas (outro admin, ou o próprio watchdog). O caso que mais dói é
+// o operador apertar "Confirmar" um segundo depois do prazo: a mensagem certa
+// existe aqui dentro ("tarde demais: a mudança %q foi revertida..."), e o
+// handler a trocava por "erro interno do servidor" no minuto em que essa é a
+// informação que mais importa para ele.
+type windowConflictError struct{ err error }
+
+func (e *windowConflictError) Error() string { return e.err.Error() }
+func (e *windowConflictError) Unwrap() error { return e.err }
+
+// windowConflict embrulha um conflito de estado da janela.
+func windowConflict(format string, a ...any) error {
+	return &windowConflictError{err: fmt.Errorf(format, a...)}
+}
+
+// IsWindowConflict diz se o erro é conflito com o estado da janela (409 do
+// lado da API) em vez de falha do servidor (500). A mensagem embrulhada foi
+// escrita para o operador ler; a genérica, não.
+func IsWindowConflict(err error) bool {
+	var e *windowConflictError
+	return errors.As(err, &e)
+}
+
+// OpenConfirmWindow grava o pendente ANTES de a mudança ser aplicada: a partir
+// daqui ela tem 90 segundos para ser confirmada, e quem falhar em aplicá-la
+// desfaz a janela (RevertPending) em vez de deixá-la para trás.
+//
+// A ORDEM — armar antes de aplicar — é a correção mais importante desta
+// revisão, e o motivo é o que acontecia com a ordem inversa. Armar depois de
+// reconciliar deixava dois buracos, os dois medidos por sonda:
+//
+//   - reconcile que falha: o handler respondia 500 e voltava ANTES de armar,
+//     com a mudança de escopo input já gravada no banco e já valendo na chain
+//     input viva — sem pendente, sem auto-revert e sem trava, enquanto o
+//     operador lia "erro interno do servidor" e concluía que nada acontecera;
+//   - duas mutações de input simultâneas: as duas passavam pela trava (que lê o
+//     pendente e ainda não havia nenhum), as duas aplicavam, e só a segunda
+//     descobria, ao armar, que já havia uma janela — mudança valendo sem rede
+//     embaixo, e o snapshot da vencedora podendo já conter a escrita da
+//     perdedora, isto é, uma reversão que o operador acredita completa e não é.
+//
+// Armando antes, a UNIQUE de pending_firewall_change (uma linha, só_row) é o
+// que serializa: a segunda requisição recebe conflito AQUI, antes de tocar no
+// firewall, e um reconcile que falha passa a ser coberto pelo watchdog.
+//
+// Não toca no nft. Quem aplica é a mutação que vem DEPOIS; esta função é só
 // a rede de proteção sendo armada, e um comando de nft aqui seria uma
 // reescrita de chain que ninguém pediu.
 //
@@ -212,7 +260,7 @@ func (s *Service) OpenConfirmWindow(_ context.Context, snapshot, by, summary str
 		return fmt.Errorf("ler a janela de confirmação em aberto: %w", err)
 	}
 	if existing != nil {
-		return fmt.Errorf("já há uma mudança aguardando confirmação (%q, aplicada por %s): confirme ou reverta antes de aplicar outra",
+		return windowConflict("já há uma mudança aguardando confirmação (%q, aplicada por %s): confirme ou reverta antes de aplicar outra",
 			existing.Summary, existing.AppliedBy)
 	}
 
@@ -288,10 +336,10 @@ func (s *Service) ConfirmPending(_ context.Context) error {
 		// merece a verdade em vez de "não há mudança aguardando confirmação",
 		// que soa como "você já confirmou" no pior momento possível.
 		if r := s.recentRevert(); r != nil {
-			return fmt.Errorf("tarde demais: a mudança %q foi revertida automaticamente porque %s; ela não está mais valendo — aplique de novo se ainda quiser",
+			return windowConflict("tarde demais: a mudança %q foi revertida automaticamente porque %s; ela não está mais valendo — aplique de novo se ainda quiser",
 				r.summary, r.reason)
 		}
-		return fmt.Errorf("não há mudança aguardando confirmação")
+		return windowConflict("não há mudança aguardando confirmação")
 	}
 	if p.Reverting() {
 		// A reversão desta mudança já começou e não terminou (o estado
@@ -308,7 +356,7 @@ func (s *Service) ConfirmPending(_ context.Context) error {
 		// sobre uma alteração que já não existia mais no banco, o pendente era
 		// apagado, e a regra que tirou o SSH dele continuava viva no nft, sem
 		// watchdog e sem ninguém tentando de novo.
-		return fmt.Errorf("a reversão desta mudança já começou (o estado anterior já foi restaurado no banco) e não pode mais ser confirmada; o LinkGuard vai concluí-la assim que o nft aceitar")
+		return windowConflict("a reversão desta mudança já começou (o estado anterior já foi restaurado no banco) e não pode mais ser confirmada; o LinkGuard vai concluí-la assim que o nft aceitar")
 	}
 	if err := s.db.ClearPendingChange(); err != nil {
 		return fmt.Errorf("apagar a mudança pendente: %w", err)
@@ -331,7 +379,7 @@ func (s *Service) RevertPending(ctx context.Context) error {
 		return fmt.Errorf("ler a mudança pendente: %w", err)
 	}
 	if p == nil {
-		return fmt.Errorf("não há mudança aguardando confirmação")
+		return windowConflict("não há mudança aguardando confirmação")
 	}
 	return s.revert(ctx, p, "a pedido do operador", false)
 }

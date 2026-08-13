@@ -14,9 +14,13 @@ package handlers_test
 //   - sem nada pendente, o GET responde `null` explicitamente.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -377,6 +381,212 @@ func TestUnknownScopeIsRefused(t *testing.T) {
 	}
 	if groups := adminGroups(t, db); len(groups) != 0 {
 		t.Errorf("nada podia ter chegado ao banco: %+v", groups)
+	}
+}
+
+// ─── A janela é armada ANTES de a mudança ser aplicada ────────────────────
+//
+// Os dois testes abaixo são os dois defeitos críticos que a revisão da Fase C2
+// provou por sonda numa máquina de teste, e que a suíte antiga deixava passar
+// inteira. Nos dois, a causa era a mesma: a janela era armada DEPOIS do
+// reconcile.
+
+// C1 — reconcile que falha. O caminho existe e é conhecido: ReconcileGroups
+// junta as falhas por grupo (uma regra que o nft recusa na hora de aplicar) e o
+// mesmo vale para o erro de leitura do estado do NTP, já visto em produção.
+//
+// Com o arme depois do reconcile, este era o resultado medido: 500 "erro
+// interno do servidor" na tela, grupo de escopo input GRAVADO no banco, jump
+// dele VIVO na chain input, e nenhuma janela — sem pendente, sem auto-revert,
+// sem trava. Uma regra que pode ter trancado o operador para fora da máquina,
+// valendo para sempre, enquanto a resposta sugeria que nada tinha acontecido.
+//
+// Armando antes, a mesma falha cai na rede: a janela existe, a reversão é
+// tentada na hora e — se ela também não passar, que é o caso aqui, porque a
+// máquina continua com defeito — o pendente FICA e o watchdog conclui sozinho
+// assim que o nft voltar a aceitar.
+func TestAFailedReconcileLeavesTheWindowArmedAndTheWatchdogFinishesTheRevert(t *testing.T) {
+	h, db, exec, fr := newGroupTestHandlerFR(t)
+
+	// A máquina com defeito: outro grupo, já existente, tem uma regra que passa
+	// no `nft -c` e é recusada no apply.
+	other := createGroupViaAPI(t, h, db, `{"name":"LAN","cond_saddr":"192.168.3.0/24","fallthrough":"continue"}`)
+	createRuleViaAPI(t, h, db, `{"group_id":"`+other.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	heal := exec.refuseApplyIn(other.ChainName)
+
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups", inputGroupBody)
+	if w.Code == http.StatusOK {
+		t.Fatalf("o reconcile falhou; a mutação não podia responder 200: %s", w.Body.String())
+	}
+
+	// O que este teste existe para exigir: a rede de proteção está armada.
+	p := getPending(t, h)
+	if p == nil {
+		t.Fatalf("a mudança de escopo input ficou sem janela depois de um reconcile que falhou: %d %s", w.Code, w.Body.String())
+	}
+
+	// A máquina volta. É o watchdog — não o handler, que já respondeu — quem
+	// conclui: pendente apagado, grupo de input fora do banco e nenhum jump
+	// para ele na chain input viva.
+	heal()
+	if err := fr.CheckPendingExpired(context.Background()); err != nil {
+		t.Fatalf("o watchdog não conseguiu concluir a reversão: %v", err)
+	}
+	if p := getPending(t, h); p != nil {
+		t.Errorf("a janela continuou aberta depois de o watchdog reverter: %+v", p)
+	}
+	for _, g := range adminGroups(t, db) {
+		if g.Scope == nftables.ScopeInput {
+			t.Errorf("o grupo de escopo input não confirmado continuou no banco: %+v", g)
+		}
+		if exec.chainHasJumpTo(nftables.InputChain, g.ChainName) && g.Scope == nftables.ScopeInput {
+			t.Errorf("a chain input viva continua pulando para o grupo revertido: %+v", g)
+		}
+	}
+}
+
+// C2 — duas mutações de escopo input ao mesmo tempo. Não precisa de dois
+// operadores: um duplo-clique ou um retry do cliente basta, e o produto é
+// multi-admin.
+//
+// Com o arme depois do reconcile, as duas passavam pela trava (que lê o
+// pendente, e ainda não havia nenhum), as duas gravavam e as duas aplicavam;
+// só a segunda descobria, ao armar, que já havia uma janela — e recebia 500
+// dizendo que NÃO há reversão automática para a mudança dela. Pior: conforme a
+// intercalação, o snapshot da vencedora era tirado depois da escrita da
+// perdedora, e reverter restauraria um estado que ainda contém a mudança não
+// confirmada — uma reversão que o operador acredita completa e não é.
+//
+// Armando antes, a tabela de uma linha só (UNIQUE only_row) é a fila: a
+// segunda requisição leva 409 sem ter escrito no banco nem tocado no firewall.
+func TestTwoConcurrentInputMutationsOnlyOneIsEverApplied(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+
+	names := []string{"AcessoA", "AcessoB"}
+	codes := make([]int, len(names))
+	bodies := make([]string, len(names))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			<-start
+			w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups",
+				`{"name":"`+name+`","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"continue"}`)
+			codes[i], bodies[i] = w.Code, w.Body.String()
+		}(i, name)
+	}
+	close(start)
+	wg.Wait()
+
+	got := append([]int{}, codes...)
+	sort.Ints(got)
+	if got[0] != http.StatusOK || got[1] != http.StatusConflict {
+		t.Fatalf("esperava um 200 e um 409, obtive %v (%q / %q)", codes, bodies[0], bodies[1])
+	}
+
+	// A perdedora não escreveu NADA: um grupo no banco, um jump na chain input.
+	groups := adminGroups(t, db)
+	if len(groups) != 1 {
+		t.Fatalf("a segunda mutação simultânea não podia ter gravado: %+v", groups)
+	}
+	winner := groups[0]
+	if jumps := jumpsIn(exec, nftables.InputChain); len(jumps) != 1 || jumps[0] != winner.ChainName {
+		t.Errorf("a chain input viva tinha que ter só o grupo vencedor (%s): %v", winner.ChainName, jumps)
+	}
+
+	// E a rede de proteção é a da mudança que valeu, não a de outra.
+	p := getPending(t, h)
+	if p == nil {
+		t.Fatalf("a mudança de input que passou ficou sem janela")
+	}
+	if !strings.Contains(p.Summary, winner.Name) {
+		t.Errorf("a janela aberta descreve outra mudança que não a que valeu (%q): %q", winner.Name, p.Summary)
+	}
+}
+
+// jumpsIn devolve, na ordem, as chains para as quais a chain viva pula.
+func jumpsIn(exec *fakeNft, chain string) []string {
+	var out []string
+	for _, expr := range exec.liveChain(chain) {
+		if target := jumpTargetOf(expr); strings.HasPrefix(target, "grp_") {
+			out = append(out, target)
+		}
+	}
+	return out
+}
+
+// ─── Todo caminho que arma a janela ───────────────────────────────────────
+
+// Até esta revisão só três mutações tinham teste de arme (criar grupo, trocar o
+// escopo e criar regra). As outras sete foram verificadas por sonda pelo
+// revisor e ficaram sem rede: uma regressão em qualquer uma delas — um grupo de
+// input apagado, desligado ou reordenado sem janela — passaria a suíte inteira
+// em verde e só apareceria com o operador trancado para fora da máquina.
+func TestEveryInputMutationOpensTheWindow(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		call func(t *testing.T, h *handlers.NftablesHandler, db *storage.DB, g storage.FirewallGroup, rule storage.FirewallRule) *httptest.ResponseRecorder
+	}{
+		{"apagar grupo de input", func(t *testing.T, h *handlers.NftablesHandler, db *storage.DB, g storage.FirewallGroup, _ storage.FirewallRule) *httptest.ResponseRecorder {
+			return doJSON(t, h.DeleteGroup, "DELETE", "/api/nftables/groups", `{"id":"`+g.ID+`"}`)
+		}},
+		{"desligar grupo de input", func(t *testing.T, h *handlers.NftablesHandler, db *storage.DB, g storage.FirewallGroup, _ storage.FirewallRule) *httptest.ResponseRecorder {
+			return doJSON(t, h.ToggleGroup, "POST", "/api/nftables/groups/toggle", `{"id":"`+g.ID+`","enabled":false}`)
+		}},
+		{"reordenar grupos com um de input", func(t *testing.T, h *handlers.NftablesHandler, db *storage.DB, _ storage.FirewallGroup, _ storage.FirewallRule) *httptest.ResponseRecorder {
+			return doJSON(t, h.ReorderGroups, "POST", "/api/nftables/groups/reorder", `{"ids":`+reversedGroupIDsJSON(t, db)+`}`)
+		}},
+		{"editar regra de grupo de input", func(t *testing.T, h *handlers.NftablesHandler, db *storage.DB, g storage.FirewallGroup, rule storage.FirewallRule) *httptest.ResponseRecorder {
+			return doJSON(t, h.UpdateRule, "PUT", "/api/nftables/rules",
+				`{"id":"`+rule.ID+`","group_id":"`+g.ID+`","action":"accept","proto":"tcp","dport":"2222"}`)
+		}},
+		{"apagar regra de grupo de input", func(t *testing.T, h *handlers.NftablesHandler, db *storage.DB, _ storage.FirewallGroup, rule storage.FirewallRule) *httptest.ResponseRecorder {
+			return doJSON(t, h.DeleteRule, "DELETE", "/api/nftables/rules", `{"id":"`+rule.ID+`"}`)
+		}},
+		{"desligar regra de grupo de input", func(t *testing.T, h *handlers.NftablesHandler, db *storage.DB, _ storage.FirewallGroup, rule storage.FirewallRule) *httptest.ResponseRecorder {
+			return doJSON(t, h.ToggleRule, "POST", "/api/nftables/rules/toggle", `{"id":"`+rule.ID+`","enabled":false}`)
+		}},
+		{"reordenar regras com uma de input", func(t *testing.T, h *handlers.NftablesHandler, db *storage.DB, g storage.FirewallGroup, rule storage.FirewallRule) *httptest.ResponseRecorder {
+			rules, err := db.ListFirewallRules()
+			if err != nil {
+				t.Fatalf("ListFirewallRules: %v", err)
+			}
+			ids := make([]string, 0, len(rules))
+			for i := len(rules) - 1; i >= 0; i-- {
+				ids = append(ids, rules[i].ID)
+			}
+			out, err := json.Marshal(ids)
+			if err != nil {
+				t.Fatalf("marshal dos ids: %v", err)
+			}
+			return doJSON(t, h.ReorderRules, "POST", "/api/nftables/rules/reorder", `{"ids":`+string(out)+`}`)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, db := newGroupTestHandler(t)
+			// Uma máquina com um grupo de forward (e uma regra dentro) e um
+			// grupo de input com a sua regra — a cara de um firewall de
+			// verdade, e o mínimo para reordenar valer alguma coisa.
+			fwd := createGroupViaAPI(t, h, db, `{"name":"LAN","cond_saddr":"192.168.3.0/24","fallthrough":"continue"}`)
+			createRuleViaAPI(t, h, db, `{"group_id":"`+fwd.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+			g := createGroupViaAPI(t, h, db, inputGroupBody)
+			confirmWindow(t, h)
+			rule := createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"accept","proto":"tcp","dport":"22"}`)
+			confirmWindow(t, h)
+
+			w := c.call(t, h, db, g, rule)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status %d, body %s", w.Code, w.Body.String())
+			}
+			if pendingOf(t, w) == nil {
+				t.Errorf("a resposta da mutação não trouxe a janela: %s", w.Body.String())
+			}
+			if getPending(t, h) == nil {
+				t.Fatalf("a mutação mexeu na chain que decide sobre o SSH e o painel e não abriu janela nenhuma")
+			}
+		})
 	}
 }
 

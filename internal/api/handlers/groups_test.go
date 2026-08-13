@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,8 +42,20 @@ import (
 // Ele nasce como a produção nasce DEPOIS da migração: a chain forward
 // existe (bootstrap), a user_rules não.
 type fakeNft struct {
+	// mu existe porque há teste que dispara duas requisições ao mesmo tempo
+	// (a corrida da janela de confirmação). Sem ela o -race acusa este falso,
+	// não o código que está sendo medido.
+	mu       sync.Mutex
 	chains   map[string][]string // chain viva → expressões, na ordem
 	executed []string
+	// applyRefusesIn são as chains cujo `add rule` falha no APPLY e passa no
+	// pré-voo. É o cenário que a revisão da Fase C2 reproduziu por sonda: numa
+	// máquina em que qualquer outro grupo tem uma regra que o nft recusa na
+	// hora de aplicar, o Reconcile devolve erro (ReconcileGroups junta as
+	// falhas por grupo) DEPOIS de já ter reconstruído a chain input. Como
+	// nftRefusesToken, é um marcador de teste para a categoria — não a imitação
+	// de uma sintaxe específica.
+	applyRefusesIn map[string]bool
 }
 
 // errNoSuchChain é a mensagem que o nft dá para referência a chain
@@ -77,14 +90,49 @@ func newFakeNft() *fakeNft {
 }
 
 func (f *fakeNft) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.executed = append(f.executed, cmd+" "+strings.Join(args, " "))
 	if cmd != "nft" {
 		return "", nil
 	}
+	if err := f.refusedAtApply(args); err != nil {
+		return "", err
+	}
 	return "", applyNftCommand(f.chains, args)
 }
 
+// refusedAtApply é a recusa que o dry run NÃO vê: `nft -c` aprova o script e o
+// comando de verdade falha. Chamada com f.mu travado.
+func (f *fakeNft) refusedAtApply(args []string) error {
+	if len(f.applyRefusesIn) == 0 || len(args) < 5 {
+		return nil
+	}
+	if args[0] == "add" && args[1] == "rule" && f.applyRefusesIn[args[4]] {
+		return errNftRefusedContent
+	}
+	return nil
+}
+
+// refuseApplyIn liga a recusa no apply para uma chain; devolve a função que a
+// desliga (a máquina "voltando", que é quando o watchdog consegue reverter).
+func (f *fakeNft) refuseApplyIn(chain string) func() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.applyRefusesIn == nil {
+		f.applyRefusesIn = map[string]bool{}
+	}
+	f.applyRefusesIn[chain] = true
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		delete(f.applyRefusesIn, chain)
+	}
+}
+
 func (f *fakeNft) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if cmd != "nft" || len(args) == 0 {
 		return "", nil
 	}
@@ -203,15 +251,32 @@ func (f *fakeNft) render() string {
 }
 
 func (f *fakeNft) forwardHasJumpTo(chain string) bool {
-	for _, expr := range f.chains[nftables.ForwardChain] {
-		if jumpTargetOf(expr) == chain {
+	return f.chainHasJumpTo(nftables.ForwardChain, chain)
+}
+
+// chainHasJumpTo pergunta se a chain VIVA pula para outra — é como um teste
+// enxerga o firewall do jeito que o operador o enxergaria.
+func (f *fakeNft) chainHasJumpTo(chain, target string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, expr := range f.chains[chain] {
+		if jumpTargetOf(expr) == target {
 			return true
 		}
 	}
 	return false
 }
 
+// liveChain devolve uma cópia das expressões da chain viva.
+func (f *fakeNft) liveChain(name string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.chains[name]...)
+}
+
 func (f *fakeNft) ranWith(substr string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, c := range f.executed {
 		if strings.Contains(c, substr) {
 			return true
