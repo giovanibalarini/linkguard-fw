@@ -129,7 +129,7 @@ widget sem dado real é omitido, nunca preenchido com estimativa.
 | Links WAN | `GET /api/links` | `links.read` |
 | Tráfego das interfaces | `traffic-history` + `/api/system/status` | `monitoring.read` |
 | Quem está consumindo | `GET /api/hosts/traffic` | `hosts.read` |
-| Alertas abertos | `GET /api/alerts?unresolved=true` | `alerts.read` |
+| Alertas abertos | `GET /api/alerts?unresolved=true` | `monitoring.read` |
 | CPU, memória, disco | `/api/system/status` + `metric_samples` | `monitoring.read` |
 | Hosts na rede | `GET /api/hosts` | `hosts.read` |
 | Primeiros passos | estado de onboarding | — |
@@ -137,6 +137,11 @@ widget sem dado real é omitido, nunca preenchido com estimativa.
 
 Layout inicial, para quem já passou do onboarding: saúde, WANs e alertas na
 primeira dobra; tráfego, consumo e recursos abaixo.
+
+> Correção de 13/08/2026: esta tabela dizia `alerts.read` para "Alertas
+> abertos". Essa permissão **não existe** no catálogo do RBAC — `GET /api/alerts`
+> é gated por `monitoring.read`, e é essa a que vale. Achado ao implementar, com
+> um teste guardando a fronteira para o próximo widget que for acrescentado.
 
 ## 6. Persistência
 
