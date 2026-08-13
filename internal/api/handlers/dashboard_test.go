@@ -45,6 +45,58 @@ func userWithPermissions(t *testing.T, db *storage.DB, username string, perms ..
 	return u
 }
 
+// grantPermissions concede permissões NOVAS a um usuário que já existe, sem
+// tirar as que ele tinha — é o "outro admin te deu hosts.read depois" da spec
+// §4.1, o momento em que os widgets escondidos têm que reaparecer.
+func grantPermissions(t *testing.T, db *storage.DB, u *storage.User, perms ...auth.Permission) {
+	t.Helper()
+	keys := make([]string, len(perms))
+	for i, p := range perms {
+		keys[i] = string(p)
+	}
+	role := &storage.Role{Name: "Papel extra de " + u.Username, Permissions: keys}
+	if err := db.CreateRole(role); err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	ids, err := db.GetUserRoleIDs(u.ID)
+	if err != nil {
+		t.Fatalf("GetUserRoleIDs: %v", err)
+	}
+	if err := db.SetUserRoles(u.ID, append(ids, role.ID)); err != nil {
+		t.Fatalf("SetUserRoles: %v", err)
+	}
+}
+
+func putLayout(t *testing.T, h *handlers.DashboardHandler, u *storage.User, items []storage.LayoutItem) (int, handlers.LayoutResponse) {
+	t.Helper()
+	body, err := json.Marshal(handlers.LayoutRequest{Items: items})
+	if err != nil {
+		t.Fatalf("serializar corpo: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/dashboard/layout", bytes.NewReader(body))
+	req = req.WithContext(auth.ContextWithClaims(req.Context(), &auth.Claims{UserID: u.ID, Username: u.Username}))
+	w := httptest.NewRecorder()
+	h.SaveLayout(w, req)
+	var resp handlers.LayoutResponse
+	if w.Code == http.StatusOK {
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decodificar resposta: %v (corpo: %s)", err, w.Body.String())
+		}
+	}
+	return w.Code, resp
+}
+
+// itemDoWidget acha um item pelo nome do widget na lista, para as asserções de
+// posição ficarem legíveis.
+func itemDoWidget(items []storage.LayoutItem, widget string) (storage.LayoutItem, bool) {
+	for _, it := range items {
+		if it.Widget == widget {
+			return it, true
+		}
+	}
+	return storage.LayoutItem{}, false
+}
+
 func getLayout(t *testing.T, h *handlers.DashboardHandler, u *storage.User) (int, handlers.LayoutResponse) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/layout", nil)
@@ -200,5 +252,217 @@ func TestLayoutWithoutClaimsIsUnauthorized(t *testing.T) {
 	h.GetLayout(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("esperava 401, obtive %d", w.Code)
+	}
+}
+
+// O ARRASTO DE QUEM NÃO VÊ TUDO NÃO APAGA O QUE ELE NÃO VÊ.
+//
+// Este é o defeito que a entrega corrige. O GET devolve o layout já filtrado por
+// permissão, e a tela manda de volta exatamente o que leu: sem a fusão na
+// escrita, o primeiro arrasto do admin sem hosts.read gravava a lista reduzida
+// por cima da linha, e os widgets de host sumiam PARA SEMPRE — quando a
+// permissão fosse concedida depois, o catálogo os oferecia de novo, mas a
+// posição que ele tinha montado já não existia.
+func TestSaveKeepsStoredWidgetsTheCallerCannotSee(t *testing.T) {
+	h, db := newDashboardTestHandler(t)
+	// Admin de rede: monitoramento e links, SEM hosts.read.
+	u := userWithPermissions(t, db, "rede", auth.PermMonitoringRead, auth.PermLinksRead)
+
+	// O painel que ele tinha, montado quando ele ainda via tudo (ou montado por
+	// outro admin antes de a permissão ser tirada).
+	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
+		{Widget: "lan_hosts", X: 6, Y: 0, W: 6, H: 2},
+		{Widget: "wan_links", X: 0, Y: 2, W: 6, H: 2},
+		{Widget: "top_talkers", X: 6, Y: 2, W: 6, H: 3},
+	}); err != nil {
+		t.Fatalf("salvar: %v", err)
+	}
+
+	// Ele arrasta: a tela manda de volta só o que ela leu, que é só o que ele vê.
+	code, resp := putLayout(t, h, u, []storage.LayoutItem{
+		{Widget: "wan_links", X: 0, Y: 0, W: 12, H: 2},
+		{Widget: "system_health", X: 0, Y: 2, W: 12, H: 2},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("salvar: esperava 200, obtive %d", code)
+	}
+	// A resposta continua sendo só o que ele enxerga: o item preservado não pode
+	// vazar de volta para a tela dele.
+	if len(resp.Items) != 2 {
+		t.Fatalf("a resposta tinha que ter os 2 itens visíveis, obtive %+v", resp.Items)
+	}
+	for _, it := range resp.Items {
+		if it.Widget == "lan_hosts" || it.Widget == "top_talkers" {
+			t.Errorf("widget fora da permissão vazou na resposta do PUT: %q", it.Widget)
+		}
+	}
+
+	// O que ficou GRAVADO (sem filtro de permissão): os widgets de host
+	// sobreviveram ao arrasto dele.
+	gravado, err := db.GetDashboardLayout(u.ID)
+	if err != nil {
+		t.Fatalf("reler o gravado: %v", err)
+	}
+	if _, ok := itemDoWidget(gravado, "lan_hosts"); !ok {
+		t.Fatalf("lan_hosts foi apagado por um admin que nem podia vê-lo: %+v", gravado)
+	}
+	if _, ok := itemDoWidget(gravado, "top_talkers"); !ok {
+		t.Fatalf("top_talkers foi apagado por um admin que nem podia vê-lo: %+v", gravado)
+	}
+
+	// E agora outro admin concede hosts.read: os widgets voltam, NA POSIÇÃO QUE
+	// TINHAM. Voltar recolocado no rodapé seria a mesma perda, só mais discreta.
+	grantPermissions(t, db, u, auth.PermHostsRead)
+	code, resp = getLayout(t, h, u)
+	if code != http.StatusOK {
+		t.Fatalf("ler depois da permissão: %d", code)
+	}
+	hosts, ok := itemDoWidget(resp.Items, "lan_hosts")
+	if !ok {
+		t.Fatalf("lan_hosts não voltou depois do hosts.read: %+v", resp.Items)
+	}
+	if hosts.X != 6 || hosts.Y != 0 || hosts.W != 6 || hosts.H != 2 {
+		t.Errorf("lan_hosts voltou fora do lugar: %+v (esperava x=6 y=0 w=6 h=2)", hosts)
+	}
+	talkers, ok := itemDoWidget(resp.Items, "top_talkers")
+	if !ok {
+		t.Fatalf("top_talkers não voltou depois do hosts.read: %+v", resp.Items)
+	}
+	if talkers.X != 6 || talkers.Y != 2 || talkers.W != 6 || talkers.H != 3 {
+		t.Errorf("top_talkers voltou fora do lugar: %+v (esperava x=6 y=2 w=6 h=3)", talkers)
+	}
+}
+
+// A fusão preserva o que já estava gravado; ela NÃO é porta de entrada. Um PUT
+// que tente gravar um widget fora da permissão de quem chama não o grava — nem
+// como item novo, nem "restaurando" um que nunca esteve lá.
+func TestSaveCannotWriteWidgetOutsideTheCallersPermission(t *testing.T) {
+	h, db := newDashboardTestHandler(t)
+	u := userWithPermissions(t, db, "rede", auth.PermMonitoringRead, auth.PermLinksRead)
+
+	// O painel gravado dele NÃO tem widget de host nenhum — assim o que
+	// aparecer depois só pode ter vindo do corpo da requisição. (Sem isto o
+	// teste ficaria ambíguo: quem nunca salvou parte do layout de fábrica, que
+	// já traz top_talkers, e a fusão preserva esse item de propósito.)
+	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
+		{Widget: "wan_links", X: 6, Y: 0, W: 6, H: 2},
+	}); err != nil {
+		t.Fatalf("salvar: %v", err)
+	}
+
+	code, resp := putLayout(t, h, u, []storage.LayoutItem{
+		{Widget: "wan_links", X: 0, Y: 0, W: 6, H: 2},
+		{Widget: "lan_hosts", X: 6, Y: 0, W: 6, H: 2},
+		{Widget: "top_talkers", X: 0, Y: 2, W: 12, H: 3},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("salvar: esperava 200 com os itens fora da permissão descartados, obtive %d", code)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Widget != "wan_links" {
+		t.Fatalf("a resposta tinha que trazer só o widget que ele pode ver, obtive %+v", resp.Items)
+	}
+
+	gravado, err := db.GetDashboardLayout(u.ID)
+	if err != nil {
+		t.Fatalf("reler o gravado: %v", err)
+	}
+	for _, proibido := range []string{"lan_hosts", "top_talkers"} {
+		if _, ok := itemDoWidget(gravado, proibido); ok {
+			t.Errorf("o PUT gravou %q, que o chamador não tem permissão de ver: %+v", proibido, gravado)
+		}
+	}
+}
+
+// O CAMINHO NORMAL NÃO PODE QUEBRAR: quem enxerga tudo continua substituindo o
+// layout inteiro, INCLUSIVE removendo o widget que tirou do painel. Uma fusão
+// feita errado ressuscita o que o admin removeu de propósito — e aí o widget
+// volta sozinho a cada abertura, sem ele conseguir se livrar dele.
+func TestSaveStillRemovesWidgetsTheCallerCanSee(t *testing.T) {
+	h, db := newDashboardTestHandler(t)
+	u := userWithPermissions(t, db, "geral", auth.PermMonitoringRead, auth.PermLinksRead, auth.PermHostsRead)
+
+	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
+		{Widget: "lan_hosts", X: 6, Y: 0, W: 6, H: 2},
+		{Widget: "wan_links", X: 0, Y: 2, W: 6, H: 2},
+	}); err != nil {
+		t.Fatalf("salvar: %v", err)
+	}
+
+	// Ele tira "Hosts na rede" do painel e rearranja o resto.
+	code, resp := putLayout(t, h, u, []storage.LayoutItem{
+		{Widget: "system_health", X: 0, Y: 0, W: 12, H: 2},
+		{Widget: "wan_links", X: 0, Y: 2, W: 12, H: 2},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("salvar: esperava 200, obtive %d", code)
+	}
+	if _, ok := itemDoWidget(resp.Items, "lan_hosts"); ok {
+		t.Fatalf("o widget que ele removeu voltou na resposta: %+v", resp.Items)
+	}
+
+	gravado, err := db.GetDashboardLayout(u.ID)
+	if err != nil {
+		t.Fatalf("reler o gravado: %v", err)
+	}
+	if _, ok := itemDoWidget(gravado, "lan_hosts"); ok {
+		t.Fatalf("o widget que ele removeu continuou gravado: %+v", gravado)
+	}
+	if len(gravado) != 2 {
+		t.Fatalf("esperava exatamente os 2 itens que ele deixou, obtive %+v", gravado)
+	}
+	saude, _ := itemDoWidget(gravado, "system_health")
+	if saude.W != 12 {
+		t.Errorf("o rearranjo dele não foi gravado: %+v", saude)
+	}
+}
+
+// "Restaurar padrão" continua sendo a saída de quem se perdeu arrastando: apaga
+// a linha e devolve JÁ o layout de fábrica, filtrado pelo que o usuário pode
+// ver, sem uma segunda ida ao servidor (spec §6).
+func TestResetLayoutRestoresTheFactoryDefault(t *testing.T) {
+	h, db := newDashboardTestHandler(t)
+	u := userWithPermissions(t, db, "rede", auth.PermMonitoringRead, auth.PermLinksRead)
+
+	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+		{Widget: "quick_actions", X: 0, Y: 0, W: 12, H: 3},
+	}); err != nil {
+		t.Fatalf("salvar: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/dashboard/layout", nil)
+	req = req.WithContext(auth.ContextWithClaims(req.Context(), &auth.Claims{UserID: u.ID, Username: u.Username}))
+	w := httptest.NewRecorder()
+	h.ResetLayout(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restaurar: esperava 200, obtive %d: %s", w.Code, w.Body.String())
+	}
+	var resp handlers.LayoutResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decodificar resposta: %v", err)
+	}
+	if _, ok := itemDoWidget(resp.Items, "quick_actions"); ok {
+		t.Errorf("o layout customizado continuou depois do restaurar: %+v", resp.Items)
+	}
+	if _, ok := itemDoWidget(resp.Items, "system_health"); !ok {
+		t.Errorf("o padrão de fábrica não voltou na resposta do DELETE: %+v", resp.Items)
+	}
+	// E o padrão volta filtrado: ele não tem hosts.read.
+	if _, ok := itemDoWidget(resp.Items, "top_talkers"); ok {
+		t.Errorf("o DELETE devolveu um widget fora da permissão dele: %+v", resp.Items)
+	}
+
+	// A leitura seguinte também é o padrão: a linha foi apagada mesmo.
+	code, depois := getLayout(t, h, u)
+	if code != http.StatusOK {
+		t.Fatalf("ler depois do restaurar: %d", code)
+	}
+	if _, ok := itemDoWidget(depois.Items, "quick_actions"); ok {
+		t.Errorf("a linha não foi apagada: %+v", depois.Items)
+	}
+	if _, ok := itemDoWidget(depois.Items, "system_health"); !ok {
+		t.Errorf("a leitura depois do restaurar não trouxe o padrão: %+v", depois.Items)
 	}
 }

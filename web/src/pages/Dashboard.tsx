@@ -111,6 +111,18 @@ export default function Dashboard() {
     return normalize([novo, ...base], novo);
   }, [layout, availableSet, onboarding.ready, onboarding.allDone, onboardingDismissed]);
 
+  /**
+   * Manda o layout que ESTA tela enxerga — e é só isso que o `PUT` substitui.
+   *
+   * O `GET` já devolve o layout filtrado pela permissão do usuário, e aqui a
+   * gente devolve o que leu. Se o `PUT` fosse "substitui tudo", o primeiro
+   * arrasto de um admin sem `hosts.read` apagaria os widgets de host que ele
+   * tinha gravados, e conceder a permissão depois não os traria de volta: a
+   * posição já teria sumido. O backend funde de volta o que o chamador não
+   * enxerga (veja `SaveLayout` em `internal/api/handlers/dashboard.go`) — por
+   * isso NÃO acrescente aqui um "mande o layout inteiro" nem tente reconstruir
+   * o layout completo no cliente: a tela não tem como saber o que ela não vê.
+   */
   const save = useCallback(async (next: LayoutItem[]) => {
     setSaveState('saving');
     try {
