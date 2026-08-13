@@ -14,7 +14,7 @@ import (
 func TestPrepareCriaOsCaminhosNumaMaquinaPelada(t *testing.T) {
 	root := t.TempDir()
 
-	created, err := Prepare(root)
+	created, err := Prepare(root, StageServiceStart)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -36,11 +36,67 @@ func TestPrepareCriaOsCaminhosNumaMaquinaPelada(t *testing.T) {
 	}
 }
 
+// O defeito da instalação em máquina pelada, em forma de teste.
+//
+// /etc/nftables.conf é conffile do pacote `nftables`. Enquanto um instalador
+// o criava, `apt install ./linkguard-fw_*.deb` numa máquina sem o nftables
+// parava no prompt de conffile do dpkg ("File on system created by you or by
+// a script") — interativo o apt espera para sempre, não interativo ele morre
+// com "end of file on stdin at conffile prompt" e deixa o `nftables` em
+// `iU`. Reproduzido em duas VMs recriadas do zero.
+//
+// Então: na fase de instalação, o arquivo NÃO pode nascer. Na partida do
+// serviço (fora de qualquer transação do dpkg), ele TEM que nascer — a
+// unidade lista o caminho em ReadWritePaths= e um arquivo ausente no start
+// nunca fica gravável para o processo em execução.
+func TestOInstaladorNaoCriaConffileDeOutroPacote(t *testing.T) {
+	root := t.TempDir()
+
+	created, err := Prepare(root, StageInstall)
+	if err != nil {
+		t.Fatalf("Prepare(StageInstall): %v", err)
+	}
+	for _, line := range created {
+		if strings.HasPrefix(line, NftablesConfPath+" ") {
+			t.Errorf("a instalação criou %s; ele é conffile do pacote nftables e o dpkg "+
+				"para no prompt de conffile no meio do `apt install`", NftablesConfPath)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, NftablesConfPath)); !os.IsNotExist(err) {
+		t.Fatalf("%s existe depois de Prepare(StageInstall) (err=%v): "+
+			"criá-lo dentro da transação do dpkg é exatamente o defeito", NftablesConfPath, err)
+	}
+
+	// E tudo o que NÃO é de outro pacote continua saindo do instalador: sem
+	// isso a unidade morre em 226/NAMESPACE antes de executar uma linha.
+	for _, e := range Entries {
+		if e.OnlyAtServiceStart {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, e.Path)); err != nil {
+			t.Errorf("%s não foi criado na instalação: %v", e.Path, err)
+		}
+	}
+
+	// A partida do serviço fecha o buraco.
+	created, err = Prepare(root, StageServiceStart)
+	if err != nil {
+		t.Fatalf("Prepare(StageServiceStart): %v", err)
+	}
+	if len(created) == 0 {
+		t.Fatal("Prepare(StageServiceStart) não criou nada depois da instalação: " +
+			"o /etc/nftables.conf ficaria faltando para sempre")
+	}
+	if _, err := os.Stat(filepath.Join(root, NftablesConfPath)); err != nil {
+		t.Fatalf("%s não nasceu na partida do serviço: %v", NftablesConfPath, err)
+	}
+}
+
 // O /etc/nftables.conf nasce com o cabeçalho que o próprio Persist() gera —
 // vazio, mas um arquivo que o `nft -f` aceita.
 func TestNftablesConfNasceComCabecalhoValido(t *testing.T) {
 	root := t.TempDir()
-	if _, err := Prepare(root); err != nil {
+	if _, err := Prepare(root, StageServiceStart); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(root, NftablesConfPath))
@@ -68,7 +124,7 @@ func TestPrepareNaoMexeNoQueJaExiste(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Prepare(root); err != nil {
+	if _, err := Prepare(root, StageServiceStart); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 
@@ -85,10 +141,10 @@ func TestPrepareNaoMexeNoQueJaExiste(t *testing.T) {
 // Rodar duas vezes (reinstalação, upgrade) não pode criar nada na segunda.
 func TestPrepareEIdempotente(t *testing.T) {
 	root := t.TempDir()
-	if _, err := Prepare(root); err != nil {
+	if _, err := Prepare(root, StageServiceStart); err != nil {
 		t.Fatalf("Prepare 1: %v", err)
 	}
-	created, err := Prepare(root)
+	created, err := Prepare(root, StageServiceStart)
 	if err != nil {
 		t.Fatalf("Prepare 2: %v", err)
 	}

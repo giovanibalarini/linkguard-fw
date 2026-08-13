@@ -147,6 +147,119 @@ func TestOsTresInstaladoresPreparamOSistema(t *testing.T) {
 	}
 }
 
+// execStartPre devolve as linhas ExecStartPre= da unidade, com os prefixos
+// (`-`, `+`, `@`, `!`) preservados.
+func execStartPre(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	for _, line := range strings.Split(readRepoFile(t, "deploy/linkguard-fw.service"), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ExecStartPre=") {
+			out = append(out, strings.TrimPrefix(line, "ExecStartPre="))
+		}
+	}
+	return out
+}
+
+// O conserto do defeito de instalação, amarrado nos dois lados.
+//
+// Um caminho marcado OnlyAtServiceStart não pode sair de instalador nenhum
+// (é conffile de outro pacote — o dpkg trava no prompt). Quem o cria é o
+// ExecStartPre da unidade, e para isso DUAS condições do systemd têm que
+// valer ao mesmo tempo. As duas foram medidas no systemd 257 (Debian 13),
+// com unidades de teste numa VM, antes de escolher este desenho:
+//
+//	A) ReadWritePaths=/etc/exp.conf (SEM `-`) + ExecStartPre=+... que cria o
+//	   arquivo  →  "Failed to set up mount namespacing: /etc/exp.conf: No
+//	   such file or directory", "Failed at step NAMESPACE spawning /bin/sh",
+//	   226/NAMESPACE. O `+` NÃO pula a montagem do namespace: o pre-comando
+//	   morre antes de criar o que quer que seja.
+//	E) ReadWritePaths=-/etc/exp.conf + ExecStartPre=+...  →  unidade active,
+//	   arquivo com o conteúdo do pre E o do ExecStart. Ou seja: o namespace é
+//	   montado UMA VEZ POR COMANDO, e o ExecStart enxerga como gravável o que
+//	   o pre-comando acabou de criar.
+//	F) ReadWritePaths=-/etc/exp.conf + ExecStartPre SEM `+`  →  "cannot
+//	   create /etc/exp.conf: Read-only file system". O `+` é o que tira o
+//	   pre-comando do ProtectSystem=strict.
+//
+// Este teste é o que impede alguém de desfazer qualquer uma das três.
+func TestPreparoDeStartExigeCaminhoOpcionalEExecStartPrePrivilegiado(t *testing.T) {
+	pres := execStartPre(t)
+	if len(pres) == 0 {
+		t.Fatal("a unidade não tem ExecStartPre=: sem ele ninguém cria o /etc/nftables.conf " +
+			"depois que o apt termina, e a instalação volta a travar no prompt de conffile do dpkg")
+	}
+
+	var prepara string
+	for _, p := range pres {
+		if strings.Contains(p, "--prepare-system-at-start") {
+			prepara = p
+		}
+	}
+	if prepara == "" {
+		t.Fatalf("nenhum ExecStartPre= chama `--prepare-system-at-start`; encontrei %v", pres)
+	}
+	prefixes := prepara[:len(prepara)-len(strings.TrimLeft(prepara, "-+@!:"))]
+	if !strings.Contains(prefixes, "+") {
+		t.Errorf("o ExecStartPre do preparo está sem o prefixo `+` (%q): sem ele o comando roda "+
+			"dentro do ProtectSystem=strict e recebe \"Read-only file system\" ao criar em /etc", prepara)
+	}
+	if !strings.Contains(prefixes, "-") {
+		t.Errorf("o ExecStartPre do preparo está sem o prefixo `-` (%q): uma falha no preparo "+
+			"derrubaria a unidade inteira e não sobraria painel para explicar o que houve", prepara)
+	}
+
+	declared := map[string]string{} // caminho sem prefixo -> entrada crua
+	for _, raw := range readWritePaths(t) {
+		declared[strings.TrimPrefix(raw, "-")] = raw
+	}
+	for _, e := range Entries {
+		if !e.OnlyAtServiceStart {
+			continue
+		}
+		raw, ok := declared[e.Path]
+		if !ok {
+			t.Errorf("%s nasce só na partida do serviço mas não está em ReadWritePaths=", e.Path)
+			continue
+		}
+		if !strings.HasPrefix(raw, "-") {
+			t.Errorf("%s está em ReadWritePaths= sem o prefixo `-`. Medido no systemd 257: "+
+				"nessa forma o próprio ExecStartPre=+ morre em 226/NAMESPACE antes de criar o "+
+				"arquivo, e o serviço entra em loop de restart numa máquina pelada", e.Path)
+		}
+	}
+}
+
+// E o outro lado do mesmo conserto: nenhum dos três instaladores pode voltar
+// a criar o /etc/nftables.conf. Eles rodam com o dpkg no comando; o arquivo
+// é conffile do pacote `nftables`, e um conffile que o dpkg não escreveu faz
+// ele parar para perguntar a quem obedecer no meio do `apt install`.
+func TestNenhumInstaladorCriaOConffileDoNftables(t *testing.T) {
+	for _, f := range []string{"deploy/deb/postinst", "deploy/install.sh", "Makefile"} {
+		body := readRepoFile(t, f)
+		for _, line := range strings.Split(body, "\n") {
+			if strings.Contains(line, "--prepare-system-at-start") {
+				t.Errorf("%s chama `--prepare-system-at-start`: essa forma cria o %s dentro da "+
+					"transação do dpkg e trava o `apt install` no prompt de conffile", f, NftablesConfPath)
+			}
+		}
+	}
+
+	nft := false
+	for _, e := range Entries {
+		if e.Path == NftablesConfPath {
+			nft = true
+			if !e.OnlyAtServiceStart {
+				t.Errorf("%s voltou a ser criado pelos instaladores (OnlyAtServiceStart=false): "+
+					"é conffile do pacote nftables e o dpkg trava no prompt", NftablesConfPath)
+			}
+		}
+	}
+	if !nft {
+		t.Fatalf("%s sumiu de sysprep.Entries — sem ele a unidade morre em 226/NAMESPACE", NftablesConfPath)
+	}
+}
+
 var controlFieldRe = regexp.MustCompile(`(?m)^\s*(Depends|Pre-Depends|Recommends):\s*(.+)$`)
 
 // controlFields devolve os campos de relação declarados num arquivo que

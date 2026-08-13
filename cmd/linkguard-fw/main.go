@@ -107,6 +107,7 @@ func run() int {
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	notifyDown := flag.Bool("notify-down", false, "Send a 'service down' notification and exit (systemd OnFailure)")
 	prepareSystem := flag.Bool("prepare-system", false, "Create the filesystem paths the systemd unit needs before it can start, then exit")
+	prepareSystemAtStart := flag.Bool("prepare-system-at-start", false, "Same as --prepare-system plus the paths that may only be created outside a dpkg transaction (called by the unit's ExecStartPre), then exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -120,8 +121,19 @@ func run() int {
 	// internal/sysprep: sem isso a unidade morre em 226/NAMESPACE, em loop
 	// de restart, disparando o OnFailure a cada tentativa — e sem nunca
 	// executar uma linha do binário que instalaria a base.
-	if *prepareSystem {
-		created, err := sysprep.Prepare("")
+	//
+	// --prepare-system-at-start é o mesmo trabalho feito pela unidade, no
+	// ExecStartPre, para os caminhos que um instalador não pode criar por
+	// pertencerem a outro pacote (/etc/nftables.conf é conffile do
+	// `nftables`): criá-lo dentro da transação do dpkg fazia o `apt install`
+	// numa máquina pelada parar no prompt de conffile. Ver internal/sysprep,
+	// tipo Stage.
+	if *prepareSystem || *prepareSystemAtStart {
+		stage := sysprep.StageInstall
+		if *prepareSystemAtStart {
+			stage = sysprep.StageServiceStart
+		}
+		created, err := sysprep.Prepare("", stage)
 		for _, line := range created {
 			fmt.Println("[INFO] criado: " + line)
 		}

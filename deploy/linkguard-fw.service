@@ -7,6 +7,31 @@ OnFailure=linkguard-notify-down.service
 
 [Service]
 Type=simple
+# Cria os caminhos que um INSTALADOR não pode criar, porque criá-los de
+# dentro de uma transação do dpkg trava a instalação: /etc/nftables.conf é
+# conffile do pacote `nftables`, e com ele já no disco o dpkg para para
+# perguntar a quem obedecer quando desempacota o `nftables`
+# ("*** nftables.conf (Y/I/N/O/D/Z) [default=N] ?" — e, sem tty, "end of file
+# on stdin at conffile prompt", com o pacote parando em `iU`). Aqui já
+# estamos fora do apt.
+#
+# Os dois prefixos são obrigatórios, e a semântica foi MEDIDA (systemd 257,
+# Debian 13), não presumida:
+#
+#   `+`  tira o comando do ProtectSystem=strict. Sem ele o pre-comando
+#        recebe "cannot create /etc/nftables.conf: Read-only file system".
+#        O que o `+` NÃO faz é pular a montagem do namespace: com
+#        /etc/nftables.conf listado SEM o `-` em ReadWritePaths=, o próprio
+#        ExecStartPre=+ morre em 226/NAMESPACE antes de criar o arquivo.
+#        Por isso a entrada abaixo ganhou o prefixo `-`.
+#   `-`  torna a falha não fatal: se o preparo não puder ser feito, o
+#        LinkGuard ainda sobe e o painel explica o problema no apply (ver
+#        sysprep.SandboxHint) — em vez de a máquina ficar sem painel nenhum.
+#
+# E o que faz isto funcionar: o namespace de montagem é construído UMA VEZ
+# POR COMANDO. O ExecStart monta o dele depois deste pre-comando, então o
+# arquivo recém-criado já existe e entra no namespace como gravável.
+ExecStartPre=-+/usr/local/bin/linkguard-fw --prepare-system-at-start
 ExecStart=/usr/local/bin/linkguard-fw --config /etc/linkguard-fw/config.json
 Restart=on-failure
 RestartSec=5
@@ -51,26 +76,34 @@ ProtectSystem=strict
 # execução, sem reiniciar o serviço no meio de uma ação do admin.
 #
 # QUEM cria: `linkguard-fw --prepare-system`, chamado pelos TRÊS caminhos de
-# instalação (postinst do .deb, deploy/install.sh e `make install`). A lista
-# está em internal/sysprep e cobre /var/lib/linkguard-fw, /etc/linkguard-fw,
-# /etc/nftables.conf, /etc/sysctl.d, /etc/kea, /etc/unbound/unbound.conf.d e
-# /etc/chrony/conf.d. Os testes de empacotamento (internal/sysprep) exigem
-# que TODA entrada sem o prefixo `-` desta linha esteja nessa lista.
+# instalação (postinst do .deb, deploy/install.sh e `make install`), mais o
+# `--prepare-system-at-start` do ExecStartPre acima, para o que os
+# instaladores não podem tocar. A lista está em internal/sysprep e cobre
+# /var/lib/linkguard-fw, /etc/linkguard-fw, /etc/nftables.conf, /etc/sysctl.d,
+# /etc/kea, /etc/unbound/unbound.conf.d e /etc/chrony/conf.d. Os testes de
+# empacotamento (internal/sysprep) exigem que TODA entrada sem o prefixo `-`
+# desta linha esteja nessa lista.
 #
-# /etc/nftables.conf e /etc/sysctl.d ficam sem prefixo porque o instalador os
-# garante. Antes disso, /etc/nftables.conf vinha do pacote nftables e
-# /etc/sysctl.d do procps; com a base em Recommends: (para que `dpkg -i` numa
-# máquina pelada configure o pacote e o serviço suba), nenhum dos dois é mais
+# /etc/sysctl.d fica sem prefixo porque o instalador o garante. Antes disso
+# ele vinha do pacote procps; com a base em Recommends: (para que `dpkg -i`
+# numa máquina pelada configure o pacote e o serviço suba), ele não é mais
 # garantido por dependência. Sem essa rede de segurança a unidade morre com
 # 226/NAMESPACE em loop de restart e nunca chega ao código que instala o
 # nftables.
+#
+# /etc/nftables.conf é a exceção que o `-` acima explica: ele é conffile do
+# pacote `nftables`, então NENHUM instalador pode criá-lo (o dpkg pararia num
+# prompt de conffile no meio do `apt install`). Quem o cria é o
+# ExecStartPre=-+ desta unidade, fora da transação do apt — e é exatamente
+# por causa desse pre-comando que a entrada precisa do `-`: sem ele, o
+# pre-comando morre em 226/NAMESPACE antes de criar o arquivo (medido).
 #
 # Os três caminhos com `-` que o LinkGuard NÃO cria são deliberados:
 # /etc/systemd/network (do pacote systemd, sempre presente),
 # /etc/resolv.conf (sempre presente) e /etc/dhcp (do isc-dhcp-client, que
 # este pacote não declara em lugar nenhum — num box só com WAN estática, ou
 # no Debian 13, ele legitimamente não existe).
-ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/nftables.conf /etc/sysctl.d -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp
+ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/sysctl.d -/etc/nftables.conf -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp
 ProtectHome=yes
 PrivateTmp=yes
 

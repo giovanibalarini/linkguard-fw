@@ -26,6 +26,12 @@
 // runs after the binary is unpacked; install.sh and `make install` do it
 // right after copying the binary into place.
 //
+// Existe um QUARTO chamador, e ele não é um instalador: a própria unidade,
+// em `ExecStartPre=-+/usr/local/bin/linkguard-fw --prepare-system-at-start`.
+// Ele existe porque um dos caminhos — /etc/nftables.conf — é conffile do
+// pacote `nftables` e não pode ser criado de dentro de uma transação do
+// dpkg. Ver o tipo Stage.
+//
 // TestEveryUnprefixedReadWritePathIsPrepared and its siblings
 // (packaging_test.go) tie this list to the unit file and to the three
 // installers, so the next path added to ReadWritePaths= cannot silently
@@ -49,6 +55,41 @@ import (
 // first boot.
 const NftablesConfPath = "/etc/nftables.conf"
 
+// Stage says WHO is calling Prepare, because the answer changes what may be
+// created.
+//
+// O motivo é um defeito reproduzido em VM pelada: `/etc/nftables.conf` é
+// conffile do pacote `nftables`. Se o instalador do LinkGuard o cria e o
+// dpkg desempacota o `nftables` DEPOIS (o que é livre para acontecer, porque
+// a base fica em Recommends: e não em Depends:), o dpkg encontra um conffile
+// que ele não escreveu e para para perguntar a quem obedecer:
+//
+//	Configuration file '/etc/nftables.conf'
+//	 ==> File on system created by you or by a script.
+//	*** nftables.conf (Y/I/N/O/D/Z) [default=N] ? dpkg: error processing
+//	    package nftables (--configure): end of file on stdin at conffile prompt
+//
+// Interativo o apt trava esperando; não interativo ele morre e o `nftables`
+// fica em `iU`. `DEBIAN_FRONTEND=noninteractive` não cobre isso — prompt de
+// conffile é do dpkg, não do debconf.
+//
+// A saída não é criar o arquivo mais cedo nem mais tarde no postinst: é
+// criá-lo FORA da transação do dpkg, na partida do serviço (ExecStartPre=-+
+// na unidade). Nesse instante o apt já terminou, e o pacote `nftables` — se
+// veio junto — já registrou o conffile dele. Ver o comentário de
+// OnlyAtServiceStart para a semântica do systemd que foi medida antes de
+// escolher isto.
+type Stage int
+
+const (
+	// StageInstall é o postinst do .deb, o deploy/install.sh e o
+	// `make install`: rodam com o dpkg no comando (ou logo antes dele).
+	StageInstall Stage = iota
+	// StageServiceStart é o ExecStartPre da unidade, fora de qualquer
+	// transação do dpkg.
+	StageServiceStart
+)
+
 // nftablesConfSeed is what an empty, LinkGuard-owned ruleset file looks like.
 // Creating it empty is safe: the first Persist() rewrites the whole file, and
 // this header is exactly what Persist() generates on top.
@@ -71,6 +112,24 @@ type Entry struct {
 	// Why is the one-line reason, printed by --prepare-system so an operator
 	// reading the install log can tell what this is for.
 	Why string
+	// OnlyAtServiceStart marks an object que os instaladores NÃO podem criar
+	// (ver Stage): ele só nasce no ExecStartPre da unidade.
+	//
+	// Isto só é seguro por causa de duas coisas medidas no systemd 257
+	// (Debian 13), não presumidas — o roteiro está em
+	// TestPreparoDeStartExigeCaminhoOpcionalEExecStartPrePrivilegiado:
+	//
+	//  1. O namespace de montagem é montado UMA VEZ POR COMANDO, não uma vez
+	//     por unidade. Um ExecStartPre que cria o caminho é enxergado pelo
+	//     ExecStart, que monta o namespace dele depois — com o caminho já
+	//     existindo, ele entra como gravável.
+	//  2. O prefixo `+` tira o comando do ProtectSystem=strict (sem ele,
+	//     escrever em /etc devolve "Read-only file system"), mas NÃO o tira
+	//     da montagem do namespace: com a entrada sem `-` em
+	//     ReadWritePaths=, o próprio ExecStartPre=+ morre em 226/NAMESPACE
+	//     antes de criar coisa alguma. Por isso toda entrada marcada aqui
+	//     PRECISA aparecer na unidade com o prefixo `-`.
+	OnlyAtServiceStart bool
 }
 
 // Entries is the whole contract, in the order they are created.
@@ -84,8 +143,13 @@ var Entries = []Entry{
 		Why: "configuração do LinkGuard",
 	},
 	{
+		// OnlyAtServiceStart: este é o único caminho da lista que pertence a
+		// OUTRO pacote (é conffile do `nftables`). Criá-lo no postinst fazia
+		// `apt install ./linkguard-fw_*.deb` numa máquina pelada parar no
+		// prompt de conffile do dpkg — ver Stage.
 		Path: NftablesConfPath, Dir: false, Mode: 0o644, Seed: nftablesConfSeed,
-		Why: "regras do firewall; sem ele a unidade morre em 226/NAMESPACE e nunca chega a instalar o nftables",
+		Why:                "regras do firewall; sem ele a unidade morre em 226/NAMESPACE e nunca chega a instalar o nftables",
+		OnlyAtServiceStart: true,
 	},
 	{
 		Path: "/etc/kea", Dir: true, Mode: 0o755,
@@ -124,11 +188,18 @@ var Entries = []Entry{
 // filesystem; a temp dir in tests). It is idempotent and never touches an
 // object that already exists.
 //
+// stage decide o que pode ser criado: um instalador (StageInstall) roda
+// dentro da transação do dpkg e por isso não toca em objeto de outro pacote;
+// a partida do serviço (StageServiceStart) roda fora dela e cria tudo.
+//
 // It returns one human-readable line per object it actually created — the
 // install log an operator reads — and the first error that stopped it.
-func Prepare(root string) ([]string, error) {
+func Prepare(root string, stage Stage) ([]string, error) {
 	var created []string
 	for _, e := range Entries {
+		if e.OnlyAtServiceStart && stage != StageServiceStart {
+			continue
+		}
 		path := filepath.Join(root, e.Path)
 		if _, err := os.Stat(path); err == nil {
 			continue

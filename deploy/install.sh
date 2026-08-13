@@ -59,11 +59,15 @@ install -m 0755 "${BINARY_SRC}" "${INSTALL_BIN}"
 # caminhos mora em internal/sysprep (um lugar só).
 #
 # Sem isto, instalar por este script deixava o serviço em loop de
-# 226/NAMESPACE ("Failed to set up mount namespacing: /etc/nftables.conf: No
+# 226/NAMESPACE ("Failed to set up mount namespacing: /etc/sysctl.d: No
 # such file or directory") — e cada tentativa disparava o
 # OnFailure=linkguard-notify-down.service.
+#
+# O /etc/nftables.conf NÃO sai daqui: ele é conffile do pacote `nftables` e
+# quem o cria é o ExecStartPre da unidade, fora de qualquer transação do
+# dpkg. Ver internal/sysprep, tipo Stage.
 
-info "Preparing system paths (nftables.conf, config/state dirs, DHCP/DNS dirs)..."
+info "Preparing system paths (config/state dirs, DHCP/DNS dirs)..."
 "${INSTALL_BIN}" --prepare-system
 
 # ─── Default config ──────────────────────────────────────────────────────────

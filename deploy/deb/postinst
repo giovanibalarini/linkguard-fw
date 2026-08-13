@@ -20,6 +20,14 @@ case "$1" in
     # quem instalava pelos outros dois ficava com o serviço em loop de
     # 226/NAMESPACE. O binário já está desempacotado quando o postinst roda.
     #
+    # O que este postinst NÃO cria é o /etc/nftables.conf: ele é conffile do
+    # pacote `nftables`, e criá-lo aqui — dentro da transação do dpkg, que é
+    # livre para desempacotar o `nftables` DEPOIS, já que a base fica em
+    # Recommends: — fazia `apt install ./linkguard-fw_*.deb` numa máquina
+    # pelada parar no prompt de conffile do dpkg, com o `nftables` em `iU`.
+    # Quem o cria é o ExecStartPre da unidade, fora do apt. Ver
+    # internal/sysprep, tipo Stage.
+    #
     # Não aborta a configuração do pacote em caso de falha: um pacote em `iU`
     # não deixa painel nenhum para explicar o que houve, que é justamente o
     # que este produto evita.
