@@ -63,13 +63,20 @@ const SYSTEM_KINDS: Record<string, {
   empty: string;
 }> = {
   [KIND_BLOCKED_HOSTS]: {
-    what: 'Qualquer tráfego de ou para estes hosts é descartado. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo.',
+    // O alcance real é o da chain: as duas linhas vivem na forward, e só
+    // nela. Dizer "qualquer tráfego" era falso justamente onde mais engana —
+    // um host "bloqueado" continua abrindo o painel, o SSH, o DNS e o DHCP
+    // do próprio firewall, porque isso é input, não forward.
+    what: 'Todo tráfego ROTEADO de ou para estes hosts é descartado: eles não saem para a internet nem alcançam outra rede através do firewall. O que eles ainda alcançam é o próprio firewall (painel, SSH, DNS e DHCP), porque estas linhas ficam só na chain forward. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo.',
     lines: ['ip saddr @blocked_hosts counter drop', 'ip daddr @blocked_hosts counter drop'],
     member: ['host', 'hosts'],
     empty: 'Nenhum host bloqueado.',
   },
   [KIND_BLOCKLIST]: {
-    what: 'Qualquer tráfego de ou para estes destinos é descartado — a faixa vale como origem e como destino. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo.',
+    // Mesma correção do kind acima, pelo mesmo motivo: só a forward. O que o
+    // PRÓPRIO firewall inicia para um destino bloqueado (atualização,
+    // consulta DNS dele) é output e não passa por estas linhas.
+    what: 'Todo tráfego ROTEADO de ou para estes destinos é descartado — a faixa vale como origem e como destino. Estas linhas ficam só na chain forward: o que o próprio firewall inicia para esses destinos não passa por elas. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo.',
     lines: ['ip daddr @blocklist counter drop', 'ip saddr @blocklist counter drop'],
     member: ['faixa', 'faixas'],
     empty: 'Nenhum destino bloqueado.',
