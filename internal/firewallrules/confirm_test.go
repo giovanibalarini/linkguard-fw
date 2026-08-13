@@ -1350,3 +1350,53 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+// M-2 da revisão final — a contagem que o painel mostra tem que sair do MESMO
+// relógio que decide reverter.
+//
+// Ela saía de `time.Until(expires_at)`, relógio de PAREDE, enquanto quem reverte
+// olha o deadline monotônico (windowExpired). Numa máquina que É o servidor NTP
+// da rede — chrony com `makestep` ligado —, um passo do relógio faz as duas
+// respostas divergirem: a tela diz "faltam 11 minutos" e o LinkGuard reverte em
+// 60 segundos. O operador usa esse número para decidir se ainda dá tempo de
+// testar o SSH antes de confirmar.
+func TestSecondsLeftComesFromTheClockThatDecidesToRevert(t *testing.T) {
+	db := newTestDB(t)
+	svc, _ := newBootedService(t, db)
+	clock := newFakeClock(time.Now())
+	clock.wire(svc)
+
+	before, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-00000000m201", "Trava SSH")
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
+		t.Fatalf("abrir janela: %v", err)
+	}
+
+	clock.advance(30 * time.Second)
+	if got := svc.SecondsLeft(pending(t, svc)); got != 60 {
+		t.Fatalf("30 s decorridos de 90: esperava 60 segundos restantes, obtive %d", got)
+	}
+
+	// O chrony dá um passo para TRÁS de dez minutos. O expires_at gravado vai
+	// para o futuro; o tempo decorrido não mudou nada.
+	clock.jumpWall(-10 * time.Minute)
+	if got := svc.SecondsLeft(pending(t, svc)); got != 60 {
+		t.Errorf("depois de um passo do relógio para trás, a contagem da tela passou a discordar da reversão: esperava 60, obtive %d", got)
+	}
+
+	// E as duas continuam de acordo na hora que importa: o watchdog reverte
+	// agora, e a tela mostra zero.
+	clock.advance(60 * time.Second)
+	if got := svc.SecondsLeft(pending(t, svc)); got != 0 {
+		t.Errorf("prazo vencido pelo relógio que decide: esperava 0, obtive %d", got)
+	}
+	if err := svc.CheckPendingExpired(context.Background()); err != nil {
+		t.Fatalf("o watchdog não reverteu no instante em que a tela mostrou zero: %v", err)
+	}
+	if p := pending(t, svc); p != nil {
+		t.Errorf("a janela continuou aberta depois de a contagem chegar a zero: %+v", p)
+	}
+}

@@ -1,7 +1,9 @@
 package handlers_test
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -59,4 +61,32 @@ func mustJSON(t *testing.T, m map[string]any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(b)
+}
+
+// M-3 da revisão final — o rollback é a operação que mais briga com uma reversão
+// em andamento: ele reescreve o RULESET INTEIRO (`flush ruleset` dentro de
+// Service.Restore) e, até aqui, era a única mutação que não consultava a trava
+// da janela de confirmação. Disparado no meio dos 90 segundos, ele escreve por
+// cima do que o watchdog acabou de impor, e a reconciliação que viria depois
+// falha em silêncio — slog.Warn e HTTP 200 na tela.
+func TestRollbackIsRefusedWhileAConfirmWindowIsOpen(t *testing.T) {
+	h, db, exec, fr := newGroupTestHandlerFR(t)
+
+	backup := &storage.IptablesBackup{Label: "antes-do-incidente", Rules: "table inet linkguard {\n}\n"}
+	if err := db.CreateIptablesBackup(backup); err != nil {
+		t.Fatalf("CreateIptablesBackup: %v", err)
+	}
+	if _, err := fr.OpenConfirmWindow(context.Background(), "admin", "grupo de escopo input aplicado"); err != nil {
+		t.Fatalf("abrir a janela: %v", err)
+	}
+
+	w := doJSON(t, h.Rollback, "POST", "/api/nftables/rollback", `{"backup_id":"`+backup.ID+`"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("o rollback tinha que ser recusado com a janela aberta: status %d, body %s", w.Code, w.Body.String())
+	}
+	// E a recusa não pode ter tocado no firewall vivo: `nft -f` é o comando com
+	// que Restore aplica o snapshot inteiro.
+	if exec.ranWith("nft -f") {
+		t.Error("o rollback recusado chegou a reescrever o ruleset")
+	}
 }

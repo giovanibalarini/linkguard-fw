@@ -111,9 +111,14 @@ func TestDescribeRuleNTPAcceptSingleNetwork(t *testing.T) {
 	}
 }
 
+// M-6 da revisão final: a fixture estava na ordem `{ 192.168.3.0/24,
+// 10.20.0.0/24 }`, que o nft NUNCA imprime — ele ordena os elementos do set, e
+// 10.20 vem antes de 192.168. Fixture que não é a saída do nft não prova nada
+// sobre a linha que o painel vai receber dele. Mesma classe de defeito já
+// corrigida em overview_test.go (M-2 daquela revisão).
 func TestDescribeRuleNTPAcceptMultipleNetworks(t *testing.T) {
-	got := describeRule(InputChain, "udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } accept")
-	want := "Aceita NTP vindo de 192.168.3.0/24, 10.20.0.0/24"
+	got := describeRule(InputChain, "udp dport 123 ip saddr { 10.20.0.0/24, 192.168.3.0/24 } accept")
+	want := "Aceita NTP vindo de 10.20.0.0/24, 192.168.3.0/24"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

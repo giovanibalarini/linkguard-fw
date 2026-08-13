@@ -784,6 +784,42 @@ func (s *Service) windowExpired(p *storage.PendingChange) bool {
 	return !s.now().Before(p.ExpiresAt)
 }
 
+// SecondsLeft é quanto tempo falta para esta janela ser revertida, em segundos,
+// medido pelo MESMO relógio que decide a hora de reverter (windowExpired).
+//
+// É o número que o painel desenha, e por isso ele não pode sair de outro relógio
+// (M-2 da revisão final). O `expires_at` que vai no corpo é relógio de PAREDE, e
+// esta máquina É o servidor NTP da rede: depois de um `makestep` do chrony —
+// para trás ou para a frente — a subtração `expires_at - agora` deixa de
+// descrever o prazo real. Enquanto houver deadline monotônico desta janela
+// (janela aberta neste processo), quem responde é ele: a contagem da tela e a
+// reversão passam a ser a mesma coisa medida uma vez. Depois de um restart não
+// existe leitura monotônica comparável, e aí o expires_at é a única fonte que
+// há — o mesmo desempate de windowExpired, para a resposta nunca divergir dela.
+//
+// Trunca em vez de arredondar e nunca devolve negativo: com 89,6 segundos ele
+// diz 89. O erro fica sempre do lado de mostrar MENOS tempo do que há — quem
+// acha que tem um segundo a menos confirma um segundo mais cedo; quem acha que
+// tem um a mais descobre pelo acesso caindo.
+//
+// p nil devolve 0. Não há janela; não há contagem.
+func (s *Service) SecondsLeft(p *storage.PendingChange) int {
+	if p == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	left := p.ExpiresAt.Sub(s.now())
+	if s.monoDeadlineID == p.ID {
+		left = s.monoDeadline.Sub(s.monoNow())
+	}
+	if left < 0 {
+		return 0
+	}
+	return int(left.Seconds())
+}
+
 // RevertPendingOnBoot é a verificação que roda no boot, ANTES de qualquer
 // reconciliação (ver cmd/linkguard-fw/main.go).
 //

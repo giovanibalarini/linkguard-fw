@@ -860,25 +860,36 @@ func (h *NftablesHandler) ListBackups(w http.ResponseWriter, r *http.Request) {
 
 // Rollback restores a stored ruleset snapshot via nft.
 //
-// REGISTRADO, NÃO CORRIGIDO (revisão da Fase C2). Este é o único endpoint de
-// mutação que reescreve o firewall INTEIRO — Service.Restore emite `flush
-// ruleset`, a dívida conhecida deste projeto — e é também o único que NÃO
-// consulta confirmWindowBlocks. Não é furo do arme da janela (o rollback não
-// mexe em grupo nem em regra do banco, então ele não abre janela nenhuma e não
-// deixa reversão pela metade), mas é a operação que mais briga com uma reversão
-// em andamento: um rollback disparado enquanto o watchdog tenta restaurar o
-// estado anterior escreve por cima do que ele acabou de impor, e o Reconcile
-// que vem logo abaixo — a única coisa que devolve o banco ao comando — falha em
-// silêncio, com um slog.Warn e um HTTP 200 na tela. Travá-lo com a janela
-// aberta, e transformar aquele Warn em erro visível, é trabalho de uma tarefa
-// própria: ele mexe no ruleset inteiro, inclusive nas partes que o snapshot da
-// janela não cobre.
+// Este é o único endpoint de mutação que reescreve o firewall INTEIRO —
+// Service.Restore emite `flush ruleset`, a dívida conhecida deste projeto —, e é
+// a operação que mais briga com uma reversão em andamento: um rollback disparado
+// enquanto o watchdog tenta restaurar o estado anterior escreve por cima do que
+// ele acabou de impor, e o Reconcile que vem logo abaixo — a única coisa que
+// devolve o banco ao comando — falha em silêncio, com um slog.Warn e um HTTP 200
+// na tela.
+//
+// M-3 da revisão final: por isso ele passou a consultar confirmWindowBlocks,
+// como toda mutação de grupo e regra. Ele continua não ABRINDO janela (não mexe
+// em grupo nem em regra do banco, e o snapshot da janela não cobre o que ele
+// restaura), mas recusá-lo enquanto uma janela corre custa ao operador esperar
+// 90 segundos e evita que ele desfaça por baixo a rede de proteção de outra
+// pessoa. O estado "revertendo" com o banco já restaurado LIBERA sozinho
+// (RevertSettled), então isto não cria beco: a saída do operador cuja
+// reconciliação não passa continua existindo.
+//
+// O que continua REGISTRADO e não corrigido: o `slog.Warn` do Reconcile abaixo
+// segue respondendo 200 na tela.
 func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		BackupID string `json:"backup_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// Depois de ler o corpo e antes de qualquer acesso ao banco, exatamente como
+	// nas dez mutações de grupo e regra (ver confirmWindowBlocks).
+	if h.confirmWindowBlocks(w, r) {
 		return
 	}
 	backups, err := h.db.GetIptablesBackups(100)

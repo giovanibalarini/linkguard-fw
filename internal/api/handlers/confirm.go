@@ -48,12 +48,20 @@ import (
 //     nenhum dos dois botões (ConfirmPending recusa), e o texto tem que dizer
 //     que a reversão está em curso.
 //
-// SecondsLeft é a contagem regressiva medida pelo RELÓGIO DO SERVIDOR — o mesmo
-// relógio que o watchdog usa para decidir a hora de reverter. Ele existe porque
-// ExpiresAt sozinho obriga o painel a comparar um instante do servidor com o
-// Date.now() da estação do operador: um relógio adiantado em 40 segundos mostra
-// "45 s" quando restam 5, e o operador usa exatamente esse número para decidir
-// se ainda dá tempo de testar o SSH antes de confirmar.
+// SecondsLeft é a contagem regressiva medida pelo relógio que DECIDE a hora de
+// reverter — firewallrules.SecondsLeft, o mesmo desempate de windowExpired
+// (monotônico enquanto a janela é deste processo, expires_at depois de um
+// restart). Ele existe porque ExpiresAt sozinho obriga o painel a comparar um
+// instante do servidor com o Date.now() da estação do operador: um relógio
+// adiantado em 40 segundos mostra "45 s" quando restam 5, e o operador usa
+// exatamente esse número para decidir se ainda dá tempo de testar o SSH antes de
+// confirmar.
+//
+// M-2 da revisão final: este campo saía de `time.Until(expires_at)`, isto é, do
+// relógio de PAREDE, enquanto quem reverte olha o deadline MONOTÔNICO. Numa
+// máquina que É o servidor NTP da rede, um `makestep` do chrony fazia a
+// contagem da tela e a reversão de verdade discordarem — e o comentário aqui
+// afirmava que era "o mesmo relógio que o watchdog usa".
 //
 // Ele é RECALCULADO a cada resposta e não é gravado em lugar nenhum: um
 // seconds_left persistido seria a contagem de quando a linha foi escrita. E
@@ -70,19 +78,10 @@ type pendingView struct {
 	RevertingAt *time.Time `json:"reverting_at,omitempty"`
 }
 
-// secondsUntil trunca em vez de arredondar, e nunca devolve negativo: com 89,6
-// segundos restando ele diz 89. O erro fica sempre do lado de mostrar MENOS
-// tempo do que há — um operador que acha que tem um segundo a menos confirma um
-// segundo mais cedo; um que acha que tem um a mais descobre pelo acesso caindo.
-func secondsUntil(t time.Time) int {
-	s := int(time.Until(t).Seconds())
-	if s < 0 {
-		return 0
-	}
-	return s
-}
-
-func newPendingView(p *storage.PendingChange) *pendingView {
+// pendingView desenha a janela para o painel. É método do handler, e não uma
+// função solta, por causa de um campo só: SecondsLeft tem que sair do serviço —
+// é lá que mora o relógio que decide reverter (M-2).
+func (h *NftablesHandler) pendingView(p *storage.PendingChange) *pendingView {
 	if p == nil {
 		return nil
 	}
@@ -91,7 +90,7 @@ func newPendingView(p *storage.PendingChange) *pendingView {
 		Summary:     p.Summary,
 		AppliedBy:   p.AppliedBy,
 		ExpiresAt:   p.ExpiresAt,
-		SecondsLeft: secondsUntil(p.ExpiresAt),
+		SecondsLeft: h.fr.SecondsLeft(p),
 		CreatedAt:   p.CreatedAt,
 		Reverting:   p.Reverting(),
 	}
@@ -150,7 +149,7 @@ func (h *NftablesHandler) PendingChange(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, pendingResponse{Pending: newPendingView(p)})
+	writeJSON(w, http.StatusOK, pendingResponse{Pending: h.pendingView(p)})
 }
 
 // ConfirmPendingChange (POST /api/nftables/pending/confirm) é o operador
@@ -344,7 +343,7 @@ func (h *NftablesHandler) openConfirmWindow(w http.ResponseWriter, r *http.Reque
 		slog.Warn("a janela armada por esta mutação já não é a que está aberta; a resposta vai sem a faixa", "armada", id)
 		return armedWindow{armed: true, id: id}, true
 	}
-	return armedWindow{armed: true, id: id, view: newPendingView(p)}, true
+	return armedWindow{armed: true, id: id, view: h.pendingView(p)}, true
 }
 
 // discardArmedWindow desfaz a janela quando a mutação falhou na ESCRITA NO
