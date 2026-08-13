@@ -179,15 +179,23 @@ const nftablesUnit = "nftables"
 // caminho ninguém habilita nada. O resultado é uma máquina em que:
 //
 //   - Persist() reescreve /etc/nftables.conf a cada reconciliação e nada
-//     nunca lê o arquivo — persistência que só existe no papel;
+//     nunca lê o arquivo — persistência que só existe no papel. Este é o
+//     motivo PRINCIPAL, e é o que sozinho justifica a função;
 //   - em todo reboot a tabela não existe, EnsureTable devolve true e o boot
-//     cai no Restore(snapshot), que começa com `flush ruleset`. A regra de
-//     ouro do produto ("o LinkGuard só mexe na tabela dele", README) passa a
-//     ser violada uma vez por reboot, apagando toda tabela de terceiro
-//     (docker, libvirt, fail2ban) criada depois do último snapshot;
+//     cai no Restore(snapshot) — ou seja, o firewall da máquina passa a
+//     depender do último snapshot gravado no banco em vez do arquivo de boot,
+//     e o que não estiver nesse snapshot não volta;
 //   - se esse Restore falhar, os named sets voltam vazios enquanto as linhas
 //     de drop continuam na forward: o painel afirma "host bloqueado" com o
 //     tráfego passando.
+//
+// Correção de 2026-08-13: o segundo item dizia que o Restore "começa com
+// `flush ruleset`" e concluía que a regra de ouro do produto ("o LinkGuard só
+// mexe na tabela dele", README) era violada uma vez por reboot, apagando toda
+// tabela de terceiro criada depois do último snapshot. Isso deixou de ser
+// verdade — nftables.Service.Restore é escopado à tabela `inet linkguard` desde
+// o commit `4450769` e não toca em tabela de terceiro nenhuma. A função continua
+// necessária pelos outros dois motivos, que não dependem daquele.
 //
 // Por que aqui, e não no postinst: o postinst roda no instante da instalação,
 // quando o nftables normalmente ainda NÃO está instalado (é o próprio

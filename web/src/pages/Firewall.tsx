@@ -113,7 +113,12 @@ export default function Firewall() {
   };
 
   const handleBackup =() => run(() => client.post('/api/nftables/backup', { label: '' }), 'Snapshot criado.');
-  const handleRollback = (b: IptablesBackup) => confirm(`Restaurar o ruleset do snapshot "${b.label}"?`) && run(() => client.post('/api/nftables/rollback', { backup_id: b.id }), 'Ruleset restaurado.');
+  // "a tabela `inet linkguard`", e não "o ruleset": desde que o restore deixou de
+  // dar `flush ruleset` (commit 4450769) o que ele reescreve é SÓ a tabela do
+  // LinkGuard. A diferença importa na hora de clicar — é exatamente ela que
+  // preserva as tabelas de terceiros (docker, libvirt, tailscale) da máquina, e
+  // é o que o operador precisa saber antes de confirmar.
+  const handleRollback = (b: IptablesBackup) => confirm(`Restaurar a tabela "inet linkguard" a partir do snapshot "${b.label}"? As tabelas de outros programas (docker, libvirt, ...) não são tocadas.`) && run(() => client.post('/api/nftables/rollback', { backup_id: b.id }), 'Tabela inet linkguard restaurada.');
 
   return (
     <div className="p-6 space-y-6">
