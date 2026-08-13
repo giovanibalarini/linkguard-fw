@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/disksmart"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
@@ -125,8 +126,19 @@ type HealthItem struct {
 func (c *Collector) checkServices(cfg Config) {
 	now := c.nowFn()
 	for _, svc := range cfg.Services {
-		up := c.isActive(svc)
 		key := "service:" + svc
+		verdict := c.probeService(svc)
+		if verdict == svcNotOurs {
+			// Nem queda nem saúde: a unidade não está na máquina (pacote sob
+			// demanda que o admin nunca ligou) ou foi mascarada por decisão
+			// de quem administra. Sai do mapa de saúde em vez de aparecer
+			// vermelha no painel: item vermelho para algo que ninguém pediu
+			// é dado falso, e alerta crítico para isso treina o operador a
+			// ignorar a tela.
+			c.forgetHealth(key)
+			continue
+		}
+		up := verdict == svcUp
 		tr := c.observe(key, up, now)
 		c.ensureMeta(key, svc, "service")
 		if c.rec != nil {
@@ -143,6 +155,14 @@ func (c *Collector) checkServices(cfg Config) {
 			_ = c.alertSvc.ServiceOnline(svc)
 		}
 	}
+}
+
+// forgetHealth removes an item the vigia can no longer say anything true
+// about, so Snapshot (the painel) stops showing it.
+func (c *Collector) forgetHealth(key string) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	delete(c.health, key)
 }
 
 // checkResource applies transition + anti-flap alerting to a host resource
@@ -191,14 +211,101 @@ func (c *Collector) ensureMeta(key, name, kind string) {
 	}
 }
 
-// isActive reports whether a systemd unit is active. The service name is
-// validated against serviceNameRe before reaching the shell (defense-in-depth).
-func (c *Collector) isActive(svc string) bool {
+// serviceVerdict is what the vigia can honestly conclude about a monitored
+// unit. O terceiro valor é o que faltava: "não é para estar rodando" não é
+// queda.
+type serviceVerdict int
+
+const (
+	svcUp serviceVerdict = iota
+	svcDown
+	// svcNotOurs: a unidade não existe na máquina, ou foi mascarada. Não há
+	// queda para relatar.
+	svcNotOurs
+)
+
+// probeService decide se uma unidade vigiada caiu.
+//
+// A pergunta antiga era `systemctl is-active`, e ela produzia um alerta
+// CRITICAL falso — reproduzido em VM pelada, duas vezes:
+//
+//	nftables  is-active=inactive  is-enabled=enabled  LoadState=loaded
+//	          ActiveState=inactive  Type=oneshot
+//	[vigia] alert created type=service_offline severity=critical
+//	        title="Serviço offline: nftables"
+//
+// Nada estava errado. O `nftables.service` é `Type=oneshot`: ele carrega o
+// /etc/nftables.conf no boot e termina — não é um daemon, e "inactive" é o
+// repouso normal dele. Mais que isso: quem o deixa parado é o próprio
+// LinkGuard, de propósito e por escrito (bootstrapdeps.EnsureNftablesUnitEnabled
+// habilita a unidade mas NUNCA a inicia, porque o `ExecStop` do unit do
+// Debian é `nft flush ruleset` e iniciá-la agora recarregaria o arquivo por
+// cima do ruleset vivo). O vigia acusava de queda exatamente a decisão que o
+// produto tomou. Numa máquina recém-instalada, que ainda não rebootou, o
+// alerta nascia ~60 s depois de subir e só se fechava quando alguém
+// reiniciasse a máquina.
+//
+// A pergunta certa para uma unidade oneshot não é "está ativa?", é "ela
+// falhou?". Um `nft -f` recusado no boot deixa a unidade em `failed`, e ISSO
+// continua sendo alerta — é o caso que importa, porque aí as regras não
+// foram carregadas.
+//
+// E o mesmo raciocínio cobre os outros dois vigiados (kea-dhcp4-server e
+// unbound, que são daemons de verdade): eles são instalados SOB DEMANDA,
+// quando o admin liga DHCP/DNS no painel. Numa máquina onde ele nunca ligou,
+// a unidade nem existe (`LoadState=not-found`) e o vigia dizia "Serviço
+// offline: kea-dhcp4-server". Ausência não é queda.
+//
+// O nome do serviço é validado contra serviceNameRe antes de chegar ao shell
+// (defense-in-depth).
+func (c *Collector) probeService(svc string) serviceVerdict {
 	if !serviceNameRe.MatchString(svc) {
-		return false
+		return svcNotOurs
 	}
-	_, err := c.exec.ExecuteRead(context.Background(), "systemctl", "is-active", svc)
-	return err == nil
+	// `systemctl show` responde 0 mesmo para unidade que não existe (devolve
+	// LoadState=not-found), então o erro aqui significa "não consegui
+	// perguntar" — sem systemd, timeout, binário ausente. Nesse caso a
+	// resposta honesta é "não sei", nunca "caiu": um critical falso é pior
+	// que alerta nenhum.
+	out, err := c.exec.ExecuteRead(context.Background(), "systemctl", "show", svc,
+		"-p", "LoadState", "-p", "ActiveState", "-p", "Type")
+	if err != nil {
+		return svcNotOurs
+	}
+	props := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			props[k] = v
+		}
+	}
+
+	switch props["LoadState"] {
+	case "":
+		// Saída vazia/irreconhecível: mesmo raciocínio do erro acima.
+		return svcNotOurs
+	case "not-found":
+		// Pacote sob demanda que o admin nunca ligou.
+		return svcNotOurs
+	case "masked", "masked-runtime":
+		// Mascarar é decisão explícita de quem administra a máquina.
+		return svcNotOurs
+	}
+
+	switch props["ActiveState"] {
+	case "failed":
+		// Vale para daemon e para oneshot: a unidade tentou e não conseguiu.
+		return svcDown
+	case "active", "activating", "reloading", "refreshing":
+		return svcUp
+	}
+
+	// Sobram "inactive" e "deactivating".
+	if props["Type"] == "oneshot" {
+		// Carregar e sair (ou ainda não ter rodado nesta sessão) é o repouso
+		// normal de uma oneshot. "Up" aqui quer dizer "não falhou".
+		return svcUp
+	}
+	return svcDown
 }
 
 // checkNTP verifies the system clock is NTP-synchronized and raises/clears

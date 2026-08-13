@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 func newTestCollector() *Collector {
@@ -57,8 +58,27 @@ func TestObserveDownAtStartupAlertsOnConfirm(t *testing.T) {
 	}
 }
 
+// unitShape é o que o `systemctl show` responderia sobre uma unidade.
+type unitShape struct {
+	loadState   string // loaded / not-found / masked
+	activeState string // active / inactive / failed / activating
+	unitType    string // simple / notify / oneshot
+}
+
+// daemon e oneshot são atalhos para as duas formas que existem na lista de
+// serviços vigiados: kea/unbound são daemons, nftables é oneshot.
+func daemon(activeState string) unitShape {
+	return unitShape{loadState: "loaded", activeState: activeState, unitType: "notify"}
+}
+
+func oneshot(activeState string) unitShape {
+	return unitShape{loadState: "loaded", activeState: activeState, unitType: "oneshot"}
+}
+
 type fakeExec struct {
 	active      map[string]bool
+	units       map[string]unitShape
+	showErr     error
 	ntpSynced   string // valor de retorno de `timedatectl show ...` ("yes"/"no")
 	findmntOut  string
 	lsblkOut    string
@@ -72,6 +92,27 @@ func (f *fakeExec) Execute(_ context.Context, _ string, _ ...string) (string, er
 func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
 	switch cmd {
 	case "systemctl":
+		if len(args) > 1 && args[0] == "show" {
+			if f.showErr != nil {
+				return "", f.showErr
+			}
+			u, ok := f.units[args[1]]
+			if !ok {
+				// O que o systemd real responde para uma unidade que não
+				// existe: exit 0 e LoadState=not-found. Quando o teste só
+				// declarou `active`, traduz para a forma de um daemon.
+				if f.active != nil {
+					if f.active[args[1]] {
+						u = daemon("active")
+					} else {
+						u = daemon("inactive")
+					}
+				} else {
+					u = unitShape{loadState: "not-found", activeState: "inactive"}
+				}
+			}
+			return "Type=" + u.unitType + "\nLoadState=" + u.loadState + "\nActiveState=" + u.activeState + "\n", nil
+		}
 		if len(args) == 2 && args[0] == "is-active" {
 			if f.active[args[1]] {
 				return "active\n", nil
@@ -118,6 +159,124 @@ func TestCheckServicesRaisesOnSecondDown(t *testing.T) {
 	}
 	if offline != 1 {
 		t.Fatalf("expected exactly 1 service_offline alert, got %d", offline)
+	}
+}
+
+// newServiceCollector monta um Collector de verdade para os testes de
+// checkServices, com o banco e o serviço de alertas reais.
+func newServiceCollector(t *testing.T, fe *fakeExec) (*Collector, *storage.DB) {
+	t.Helper()
+	db := openTestDB(t)
+	return &Collector{db: db, alertSvc: alerts.NewService(db), exec: fe,
+		health: map[string]*itemState{}, nowFn: seqClock()}, db
+}
+
+func countOffline(t *testing.T, db *storage.DB) int {
+	t.Helper()
+	all, _ := db.GetAlerts(false, 0)
+	n := 0
+	for _, a := range all {
+		if a.Type == alerts.TypeServiceOffline {
+			n++
+		}
+	}
+	return n
+}
+
+// O alerta crítico falso da validação em VM, em forma de teste.
+//
+// `nftables.service` é Type=oneshot: carrega o /etc/nftables.conf no boot e
+// termina. E quem o deixa parado é o próprio LinkGuard — ele habilita a
+// unidade e NUNCA a inicia (bootstrapdeps.EnsureNftablesUnitEnabled). Com
+// `systemctl is-active` respondendo "inactive", o vigia levantava
+// "Serviço offline: nftables" com severidade CRITICAL numa máquina onde nada
+// estava errado. Alerta crítico falso treina o operador a ignorar a tela.
+func TestOneshotParadaNaoEQuedaMasFalhaE(t *testing.T) {
+	fe := &fakeExec{units: map[string]unitShape{"nftables": oneshot("inactive")}}
+	c, db := newServiceCollector(t, fe)
+	cfg := Config{Enabled: true, Services: []string{"nftables"}}
+
+	// Muitas passadas: se "inactive" fosse tratado como queda, o anti-flap
+	// (duas leituras) já teria disparado na segunda.
+	for i := 0; i < 5; i++ {
+		c.checkServices(cfg)
+	}
+	if n := countOffline(t, db); n != 0 {
+		t.Fatalf("unidade oneshot parada gerou %d alerta(s) service_offline; "+
+			"ela carrega o arquivo e termina — parada é o repouso normal dela, e é o "+
+			"próprio LinkGuard que a deixa assim de propósito", n)
+	}
+
+	// E o caso que importa de verdade continua alertando: `nft -f` recusado
+	// no boot deixa a unidade em `failed`, e aí as regras NÃO foram
+	// carregadas.
+	fe.units["nftables"] = oneshot("failed")
+	c.checkServices(cfg)
+	c.checkServices(cfg)
+	if n := countOffline(t, db); n != 1 {
+		t.Fatalf("unidade oneshot em `failed` gerou %d alerta(s), esperava 1: "+
+			"esse é o caso em que o ruleset não foi carregado", n)
+	}
+}
+
+// Daemon de verdade parado continua sendo queda — o conserto acima não pode
+// ter emudecido o vigia inteiro.
+func TestDaemonParadoContinuaSendoQueda(t *testing.T) {
+	fe := &fakeExec{units: map[string]unitShape{"unbound": daemon("active")}}
+	c, db := newServiceCollector(t, fe)
+	cfg := Config{Enabled: true, Services: []string{"unbound"}}
+
+	c.checkServices(cfg)
+	fe.units["unbound"] = daemon("inactive")
+	c.checkServices(cfg) // 1ª queda: anti-flap segura
+	if n := countOffline(t, db); n != 0 {
+		t.Fatalf("uma leitura só já alertou (%d): o anti-flap sumiu", n)
+	}
+	c.checkServices(cfg) // 2ª queda: alerta
+	if n := countOffline(t, db); n != 1 {
+		t.Fatalf("daemon parado gerou %d alerta(s), esperava 1", n)
+	}
+}
+
+// Os outros dois vigiados (kea-dhcp4-server, unbound) são instalados SOB
+// DEMANDA, quando o admin liga DHCP/DNS no painel. Numa máquina onde ele
+// nunca ligou, a unidade não existe. Ausência não é queda — e um item
+// vermelho no painel para um serviço que ninguém pediu é dado falso.
+func TestUnidadeAusenteOuMascaradaNaoEQuedaENaoVaiParaOPainel(t *testing.T) {
+	for nome, forma := range map[string]unitShape{
+		"não instalada": {loadState: "not-found", activeState: "inactive"},
+		"mascarada":     {loadState: "masked", activeState: "inactive"},
+	} {
+		t.Run(nome, func(t *testing.T) {
+			fe := &fakeExec{units: map[string]unitShape{"kea-dhcp4-server": forma}}
+			c, db := newServiceCollector(t, fe)
+			cfg := Config{Enabled: true, Services: []string{"kea-dhcp4-server"}}
+			for i := 0; i < 5; i++ {
+				c.checkServices(cfg)
+			}
+			if n := countOffline(t, db); n != 0 {
+				t.Errorf("unidade %s gerou %d alerta(s) service_offline", nome, n)
+			}
+			for _, it := range c.Snapshot() {
+				if it.Name == "kea-dhcp4-server" {
+					t.Errorf("unidade %s apareceu no painel (Up=%v): dado falso", nome, it.Up)
+				}
+			}
+		})
+	}
+}
+
+// "Não consegui perguntar" (sem systemd, timeout, binário ausente) não pode
+// virar "caiu".
+func TestFalhaAoConsultarOSystemdNaoViraQueda(t *testing.T) {
+	fe := &fakeExec{showErr: assertErr{}}
+	c, db := newServiceCollector(t, fe)
+	cfg := Config{Enabled: true, Services: []string{"unbound"}}
+	for i := 0; i < 5; i++ {
+		c.checkServices(cfg)
+	}
+	if n := countOffline(t, db); n != 0 {
+		t.Fatalf("systemctl indisponível gerou %d alerta(s) service_offline", n)
 	}
 }
 
