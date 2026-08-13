@@ -1037,11 +1037,23 @@ func TestChangingConnStateOfAnInputGroupOpensTheWindow(t *testing.T) {
 // E soltar de volta também abre: sair de "só conexões novas" faz o grupo
 // voltar a derrubar o que já está de pé — inclusive a sessão do operador. Nos
 // dois sentidos vale a regra deste mecanismo: na dúvida, abre.
+//
+// As duas asserções do fim NÃO são decoração, e a revisão provou por quê: sem
+// elas, este teste continuava VERDE com o UpdateGroup ignorando b.ConnState
+// por completo. Ele mediria só "editar um grupo de input abre janela" — que
+// vale para qualquer edição, inclusive uma que não mudou nada — enquanto SOLTAR
+// a restrição é justamente o sentido que volta a derrubar conexão viva, e por
+// isso o que mais precisa da janela. Um teste que passa com a feature arrancada
+// é pior que teste nenhum: dá sensação de cobertura onde não há.
 func TestLooseningConnStateOfAnInputGroupAlsoOpensTheWindow(t *testing.T) {
-	h, db := newGroupTestHandler(t)
+	h, db, exec := newGroupTestHandlerNft(t)
 	g := createGroupViaAPI(t, h, db,
 		`{"name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"continue","conn_state":"new"}`)
 	confirmWindow(t, h)
+	// O ponto de partida é real, e não suposto: a linha viva nasceu restrita.
+	if line := jumpLineTo(t, exec, nftables.InputChain, g.ChainName); !strings.Contains(line, "ct state new") {
+		t.Fatalf("o teste ia medir a soltura de uma restrição que nunca existiu: %q", line)
+	}
 
 	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
 		`{"id":"`+g.ID+`","name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"continue","conn_state":"any"}`)
@@ -1050,6 +1062,14 @@ func TestLooseningConnStateOfAnInputGroupAlsoOpensTheWindow(t *testing.T) {
 	}
 	if pendingOf(t, w) == nil {
 		t.Errorf("soltar um grupo de input tinha que abrir a janela: %s", w.Body.String())
+	}
+	// A soltura aconteceu de verdade — no banco e na chain input VIVA. Só com
+	// as duas o teste guarda o caso que descreve.
+	if after := adminGroups(t, db)[0]; after.ConnState != nftables.ConnStateAny {
+		t.Fatalf("a soltura não chegou ao banco (mudei na tela e não aconteceu nada): %+v", after)
+	}
+	if line := jumpLineTo(t, exec, nftables.InputChain, g.ChainName); strings.Contains(line, "ct state") {
+		t.Errorf("a restrição ficou no firewall vivo depois de ser desfeita: %q", line)
 	}
 }
 

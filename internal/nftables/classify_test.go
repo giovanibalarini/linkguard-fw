@@ -157,7 +157,12 @@ func TestDescribeRuleCtStateRelatedIsInPortuguese(t *testing.T) {
 		t.Fatalf("a proteção base caiu no fallback e apareceria como expressão nft crua no painel: %q",
 			rule.Description)
 	}
-	want := "Aceita os erros ICMP de conexões já conhecidas (mantém o Path MTU Discovery funcionando)"
+	// O texto descreve o que a linha REALMENTE aceita — tudo que o conntrack
+	// marca como RELATED —, e não só os erros ICMP: `ct state related` também
+	// alcançaria um canal de dados previsto por helper de conntrack (FTP, SIP)
+	// destinado ao firewall. Prometer menos do que a regra faz é a mesma
+	// categoria de defeito que dizer "aplicada" para uma linha que não está.
+	want := "Aceita o que o conntrack liga a uma conexão já conhecida — na prática os erros ICMP (mantém o Path MTU Discovery funcionando)"
 	if rule.Description != want {
 		t.Errorf("descrição da proteção base:\n  obtive %q\n  queria %q", rule.Description, want)
 	}

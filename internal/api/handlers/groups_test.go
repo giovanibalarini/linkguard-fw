@@ -1759,40 +1759,29 @@ func TestUnknownConnStateIsRefused(t *testing.T) {
 	}
 }
 
-// Grupo do sistema (blocked_hosts, blocklist) não aceita o campo: é lista
-// fechada, renderizada por um mapa próprio, e bloqueio de host é justamente
-// onde se quer a marreta. Recusa com 400 — e, mais importante que o status, a
-// coluna dele continua vazia depois da tentativa.
-func TestSystemGroupRefusesConnState(t *testing.T) {
-	h, db := newGroupTestHandler(t)
-
-	groups, err := db.ListFirewallGroups()
-	if err != nil {
-		t.Fatalf("listar: %v", err)
-	}
-	var sys storage.FirewallGroup
-	for _, g := range groups {
-		if nftables.IsSystemGroup(g.Kind) {
-			sys = g
-			break
-		}
-	}
-	if sys.ID == "" {
-		t.Fatal("o ambiente de teste tem que ter os grupos do sistema criados")
-	}
-
-	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
-		`{"id":"`+sys.ID+`","name":"`+sys.Name+`","fallthrough":"continue","conn_state":"new"}`)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("restringir grupo do sistema: esperava 400, obtive %d (%s)", w.Code, w.Body.String())
-	}
-	after, err := db.ListFirewallGroups()
-	if err != nil {
-		t.Fatalf("listar: %v", err)
-	}
-	for _, g := range after {
-		if g.ID == sys.ID && g.ConnState != "" {
-			t.Errorf("o grupo do sistema foi restringido mesmo assim: %+v", g)
-		}
-	}
-}
+// Grupo do sistema (blocked_hosts, blocklist) não recebe `ct state new`: é
+// lista fechada, renderizada por um mapa próprio, e bloqueio de host é
+// justamente onde se quer a marreta — derrubar na hora inclusive o que já
+// estava estabelecido.
+//
+// NÃO HÁ TESTE DE API PARA ISSO AQUI, E É DE PROPÓSITO. Havia um
+// (TestSystemGroupRefusesConnState) e ele passava trivialmente: a guarda de
+// UpdateGroup recusa QUALQUER edição de grupo do sistema (groups.go, o
+// IsSystemGroup logo depois do findGroup) antes de sequer olhar o conn_state,
+// então o 400 que ele media não tinha nada a ver com o campo, e a asserção de
+// que a coluna continuou vazia era verdadeira mesmo com a feature inteira
+// arrancada. Pela mesma guarda, o campo também não tem caminho de CRIAÇÃO por
+// onde chegar a um grupo do sistema: CreateGroup nunca carimba Kind, e os
+// grupos do sistema nascem só de EnsureSystemGroups.
+//
+// A garantia real é do renderizador, onde ela pode de fato ser violada, e está
+// presa por dois testes em internal/nftables:
+//
+//   - TestSystemGroupNeverGetsCtState — o mapa que EMITE as linhas do sistema
+//     não produz `ct state` nem com ConnState: ConnStateNew no grupo, e a
+//     expressão por onde a forward viva é PROCURADA também não;
+//   - TestForwardChainKeepsSystemBlockLinesUntouchedByConnState — a forward
+//     reconstruída inteira mantém as linhas de bloqueio como sempre foram.
+//
+// Um teste que não guarda nada é pior que teste nenhum: dá sensação de
+// cobertura onde não há.

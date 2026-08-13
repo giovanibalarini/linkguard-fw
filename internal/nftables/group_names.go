@@ -101,7 +101,12 @@ func rewriteGroupJumpDescription(rule *ChainRule, groupNames map[string]string) 
 		// chegar ali": o que já está estabelecido passa reto sem ser
 		// avaliado. Dizer o texto do caso irrestrito aqui seria afirmar uma
 		// proteção mais larga do que a linha faz.
-		rule.Description = fmt.Sprintf("Avalia o grupo %q %s", name, newOnlySuffix)
+		//
+		// O travessão é o conector que faltava: sem ele a frase saía emendada
+		// (`Avalia o grupo "Acesso ao firewall" só para conexões novas`), lida
+		// como se algo tivesse sido cortado no meio — e é texto que o operador
+		// lê na Visão geral.
+		rule.Description = fmt.Sprintf("Avalia o grupo %q — %s", name, newOnlySuffix)
 	case cond == "":
 		rule.Description = fmt.Sprintf("Avalia o grupo %q (sem condição: vale para todo o tráfego que chegar ali)", name)
 	case newOnly:

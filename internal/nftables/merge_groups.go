@@ -106,6 +106,37 @@ func systemGroupExpressions(kind string) []string {
 //
 // Sem contrapartida viva, o contador fica com HasCounter=false — "não
 // medido" —, jamais com um zero, que significaria "medido, e deu zero".
+//
+// O QUE "APLICADA" SIGNIFICA AQUI, EXATAMENTE (dívida conhecida, I-1):
+//
+// Para um grupo do admin, Applied é PRESENÇA DO JUMP para a chain dele —
+// nunca EQUIVALÊNCIA da linha viva com a que o banco descreve. indexGroupJumps
+// lê só o alvo do último `jump ` e joga fora todo o resto da expressão, de modo
+// que um grupo gravado como "só conexões novas" cuja linha viva ainda é a
+// irrestrita (`... counter jump grp_x`, sem `ct state new`) aparece como
+// aplicado — e o inverso também: linha viva com `ct state new` e banco em
+// ConnStateAny. O mesmo vale, e desde antes desta coluna existir, para a
+// condição de entrada (cond_saddr, cond_daddr, cond_iif).
+//
+// O cenário em que isso morde: um grupo de escopo FORWARD (que não abre janela
+// de confirmação) é mudado para "só conexões novas" e a reconciliação falha
+// depois do UPDATE no banco — rebuildChain é `flush chain` + N × `add rule`,
+// não é atômico. O banco diz "new", o kernel tem a linha antiga, e o painel diz
+// "Aplicada": o operador acredita que parou de derrubar transferências em curso
+// e continua derrubando.
+//
+// POR QUE NÃO APERTAR O CRITÉRIO AQUI, AINDA. Exigir equivalência da linha
+// significa reproduzir a forma EXATA que o nft imprime — aspas em iifname, /32
+// comido, a cláusula counter consumida por parseChainRuleLine, a ordem dos
+// tokens — e qualquer diferença de grafia vira "configurado, não aplicado" num
+// grupo que está perfeitamente em vigor. Esse falso negativo é a mesma
+// confiança falsa com o sinal trocado, e já custou uma correção neste painel:
+// o M-1 da revisão da Fase C2, em que procurar o jump na chain errada deixava
+// todo grupo de escopo input eternamente como não aplicado com o jump vivo o
+// tempo todo (TestMergeGroupsAppliedFromTheInputChainForAnInputScopeGroup).
+// Um aperto aqui só se sustenta passando pelo normalizeExpression dos dois
+// lados e com fixture de saída REAL do nft — não é mudança de uma linha. Fica
+// registrado como dívida, a ser exercitado na validação em VM.
 func MergeGroups(groups []StoredGroup, chains map[string]ChainInfo, forward ChainInfo) []GroupView {
 	sorted := make([]StoredGroup, len(groups))
 	copy(sorted, groups)

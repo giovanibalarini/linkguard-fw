@@ -151,8 +151,17 @@ func describeRule(chain, expr string) string {
 		// linha da tela que o admin não pediu, não pode mexer, e ainda por
 		// cima não entende. O nome nftables do estado (`ct state related`)
 		// não se traduz; a explicação do que ele faz, sim.
+		//
+		// A frase diz "o que o conntrack liga a uma conexão já conhecida", e não
+		// "os erros ICMP", porque `ct state related` é mais largo do que só
+		// ICMP: um helper de conntrack (FTP, SIP) também marca como RELATED o
+		// canal de dados que ele previu, e esse canal seria aceito por esta
+		// linha se algum dia fosse destinado ao próprio firewall. O LinkGuard
+		// nunca emite `ct helper set`, então hoje o que passa aqui é ICMP — mas
+		// a descrição não pode prometer uma regra mais estreita do que a que
+		// está valendo no kernel.
 		if strings.HasPrefix(expr, "ct state related") {
-			return "Aceita os erros ICMP de conexões já conhecidas (mantém o Path MTU Discovery funcionando)"
+			return "Aceita o que o conntrack liga a uma conexão já conhecida — na prática os erros ICMP (mantém o Path MTU Discovery funcionando)"
 		}
 		if strings.Contains(expr, "udp dport 123") {
 			switch {
