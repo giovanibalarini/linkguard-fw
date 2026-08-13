@@ -929,6 +929,17 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 				target.Label))
 			return
 		}
+		// Mesma família de recusa, e pela mesma razão de não ser 500: o snapshot
+		// é que não serve, o LinkGuard está são. Aqui o que ele traz é uma chain
+		// `input` com política restritiva — o LinkGuard nunca gera isso, então a
+		// linha foi editada à mão ou veio de outra máquina. Aplicá-la trancaria o
+		// operador para fora de um firewall que ele só alcança pela rede.
+		if errors.Is(err, nftables.ErrInputPolicyNotAccept) {
+			slog.Warn("rollback recusado: a chain input do snapshot tem política restritiva", "snapshot", target.Label, "err", err)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"o snapshot %q não pode ser restaurado: %s", target.Label, err.Error()))
+			return
+		}
 		writeInternalError(w, fmt.Errorf("rollback failed: %w", err))
 		return
 	}

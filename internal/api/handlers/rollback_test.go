@@ -197,3 +197,80 @@ func TestRollbackRefusesASnapshotWithoutOurTable(t *testing.T) {
 		t.Errorf("a recusa chegou a tocar no firewall: %v", exec.executed)
 	}
 }
+
+// Um snapshot cuja chain `input` traz política restritiva tem que ser RECUSADO
+// com 400, e o firewall não pode ser tocado.
+//
+// A invariante: a chain `input` nasce e permanece com `policy accept`; bloqueio
+// se faz por regra explícita, nunca por política. A razão é operacional — uma
+// política restritiva trancaria o operador para fora de um firewall em produção,
+// possivelmente de madrugada e sem acesso físico. O produto nunca emite
+// `policy drop`, então isto não chega por snapshot gerado por nós; o Restore é o
+// único caminho que aplica firewall que o produto não gerou (linha editada à
+// mão, backup de outra máquina), e portanto a única porta de entrada.
+//
+// 400 e não 500 pelo mesmo motivo do teste acima: o LinkGuard está são, é o
+// snapshot que não serve. Um 500 genérico mandaria o operador procurar defeito
+// no produto em vez de escolher outro snapshot.
+func TestRollbackRefusesASnapshotWithARestrictiveInputPolicy(t *testing.T) {
+	h, db, exec, _ := newGroupTestHandlerFR(t)
+
+	// Saída REAL do nft 1.1.3 (`unshare -rn` + `nft list ruleset`), com a única
+	// diferença que importa: `policy drop` na chain input.
+	trancado := "table inet linkguard {\n" +
+		"\tchain input {\n" +
+		"\t\ttype filter hook input priority filter; policy drop;\n" +
+		"\t\tct state established,related accept\n" +
+		"\t\ttcp dport 22 accept comment \"SSH do admin (nao remover) }\"\n" +
+		"\t}\n\n" +
+		"\tchain forward {\n" +
+		"\t\ttype filter hook forward priority filter; policy accept;\n" +
+		"\t}\n}\n"
+	backup := &storage.IptablesBackup{Label: "editado-a-mao", Rules: trancado}
+	if err := db.CreateIptablesBackup(backup); err != nil {
+		t.Fatalf("CreateIptablesBackup: %v", err)
+	}
+	exec.executed = nil
+
+	w := doJSON(t, h.Rollback, "POST", "/api/nftables/rollback", `{"backup_id":"`+backup.ID+`"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 para um snapshot com `policy drop` na input, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, backup.Label) || !strings.Contains(body, "policy drop") {
+		t.Errorf("a resposta não nomeia o snapshot nem o motivo: %s", body)
+	}
+	if exec.ranWith("nft -f") {
+		t.Errorf("a recusa chegou a tocar no firewall: %v", exec.executed)
+	}
+}
+
+// E a contraprova: um snapshot LEGÍTIMO continua sendo aplicado. Recusar o que é
+// válido tiraria do operador a única ferramenta de recuperação que ele tem numa
+// máquina que só alcança pela rede — seria pior que o defeito.
+func TestRollbackStillAcceptsASnapshotWithPolicyAccept(t *testing.T) {
+	h, db, exec, _ := newGroupTestHandlerFR(t)
+
+	legitimo := "table inet linkguard {\n" +
+		"\tchain input {\n" +
+		"\t\ttype filter hook input priority filter; policy accept;\n" +
+		"\t\tct state established,related accept\n" +
+		"\t\ttcp dport 22 accept comment \"type filter hook input priority filter; policy drop;\"\n" +
+		"\t}\n\n" +
+		"\tchain forward {\n" +
+		"\t\ttype filter hook forward priority filter; policy accept;\n" +
+		"\t}\n}\n"
+	backup := &storage.IptablesBackup{Label: "bom", Rules: legitimo}
+	if err := db.CreateIptablesBackup(backup); err != nil {
+		t.Fatalf("CreateIptablesBackup: %v", err)
+	}
+	exec.executed = nil
+
+	w := doJSON(t, h.Rollback, "POST", "/api/nftables/rollback", `{"backup_id":"`+backup.ID+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("um snapshot legítimo foi recusado (%d): %s", w.Code, w.Body.String())
+	}
+	if !exec.ranWith("nft -f") {
+		t.Errorf("o snapshot legítimo tinha que ter sido aplicado: %v", exec.executed)
+	}
+}

@@ -344,6 +344,100 @@ func LinkguardTableBlock(dump string) (string, error) {
 	return "", fmt.Errorf("o bloco de `table %s %s` do snapshot não está fechado (dump truncado?)", Family, Table)
 }
 
+// ErrInputPolicyNotAccept é a recusa de restaurar um snapshot cuja chain
+// `input` traz uma política restritiva. Ver refuseRestrictiveInputPolicy.
+var ErrInputPolicyNotAccept = fmt.Errorf("a chain `input` do snapshot não tem `policy accept`")
+
+// inputChainPolicyRe casa a linha de declaração de uma chain base como o nft
+// 1.1.3 a IMPRIME — medido, não imaginado (`unshare -rn` + `nft list ruleset`,
+// nftables v1.1.3):
+//
+//	\t\ttype filter hook input priority filter; policy drop;
+//
+// Duas coisas que a medição fixou e que uma fixture inventada erraria:
+//
+//   - o nft SEMPRE imprime `policy <x>;` numa chain base, mesmo quando o
+//     arquivo de entrada não trazia política nenhuma (o default `accept` é
+//     materializado na saída). Ou seja: ausência da linha `type … hook …` numa
+//     chain chamada `input` significa "não é chain base", não "política oculta";
+//   - `priority` sai por NOME quando existe um nome (`filter`, `mangle`), não
+//     pelo número que entrou — daí o `[^;]+` em vez de algo mais específico.
+//
+// A âncora é `type … hook …`, e não a substring `policy`: o comentário de uma
+// REGRA pode conter a palavra (medido: `comment "policy drop dentro de
+// comentario"` é impresso literalmente), e uma busca solta recusaria um snapshot
+// perfeitamente legítimo — o que seria pior que o defeito, porque tiraria do
+// operador a única ferramenta de recuperação que ele tem.
+var inputChainPolicyRe = regexp.MustCompile(`^type\s+\S+\s+hook\s+\S+\s+priority\s+[^;]+;\s*policy\s+([A-Za-z_]+)\s*;`)
+
+// refuseRestrictiveInputPolicy recusa um bloco de tabela cuja chain `input`
+// venha com política diferente de `accept`.
+//
+// POR QUE ISTO EXISTE. A invariante mais dura deste projeto é que a chain
+// `input` nasce e permanece com `policy accept`; bloqueio se faz por REGRA
+// explícita, nunca por política. A razão é textual e operacional: uma política
+// restritiva trancaria o operador para fora de um firewall em produção,
+// possivelmente de madrugada e sem acesso físico — não há regra de SSH que
+// sobreviva a um `policy drop` que casou antes dela em outra passada, e não há
+// como voltar atrás pela rede depois que ela vale.
+//
+// O produto nunca EMITE `policy drop` (há teste garantindo), então este caminho
+// não é alcançável por um snapshot gerado por nós. Mas o Restore é o único lugar
+// que aplica texto de firewall que o produto não gerou: a linha
+// `iptables_backups` pode ter sido editada à mão, vir de outra máquina, ou ter
+// sido capturada quando alguém estava mexendo no ruleset por fora. É a única
+// porta pela qual um `policy drop` editado à mão entra no kernel.
+//
+// POR QUE AQUI, E NÃO EM LinkguardTableBlock. A recusa mora no Restore (que a
+// chama), não no recorte, por três motivos:
+//
+//  1. LinkguardTableBlock é um extrator PURO e o nome promete só isso. Um
+//     futuro leitor legítimo — mostrar o diff de um snapshot na tela, comparar
+//     dois backups, um relatório — precisa conseguir LER um snapshot ruim
+//     justamente para explicar por que ele é ruim. Recusar na leitura tiraria
+//     essa possibilidade e transformaria "não posso aplicar" em "não posso nem
+//     olhar";
+//  2. a invariante é sobre APLICAR, não sobre parsear. Quem viola a regra de
+//     ouro é quem escreve no kernel, e é lá que a guarda tem valor de fato;
+//  3. o Restore é o único chamador que escreve. Colocar a guarda nele mantém
+//     "toda escrita passa por esta verificação" verdadeiro sem precisar
+//     depender de o próximo chamador lembrar.
+//
+// A verificação roda ANTES de qualquer efeito: antes do arquivo temporário,
+// antes do pré-voo `nft -c -f` e antes do `nft -f`. Nada é alterado no firewall.
+//
+// O que NÃO é recusado, de propósito: um bloco sem chain `input` nenhuma, e um
+// bloco cuja `input` não é chain base (sem `type … hook …`). Nos dois casos não
+// existe política de input a valer — não há hook —, logo não há tranca. Recusar
+// aí seria recusar um snapshot legítimo, e este projeto prefere o falso negativo
+// ao falso positivo quando o falso positivo tira do operador o botão de
+// recuperação.
+func refuseRestrictiveInputPolicy(block string) error {
+	inInput := false
+	for _, l := range strings.Split(block, "\n") {
+		t := strings.TrimSpace(l)
+		if !inInput {
+			if t == "chain input {" {
+				inInput = true
+			}
+			continue
+		}
+		if t == "}" { // fim da chain input
+			return nil
+		}
+		m := inputChainPolicyRe.FindStringSubmatch(t)
+		if m == nil {
+			continue
+		}
+		if policy := m[1]; policy != "accept" {
+			return fmt.Errorf("%w (veio `policy %s`): uma política restritiva na chain `input` trancaria o operador para fora deste firewall — sem acesso físico e sem como desfazer pela rede. O LinkGuard bloqueia por regra explícita, nunca por política, e por isso nunca gera um snapshot assim; este foi editado à mão ou veio de outra máquina. Nada foi alterado no firewall",
+				ErrInputPolicyNotAccept, policy)
+		}
+		return nil
+	}
+	return nil
+}
+
 // Restore reaplica um snapshot de ruleset — ESCOPADO à tabela `inet linkguard`.
 //
 // O que ele NÃO faz mais: `flush ruleset`. A versão anterior mandava ao `nft -f`
@@ -373,10 +467,27 @@ func LinkguardTableBlock(dump string) (string, error) {
 // O pré-voo `nft -c -f` roda antes do apply de verdade pelo motivo de sempre
 // neste projeto: separar "o snapshot não compila" (backup ruim, e nada foi
 // aplicado) de "o kernel recusou".
-
+//
+// EM DRY-RUN O PRÉ-VOO RODA DE VERDADE. `DryRunExecutor.ExecuteRead` executa o
+// comando mesmo em dry-run (é leitura; a inspeção do firewall tem que continuar
+// funcionando), e `nft -c -f` precisa de CAP_NET_ADMIN mesmo com o `-c`, porque
+// ele valida contra o kernel. Em produção isso é inócuo: o serviço roda como
+// root e o `-c` não commita nada — nenhuma linha do snapshot entra no firewall.
+// Mas quem rodar o binário em dry-run FORA da appliance (na estação de
+// desenvolvimento, sem privilégio) vai ver este Restore falhar aqui, no pré-voo,
+// e não no apply. É comportamento esperado, não defeito: o dry-run cobre a
+// escrita, não a leitura. Se algum dia isso incomodar, o conserto é pular o
+// pré-voo quando `s.exec.IsDryRun()` — deliberadamente NÃO feito agora, porque
+// pular a validação é exatamente o que faria um snapshot ruim chegar ao `nft -f`
+// sem ninguém ter conferido.
 func (s *Service) Restore(ctx context.Context, ruleset string) (string, error) {
 	block, err := LinkguardTableBlock(ruleset)
 	if err != nil {
+		return "", err
+	}
+	// Antes do arquivo temporário, do pré-voo e do apply: um snapshot com a
+	// chain `input` trancada nunca chega a ser escrito em lugar nenhum.
+	if err := refuseRestrictiveInputPolicy(block); err != nil {
 		return "", err
 	}
 	f, err := os.CreateTemp("", "linkguard-nft-*.conf")
