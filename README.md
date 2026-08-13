@@ -116,9 +116,11 @@ LinkGuard, and it brings what it needs.** That is the same premise as
 goes in first, on a machine with nothing on it, and coordinates the rest.
 
 ```bash
-# Either of these works on a machine with nothing installed on it:
+# Recommended — works on a machine with nothing installed on it:
 sudo apt install ./linkguard-fw_<version>_amd64.deb   # apt resolves everything up front
-sudo dpkg -i ./linkguard-fw_<version>_amd64.deb       # no apt needed; LinkGuard finishes the job
+
+# Also works, when apt is not an option (see "Do not install nftables by hand" below):
+sudo dpkg -i ./linkguard-fw_<version>_amd64.deb       # LinkGuard finishes the job itself
 ```
 
 The package declares its base (`nftables`, `iproute2`, `iptables`,
@@ -130,6 +132,42 @@ configures, the service starts, and on its first boot it installs whatever
 base package is missing itself (`internal/bootstrapdeps`) — a running service
 can call apt, a package's own maintainer scripts cannot (dpkg holds its lock
 for the whole run).
+
+### Do not install `nftables` by hand afterwards
+
+**Use `sudo apt install ./linkguard-fw_<version>_amd64.deb` and let LinkGuard
+bring `nftables` in on its own.** That path is clean end to end: it finishes
+with no questions asked, and there is nothing to do afterwards.
+
+The path that trips people up is starting the service and *then* installing
+`nftables` yourself. By the time you do, LinkGuard has already created
+`/etc/nftables.conf` — it owns that file, it is listed in the table above, and
+it is written before the service comes up. The `nftables` package then finds a
+config file it did not write and asks what to do with it:
+
+```
+Configuration file '/etc/nftables.conf'
+ ==> File on system created by you or by a script.
+*** nftables.conf (Y/I/N/O/D/Z) [default=N] ?
+```
+
+- **At a terminal**, answer **N** — keep the version currently on the system.
+  That is LinkGuard's file, and it is the one the firewall boots from.
+- **From a script, Ansible or a pipeline** there is nobody to answer, so the
+  install stops with **exit code 100** and leaves `nftables` half-configured.
+  Nothing is broken and the machine is fine — the automation just looks like
+  it failed.
+
+**If that already happened, restart the service and it resolves itself:**
+
+```bash
+sudo systemctl restart linkguard-fw
+```
+
+LinkGuard notices the half-configured package on startup and finishes the
+installation with the right options, keeping its own `/etc/nftables.conf`.
+Confirm with `systemctl is-active linkguard-fw` and the firewall screen in the
+panel.
 
 The optional packages are **not** installed at boot — that would take over
 services nobody asked for. What actually installs what, and when:

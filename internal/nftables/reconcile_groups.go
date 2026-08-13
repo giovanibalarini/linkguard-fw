@@ -425,6 +425,11 @@ func (s *Service) reconcileGroups(ctx context.Context, groups []StoredGroup) err
 		slog.Error("o ruleset NÃO foi persistido para o próximo boot: a chain forward e/ou a input não puderam ser reconstruídas nesta passada, e gravar o ruleset vivo faria a máquina voltar com esse meio-termo em todo boot",
 			"err_forward", forwardErr, "err_input", inputErr)
 	} else if err := s.Persist(ctx); err != nil {
+		// Este WARN é a ÚNICA evidência da falha: o apply_status desta mesma
+		// passada continua `{"ok": true}`, porque as regras de fato entraram no
+		// kernel — só não foram gravadas para o próximo boot. Foi exatamente
+		// este caminho que a validação em VM mediu (§10); a pendência inteira,
+		// com o cenário e o ponto de enxerto, está no doc de Service.Persist.
 		slog.Warn("grupos reconciliados, mas não foi possível persistir para o próximo boot", "err", err)
 	}
 	if len(failures) > 0 {

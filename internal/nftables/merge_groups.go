@@ -107,23 +107,43 @@ func systemGroupExpressions(kind string) []string {
 // Sem contrapartida viva, o contador fica com HasCounter=false — "não
 // medido" —, jamais com um zero, que significaria "medido, e deu zero".
 //
-// O QUE "APLICADA" SIGNIFICA AQUI, EXATAMENTE (dívida conhecida, I-1):
+// O QUE "APLICADA" SIGNIFICA AQUI, EXATAMENTE (I-1):
 //
 // Para um grupo do admin, Applied é PRESENÇA DO JUMP para a chain dele —
 // nunca EQUIVALÊNCIA da linha viva com a que o banco descreve. indexGroupJumps
 // lê só o alvo do último `jump ` e joga fora todo o resto da expressão, de modo
-// que um grupo gravado como "só conexões novas" cuja linha viva ainda é a
-// irrestrita (`... counter jump grp_x`, sem `ct state new`) aparece como
-// aplicado — e o inverso também: linha viva com `ct state new` e banco em
-// ConnStateAny. O mesmo vale, e desde antes desta coluna existir, para a
-// condição de entrada (cond_saddr, cond_daddr, cond_iif).
+// que uma linha viva irrestrita (`... counter jump grp_x`) e uma restrita
+// (`... ct state new counter jump grp_x`) são indistinguíveis daqui. O mesmo
+// vale, e desde antes desta coluna existir, para a condição de entrada
+// (cond_saddr, cond_daddr, cond_iif).
 //
-// O cenário em que isso morde: um grupo de escopo FORWARD (que não abre janela
-// de confirmação) é mudado para "só conexões novas" e a reconciliação falha
-// depois do UPDATE no banco — rebuildChain é `flush chain` + N × `add rule`,
-// não é atômico. O banco diz "new", o kernel tem a linha antiga, e o painel diz
-// "Aplicada": o operador acredita que parou de derrubar transferências em curso
-// e continua derrubando.
+// O CENÁRIO PREVISTO NÃO SE CONFIRMOU — MEDIDO EM VM (§11 da validação final).
+// A previsão registrada aqui era: grupo de escopo FORWARD (que não abre janela
+// de confirmação) mudado para "só conexões novas", reconciliação falhando
+// depois do UPDATE no banco, e o painel dizendo "Aplicada" com a linha antiga
+// viva. Exercitado com um shim de `nft` que recusava SÓ a linha restrita do
+// grupo alvo, o que a máquina faz é outra coisa:
+//
+//   - a tela NÃO diz "Aplicada". Diz `applied: false`, `apply_status.ok:
+//     false`, e o erro NOMEIA a linha que o nft recusou. O operador tem sinal.
+//   - a chain forward fica SEM LINHA NENHUMA para aquele grupo — nem a
+//     restrita nem a irrestrita. rebuildChain é `flush chain` + N × `add rule`
+//     e não é atômico: quem cai no meio não deixa a linha velha para trás,
+//     deixa o vazio. É o comportamento que rebuildChain documenta ("um
+//     firewall parcial com as outras regras intactas é estritamente mais
+//     seguro que um vazio"), mas num grupo de BLOQUEIO ele é fail-open: o
+//     grupo deixa de bloquear até o próximo restart, que reconcilia tudo.
+//
+// Ou seja: o risco real desta função não é o falso "Aplicada" (que não se
+// reproduziu), é a JANELA EM QUE O GRUPO NÃO BLOQUEIA NADA, com a tela
+// mostrando a falha. Dois detalhes medidos na mesma passada, que pertencem ao
+// caminho de apply e não a esta função: o corpo do 500 é genérico ("erro
+// interno do servidor") e o motivo só aparece no apply_status da listagem, de
+// modo que quem clica "Salvar" e lê só a mensagem de erro não descobre qual
+// linha caiu; e um shim mais largo (recusando qualquer linha com `ct`) esvaziou
+// a chain input inteira, perdendo até o `ct state related counter accept` — não
+// é cenário realista de produção, foi construído para medir o alcance, e o
+// restart recuperou.
 //
 // POR QUE NÃO APERTAR O CRITÉRIO AQUI, AINDA. Exigir equivalência da linha
 // significa reproduzir a forma EXATA que o nft imprime — aspas em iifname, /32
@@ -135,8 +155,9 @@ func systemGroupExpressions(kind string) []string {
 // todo grupo de escopo input eternamente como não aplicado com o jump vivo o
 // tempo todo (TestMergeGroupsAppliedFromTheInputChainForAnInputScopeGroup).
 // Um aperto aqui só se sustenta passando pelo normalizeExpression dos dois
-// lados e com fixture de saída REAL do nft — não é mudança de uma linha. Fica
-// registrado como dívida, a ser exercitado na validação em VM.
+// lados e com fixture de saída REAL do nft — não é mudança de uma linha. E,
+// com o cenário que o justificava medido e desmentido, ele deixou de ter um
+// caso concreto que o motive: fica como opção, não como pendência.
 func MergeGroups(groups []StoredGroup, chains map[string]ChainInfo, forward ChainInfo) []GroupView {
 	sorted := make([]StoredGroup, len(groups))
 	copy(sorted, groups)

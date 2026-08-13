@@ -436,6 +436,33 @@ func (s *Service) DelBlocklist(ctx context.Context, cidr string) (string, error)
 // decisão de não gravar. Todo chamador trata o erro daqui como "não consegui
 // persistir" e o registra em WARN; um erro sintético encheria o journal de
 // alarme falso a cada reconciliação dos 90 segundos.
+//
+// PENDÊNCIA CONHECIDA: A FALHA DAQUI É MUDA NA TELA (§10 da validação final
+// em VM, medida em 2026-08-13, não corrigida de propósito).
+//
+// Todo chamador trata o erro devolvido aqui como um WARN no journal e segue
+// em frente — e mais nada. Não existe alerta, item de saúde nem campo do
+// apply_status que conte ao operador que o firewall vivo não foi gravado para
+// o próximo boot. Medido com /etc/nftables.conf ausente e /etc imutável, de
+// modo que o ExecStartPre (que tem o prefixo `-`) não conseguisse criar o
+// arquivo: o serviço sobe, o painel responde 200, o apply CHEGA ao kernel e as
+// regras valem — e o painel diz `apply_status: {"ok": true}`, sem nenhum
+// alerta aberto e sem nenhum item de saúde novo depois de 2 ciclos do vigia.
+// A única evidência é o WARN no journal. As regras não sobrevivem ao reboot.
+//
+// É o modo de falha que o prefixo `-` no ExecStartPre introduziu — o `-`
+// funciona exatamente como projetado (antes disso a máquina não subia), mas o
+// preço dele é este estado silencioso, que contraria a regra do projeto de que
+// "configurado ≠ funcionando" tem que ser visível na tela.
+//
+// Por que não foi corrigido junto: a condição teve que ser fabricada (chattr
+// +i em /etc) e a correção mexe no caminho de apply — propagar a falha de
+// persistência até o apply_status e/ou abrir um item de saúde — o que não se
+// faz na véspera de um deploy. Quem pegar isto: o consumidor certo é o
+// apply_status da listagem (o mesmo campo que já carrega a recusa do nft) e/ou
+// um item de saúde do vigia checando a existência e a idade de
+// s.persistPath(); os cinco chamadores que hoje só logam WARN são os pontos de
+// enxerto.
 func (s *Service) Persist(ctx context.Context) error {
 	if s.exec.IsDryRun() {
 		return nil
