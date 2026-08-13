@@ -179,6 +179,16 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.Post("/api/auth/2fa/activate", authH.TwoFAActivate)
 		r.Post("/api/auth/2fa/disable", authH.TwoFADisable)
 
+		// Layout do painel (Fase B): os widgets que ESTE admin escolheu e onde
+		// ele os pôs. É preferência pessoal, então o dono é sempre o usuário
+		// autenticado — não existe rota para ler nem escrever o painel de
+		// outro. O gate é dashboard.read (inclusive na escrita): quem não pode
+		// abrir o painel não tem layout de painel para salvar.
+		dashH := handlers.NewDashboardHandler(s.db)
+		r.With(require(auth.PermDashboardRead)).Get("/api/dashboard/layout", dashH.GetLayout)
+		r.With(require(auth.PermDashboardRead)).Put("/api/dashboard/layout", dashH.SaveLayout)
+		r.With(require(auth.PermDashboardRead)).Delete("/api/dashboard/layout", dashH.ResetLayout)
+
 		// System
 		sysH := handlers.NewSystemHandler(s.sysCol, s.db, s.rrdSvc)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/status", sysH.Status)

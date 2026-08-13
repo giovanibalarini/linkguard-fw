@@ -8,6 +8,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -1225,5 +1226,223 @@ func TestMigrateAddsConnStateToADatabaseCreatedBeforeTheColumn(t *testing.T) {
 				pass, groups[0].ConnState)
 		}
 		db.Close()
+	}
+}
+
+// ─── Layout do painel (Fase B, spec §4.1 e §6) ─────────────────────────────
+
+// Layout inválido nunca trava a tela. Um item que aponta para um widget que não
+// existe mais (versão anterior, widget removido do produto) é descartado item a
+// item — o resto do painel do operador continua abrindo.
+func TestUnknownWidgetIsDroppedItemByItemNotWholeLayout(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.SaveDashboardLayout("u1", []storage.LayoutItem{
+		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
+		{Widget: "widget_que_nao_existe_mais", X: 6, Y: 0, W: 6, H: 2},
+		{Widget: "wan_links", X: 0, Y: 2, W: 12, H: 3},
+	}); err != nil {
+		t.Fatalf("salvar: %v", err)
+	}
+	got, err := db.GetDashboardLayout("u1")
+	if err != nil {
+		t.Fatalf("ler: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("esperava 2 itens válidos, obtive %d: %+v", len(got), got)
+	}
+	for _, it := range got {
+		if it.Widget == "widget_que_nao_existe_mais" {
+			t.Error("o item desconhecido tinha que ter sido descartado")
+		}
+	}
+}
+
+// O layout é de quem o salvou. Um admin não vê nem sobrescreve o painel de
+// outro: quem nunca salvou nada cai no layout de fábrica, e salvar o painel de
+// um não mexe no do outro. Sem isto, "cada admin monta o seu" (spec §4.1) vira
+// um layout único que o último a arrastar impõe a todos.
+func TestLayoutIsPerUser(t *testing.T) {
+	db := newTestDB(t)
+
+	doU1 := []storage.LayoutItem{
+		{Widget: "wan_links", X: 0, Y: 0, W: 12, H: 3},
+	}
+	if err := db.SaveDashboardLayout("u1", doU1); err != nil {
+		t.Fatalf("salvar u1: %v", err)
+	}
+
+	// u2 nunca salvou nada: tem que receber o padrão de fábrica, não o painel
+	// do u1 e não uma tela em branco.
+	got2, err := db.GetDashboardLayout("u2")
+	if err != nil {
+		t.Fatalf("ler u2: %v", err)
+	}
+	padrao := storage.DefaultDashboardLayout()
+	if len(got2) != len(padrao) {
+		t.Fatalf("u2 sem layout salvo tinha que cair no padrão (%d itens), obtive %d: %+v",
+			len(padrao), len(got2), got2)
+	}
+	for i := range padrao {
+		if got2[i] != padrao[i] {
+			t.Errorf("u2 item %d: esperava %+v, obtive %+v", i, padrao[i], got2[i])
+		}
+	}
+
+	// u2 monta o dele. O painel do u1 não pode mudar por causa disso.
+	doU2 := []storage.LayoutItem{
+		{Widget: "lan_hosts", X: 0, Y: 0, W: 6, H: 2},
+		{Widget: "open_alerts", X: 6, Y: 0, W: 6, H: 2},
+	}
+	if err := db.SaveDashboardLayout("u2", doU2); err != nil {
+		t.Fatalf("salvar u2: %v", err)
+	}
+
+	got1, err := db.GetDashboardLayout("u1")
+	if err != nil {
+		t.Fatalf("reler u1: %v", err)
+	}
+	if len(got1) != 1 || got1[0] != doU1[0] {
+		t.Fatalf("o painel do u1 tinha que continuar intacto, obtive %+v", got1)
+	}
+
+	got2, err = db.GetDashboardLayout("u2")
+	if err != nil {
+		t.Fatalf("reler u2: %v", err)
+	}
+	if len(got2) != 2 || got2[0] != doU2[0] || got2[1] != doU2[1] {
+		t.Fatalf("o painel do u2 tinha que ser o que ele salvou, obtive %+v", got2)
+	}
+}
+
+// Toda permissão declarada pelos widgets tem que existir de fato no catálogo de
+// permissões do RBAC. Uma chave inventada aqui não daria erro em lugar nenhum:
+// ela simplesmente nunca casaria com nenhuma permissão do usuário, e o widget
+// sumiria do painel de todo mundo, para sempre, sem nenhuma mensagem.
+func TestEveryWidgetPermissionExistsInTheRBACCatalog(t *testing.T) {
+	for _, w := range storage.DashboardWidgets {
+		if w.Permission == "" {
+			continue // widget sem permissão (onboarding, ações rápidas)
+		}
+		if !auth.IsValidPermission(w.Permission) {
+			t.Errorf("widget %q exige a permissão %q, que não existe no catálogo do RBAC",
+				w.Name, w.Permission)
+		}
+	}
+}
+
+// O layout de fábrica só pode conter widget que existe. Um padrão com um nome
+// errado abriria o painel já sem aquele widget — e o operador que nunca
+// arrastou nada é justamente quem não tem como perceber que falta algo.
+func TestDefaultLayoutOnlyReferencesKnownWidgets(t *testing.T) {
+	for _, it := range storage.DefaultDashboardLayout() {
+		if !storage.IsKnownDashboardWidget(it.Widget) {
+			t.Errorf("o layout de fábrica referencia o widget desconhecido %q", it.Widget)
+		}
+		if it.X < 0 || it.W < 1 || it.X+it.W > storage.DashboardGridColumns {
+			t.Errorf("o item %+v sai da grade de %d colunas", it, storage.DashboardGridColumns)
+		}
+	}
+}
+
+// A migração do painel roda em banco que já existe e é idempotente: o segundo
+// boot não recria nada e o painel que o admin já tinha montado continua lá. É a
+// garantia que faltou no incidente de 2026-07-24 — migração de boot é caminho
+// crítico, e o jeito de ela não travar a máquina é não ter trabalho para fazer
+// da segunda vez em diante.
+func TestDashboardLayoutMigrationIsIdempotentAndKeepsSavedLayouts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "painel.db")
+
+	db, err := storage.Open(path)
+	if err != nil {
+		t.Fatalf("primeiro Open: %v", err)
+	}
+	meu := []storage.LayoutItem{{Widget: "wan_links", X: 0, Y: 0, W: 12, H: 3}}
+	if err := db.SaveDashboardLayout("u1", meu); err != nil {
+		t.Fatalf("salvar: %v", err)
+	}
+	db.Close()
+
+	for passada := 2; passada <= 3; passada++ {
+		db, err := storage.Open(path)
+		if err != nil {
+			t.Fatalf("passada %d: storage.Open: %v", passada, err)
+		}
+		got, err := db.GetDashboardLayout("u1")
+		if err != nil {
+			t.Fatalf("passada %d: ler: %v", passada, err)
+		}
+		if len(got) != 1 || got[0] != meu[0] {
+			t.Errorf("passada %d: o painel salvo não sobreviveu: %+v", passada, got)
+		}
+		db.Close()
+	}
+}
+
+// "Restaurar padrão": apagar o layout devolve o de fábrica, para quem se perdeu
+// arrastando (spec §6).
+func TestDeleteDashboardLayoutRestoresTheFactoryDefault(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.SaveDashboardLayout("u1", []storage.LayoutItem{
+		{Widget: "wan_links", X: 0, Y: 0, W: 12, H: 3},
+	}); err != nil {
+		t.Fatalf("salvar: %v", err)
+	}
+	if err := db.DeleteDashboardLayout("u1"); err != nil {
+		t.Fatalf("apagar: %v", err)
+	}
+	got, err := db.GetDashboardLayout("u1")
+	if err != nil {
+		t.Fatalf("ler: %v", err)
+	}
+	if len(got) != len(storage.DefaultDashboardLayout()) {
+		t.Fatalf("esperava o layout de fábrica de volta, obtive %+v", got)
+	}
+}
+
+// Layout vazio é uma escolha do admin — ele tirou todos os widgets — e é
+// diferente de "nunca salvou nada". Se as duas situações se confundissem, quem
+// esvaziasse o painel de propósito veria os widgets de fábrica voltarem
+// sozinhos no próximo F5.
+func TestEmptyLayoutIsAChoiceNotAMissingLayout(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.SaveDashboardLayout("u1", []storage.LayoutItem{}); err != nil {
+		t.Fatalf("salvar vazio: %v", err)
+	}
+	got, err := db.GetDashboardLayout("u1")
+	if err != nil {
+		t.Fatalf("ler: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("esperava painel vazio, obtive %+v", got)
+	}
+}
+
+// Geometria impossível (fora da grade de 12 colunas, tamanho zero ou negativo)
+// é descartada item a item, como o widget desconhecido — uma linha ruim no
+// banco não pode levar o painel inteiro junto.
+func TestOutOfGridItemIsDroppedItemByItem(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.SaveDashboardLayout("u1", []storage.LayoutItem{
+		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
+		{Widget: "wan_links", X: 8, Y: 0, W: 6, H: 2},      // passa da coluna 12
+		{Widget: "open_alerts", X: 0, Y: 2, W: 6, H: 0},    // sem altura
+		{Widget: "lan_hosts", X: -1, Y: 0, W: 6, H: 2},     // fora à esquerda
+		{Widget: "top_talkers", X: 0, Y: 4, W: 12, H: 999}, // altura absurda
+		{Widget: "system_resources", X: 0, Y: 6, W: 12, H: 2},
+	}); err != nil {
+		t.Fatalf("salvar: %v", err)
+	}
+	got, err := db.GetDashboardLayout("u1")
+	if err != nil {
+		t.Fatalf("ler: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("esperava só os 2 itens desenháveis, obtive %d: %+v", len(got), got)
+	}
+	for _, it := range got {
+		if it.Widget != "system_health" && it.Widget != "system_resources" {
+			t.Errorf("item fora da grade voltou: %+v", it)
+		}
 	}
 }

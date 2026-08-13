@@ -110,8 +110,51 @@ func (db *DB) migrate() error {
 	if err := db.migrateAddPendingChangeRevertingAt(); err != nil {
 		return fmt.Errorf("migrate add pending_firewall_change.reverting_at: %w", err)
 	}
+	if err := db.migrateDashboardLayout(); err != nil {
+		return fmt.Errorf("migrate create dashboard_layout: %w", err)
+	}
 
 	return nil
+}
+
+// migrateDashboardLayout cria a tabela dashboard_layout — o painel que cada
+// admin montou para si (spec §4.1). Uma linha por usuário, e a ausência de
+// linha é o estado normal de quem nunca arrastou nada: GetDashboardLayout
+// devolve o layout de fábrica nesse caso, nunca uma tela em branco.
+//
+// Não há chave estrangeira para users(id) de propósito. Ela custaria mais do
+// que protege: uma preferência órfã de um usuário removido não faz mal nenhum
+// (o id é único e nunca é reaproveitado), enquanto a FK ligaria o boot do
+// painel à integridade de outra tabela — e este banco roda com
+// foreign_keys(1), então um id fora do ar aqui viraria erro de gravação numa
+// tela que é só preferência pessoal.
+//
+// Migração imperativa em transação, no molde de migrateAddFirewallGroupScope, e
+// não uma linha a mais na lista de CREATE TABLE IF NOT EXISTS acima: toda
+// migração deste projeto roda em transação desde o incidente de 2026-07-24, em
+// que uma que não rodava travou o boot de uma máquina de produção por mais de
+// 50 minutos. Sai barata — um SELECT em sqlite_master nos boots seguintes, e
+// nada mais.
+func (db *DB) migrateDashboardLayout() error {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashboard_layout'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar a tabela dashboard_layout: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+	if _, err := tx.Exec(createDashboardLayoutTable); err != nil {
+		return fmt.Errorf("criar a tabela dashboard_layout: %w", err)
+	}
+	return tx.Commit()
 }
 
 // migrateAddPasswordVersion adds users.password_version if the column doesn't
@@ -743,6 +786,22 @@ CREATE TABLE IF NOT EXISTS pending_firewall_change (
     summary      TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     reverting_at INTEGER NOT NULL DEFAULT 0
+);`
+
+// ─── Painel com widgets (Fase B) ──────────────────────────────────────────
+//
+// Criada por migrateDashboardLayout (em transação), NÃO pela lista de
+// migrações simples acima — ver o doc-comment daquela função.
+//
+// items guarda a lista de {widget,x,y,w,h} em JSON, e não uma linha por
+// widget: o layout é lido e gravado sempre inteiro, nunca item a item, e uma
+// segunda tabela só acrescentaria junção e ordem explícita para representar
+// exatamente o mesmo documento.
+const createDashboardLayoutTable = `
+CREATE TABLE IF NOT EXISTS dashboard_layout (
+    user_id    TEXT PRIMARY KEY,
+    items      TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 
 const createFirewallRulesTable = `
