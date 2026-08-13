@@ -130,17 +130,37 @@ export function isEmptySeries(points: Point[]): boolean {
 }
 
 /**
- * A amostra MEDIDA mais recente, ou `null` quando a série não tem nenhuma.
+ * A "taxa agora" dos widgets: `rx + tx` da amostra COMPLETA mais recente, em
+ * bits/s, ou `null` quando a janela não tem nenhuma.
  *
- * É a "taxa agora" dos widgets: a série de 1 s do tsdb é a medição mais fresca
- * que a máquina tem. Pegar `points[points.length - 1]` direto seria o defeito:
- * o último ponto da janela pode ser um intervalo sem amostra, e ele viraria um
- * `0` na tela — um link fora do ar com cara de link ocioso.
+ * São dois defeitos evitados de uma vez, e os dois já aconteceram neste
+ * projeto:
+ *
+ *  1. **Não é `points[points.length - 1]`.** O último ponto da janela pode ser
+ *     um intervalo sem amostra, e ele viraria um `0` na tela — link fora do ar
+ *     com cara de link ocioso.
+ *  2. **Uma direção ausente não entra como zero.** As duas direções são séries
+ *     separadas no tsdb (`if.rx_bps` e `if.tx_bps`) e um instante pode ter
+ *     bucket de uma e não da outra — é por isso que `HistoryPoint` usa ponteiro
+ *     (63dbd91) e que `pointsFromHistory` propaga `null` (552c440). Somar com
+ *     `?? 0` faria a soma valer só a direção medida: um número plausível, com
+ *     sinal de 2×, e sem nenhum aviso na tela de que metade não foi medida. É o
+ *     mesmo dado falso das duas correções, com outra fantasia.
+ *
+ * A saída para (2) é **recuar até a amostra completa mais recente**, e não
+ * devolver `null` no primeiro ponto pela metade: com o sampler gravando os dois
+ * sentidos no mesmo segundo, a amostra pela metade é a exceção (uma falha de
+ * gravação, um rollup parcial), e recuar 1 s dá o total certo em vez de piscar
+ * `—` num link saudável. Só quando a janela inteira não tem nenhuma amostra
+ * completa é que sai `—` — e aí `—` é a verdade: a *soma* não foi medida.
+ * Nesse caso o sparkline continua desenhando o sentido que existe, que é
+ * exatamente a divisão de trabalho certa: o desenho mostra por direção, o
+ * número mostra o total.
  */
-export function latestSample(points: Point[]): Point | null {
+export function latestTotal(points: Point[]): number | null {
   for (let i = points.length - 1; i >= 0; i--) {
     const p = points[i];
-    if (p.rx !== null || p.tx !== null) return p;
+    if (p.rx !== null && p.tx !== null) return p.rx + p.tx;
   }
   return null;
 }

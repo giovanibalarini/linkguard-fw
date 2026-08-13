@@ -3,7 +3,7 @@ import client from '../../api/client';
 import Sparkline, { type SparklinePoint } from '../ui/Sparkline';
 import Tag, { type TagVariant } from '../ui/Tag';
 import WidgetCard, { WidgetNote, usePolled } from './WidgetCard';
-import { formatBps, latestSample, pointsFromHistory } from '../../lib/series';
+import { formatBps, latestTotal, pointsFromHistory } from '../../lib/series';
 import type { Point } from '../../lib/series';
 import type { TrafficHistoryResponse, WanLink } from '../../types';
 
@@ -24,9 +24,11 @@ const ROTULO: Record<string, string> = {
 /**
  * Links WAN: estado, latência, perda e taxa de cada link de internet.
  *
- * A taxa "agora" é a última amostra MEDIDA da série de 1 s do tsdb, e não uma
- * média nem uma estimativa. Link sem nenhuma amostra na janela mostra `—`:
- * um zero ali faria um link fora do ar parecer um link ocioso.
+ * A taxa "agora" é a última amostra COMPLETA (rx e tx medidos no mesmo
+ * instante) da série de 1 s do tsdb, e não uma média nem uma estimativa. Link
+ * sem nenhuma amostra completa na janela mostra `—`: um zero ali faria um link
+ * fora do ar parecer um link ocioso, e completar com zero a direção que faltou
+ * faria um link carregado parecer um link com metade do tráfego.
  */
 export default function WanLinksWidget() {
   const { data: links, state } = usePolled<WanLink[]>('/api/links');
@@ -87,8 +89,10 @@ export default function WanLinksWidget() {
       <div className="space-y-1.5">
         {(links ?? []).map((link) => {
           const pontos = series[link.interface] ?? [];
-          const ultima = latestSample(pontos);
-          const taxa = ultima === null ? null : (ultima.rx ?? 0) + (ultima.tx ?? 0);
+          // Sempre por `latestTotal`: somar `rx`/`tx` aqui com `?? 0` faria a
+          // direção não medida entrar como zero medido, e a taxa do link
+          // apareceria subestimada — plausível, sem sinal nenhum na tela.
+          const taxa = latestTotal(pontos);
           return (
             // Compacto de propósito: no tamanho de fábrica (4x2) o widget
             // precisa mostrar DOIS links sem rolar, que é o caso da máquina de

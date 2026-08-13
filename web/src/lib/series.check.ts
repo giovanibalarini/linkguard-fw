@@ -24,7 +24,7 @@ import {
   formatBps,
   formatVolume,
   isEmptySeries,
-  latestSample,
+  latestTotal,
   niceScale,
   pointsFromHistory,
   reduceToWidth,
@@ -531,38 +531,97 @@ grupo('resolução por janela');
 // Pegar o último elemento da janela seria o defeito: o último intervalo pode
 // não ter amostra, e viraria um `0` na tela — link fora do ar com cara de link
 // ocioso, que é o mesmo erro que a Fase A já pegou duas vezes.
-grupo('última amostra medida');
+grupo('taxa agora dos widgets');
 {
-  assert(latestSample([]) === null, 'série vazia não tem última amostra');
+  assert(latestTotal([]) === null, 'série vazia não tem taxa agora');
   assert(
-    latestSample([{ t: 0, rx: null, tx: null }]) === null,
-    'série só de ausências não tem última amostra — `—`, e não `0`',
+    latestTotal([{ t: 0, rx: null, tx: null }]) === null,
+    'série só de ausências não tem taxa agora — `—`, e não `0`',
   );
   assert(
-    latestSample([
+    latestTotal([
       { t: 0, rx: 1_000, tx: 2_000 },
       { t: 1, rx: null, tx: null },
       { t: 2, rx: null, tx: null },
-    ])?.rx === 1_000,
+    ]) === 3_000,
     'com o fim da janela vazio, vale a última MEDIDA, e não o último elemento',
   );
   assert(
-    latestSample([
-      { t: 0, rx: 1_000, tx: null },
-      { t: 1, rx: 9_000, tx: null },
-    ])?.rx === 9_000,
+    latestTotal([
+      { t: 0, rx: 1_000, tx: 0 },
+      { t: 1, rx: 9_000, tx: 0 },
+    ]) === 9_000,
     'a mais recente é a do fim, não a do começo',
   );
   assert(
-    latestSample([{ t: 0, rx: 0, tx: 0 }])?.rx === 0,
+    latestTotal([{ t: 0, rx: 0, tx: 0 }]) === 0,
     'zero medido É uma amostra: zero é medição, ausência não',
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A agregação também não pode inventar zero
+// ─────────────────────────────────────────────────────────────────────────────
+// O mesmo defeito de 63dbd91 (backend) e 552c440 (conversão) tem uma terceira
+// porta: a SOMA das duas direções. `(p.rx ?? 0) + (p.tx ?? 0)` transforma o
+// sentido não medido em zero medido e entrega uma taxa subestimada — número
+// plausível, sinal de 2×, e nenhum aviso na tela. A regra vale na agregação
+// como vale no ponto: `—` é não medido, `0` é medido e deu zero.
+grupo('soma não completa ausência com zero');
+{
+  // Uma janela cujo ÚNICO ponto tem um sentido ausente não vale 5 Mb/s: a
+  // soma não foi medida, e a tela tem que dizer `—`.
+  const soPelaMetade: Point[] = [{ t: 0, rx: 5_000_000, tx: null }];
   assert(
-    latestSample([
-      { t: 0, rx: 500, tx: 500 },
-      { t: 1, rx: null, tx: 700 },
-    ])?.tx === 700,
-    'um instante com só um dos sentidos medido ainda é uma amostra',
+    latestTotal(soPelaMetade) === null,
+    `um lado null não pode virar zero na soma, obtive ${latestTotal(soPelaMetade)}`,
+  );
+  assert(
+    latestTotal(soPelaMetade) !== 5_000_000,
+    'a soma não pode valer só a direção medida — é o zero inventado com sinal de 2×',
+  );
+  assert(formatBps(latestTotal(soPelaMetade)) === '—', 'e na tela isso é `—`, não "5.0 Mb/s"');
+  assert(
+    latestTotal([{ t: 0, rx: null, tx: 5_000_000 }]) === null,
+    'e vale para os dois sentidos: tx sozinho também não é um total',
+  );
+
+  // O caso real do tsdb: o último instante perdeu o bucket de um sentido (a
+  // união de timestamps de GetHistory existe justamente para isso). Recuar
+  // para a amostra COMPLETA anterior dá o total certo, em vez de piscar `—`
+  // num link saudável — e, sobretudo, em vez de somar 8 Mb/s como se o link
+  // estivesse com metade do tráfego.
+  const buracoNoFim: Point[] = [
+    { t: 0, rx: 8_000_000, tx: 2_000_000 },
+    { t: 1, rx: 8_000_000, tx: null },
+  ];
+  assert(
+    latestTotal(buracoNoFim) === 10_000_000,
+    `com o último ponto pela metade vale a última amostra completa, obtive ${latestTotal(buracoNoFim)}`,
+  );
+  assert(latestTotal(buracoNoFim) !== 8_000_000, 'e nunca a metade medida do ponto incompleto');
+
+  // Zero medido continua entrando na soma: um link ocioso soma 0, e 0 não é
+  // ausência. É a metade da regra que se esquece com facilidade.
+  assert(
+    latestTotal([{ t: 0, rx: 3_000, tx: 0 }]) === 3_000,
+    'tx medido em zero soma zero, e a amostra continua completa',
+  );
+  assert(formatBps(latestTotal([{ t: 0, rx: 0, tx: 0 }])) === '0', 'link ocioso medido lê `0`');
+
+  // Ponta a ponta, do JSON da API ao texto da tela: é assim que o widget de
+  // links WAN monta o número que todo admin vê no painel de fábrica.
+  const daApi = pointsFromHistory([
+    { timestamp: 1_700_000_000, rx_bps: 1_275_000, tx_bps: 1_275_000 },
+    { timestamp: 1_700_000_001, rx_bps: 1_275_000, tx_bps: null },
+  ]);
+  assert(
+    formatBps(latestTotal(daApi)) === '20.4 Mb/s',
+    `o total tem que ser o da amostra completa, obtive "${formatBps(latestTotal(daApi))}"`,
+  );
+  assert(
+    formatBps(latestTotal([daApi[1]])) === '—',
+    `sem amostra completa na janela o texto é um travessão, obtive "${formatBps(latestTotal([daApi[1]]))}"`,
   );
 }
 
