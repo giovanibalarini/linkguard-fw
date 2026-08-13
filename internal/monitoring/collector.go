@@ -32,6 +32,8 @@ type Collector struct {
 	bootChecked bool                   // guards checkBootTime (Task 5) so it fires at most once per process
 	bootIDFn    func() (string, error) // returns the kernel's current boot_id; overridable in tests
 
+	bootPersist BootPersistSource // nil until SetBootPersistSource; see checkBootPersist
+
 	ifaceExists    func(string) bool // overridable in tests; nil means the real /sys/class/net check
 	resolvConfPath string            // overridable in tests; empty means defaultResolvConfPath
 	dnsProbe       func() error      // overridable in tests; nil means the real UDP probe to 127.0.0.1:53
@@ -124,6 +126,7 @@ func (c *Collector) collect() {
 			c.checkWANInterfaces()
 			c.checkFirewallNAT()
 			c.checkDNSResolver()
+			c.checkBootPersist()
 		}
 
 		// Boot-time is measured once per process lifetime (see

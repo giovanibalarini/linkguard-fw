@@ -279,7 +279,21 @@ export interface FirewallRule {
 // "unknown"), same LastApply shape used by NTP/DHCP/DNS.
 export interface FirewallRulesData {
   rules: FirewallRule[];
-  apply_status?: LastApply;
+  apply_status?: FirewallApplyStatus;
+}
+
+// FirewallApplyStatus é o LastApply do firewall com a pergunta que só ele tem:
+// "o que está valendo agora volta depois de um reboot?".
+//
+// boot_persist_error preenchido significa que as regras ENTRARAM no kernel e
+// estão valendo, mas o arquivo que o nftables.service carrega no boot não foi
+// gravado — medido em VM com /etc imutável, quando o painel dizia `ok: true` e
+// a máquina voltaria de um reboot com outro firewall. `ok` vem falso junto,
+// porque um verde nesse estado é a mentira que este campo existe para desfazer;
+// quem desenha a tela precisa dos dois para não chamar de "apply que falhou"
+// algo que o operador desfaria à toa (ver a faixa em FirewallGroups.tsx).
+export interface FirewallApplyStatus extends LastApply {
+  boot_persist_error?: string;
 }
 
 // ─── Firewall overview (GET /api/nftables/overview) ───────────────────────
@@ -477,7 +491,7 @@ export interface FirewallGroup {
 
 export interface FirewallGroupsData {
   groups: FirewallGroup[];
-  apply_status?: LastApply | null;
+  apply_status?: FirewallApplyStatus | null;
 }
 
 export interface PortForward {

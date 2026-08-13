@@ -612,3 +612,56 @@ func TestMainWiresThePersistGuard(t *testing.T) {
 		t.Errorf("nftSvc.SetPersistGuard tem que ser ligado ANTES da primeira reconciliação do boot: até lá, persistir não consulta ninguém")
 	}
 }
+
+// TestMainWiresTheBootPersistSource guarda a ligação do vigia ao serviço de
+// nftables. Sem ela o Collector não tem como saber nada sobre o
+// /etc/nftables.conf, o item "Regras no próximo boot" da Saúde do sistema
+// simplesmente não existe, e a falha do Persist volta a ser o que a validação
+// em VM mediu no §10: um WARN no journal, com o painel dizendo `ok: true`
+// enquanto as regras não sobreviveriam ao reboot.
+//
+// Guarda de deriva na AST, como TestMainWiresTheInputChainSources e
+// TestMainWiresThePersistGuard: o modo de falha é uma linha REMOVIDA num
+// refactor, que compila igual e não quebra teste nenhum de comportamento.
+func TestMainWiresTheBootPersistSource(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("não foi possível localizar o arquivo de teste")
+	}
+	srcPath := filepath.Join(filepath.Dir(thisFile), "main.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parsear main.go: %v", err)
+	}
+
+	wired := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, isCall := n.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel || sel.Sel.Name != "SetBootPersistSource" {
+			return true
+		}
+		recv, isIdent := sel.X.(*ast.Ident)
+		if !isIdent || recv.Name != "metricsCollector" {
+			return true
+		}
+		// A fonte tem que ser o MESMO nftSvc que persiste de verdade: um
+		// segundo Service teria um PersistState próprio, sempre "nunca
+		// tentou", e o item nunca apareceria.
+		if len(call.Args) == 1 {
+			if arg, isIdent := call.Args[0].(*ast.Ident); isIdent && arg.Name == "nftSvc" {
+				wired = true
+			}
+		}
+		return true
+	})
+
+	if !wired {
+		t.Fatal("o boot não liga mais metricsCollector.SetBootPersistSource(nftSvc): o item \"Regras no próximo boot\" some da Saúde do sistema e a falha do Persist volta a ser muda na tela (§10 da validação em VM)")
+	}
+}

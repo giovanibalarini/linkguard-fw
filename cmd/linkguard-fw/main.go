@@ -324,6 +324,12 @@ func run() int {
 	promReg := prometheus.NewRegistry()
 	appMetrics := metrics.New(promReg)
 	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec, rrdSvc)
+	// O item "Regras no próximo boot" da Saúde do sistema. Sem esta linha o
+	// vigia não tem como saber nada sobre o /etc/nftables.conf e o item
+	// simplesmente não aparece — a falha do Persist voltaria a ser só um WARN no
+	// journal, que é exatamente o que o §10 da validação em VM mediu. Guardada
+	// contra deriva por TestMainWiresTheBootPersistSource.
+	metricsCollector.SetBootPersistSource(nftSvc)
 	backupSched := backup.NewScheduler(db, secretsSvc, notifySvc, alertSvc, version)
 	journalSched := monitoring.NewJournalScheduler(metricsCollector)
 	updatesSched := monitoring.NewUpdatesScheduler(metricsCollector)

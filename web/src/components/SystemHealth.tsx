@@ -14,6 +14,7 @@ const LABEL: Record<string, string> = {
   'boot-time': 'Tempo de boot',
   'journal-integrity': 'Integridade dos logs',
   'firewall-nat': 'Regra de NAT',
+  'firewall-boot-persist': 'Regras no próximo boot',
   'wan-interface': 'Interfaces WAN',
   'dns-resolver': 'Resolver DNS',
   'system-updates': 'Atualizações do sistema',
@@ -61,7 +62,12 @@ export default function SystemHealth() {
             className={`flex items-center gap-2 rounded-lg border p-3 ${it.up ? 'border-green-500/20 bg-green-500/5' : 'border-red-500/30 bg-red-500/10'}`}>
             {it.up ? <ShieldCheck className="w-4 h-4 text-green-400 shrink-0" /> : <ShieldAlert className="w-4 h-4 text-red-400 shrink-0" />}
             <div className="min-w-0">
-              <div className="text-white text-sm truncate">{LABEL[it.name] ?? it.name}</div>
+              {/* O `truncate` corta o rótulo dentro de um cartão estreito, e
+                  "Regras no ..." em vermelho não diz ao operador o que está
+                  fora do ar. O title devolve o nome inteiro no hover — vale
+                  para todos os vigias, não só o novo ("Sincroniza...",
+                  "Temperatu...", "Atualizaçõ..." já sofriam do mesmo). */}
+              <div className="text-white text-sm truncate" title={LABEL[it.name] ?? it.name}>{LABEL[it.name] ?? it.name}</div>
               <div className={`text-xs ${it.up ? 'text-green-400' : 'text-red-400'}`}>{it.up ? 'no ar' : 'fora do ar'}</div>
             </div>
           </div>

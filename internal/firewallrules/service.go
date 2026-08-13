@@ -378,6 +378,22 @@ type ApplyStatus struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
 	At    int64  `json:"at"` // unix seconds
+
+	// BootPersistError é "as regras ENTRARAM no kernel, mas o arquivo de boot
+	// não foi gravado" — o estado que o §10 da validação em VM mediu e que o
+	// painel reportava como `{"ok": true}`. Campo próprio, e não Error, porque
+	// as duas coisas são diferentes e o operador age de forma diferente em cada
+	// uma: com Error preenchido, o que ele configurou pode não estar valendo e
+	// ele precisa conferir a "Visão geral" antes de confiar nas regras; com só
+	// este preenchido, o que ele configurou ESTÁ valendo — o que não está é o
+	// próximo boot. Enfiar isto em Error faria a faixa vermelha dizer que o
+	// apply falhou, e o operador desfaria um trabalho que funcionou.
+	//
+	// OK fica falso mesmo assim (ver recordApplyStatus): `ok: true` com o
+	// arquivo de boot para trás é a mentira mais direta que este apply status
+	// contava, e um consumidor que só saiba ler `ok` tem que ver um problema —
+	// nunca um verde sintético.
+	BootPersistError string `json:"boot_persist_error,omitempty"`
 }
 
 // Reconcile loads every stored group with its rules (enabled or not, in
@@ -494,10 +510,24 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	return applyErr
 }
 
+// recordApplyStatus grava o resultado da passada — e, junto dele, o estado do
+// arquivo de boot.
+//
+// A leitura de PersistState vale para TODOS os caminhos que chegam aqui,
+// inclusive os que abortam antes de tocar no nft (loadErr, missingErr): o
+// arquivo de boot continua para trás de qualquer jeito, e essa é a pergunta
+// que este campo responde. Attempted falso — dry-run, ou nenhum Persist ainda
+// nesta sessão — não vira nada: "não sei" nunca é gravado como problema.
 func (s *Service) recordApplyStatus(applyErr error) {
 	st := ApplyStatus{OK: applyErr == nil, At: time.Now().Unix()}
 	if applyErr != nil {
 		st.Error = applyErr.Error()
+	}
+	if s.nft != nil {
+		if ps := s.nft.PersistState(); ps.Attempted && !ps.OK {
+			st.BootPersistError = ps.Err
+			st.OK = false
+		}
 	}
 	b, err := json.Marshal(st)
 	if err != nil {

@@ -52,6 +52,9 @@ const (
 
 	TypeFirewallChangeReverted = "firewall_change_reverted"
 
+	TypeFirewallBootPersistFailed = "firewall_boot_persist_failed"
+	TypeFirewallBootPersistOK     = "firewall_boot_persist_ok"
+
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
 	SeverityCritical = "critical"
@@ -106,6 +109,7 @@ var stateAlertTypes = []string{
 	TypeBaseDepsMissing,
 	TypeNetsvcDepsMissing,
 	TypeFirewallSystemGroupsMissing,
+	TypeFirewallBootPersistFailed,
 }
 
 // Service manages alert generation and retrieval.
@@ -512,6 +516,29 @@ func (s *Service) WANInterfaceOK() error {
 	s.AutoResolve(TypeWANInterfaceMissing, "")
 	return s.createRecovery(TypeWANInterfaceOK, "Interfaces WAN consistentes",
 		"Todos os links WAN apontam para interfaces existentes.", "")
+}
+
+// FirewallBootPersistFailed abre o aviso de que o firewall vivo não está
+// gravado no arquivo de boot: as regras valem AGORA e não sobreviveriam a um
+// reboot. Medido em VM (§10 da validação final) com /etc imutável — o apply
+// chega ao kernel, o painel responde, e a máquina voltaria de um reboot com um
+// firewall diferente do que a tela mostrava.
+//
+// Warning, e não Critical, de propósito: nada está desprotegido neste instante,
+// ao contrário da regra de NAT inconsistente (que é tráfego sem tradução agora).
+// Gritar Critical por algo que só se materializa no próximo boot treina o
+// operador a ignorar Critical — que é a razão pela qual este projeto já teve de
+// corrigir um alerta crítico falso.
+func (s *Service) FirewallBootPersistFailed(detail string) error {
+	return s.Create(TypeFirewallBootPersistFailed, SeverityWarning, "Regras não gravadas para o próximo boot",
+		"O firewall em vigor não foi gravado no arquivo de boot; as regras valem agora, mas um reboot não as traria de volta: "+detail, "")
+}
+
+// FirewallBootPersistOK fecha FirewallBootPersistFailed e anuncia a volta.
+func (s *Service) FirewallBootPersistOK() error {
+	s.AutoResolve(TypeFirewallBootPersistFailed, "")
+	return s.createRecovery(TypeFirewallBootPersistOK, "Regras gravadas para o próximo boot",
+		"O firewall em vigor voltou a ser gravado no arquivo de boot.", "")
 }
 
 // DNSResolverDrift raises a warning when the box is not using its own

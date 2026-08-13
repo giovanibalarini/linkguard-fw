@@ -16,9 +16,9 @@ import { adminGroupsAbove as groupsAbove, isSystemGroup, KIND_BLOCKED_HOSTS, KIN
 import { anchorFrom, claimFullBanner, countdownNow, formatCountdown } from '../lib/pendingWindow';
 import type { CountdownAnchor } from '../lib/pendingWindow';
 import type {
-  FirewallGroup, FirewallGroupsData, FirewallPendingChange, FirewallPendingResponse,
-  FirewallRule, FirewallRulesData, GroupConnState, GroupFallthrough, GroupScope, LastApply,
-  MsgLevel, NetHost, NftChainRule, NftManaged,
+  FirewallApplyStatus, FirewallGroup, FirewallGroupsData, FirewallPendingChange,
+  FirewallPendingResponse, FirewallRule, FirewallRulesData, GroupConnState,
+  GroupFallthrough, GroupScope, MsgLevel, NetHost, NftChainRule, NftManaged,
 } from '../types';
 
 interface Props {
@@ -385,7 +385,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   // porque desbloquear exige o MAC. null = não consultado ou sem permissão,
   // que é diferente de "inventário vazio".
   const [hosts, setHosts] = useState<NetHost[] | null>(null);
-  const [applyStatus, setApplyStatus] = useState<LastApply | undefined>(undefined);
+  const [applyStatus, setApplyStatus] = useState<FirewallApplyStatus | undefined>(undefined);
   const [selectedId, setSelectedId] = useState<string>('');
   const [unit, setUnit] = useState<Unit>('bytes');
   const [loading, setLoading] = useState(true);
@@ -1046,9 +1046,34 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       {/* apply_status: the last DB→nft reconcile can fail on its own — a
           boot-time one has no HTTP response for anyone to see — so this is a
           standing banner, not a transient message. */}
-      {applyStatus && !applyStatus.ok && (
+      {/* `ok: false` passou a ter DUAS causas possíveis, e elas pedem ações
+          opostas do operador — daí a condição não ser mais só `!ok`.
+
+          Se a única coisa que aconteceu foi o arquivo de boot não ter sido
+          gravado (`boot_persist_error` sem `error`), esta faixa NÃO aparece:
+          as regras entraram no kernel e estão valendo, e chamar isso de "o
+          apply falhou" faria o operador desfazer um trabalho que funcionou.
+          Quem fala desse caso é a faixa âmbar logo abaixo.
+
+          O `|| !boot_persist_error` mantém o comportamento antigo para um
+          `ok: false` sem mensagem nenhuma: continua sendo uma falha de apply
+          sem detalhe, não um silêncio. */}
+      {applyStatus && !applyStatus.ok && (applyStatus.error || !applyStatus.boot_persist_error) && (
         <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
           A última tentativa de aplicar seus grupos ao nftables falhou: {applyStatus.error || 'erro desconhecido'}. O que está em vigor pode não refletir o que está configurado aqui — confira a aba "Visão geral" antes de confiar nas regras abaixo.
+        </div>
+      )}
+
+      {/* Âmbar, e não vermelho: as regras ESTÃO valendo agora — o que não está
+          é o próximo boot. As duas faixas podem aparecer juntas na mesma
+          passada (o nft recusou algo E o arquivo de boot ficou para trás):
+          são dois problemas diferentes, com duas ações diferentes. */}
+      {applyStatus?.boot_persist_error && (
+        <div className="card border border-amber-500/30 bg-amber-500/10 text-amber-300 text-sm">
+          <p className="font-medium">Suas regras estão valendo agora, mas não sobrevivem a um reboot.</p>
+          <p className="mt-1 text-amber-200/80">
+            O firewall em vigor não pôde ser gravado no arquivo que a máquina carrega no boot: {applyStatus.boot_persist_error}. Se a máquina reiniciar antes de isso ser resolvido, ela volta com o firewall anterior — não com o que está nesta tela.
+          </p>
         </div>
       )}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"regexp"
@@ -28,6 +29,84 @@ import (
 
 // defaultResolvConfPath is the file checkDNSResolver reads; overridden in tests.
 const defaultResolvConfPath = "/etc/resolv.conf"
+
+// BootPersistSource é o que checkBootPersist precisa saber sobre o arquivo de
+// boot do firewall. Interface, e não *nftables.Service direto, para o teste
+// poder montar as combinações (nunca tentou / falhou / gravou e o arquivo
+// sumiu) sem um nft de verdade — e para deixar explícito que o vigia só LÊ.
+//
+// Implementado por *nftables.Service (PersistState/PersistPath).
+type BootPersistSource interface {
+	PersistState() nftables.PersistState
+	PersistPath() string
+}
+
+// SetBootPersistSource liga o vigia ao serviço de nftables. Sem ela o item
+// "Regras no próximo boot" simplesmente não existe — um Collector sem fonte
+// não tem como saber nada sobre o arquivo de boot, e inventar um "ok" seria o
+// dado falso que este projeto não aceita. Ligar isto é obrigação do main
+// (guardado por TestMainWiresTheBootPersistSource).
+func (c *Collector) SetBootPersistSource(src BootPersistSource) { c.bootPersist = src }
+
+// checkBootPersist responde a pergunta que o §10 da validação em VM deixou sem
+// resposta na tela: "o que está valendo agora volta depois de um reboot?".
+//
+// É item de saúde, e não só alerta, porque é uma CONDIÇÃO contínua e não um
+// evento: enquanto o arquivo de boot não refletir o firewall vivo o operador
+// tem que ver, e quando voltar a ser gravado tem que sumir sozinho. Um alerta
+// isolado seria criado uma vez e o operador o resolveria sem a condição ter
+// mudado.
+//
+// As duas perguntas que ele faz, ambas baratas e ambas honestas:
+//
+//  1. a última tentativa REAL de gravar falhou? (nftables.PersistState — sem
+//     nenhum comando novo: é a memória do que já aconteceu);
+//  2. o arquivo simplesmente não está lá? (um os.Stat por ciclo).
+//
+// O que ele deliberadamente NÃO faz é comparar o ruleset vivo com o conteúdo
+// do arquivo a cada ciclo: isso custaria um `nft list table` por tique para
+// responder a uma pergunta que a memória do Persist já responde. Também não
+// olha a IDADE do arquivo — uma máquina saudável que não muda regra há meses
+// tem um arquivo antigo e correto, e transformar isso em item vermelho seria
+// exatamente o falso positivo que treina o operador a ignorar a tela.
+//
+// Três silêncios de propósito, cada um por não haver veredito a dar:
+//
+//   - sem fonte ligada (binário sem nft, testes): nada a dizer;
+//   - Persist nunca chegou a tentar gravar (dry-run, ou o boot ainda não
+//     reconciliou): "ainda não sei" nunca vira "está tudo bem";
+//   - o os.Stat falhou por algo que não é "não existe" (permissão no diretório,
+//     IO): não conseguir olhar não é o mesmo que o arquivo estar errado. Mesma
+//     escolha de todo early-return deste arquivo.
+func (c *Collector) checkBootPersist() {
+	if c.bootPersist == nil {
+		return
+	}
+	st := c.bootPersist.PersistState()
+	if !st.Attempted {
+		return
+	}
+	path := c.bootPersist.PersistPath()
+
+	var reason string
+	if !st.OK {
+		reason = fmt.Sprintf("a última gravação de %s falhou: %s", path, st.Err)
+	} else if _, err := os.Stat(path); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return // não consegui olhar; sem veredito neste ciclo
+		}
+		reason = fmt.Sprintf("%s foi gravado com sucesso, mas não está mais lá", path)
+	}
+
+	tr := c.observe("firewall:bootpersist", reason == "", c.nowFn())
+	c.ensureMeta("firewall:bootpersist", "firewall-boot-persist", "resource")
+	switch tr {
+	case transDown:
+		_ = c.alertSvc.FirewallBootPersistFailed(reason)
+	case transUp:
+		_ = c.alertSvc.FirewallBootPersistOK()
+	}
+}
 
 // enabledWANInterfaces returns the interfaces of every enabled WAN link —
 // the source of truth both checkWANInterfaces and checkFirewallNAT compare

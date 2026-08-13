@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
@@ -71,6 +72,69 @@ type Service struct {
 	// tome. É por isso que ReconcileGroups/ReconcileGroupsFrom compartilham um
 	// corpo interno (reconcileGroups) em vez de uma chamar a outra.
 	reconcileMu sync.Mutex
+
+	// persistMu protege persistState, lido de fora (o vigia, o apply status)
+	// enquanto qualquer caminho de reconciliação pode estar escrevendo.
+	persistMu sync.Mutex
+	// persistState é o resultado da ÚLTIMA tentativa REAL de gravar o arquivo
+	// de boot — a memória que faltava para a falha do Persist deixar de ser só
+	// um WARN no journal (§10 da validação em VM). Ver PersistState.
+	persistState PersistState
+}
+
+// PersistState é o que o produto sabe sobre o arquivo de boot: a última vez
+// que o Persist tentou MESMO gravá-lo, e com que resultado.
+//
+// Existe porque o Persist é o ponto em que os cinco chamadores convergem e
+// nenhum deles carregava a falha para lugar nenhum além do journal: as regras
+// entravam no kernel, o painel dizia `apply_status: {"ok": true}` e a máquina
+// voltaria de um reboot com um firewall diferente do que a tela mostrava.
+// Gravar o resultado AQUI, e não em cada chamador, é o que torna a falha
+// visível independentemente de qual caminho a disparou.
+//
+// "Tentativa REAL" exclui de propósito os dois casos em que o Persist decide
+// não escrever e devolve nil:
+//
+//   - dry-run: nada neste binário toca no firewall, então não há nada a dizer
+//     sobre o arquivo de boot;
+//   - a guarda da janela de confirmação (SetPersistGuard): não gravar ali é a
+//     decisão certa, dura no máximo os 90 segundos da janela e o painel já
+//     mostra a faixa da mudança pendente. Registrá-la como falha faria o vigia
+//     acender um item vermelho em toda mutação de escopo input de uma máquina
+//     saudável — exatamente o alarme falso que este projeto acabou de corrigir
+//     em outro vigia.
+//
+// Attempted falso significa "ainda não sei", nunca "está tudo bem": quem
+// consome isto (monitoring.Collector.checkBootPersist) fica em silêncio em vez
+// de inventar um veredito.
+type PersistState struct {
+	// Attempted é falso até o Persist chegar de fato à gravação uma vez.
+	Attempted bool
+	// OK diz se a última tentativa gravou o arquivo de boot.
+	OK bool
+	// Err é a mensagem da falha (vazia quando OK).
+	Err string
+	// At é o instante (unix) da última tentativa.
+	At int64
+}
+
+// recordPersist guarda o resultado de uma tentativa real de gravação.
+func (s *Service) recordPersist(err error) {
+	st := PersistState{Attempted: true, OK: err == nil, At: time.Now().Unix()}
+	if err != nil {
+		st.Err = err.Error()
+	}
+	s.persistMu.Lock()
+	s.persistState = st
+	s.persistMu.Unlock()
+}
+
+// PersistState devolve o resultado da última tentativa real de gravar o
+// arquivo de boot. Ver o tipo PersistState para o que "real" exclui.
+func (s *Service) PersistState() PersistState {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	return s.persistState
 }
 
 // NewService creates an nftables Service.
@@ -134,10 +198,14 @@ func (s *Service) persistBlocked() bool {
 	return false
 }
 
-// persistPath é o arquivo que Persist grava. O fallback para a variável de
+// PersistPath é o arquivo que Persist grava. O fallback para a variável de
 // pacote cobre os Service montados por literal (`&Service{exec: …}`, comum nos
 // testes deste pacote), que nunca passaram por NewService.
-func (s *Service) persistPath() string {
+//
+// Exportado porque o vigia precisa perguntar por ele: checkBootPersist confere
+// a EXISTÊNCIA deste arquivo, e um caminho fixo no vigia divergiria em silêncio
+// de um Service redirecionado por SetConfPath (o que a suíte inteira faz).
+func (s *Service) PersistPath() string {
 	if s.confPath != "" {
 		return s.confPath
 	}
@@ -437,32 +505,34 @@ func (s *Service) DelBlocklist(ctx context.Context, cidr string) (string, error)
 // persistir" e o registra em WARN; um erro sintético encheria o journal de
 // alarme falso a cada reconciliação dos 90 segundos.
 //
-// PENDÊNCIA CONHECIDA: A FALHA DAQUI É MUDA NA TELA (§10 da validação final
-// em VM, medida em 2026-08-13, não corrigida de propósito).
-//
-// Todo chamador trata o erro devolvido aqui como um WARN no journal e segue
-// em frente — e mais nada. Não existe alerta, item de saúde nem campo do
-// apply_status que conte ao operador que o firewall vivo não foi gravado para
-// o próximo boot. Medido com /etc/nftables.conf ausente e /etc imutável, de
-// modo que o ExecStartPre (que tem o prefixo `-`) não conseguisse criar o
-// arquivo: o serviço sobe, o painel responde 200, o apply CHEGA ao kernel e as
-// regras valem — e o painel diz `apply_status: {"ok": true}`, sem nenhum
-// alerta aberto e sem nenhum item de saúde novo depois de 2 ciclos do vigia.
-// A única evidência é o WARN no journal. As regras não sobrevivem ao reboot.
-//
-// É o modo de falha que o prefixo `-` no ExecStartPre introduziu — o `-`
-// funciona exatamente como projetado (antes disso a máquina não subia), mas o
-// preço dele é este estado silencioso, que contraria a regra do projeto de que
+// A FALHA DAQUI NÃO É MAIS MUDA NA TELA (§10 da validação final em VM,
+// 2026-08-13). O que ela era: os cinco chamadores logavam um WARN e seguiam em
+// frente, e mais nada. Medido com /etc/nftables.conf ausente e /etc imutável,
+// de modo que o ExecStartPre (que tem o prefixo `-`) não conseguisse criar o
+// arquivo — o serviço sobe, o painel responde 200, o apply CHEGA ao kernel e as
+// regras valem, e o painel dizia `apply_status: {"ok": true}`, sem alerta e sem
+// item de saúde depois de 2 ciclos do vigia. A única evidência era o journal, e
+// as regras não sobreviveriam ao reboot: a máquina voltaria com um firewall
+// diferente do que a tela mostrava. É o modo de falha que o prefixo `-`
+// introduziu — o `-` funciona como projetado (antes dele a máquina não subia),
+// mas o preço era esse estado silencioso, contra a regra do projeto de que
 // "configurado ≠ funcionando" tem que ser visível na tela.
 //
-// Por que não foi corrigido junto: a condição teve que ser fabricada (chattr
-// +i em /etc) e a correção mexe no caminho de apply — propagar a falha de
-// persistência até o apply_status e/ou abrir um item de saúde — o que não se
-// faz na véspera de um deploy. Quem pegar isto: o consumidor certo é o
-// apply_status da listagem (o mesmo campo que já carrega a recusa do nft) e/ou
-// um item de saúde do vigia checando a existência e a idade de
-// s.persistPath(); os cinco chamadores que hoje só logam WARN são os pontos de
-// enxerto.
+// O conserto ficou AQUI, e não nos cinco chamadores, porque aqui é onde eles
+// convergem: recordPersist grava o resultado de toda tentativa real em
+// PersistState, e as duas superfícies leem de lá —
+//
+//   - firewallrules.Service.recordApplyStatus, que deixa de dizer `ok: true` e
+//     nomeia o que não aconteceu em `boot_persist_error` (sem virar erro do
+//     apply: as regras ENTRARAM no kernel, e reportar erro faria o operador
+//     desfazer um trabalho que funcionou);
+//   - monitoring.Collector.checkBootPersist, o item "Regras no próximo boot" da
+//     Saúde do sistema, que é a superfície certa para uma CONDIÇÃO contínua e
+//     some sozinha quando o arquivo volta a ser gravado.
+//
+// Continua devolvendo o erro ao chamador, e todo chamador continua tratando-o
+// como WARN e seguindo em frente: as regras estão valendo, e abortar por causa
+// do arquivo de boot seria trocar um problema futuro por um presente.
 func (s *Service) Persist(ctx context.Context) error {
 	if s.exec.IsDryRun() {
 		return nil
@@ -470,15 +540,22 @@ func (s *Service) Persist(ctx context.Context) error {
 	if s.persistBlocked() {
 		return nil
 	}
+	// Daqui para baixo é uma tentativa REAL de gravar: todo caminho de saída
+	// passa por recordPersist. A recusa do `nft list table` conta como falha de
+	// persistência porque a consequência é a mesma — o arquivo de boot fica com
+	// o conteúdo antigo (ou não existe) enquanto o kernel tem outro.
 	tbl, err := s.exec.ExecuteRead(ctx, "nft", "list", "table", Family, Table)
 	if err != nil {
+		s.recordPersist(err)
 		return err
 	}
 	body := fmt.Sprintf(
 		"#!/usr/sbin/nft -f\n\ntable %s %s\ndelete table %s %s\n\n%s\n",
 		Family, Table, Family, Table, tbl,
 	)
-	return os.WriteFile(s.persistPath(), []byte(body), 0o644)
+	err = os.WriteFile(s.PersistPath(), []byte(body), 0o644)
+	s.recordPersist(err)
+	return err
 }
 
 // ─── Port forwarding (DNAT) ──────────────────────────────────────────────────

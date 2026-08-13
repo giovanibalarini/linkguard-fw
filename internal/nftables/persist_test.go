@@ -176,7 +176,7 @@ func TestPersistWritesTheServiceConfPath(t *testing.T) {
 func TestNewServiceDefaultsToTheSystemConfPath(t *testing.T) {
 	// ConfPath aqui é o temporário do TestMain; o que importa é que o Service
 	// nasce apontando para ele, e não para vazio.
-	if got := NewService(&recordExec{}).persistPath(); got != ConfPath {
+	if got := NewService(&recordExec{}).PersistPath(); got != ConfPath {
 		t.Errorf("um Service novo tem que nascer apontando para o ConfPath do pacote (%q), obtive %q", ConfPath, got)
 	}
 	// E o valor de produção é o arquivo que o systemd carrega no boot.
