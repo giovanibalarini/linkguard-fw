@@ -56,6 +56,12 @@ type fakeNft struct {
 	// nftRefusesToken, é um marcador de teste para a categoria — não a imitação
 	// de uma sintaxe específica.
 	applyRefusesIn map[string]bool
+	// checked guarda o TEXTO de cada script que passou pelo pré-voo `nft -c
+	// -f`. Sem isso não há como um teste afirmar que o pré-voo validou a MESMA
+	// linha que o apply escreveu — e é exatamente aí que uma conversão
+	// incompleta se esconde: o dry run aprova a linha antiga, o apply escreve
+	// outra, e as duas passam.
+	checked []string
 }
 
 // errNoSuchChain é a mensagem que o nft dá para referência a chain
@@ -155,6 +161,7 @@ func (f *fakeNft) check(path string) error {
 	if err != nil {
 		return err
 	}
+	f.checked = append(f.checked, string(body))
 	scratch := make(map[string][]string, len(f.chains))
 	for name, rules := range f.chains {
 		scratch[name] = append([]string{}, rules...)
@@ -272,6 +279,20 @@ func (f *fakeNft) liveChain(name string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string{}, f.chains[name]...)
+}
+
+// checkedWith diz se algum script de pré-voo continha o trecho. Chamado sem
+// travar f.mu porque ExecuteRead já o mantém travado durante o check e os
+// testes que usam isto leem depois da requisição.
+func (f *fakeNft) checkedWith(substr string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, script := range f.checked {
+		if strings.Contains(script, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeNft) ranWith(substr string) bool {
@@ -1587,4 +1608,191 @@ func reversedGroupIDsJSON(t *testing.T, db *storage.DB) string {
 		t.Fatalf("marshal dos ids: %v", err)
 	}
 	return string(out)
+}
+
+// ─── "Vale para toda conexão" × "só conexões novas" ───────────────────────
+//
+// O campo tem DUAS pontas, e elas entram juntas ou não entram: o corpo do
+// handler e o UPDATE do storage. Com o campo `scope` isso já deu errado neste
+// projeto — o campo existia na tela, não era gravado, e o operador mudava a
+// escolha com HTTP 200 e nada acontecendo. Os testes abaixo medem sempre as
+// duas: o que ficou no BANCO e o que ficou no FIREWALL VIVO.
+
+// jumpLineTo devolve a linha viva da chain que salta para target — é onde o
+// `ct state new` tem que aparecer, e não em outro lugar.
+func jumpLineTo(t *testing.T, exec *fakeNft, chain, target string) string {
+	t.Helper()
+	for _, expr := range exec.liveChain(chain) {
+		if jumpTargetOf(expr) == target {
+			return expr
+		}
+	}
+	t.Fatalf("nenhum jump para %q na chain %q: %v", target, chain, exec.liveChain(chain))
+	return ""
+}
+
+// A escolha feita na criação tem que chegar ao nft. Este é o teste que pega o
+// furo deixado em aberto pela Task 1: o campo era gravável e renderizável, mas
+// a conversão storage.FirewallGroup → nftables.StoredGroup não o carregava, de
+// modo que o grupo nascia "só conexões novas" no banco e "toda conexão" no
+// firewall — a pior divergência possível, porque a tela mostraria a escolha do
+// operador e o kernel faria o contrário dela.
+func TestCreateGroupWithNewConnectionsOnlyReachesTheFirewall(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db,
+		`{"name":"Wi-Fi visitantes","cond_saddr":"192.168.50.0/24","fallthrough":"continue","conn_state":"new"}`)
+
+	if g.ConnState != nftables.ConnStateNew {
+		t.Fatalf("a escolha não chegou ao banco: %+v", g)
+	}
+	line := jumpLineTo(t, exec, nftables.ForwardChain, g.ChainName)
+	if !strings.Contains(line, "ct state new") {
+		t.Errorf("o firewall vivo não recebeu a restrição: %q", line)
+	}
+	// E o pré-voo tem que ter validado ESTA linha, não a de antes: a ordem
+	// obrigatória de toda mutação é validar → `nft -c` → gravar → reconciliar,
+	// e um dry run que aprova uma linha diferente da que vai ser aplicada é o
+	// pré-voo existindo só para constar.
+	if !exec.checkedWith("ct state new") {
+		t.Errorf("o pré-voo `nft -c` não viu a restrição que foi aplicada: %v", exec.checked)
+	}
+}
+
+// E o contrapeso, que é a garantia de compatibilidade da entrega inteira: o
+// grupo criado sem falar do campo — todo grupo que já existe, e todo cliente
+// que não conhece a escolha — continua emitindo a linha de sempre.
+func TestCreateGroupWithoutConnStateStillEmitsTheLineItAlwaysDid(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db,
+		`{"name":"LAN","cond_saddr":"192.168.50.0/24","fallthrough":"continue"}`)
+
+	if g.ConnState != "" {
+		t.Errorf("o grupo nasceu restrito sem ninguém pedir: %+v", g)
+	}
+	line := jumpLineTo(t, exec, nftables.ForwardChain, g.ChainName)
+	if strings.Contains(line, "ct state") {
+		t.Errorf("vazou ct state para um grupo de toda conexão: %q", line)
+	}
+}
+
+// A edição nos dois sentidos. Restringir é o caso que o operador vai usar;
+// SOLTAR de volta é o que ele vai fazer quando perceber que precisava da
+// marreta, e uma edição que só sabe apertar deixaria o grupo preso na escolha
+// nova para sempre.
+func TestUpdateGroupChangesConnStateInBothDirections(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db, `{"name":"Wi-Fi","cond_saddr":"192.168.50.0/24","fallthrough":"continue"}`)
+
+	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+g.ID+`","name":"Wi-Fi","cond_saddr":"192.168.50.0/24","fallthrough":"continue","conn_state":"new"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	if after := adminGroups(t, db)[0]; after.ConnState != nftables.ConnStateNew {
+		t.Fatalf("a escolha nova não chegou ao banco (mudei na tela e não aconteceu nada): %+v", after)
+	}
+	if line := jumpLineTo(t, exec, nftables.ForwardChain, g.ChainName); !strings.Contains(line, "ct state new") {
+		t.Fatalf("a escolha nova não chegou ao firewall vivo: %q", line)
+	}
+
+	back := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+g.ID+`","name":"Wi-Fi","cond_saddr":"192.168.50.0/24","fallthrough":"continue","conn_state":"any"}`)
+	if back.Code != http.StatusOK {
+		t.Fatalf("UpdateGroup (voltar): status %d, body %s", back.Code, back.Body.String())
+	}
+	if after := adminGroups(t, db)[0]; after.ConnState != nftables.ConnStateAny {
+		t.Fatalf("não deu para voltar a valer para toda conexão: %+v", after)
+	}
+	if line := jumpLineTo(t, exec, nftables.ForwardChain, g.ChainName); strings.Contains(line, "ct state") {
+		t.Errorf("a restrição ficou no firewall depois de ser desfeita: %q", line)
+	}
+}
+
+// Campo AUSENTE no corpo significa MANTER o gravado — mesmo contrato do
+// `scope`, e pela mesma razão: um cliente que não conhece o campo (ou uma
+// chamada que só quer renomear o grupo) devolveria em silêncio a "toda
+// conexão" um grupo que o operador restringiu de propósito, com HTTP 200 e
+// nada na tela mudando. Para soltar o grupo, o cliente manda "any"
+// explicitamente — que é o que a tela faz.
+func TestUpdateWithoutConnStateKeepsTheStoredOne(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db,
+		`{"name":"Wi-Fi","cond_saddr":"192.168.50.0/24","fallthrough":"continue","conn_state":"new"}`)
+
+	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+g.ID+`","name":"Outro nome","cond_saddr":"192.168.50.0/24","fallthrough":"continue"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	after := adminGroups(t, db)[0]
+	if after.ConnState != nftables.ConnStateNew {
+		t.Fatalf("a escolha gravada foi perdida por um corpo que nem falava dela: %+v", after)
+	}
+	if line := jumpLineTo(t, exec, nftables.ForwardChain, g.ChainName); !strings.Contains(line, "ct state new") {
+		t.Errorf("o firewall foi afrouxado por um corpo que nem falava da escolha: %q", line)
+	}
+}
+
+// Valor desconhecido é recusado na entrada, nunca normalizado em silêncio: um
+// "established" gravado por um cliente confuso viraria "any" na renderização e
+// a tela diria uma coisa enquanto o firewall faz outra.
+func TestUnknownConnStateIsRefused(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups",
+		`{"name":"Estranho","fallthrough":"continue","conn_state":"established"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("criar com conn_state inválido: esperava 400, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if len(adminGroups(t, db)) != 0 {
+		t.Fatalf("o grupo inválido chegou ao banco: %+v", adminGroups(t, db))
+	}
+
+	g := createGroupViaAPI(t, h, db, `{"name":"Wi-Fi","fallthrough":"continue","conn_state":"new"}`)
+	upd := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+g.ID+`","name":"Wi-Fi","fallthrough":"continue","conn_state":"invalid"}`)
+	if upd.Code != http.StatusBadRequest {
+		t.Errorf("editar com conn_state inválido: esperava 400, obtive %d (%s)", upd.Code, upd.Body.String())
+	}
+	if after := adminGroups(t, db)[0]; after.ConnState != nftables.ConnStateNew {
+		t.Errorf("a escolha válida anterior foi corrompida pela edição recusada: %+v", after)
+	}
+}
+
+// Grupo do sistema (blocked_hosts, blocklist) não aceita o campo: é lista
+// fechada, renderizada por um mapa próprio, e bloqueio de host é justamente
+// onde se quer a marreta. Recusa com 400 — e, mais importante que o status, a
+// coluna dele continua vazia depois da tentativa.
+func TestSystemGroupRefusesConnState(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("listar: %v", err)
+	}
+	var sys storage.FirewallGroup
+	for _, g := range groups {
+		if nftables.IsSystemGroup(g.Kind) {
+			sys = g
+			break
+		}
+	}
+	if sys.ID == "" {
+		t.Fatal("o ambiente de teste tem que ter os grupos do sistema criados")
+	}
+
+	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+sys.ID+`","name":"`+sys.Name+`","fallthrough":"continue","conn_state":"new"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("restringir grupo do sistema: esperava 400, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	after, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("listar: %v", err)
+	}
+	for _, g := range after {
+		if g.ID == sys.ID && g.ConnState != "" {
+			t.Errorf("o grupo do sistema foi restringido mesmo assim: %+v", g)
+		}
+	}
 }

@@ -1006,3 +1006,69 @@ func TestSystemGroupNeverOpensTheWindow(t *testing.T) {
 		t.Errorf("grupo do sistema mora na forward e não podia abrir janela: %+v", p)
 	}
 }
+
+// ─── A escolha "só conexões novas" e a janela ─────────────────────────────
+
+// Mudar o conn_state de um grupo de escopo input é mexer na chain que decide
+// sobre o SSH e o painel: abre janela, como qualquer outra mutação que alcance
+// a input. Aqui isso importa MAIS, não menos — é justamente a escolha em que a
+// sessão do operador não cai, então ele testaria com uma conexão que sobreviveu
+// e confirmaria um bloqueio que só morde na próxima reconexão. A janela é o que
+// dá o tempo (e, com a Task 4, o aviso) para ele testar direito.
+func TestChangingConnStateOfAnInputGroupOpensTheWindow(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+	g := createGroupViaAPI(t, h, db, inputGroupBody)
+	confirmWindow(t, h)
+
+	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+g.ID+`","name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"continue","conn_state":"new"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	if pendingOf(t, w) == nil {
+		t.Errorf("restringir um grupo de input tinha que abrir a janela: %s", w.Body.String())
+	}
+	after := adminGroups(t, db)[0]
+	if after.ConnState != nftables.ConnStateNew {
+		t.Fatalf("a escolha não chegou ao banco: %+v", after)
+	}
+}
+
+// E soltar de volta também abre: sair de "só conexões novas" faz o grupo
+// voltar a derrubar o que já está de pé — inclusive a sessão do operador. Nos
+// dois sentidos vale a regra deste mecanismo: na dúvida, abre.
+func TestLooseningConnStateOfAnInputGroupAlsoOpensTheWindow(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+	g := createGroupViaAPI(t, h, db,
+		`{"name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"continue","conn_state":"new"}`)
+	confirmWindow(t, h)
+
+	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+g.ID+`","name":"Acesso ao firewall","scope":"input","cond_saddr":"192.168.3.0/24","fallthrough":"continue","conn_state":"any"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	if pendingOf(t, w) == nil {
+		t.Errorf("soltar um grupo de input tinha que abrir a janela: %s", w.Body.String())
+	}
+}
+
+// E o contrapeso: num grupo de forward a mesma edição não custa 90 segundos.
+// Uma janela que abre em tudo é uma janela que o operador aprende a clicar sem
+// ler.
+func TestChangingConnStateOfAForwardGroupDoesNotOpenTheWindow(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+	g := createGroupViaAPI(t, h, db, `{"name":"LAN","cond_saddr":"192.168.3.0/24","fallthrough":"continue"}`)
+
+	w := doJSON(t, h.UpdateGroup, "PUT", "/api/nftables/groups",
+		`{"id":"`+g.ID+`","name":"LAN","cond_saddr":"192.168.3.0/24","fallthrough":"continue","conn_state":"new"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateGroup: status %d, body %s", w.Code, w.Body.String())
+	}
+	if p := pendingOf(t, w); p != nil {
+		t.Errorf("mutação de escopo forward não podia abrir janela: %+v", p)
+	}
+	if p := getPending(t, h); p != nil {
+		t.Fatalf("GET devolveu janela aberta depois de uma mutação de forward: %+v", p)
+	}
+}

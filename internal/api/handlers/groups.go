@@ -52,6 +52,15 @@ import (
 // SSH, painel, DNS, Samba. Um valor que não seja um desses três é recusado por
 // ValidateGroup: normalizá-lo para forward colocaria na chain de tráfego
 // atravessando um grupo escrito para outra coisa.
+//
+// ConnState é o campo desta entrega, e decide PARA QUAIS CONEXÕES o grupo
+// vale: "any" (ou vazio, que é toda linha anterior a ele) derruba na hora o
+// que casar com a condição, "new" só alcança conexões NOVAS — a linha do jump
+// ganha `ct state new` e a transferência que já estava correndo segue até
+// terminar. Como o escopo, um valor fora dessa lista é recusado por
+// ValidateGroup em vez de normalizado: um "established" gravado por um cliente
+// confuso viraria "any" na renderização, e a tela diria uma coisa enquanto o
+// firewall faz outra.
 type groupBody struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -60,6 +69,7 @@ type groupBody struct {
 	CondIif     string `json:"cond_iif"`
 	Fallthrough string `json:"fallthrough"`
 	Scope       string `json:"scope"`
+	ConnState   string `json:"conn_state"`
 }
 
 func (b groupBody) trimmed() groupBody {
@@ -71,6 +81,7 @@ func (b groupBody) trimmed() groupBody {
 		CondIif:     strings.TrimSpace(b.CondIif),
 		Fallthrough: strings.TrimSpace(b.Fallthrough),
 		Scope:       strings.TrimSpace(b.Scope),
+		ConnState:   strings.TrimSpace(b.ConnState),
 	}
 }
 
@@ -168,6 +179,7 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		CondIif:     b.CondIif,
 		Fallthrough: b.Fallthrough,
 		Scope:       b.Scope,
+		ConnState:   b.ConnState,
 	}
 	if err := nftables.ValidateGroup(toStoredGroup(*row)); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -258,6 +270,15 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if b.Scope != "" {
 		row.Scope = b.Scope
 	}
+	// Mesmo contrato para a escolha "toda conexão" × "só conexões novas", e
+	// pela mesma razão, com o sinal trocado: ausente é "mantenha o que está
+	// gravado", nunca "volte para toda conexão". Um cliente antigo devolveria
+	// à marreta um grupo que o operador restringiu de propósito — afrouxando o
+	// firewall com HTTP 200 e nada na tela mudando. Para soltar o grupo, o
+	// cliente manda "any" explicitamente, que é o que a tela faz.
+	if b.ConnState != "" {
+		row.ConnState = b.ConnState
+	}
 	if err := nftables.ValidateGroup(toStoredGroup(row)); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -273,6 +294,11 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 				// antigo seria validar outra coisa que não a que vai ser
 				// aplicada — exatamente o que o pré-voo existe para não fazer.
 				g.Scope = row.Scope
+				// E a escolha de conexões pela mesma razão: ela muda a LINHA
+				// que vai ser escrita (`ct state new` no jump). Validar o
+				// conjunto sem ela seria dar o pré-voo por bom para outra
+				// linha que não a que será aplicada.
+				g.ConnState = row.ConnState
 			}
 			out[i] = g
 		}
@@ -540,5 +566,6 @@ func toStoredGroup(g storage.FirewallGroup) nftables.StoredGroup {
 		ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
 		Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
 		CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
+		ConnState: g.ConnState,
 	}
 }

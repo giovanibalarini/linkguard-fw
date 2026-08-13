@@ -344,7 +344,13 @@ func (s *Service) StoredGroupsWithRules(rules []storage.FirewallRule) ([]nftable
 			ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
 			Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
 			CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
-			Rules: byGroup[g.ID],
+			// ConnState decide se a linha do jump leva `ct state new`. Esta
+			// conversão é o caminho pelo qual a escolha do operador chega ao
+			// renderizador (e ao pré-voo `nft -c` que o precede): deixá-la de
+			// fora seria gravar a restrição no banco, mostrá-la na tela e nunca
+			// aplicá-la — o firewall fazendo o contrário do que o painel afirma.
+			ConnState: g.ConnState,
+			Rules:     byGroup[g.ID],
 		})
 	}
 	return out, nil
