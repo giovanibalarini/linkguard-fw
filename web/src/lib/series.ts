@@ -20,8 +20,11 @@ export type Point = { t: number; rx: number | null; tx: number | null };
  * Dois detalhes desta API que já custaram tempo e estão registrados aqui para
  * não custarem de novo: o parâmetro de consulta é **`iface`** (não
  * `interface`), e os campos são **`rx_bps`/`tx_bps`** (não `rx`/`tx`).
+ *
+ * `rx_bps`/`tx_bps` são `number | null`: quando num instante só houve amostra
+ * de um dos sentidos, o outro vem `null` — **não medido**, e não zero medido.
  */
-export type HistorySample = { timestamp: number; rx_bps: number; tx_bps: number };
+export type HistorySample = { timestamp: number; rx_bps: number | null; tx_bps: number | null };
 
 /**
  * Apesar do nome `_bps`, o backend grava **bytes** por segundo:
@@ -32,12 +35,25 @@ export type HistorySample = { timestamp: number; rx_bps: number; tx_bps: number 
  */
 export const BITS_PER_BYTE = 8;
 
-/** Converte a resposta da API para a série que o gráfico consome (bits/s). */
+/**
+ * Converte a resposta da API para a série que o gráfico consome (bits/s).
+ *
+ * **A ausência é propagada, nunca multiplicada.** Em JavaScript `null * 8`
+ * é `0`, então uma conversão ingênua transformaria o "não medido" que a API
+ * acabou de passar a dizer (commit 63dbd91) num zero medido — o mesmo dado
+ * falso que a correção do backend existiu para tirar, agora reinventado na
+ * tela. Esta é a única porta de entrada do histórico no app, e o resto de
+ * `series.ts` (`reduceToWidth`, `seriesMax`, `seriesPeak`, `totalBytes`,
+ * `contiguousRuns`) já trata `null` corretamente.
+ */
 export function pointsFromHistory(samples: HistorySample[]): Point[] {
   return samples.map((s) => ({
     t: s.timestamp * 1000,
-    rx: s.rx_bps * BITS_PER_BYTE,
-    tx: s.tx_bps * BITS_PER_BYTE,
+    // `typeof` e não `!== null`: pega também o campo ausente de uma resposta
+    // de versão anterior, que em JSON chega como `undefined` e cairia no mesmo
+    // zero por outro caminho.
+    rx: typeof s.rx_bps === 'number' ? s.rx_bps * BITS_PER_BYTE : null,
+    tx: typeof s.tx_bps === 'number' ? s.tx_bps * BITS_PER_BYTE : null,
   }));
 }
 

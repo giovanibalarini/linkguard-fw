@@ -607,8 +607,16 @@ export interface TrafficHistoryPoint {
   interface: string;
   step_seconds: number;
   timestamp: number;
-  rx_bps: number;
-  tx_bps: number;
+  /**
+   * `null` é **não medido**, e nunca zero.
+   *
+   * O backend serializa isto como ponteiro e sem `omitempty`, de propósito
+   * (`internal/tsdb`, commit 63dbd91): campo omitido desserializaria como `0`
+   * aqui, que é o mesmo dado falso com outra cara. Um zero inventado faz um
+   * link fora do ar parecer um link ocioso.
+   */
+  rx_bps: number | null;
+  tx_bps: number | null;
 }
 
 export interface TrafficHistoryResponse {

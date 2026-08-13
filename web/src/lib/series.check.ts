@@ -334,6 +334,34 @@ grupo('conversão da API');
   assert(formatBps(out[0].rx) === '10.2 Mb/s', `10,2 Mb/s é o número do mockup, obtive "${formatBps(out[0].rx)}"`);
 }
 
+// A ausência atravessa a conversão inteira, e não vira zero no caminho.
+//
+// Este defeito já existiu dos dois lados. No backend, a junção das duas séries
+// lia o mapa sem `comma-ok` e devolvia o zero-value da chave ausente (corrigido
+// em 63dbd91: os campos viraram ponteiro e o JSON traz `null`). Aqui, em
+// JavaScript, `null * 8` é `0` — uma conversão ingênua reinventaria exatamente
+// o mesmo zero, agora do lado da tela, e um link fora do ar voltaria a parecer
+// um link ocioso.
+{
+  const out = pointsFromHistory([
+    { timestamp: 1_700_000_000, rx_bps: 1_275_000, tx_bps: null },
+    { timestamp: 1_700_000_001, rx_bps: null, tx_bps: null },
+    { timestamp: 1_700_000_002, rx_bps: 0, tx_bps: 0 },
+  ]);
+  assert(out[0].tx === null, `null da API tem que chegar null ao Point, obtive ${out[0].tx}`);
+  assert(out[0].rx === 1_275_000 * BITS_PER_BYTE, 'o sentido que FOI medido continua convertido');
+  assert(out[1].rx === null && out[1].tx === null, 'instante sem nenhuma medição não vira dois zeros');
+  assert(out[2].rx === 0 && out[2].tx === 0, 'zero medido continua zero — é medição, e se desenha');
+  assert(
+    formatBps(out[0].tx) === '—' && formatBps(out[2].tx) === '0',
+    'na tela: `—` é não medido, `0` é medido e deu zero',
+  );
+  // A porta de entrada é uma só, então basta ela propagar para o resto do
+  // arquivo tratar a ausência como já trata: aqui a prova de ponta a ponta.
+  assert(seriesPeak([out[1]]) === null, 'uma série feita só de ausências continua sem pico');
+  assert(contiguousRuns(out.map((p) => p.tx)).length === 1, 'o buraco continua sendo buraco depois da conversão');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // A outra porta de entrada de taxa: /api/system/status
 // ─────────────────────────────────────────────────────────────────────────────
