@@ -88,10 +88,17 @@ export default function Dhcp() {
           que a tela continua exibindo (domínio de bloqueio inválido,
           upstream malformado, servidor NTP que não parseia). "Aplicado" e
           "tudo o que você configurou está em vigor" não são a mesma
-          afirmação — esta faixa é a diferença entre as duas. */}
+          afirmação — esta faixa é a diferença entre as duas.
+
+          O texto fixo era "Revise os valores marcados e salve de novo", o que
+          só vale para o aviso de entrada descartada. Desde que o
+          dns-root-data ausente virou aviso em vez de aborto (I-2), existe
+          aviso que não tem valor nenhum para revisar — e mandar revisar o que
+          não existe é mandar o admin procurar um erro que não está lá. Cada
+          aviso já diz por conta própria o que fazer. */}
       {data?.last_apply?.warning && (
         <div className="card border border-amber-500/30 bg-amber-500/10 text-amber-400 text-sm">
-          Aplicado, mas nem tudo entrou em vigor: {data.last_apply.warning} Revise os valores marcados e salve de novo.
+          Aplicado, com ressalvas: {data.last_apply.warning}
         </div>
       )}
       <p className="text-gray-500 text-xs">Salvar reservas ou config já aplica automaticamente (sem reiniciar o serviço).</p>

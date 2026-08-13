@@ -152,7 +152,7 @@ export default function Ntp() {
           afirmação — esta faixa é a diferença entre as duas. */}
       {data?.last_apply?.warning && (
         <div className="card border border-amber-500/30 bg-amber-500/10 text-amber-400 text-sm">
-          Aplicado, mas nem tudo entrou em vigor: {data.last_apply.warning} Revise os valores marcados e salve de novo.
+          Aplicado, com ressalvas: {data.last_apply.warning}
         </div>
       )}
 
