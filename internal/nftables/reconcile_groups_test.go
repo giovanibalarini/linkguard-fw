@@ -638,6 +638,57 @@ func TestReconcileGroupsDoesNotLogTheNoBlockAlarmWhenSystemGroupsArePresent(t *t
 	}
 }
 
+// M-6 da revisão final: desligar os dois bloqueios é uma decisão que a spec
+// §2.1 permite — o botão existe, e desligar é como se testa uma regra sem
+// perder a lista de membros. Um grupo desligado não emite linha nenhuma
+// (forwardChainRules pula), então a forward fica sem drop nenhum e o alarme
+// disparava um slog.Error a cada reconciliação numa máquina em perfeito
+// estado, feita exatamente do jeito que o admin pediu. Alarme sem condição
+// de erro é alarme que ninguém lê — e este alerta é sobre firewall sem
+// bloqueio, que é a última coisa que pode virar ruído.
+func TestReconcileGroupsDoesNotLogTheNoBlockAlarmWhenTheAdminTurnedBothBlocksOff(t *testing.T) {
+	logs := captureLogs(t)
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: false, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: false, Position: 1, Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if warn := errorLineMentioning(logs.String(), "nenhum bloqueio administrativo"); warn != "" {
+		t.Errorf("o admin desligou os dois bloqueios de propósito; isso não é erro: %s", warn)
+	}
+}
+
+// E o alarme continua pegando o meio-termo: um grupo do sistema veio na
+// lista e o outro não. É o contorno da defesa (ensureSystemGroupsPresent
+// exige os dois), e não uma escolha que o painel permita fazer.
+func TestReconcileGroupsLogsTheAlarmWhenOnlyOneSystemGroupIsInTheList(t *testing.T) {
+	logs := captureLogs(t)
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: false, Position: 0, Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	line := errorLineMentioning(logs.String(), "nenhum bloqueio administrativo")
+	if line == "" {
+		t.Fatalf("faltando um grupo do sistema, o alarme tem que disparar:\n%s", logs.String())
+	}
+	if !strings.Contains(line, GroupKindBlocklist) {
+		t.Errorf("o alarme tem que nomear o kind ausente: %s", line)
+	}
+}
+
 // E o aviso é só para o caso "zero grupos": uma remoção de órfã normal, com
 // grupos vivos, não pode ficar avisando a cada apply — aviso que aparece
 // sempre é aviso que ninguém lê.

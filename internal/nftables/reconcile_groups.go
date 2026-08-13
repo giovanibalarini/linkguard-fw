@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -58,6 +59,33 @@ func anyRuleIsADrop(rules [][]string) bool {
 		}
 	}
 	return false
+}
+
+// missingSystemKinds devolve os kinds de grupo do sistema que NÃO aparecem na
+// lista recebida — a condição exata que o alarme abaixo existe para pegar (um
+// chamador que contornou ensureSystemGroupsPresent), e que "nenhuma linha de
+// drop na forward" não distingue.
+//
+// Sem isto o alarme era um slog.Error sempre que o admin desligava os dois
+// bloqueios DE PROPÓSITO, coisa que a spec §2.1 permite explicitamente: um
+// grupo desligado não emite linha nenhuma (forwardChainRules pula), a forward
+// fica sem drop e o log gritava sobre uma máquina em perfeito estado. Alarme
+// que dispara sem condição de erro é alarme que ninguém lê.
+func missingSystemKinds(groups []StoredGroup) []string {
+	present := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		if IsSystemGroup(g.Kind) {
+			present[g.Kind] = true
+		}
+	}
+	var missing []string
+	for kind := range systemGroupForwardRules {
+		if !present[kind] {
+			missing = append(missing, kind)
+		}
+	}
+	sort.Strings(missing) // ordem estável no log
+	return missing
 }
 
 // ReconcileGroups reconstrói, a partir do banco, todo o conjunto de chains
@@ -216,9 +244,15 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 	// caso, barato (um slog.Error, nunca um erro fatal) e que não existia —
 	// o único aviso hoje é o de "nenhum grupo veio do banco" (abaixo, passo
 	// 4), que não cobre "veio lista, mas sem nenhum bloqueio dentro".
-	if !anyRuleIsADrop(forwardRules) {
-		slog.Error("a chain forward reconciliada não contém nenhum bloqueio administrativo (nenhuma linha `drop`); a defesa esperada é internal/firewallrules.ensureSystemGroupsPresent — isto é o alarme para o caso de algum chamador tê-la contornado",
-			"grupos_recebidos", len(groups), "grupos_aplicados", len(valid))
+	//
+	// A condição é o grupo do sistema ESTAR AUSENTE da lista, não a forward
+	// estar sem drop: desligar os dois bloqueios é uma decisão que a spec
+	// §2.1 permite, e ela também deixa a forward sem nenhuma linha de drop.
+	// A checagem de drop fica como confirmação — presente a linha, não houve
+	// contorno nenhum a denunciar.
+	if missing := missingSystemKinds(groups); len(missing) > 0 && !anyRuleIsADrop(forwardRules) {
+		slog.Error("a chain forward foi reconciliada sem grupo do sistema na lista e sem nenhum bloqueio administrativo (nenhuma linha `drop`); a defesa esperada é internal/firewallrules.ensureSystemGroupsPresent — isto é o alarme para o caso de algum chamador tê-la contornado",
+			"kinds_ausentes", missing, "grupos_recebidos", len(groups), "grupos_aplicados", len(valid))
 	}
 	forwardErr := s.rebuildChain(ctx, ForwardChain, forwardRules)
 	if forwardErr != nil {
