@@ -106,7 +106,10 @@ func (h *NetsvcHandler) doReload(ctx context.Context) error {
 		// Applied, but not everything the admin configured got through —
 		// see applyStatus.Warning (I-7).
 		st.Warning = strings.Join(res.Warnings, " ")
-		slog.Warn("DHCP/DNS aplicado com entradas descartadas", "avisos", res.Warnings)
+		// "com ressalvas", e não "com entradas descartadas": desde que o
+		// dns-root-data ausente virou aviso em vez de aborto (I-2), nem todo
+		// aviso é uma entrada que o backend teve de largar.
+		slog.Warn("DHCP/DNS aplicado com ressalvas", "avisos", res.Warnings)
 	}
 	if err != nil {
 		st.Error = err.Error()
