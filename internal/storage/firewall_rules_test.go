@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -491,6 +492,7 @@ func TestPendingFirewallChangeLifecycle(t *testing.T) {
 		t.Fatalf("banco novo tem que estar sem pendente, obtive %v/%v", p, err)
 	}
 
+	criado := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
 	expires := time.Now().Add(90 * time.Second).Truncate(time.Second)
 	if err := db.SavePendingChange(storage.PendingChange{
 		ID:        "p1",
@@ -498,6 +500,7 @@ func TestPendingFirewallChangeLifecycle(t *testing.T) {
 		ExpiresAt: expires,
 		AppliedBy: "gov",
 		Summary:   "grupo Trava SSH aplicado",
+		CreatedAt: criado,
 	}); err != nil {
 		t.Fatalf("SavePendingChange: %v", err)
 	}
@@ -514,6 +517,12 @@ func TestPendingFirewallChangeLifecycle(t *testing.T) {
 	}
 	if got.AppliedBy != "gov" || got.Summary != "grupo Trava SSH aplicado" || got.Snapshot == "" {
 		t.Errorf("pendente lido diferente do gravado: %+v", got)
+	}
+	// m-4: created_at é o do CHAMADOR (que usa o relógio injetado do serviço,
+	// o mesmo de que sai o expires_at), não um time.Now() cru aqui dentro.
+	if !got.CreatedAt.Equal(criado) {
+		t.Errorf("created_at = %v, queria o do chamador (%v): dois relógios diferentes na mesma linha fazem 'aberta às 03:00, expira às 02:31'",
+			got.CreatedAt.UTC(), criado)
 	}
 
 	if err := db.ClearPendingChange(); err != nil {
@@ -570,11 +579,18 @@ func TestReplaceFirewallGroupsAndRulesRestoresExactly(t *testing.T) {
 		t.Fatalf("CreateFirewallRule: %v", err)
 	}
 
-	// o snapshot do estado anterior
-	antes := []storage.FirewallGroup{{ID: "antigo", Name: "Minhas regras", ChainName: "grp_antigo",
-		Position: 3, Enabled: false, Fallthrough: "accept", Kind: "admin", Scope: "forward"}}
+	// o snapshot do estado anterior. Os dois grupos do sistema vão junto
+	// porque todo snapshot legítimo os tem (I-2): um sem eles é recusado, e há
+	// um teste só para isso logo abaixo.
+	nascido := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	alterado := time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
+	antes := append(systemGroupsFixture(), storage.FirewallGroup{
+		ID: "antigo", Name: "Minhas regras", ChainName: "grp_antigo",
+		Position: 3, Enabled: false, Fallthrough: "accept", Kind: "admin", Scope: "forward",
+		CreatedAt: nascido, UpdatedAt: alterado})
 	antesRules := []storage.FirewallRule{{ID: "r1", Position: 7, GroupID: "antigo",
-		Enabled: false, Action: "accept", Proto: "tcp", Dport: "9997"}}
+		Enabled: false, Action: "accept", Proto: "tcp", Dport: "9997",
+		CreatedAt: nascido, UpdatedAt: alterado}}
 
 	if err := db.ReplaceFirewallGroupsAndRules(antes, antesRules); err != nil {
 		t.Fatalf("ReplaceFirewallGroupsAndRules: %v", err)
@@ -584,12 +600,31 @@ func TestReplaceFirewallGroupsAndRulesRestoresExactly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListFirewallGroups: %v", err)
 	}
-	if len(groups) != 1 || groups[0].ID != "antigo" {
+	if len(groups) != len(antes) {
 		t.Fatalf("os grupos não foram substituídos pelo snapshot: %+v", groups)
 	}
-	g := groups[0]
+	var g storage.FirewallGroup
+	for _, cand := range groups {
+		if cand.ID == "antigo" {
+			g = cand
+		}
+	}
+	if g.ID != "antigo" {
+		t.Fatalf("o grupo do snapshot não foi restaurado: %+v", groups)
+	}
 	if g.Position != 3 || g.Enabled || g.Fallthrough != "accept" || g.Scope != "forward" {
 		t.Errorf("o grupo restaurado não é idêntico ao do snapshot: %+v", g)
+	}
+	// m-3: updated_at vem do SNAPSHOT, não de time.Now(). Carimbar a hora da
+	// reversão num campo de AUDITORIA descreve um estado que nunca existiu —
+	// o operador leria "esta regra foi alterada às 03:14" sobre uma linha que
+	// às 03:14 apenas voltou a ser o que já era.
+	if !g.UpdatedAt.Equal(alterado) {
+		t.Errorf("updated_at do grupo restaurado = %v, queria o do snapshot (%v): restaurar repõe um estado que já existiu, não cria um novo",
+			g.UpdatedAt.UTC(), alterado)
+	}
+	if !g.CreatedAt.Equal(nascido) {
+		t.Errorf("created_at do grupo restaurado = %v, queria %v", g.CreatedAt.UTC(), nascido)
 	}
 
 	rules, err := db.ListFirewallRules()
@@ -601,6 +636,74 @@ func TestReplaceFirewallGroupsAndRulesRestoresExactly(t *testing.T) {
 	}
 	if rules[0].Position != 7 || rules[0].Enabled {
 		t.Errorf("a regra restaurada não é idêntica à do snapshot (position/enabled): %+v", rules[0])
+	}
+	if !rules[0].UpdatedAt.Equal(alterado) {
+		t.Errorf("updated_at da regra restaurada = %v, queria o do snapshot (%v)", rules[0].UpdatedAt.UTC(), alterado)
+	}
+}
+
+// systemGroupsFixture são os dois grupos que o LinkGuard mantém por conta
+// própria — os bloqueios administrativos. Todo snapshot legítimo os contém, e
+// é por isso que ReplaceFirewallGroupsAndRules os exige (I-2).
+func systemGroupsFixture() []storage.FirewallGroup {
+	return []storage.FirewallGroup{
+		{ID: "sys-hosts", Name: "Hosts bloqueados", ChainName: "sys_blocked_hosts",
+			Position: 0, Enabled: true, Fallthrough: "continue", Kind: "blocked_hosts", Scope: "forward"},
+		{ID: "sys-blocklist", Name: "Lista de bloqueio", ChainName: "sys_blocklist",
+			Position: 1, Enabled: true, Fallthrough: "continue", Kind: "blocklist", Scope: "forward"},
+	}
+}
+
+// I-2. A guarda de "lista vazia" não cobre o caso que de fato acontece: um
+// snapshot com grupos do admin e SEM os dois do sistema. Ele passava, o
+// `DELETE FROM firewall_groups` apagava os bloqueios administrativos, e nada
+// os recria (firewallrules.EnsureSystemGroups é travado por flag de settings).
+// A partir dali ensureSystemGroupsPresent aborta TODA reconciliação da
+// máquina, para sempre: o firewall congela no último estado aplicado e nenhuma
+// mudança do admin volta a valer. É a mesma invariante, defendida dos dois
+// lados.
+func TestReplaceFirewallGroupsAndRulesRefusesASnapshotWithoutTheSystemGroups(t *testing.T) {
+	db := newTestDB(t)
+	for _, g := range systemGroupsFixture() {
+		linha := g
+		if err := db.CreateFirewallGroup(&linha); err != nil {
+			t.Fatalf("CreateFirewallGroup: %v", err)
+		}
+	}
+
+	// um snapshot não-vazio, com um grupo do admin só
+	semSistema := []storage.FirewallGroup{{ID: "g1", Name: "Minhas regras",
+		ChainName: "grp_g1", Position: 0, Enabled: true, Fallthrough: "continue", Kind: "admin"}}
+	err := db.ReplaceFirewallGroupsAndRules(semSistema, nil)
+	if err == nil {
+		t.Fatal("restaurar um snapshot sem os grupos do sistema tinha que falhar: apagá-los trava toda reconciliação da máquina, para sempre")
+	}
+	if !strings.Contains(err.Error(), "Hosts bloqueados") || !strings.Contains(err.Error(), "Lista de bloqueio") {
+		t.Errorf("a mensagem tem que nomear os bloqueios que faltam, obtive %q", err.Error())
+	}
+
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("os bloqueios administrativos foram apagados por um snapshot sem eles: %+v", groups)
+	}
+}
+
+// Um snapshot que traz os dois bloqueios continua sendo aceito — a guarda de
+// I-2 não pode virar um "nada mais é restaurável".
+func TestReplaceFirewallGroupsAndRulesAcceptsASnapshotWithTheSystemGroups(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.ReplaceFirewallGroupsAndRules(systemGroupsFixture(), nil); err != nil {
+		t.Fatalf("um snapshot com os dois grupos do sistema tem que ser aceito: %v", err)
+	}
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Errorf("os dois bloqueios tinham que ter sido restaurados, obtive %+v", groups)
 	}
 }
 

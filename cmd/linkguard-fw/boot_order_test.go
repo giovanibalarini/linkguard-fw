@@ -308,6 +308,13 @@ func TestPendingChangeIsRevertedBeforeAnyReconcileOnBoot(t *testing.T) {
 		t.Fatalf("parsear main.go: %v", err)
 	}
 
+	// m-6: a comparação é feita DENTRO do corpo de provisionSystem, não no
+	// arquivo inteiro. Comparar posições no arquivo aprovava um
+	// RevertPendingOnBoot que estivesse numa função anterior qualquer — até
+	// numa função morta —, e o guarda existe justamente para dizer que ele vem
+	// antes das reconciliações NA SEQUÊNCIA QUE O BOOT EXECUTA.
+	body := provisionSystemBody(t, file)
+
 	// Só o que APLICA firewall entra na lista. frSvc.WatchPending não entra:
 	// é a goroutine do timer, e ela não aplica nada por si.
 	applies := map[string]bool{
@@ -324,7 +331,7 @@ func TestPendingChangeIsRevertedBeforeAnyReconcileOnBoot(t *testing.T) {
 
 	revert := -1
 	firstApply, firstApplyName := -1, ""
-	ast.Inspect(file, func(n ast.Node) bool {
+	ast.Inspect(body, func(n ast.Node) bool {
 		call, isCall := n.(*ast.CallExpr)
 		if !isCall {
 			return true
@@ -348,22 +355,62 @@ func TestPendingChangeIsRevertedBeforeAnyReconcileOnBoot(t *testing.T) {
 	})
 
 	if revert == -1 {
-		t.Fatal("o boot não verifica mais a mudança de firewall pendente: um reboot dentro da janela de confirmação passaria a deixar valendo para sempre uma regra não confirmada que pode ter trancado o operador fora da máquina")
+		t.Fatal("provisionSystem não verifica mais a mudança de firewall pendente: um reboot dentro da janela de confirmação passaria a deixar valendo para sempre uma regra não confirmada que pode ter trancado o operador fora da máquina")
 	}
 	if firstApply == -1 {
-		t.Fatal("o boot não aplica mais firewall por nenhum caminho conhecido -- se a sequência mudou de forma, este guarda precisa mudar junto")
+		t.Fatal("provisionSystem não aplica mais firewall por nenhum caminho conhecido -- se a sequência mudou de forma, este guarda precisa mudar junto")
 	}
 	if revert > firstApply {
 		t.Errorf("frSvc.RevertPendingOnBoot tem que vir ANTES de %s: reverter depois de já ter aplicado é aplicar mais uma vez, na máquina que acabou de voltar, a regra que pode tê-la derrubado", firstApplyName)
 	}
 }
 
-// A verificação de boot roda UMA vez. provisionSystem é reexecutado quando
-// uma tentativa posterior de instalar a base finalmente dá certo, e isso
-// pode acontecer meia hora depois da subida, com o operador já no painel:
-// sem a trava, essa segunda passada reverteria uma janela de confirmação
-// recém-aberta como se a máquina tivesse reiniciado. "No boot" tem que
-// querer dizer no boot.
+// provisionSystemBody devolve o corpo do FuncLit atribuído a
+// `provisionSystem := func() { … }` em main.go — a sequência que o boot de
+// fato executa. Os guardas deste arquivo comparam posições DENTRO dele: no
+// arquivo inteiro, uma chamada perdida numa função anterior (ou morta)
+// aprovaria uma sequência de boot errada (m-6).
+func provisionSystemBody(t *testing.T, file *ast.File) *ast.FuncLit {
+	t.Helper()
+	var body *ast.FuncLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		assign, isAssign := n.(*ast.AssignStmt)
+		if !isAssign || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+			return true
+		}
+		name, isIdent := assign.Lhs[0].(*ast.Ident)
+		if !isIdent || name.Name != "provisionSystem" {
+			return true
+		}
+		if lit, isLit := assign.Rhs[0].(*ast.FuncLit); isLit && body == nil {
+			body = lit
+		}
+		return true
+	})
+	if body == nil {
+		t.Fatal("não encontrei `provisionSystem := func() { … }` em main.go -- se a sequência de boot mudou de forma, os guardas deste arquivo precisam mudar junto")
+	}
+	return body
+}
+
+// A verificação de boot roda UMA vez POR PROCESSO. provisionSystem é
+// reexecutado quando uma tentativa posterior de instalar a base finalmente dá
+// certo, e isso pode acontecer meia hora depois da subida, com o operador já
+// no painel: sem a trava, essa segunda passada reverteria uma janela de
+// confirmação recém-aberta como se a máquina tivesse reiniciado. "No boot"
+// tem que querer dizer no boot.
+//
+// I-5 — por que o guarda olha a DECLARAÇÃO do sync.Once e não só a chamada.
+// A versão anterior procurava qualquer CallExpr com selector `.Do` que
+// contivesse RevertPendingOnBoot no corpo, e isso não guardava nada: mover o
+// `var pendingCheckedOnce sync.Once` para DENTRO do FuncLit de
+// provisionSystem — que o recria a cada chamada, ou seja, proteção zero e
+// exatamente o bug que este teste existe para pegar — deixava o teste VERDE.
+// Passaria também com qualquer outro método chamado `Do`. Então agora são
+// três coisas, e nenhuma delas sozinha basta: a chamada é `X.Do(func(){…})`
+// com RevertPendingOnBoot dentro; `X` é declarado FORA do corpo de
+// provisionSystem (senão não sobrevive entre as passadas); e o tipo de `X` é
+// sync.Once (senão `Do` não quer dizer nada).
 func TestTheBootPendingCheckRunsOnlyOnce(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -376,9 +423,12 @@ func TestTheBootPendingCheckRunsOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsear main.go: %v", err)
 	}
+	body := provisionSystemBody(t, file)
 
-	guarded := false
-	ast.Inspect(file, func(n ast.Node) bool {
+	// 1. a chamada: `<recv>.Do(func(){ … frSvc.RevertPendingOnBoot … })`,
+	//    dentro de provisionSystem.
+	guardName := ""
+	ast.Inspect(body, func(n ast.Node) bool {
 		call, isCall := n.(*ast.CallExpr)
 		if !isCall {
 			return true
@@ -387,24 +437,62 @@ func TestTheBootPendingCheckRunsOnlyOnce(t *testing.T) {
 		if !isSel || sel.Sel.Name != "Do" {
 			return true
 		}
-		// O corpo do sync.Once.Do tem que ser quem chama RevertPendingOnBoot.
+		recv, isIdent := sel.X.(*ast.Ident)
+		if !isIdent {
+			return true
+		}
 		ast.Inspect(call, func(inner ast.Node) bool {
 			innerCall, isInnerCall := inner.(*ast.CallExpr)
 			if !isInnerCall {
 				return true
 			}
 			if innerSel, isInnerSel := innerCall.Fun.(*ast.SelectorExpr); isInnerSel {
-				if recv, isIdent := innerSel.X.(*ast.Ident); isIdent &&
-					recv.Name == "frSvc" && innerSel.Sel.Name == "RevertPendingOnBoot" {
-					guarded = true
+				if r, isID := innerSel.X.(*ast.Ident); isID &&
+					r.Name == "frSvc" && innerSel.Sel.Name == "RevertPendingOnBoot" && guardName == "" {
+					guardName = recv.Name
 				}
 			}
 			return true
 		})
 		return true
 	})
+	if guardName == "" {
+		t.Fatal("frSvc.RevertPendingOnBoot tem que estar dentro de um sync.Once.Do em provisionSystem: provisionSystem roda de novo quando a base termina de instalar, e uma segunda passada reverteria uma janela de confirmação aberta minutos antes pelo operador")
+	}
 
-	if !guarded {
-		t.Error("frSvc.RevertPendingOnBoot tem que estar dentro de um sync.Once.Do: provisionSystem roda de novo quando a base termina de instalar, e uma segunda passada reverteria uma janela de confirmação aberta minutos antes pelo operador")
+	// 2 e 3. a declaração de guardName: fora do corpo de provisionSystem e do
+	//        tipo sync.Once. Um `var` recriado a cada passada não guarda nada,
+	//        e um `.Do` que não seja de um sync.Once não é uma trava.
+	declaredOutside, isOnce := false, false
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, isSpec := n.(*ast.ValueSpec)
+		if !isSpec {
+			return true
+		}
+		named := false
+		for _, name := range spec.Names {
+			if name.Name == guardName {
+				named = true
+			}
+		}
+		if !named {
+			return true
+		}
+		if int(spec.Pos()) < int(body.Pos()) || int(spec.Pos()) > int(body.End()) {
+			declaredOutside = true
+		}
+		if sel, isSel := spec.Type.(*ast.SelectorExpr); isSel {
+			if pkg, isIdent := sel.X.(*ast.Ident); isIdent && pkg.Name == "sync" && sel.Sel.Name == "Once" {
+				isOnce = true
+			}
+		}
+		return true
+	})
+
+	if !declaredOutside {
+		t.Errorf("a trava %q tem que ser declarada FORA do corpo de provisionSystem: declarada dentro, ela é recriada a cada passada e a segunda execução (quando a base termina de instalar) volta a reverter a janela de confirmação que o operador acabou de abrir", guardName)
+	}
+	if !isOnce {
+		t.Errorf("a trava %q tem que ser um sync.Once: `.Do` de qualquer outro tipo não garante execução única, e é a execução única que faz \"no boot\" querer dizer no boot", guardName)
 	}
 }

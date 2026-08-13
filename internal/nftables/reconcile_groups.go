@@ -364,7 +364,30 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 		"grupos", len(groups), "chains_aplicadas", chainsApplied,
 		"regras_puladas", len(skippedAll), "falhas", len(failures))
 
-	if err := s.Persist(ctx); err != nil {
+	// Persist grava o ruleset VIVO em /etc/nftables.conf, e o nftables.service
+	// do systemd carrega esse arquivo ANTES de o LinkGuard subir. Ou seja: o
+	// que for persistido aqui é o firewall com que a máquina volta em TODO
+	// boot seguinte, antes de qualquer reconciliação nossa.
+	//
+	// Por isso ele agora depende de as duas chains estruturais terem sido
+	// reconstruídas nesta passada. Antes era incondicional, e o caso que isso
+	// quebrava é o pior desta fase: numa REVERSÃO em que a forward e/ou a
+	// input não puderam ser reescritas (nft recusando com EBUSY, tabela
+	// recriada do zero, leitura do estado do NTP falhando — este último deixa
+	// a input intocada por desenho), a regra perigosa que trancou o operador
+	// continuava viva no ruleset e era gravada no arquivo de boot. A máquina
+	// passava a voltar trancada, sozinha, para sempre.
+	//
+	// Falha por GRUPO não bloqueia (o `failures` continua podendo ter itens
+	// aqui): um grupo com nome de chain inválido ou condição de entrada que
+	// não renderiza é um problema do grupo, não do arquivo de boot — a forward
+	// e a input foram reconstruídas corretamente sem ele, e não persistir por
+	// causa disso congelaria o /etc/nftables.conf num estado antigo enquanto o
+	// admin acha que salvou. O caminho normal não muda.
+	if forwardErr != nil || inputErr != nil {
+		slog.Error("o ruleset NÃO foi persistido para o próximo boot: a chain forward e/ou a input não puderam ser reconstruídas nesta passada, e gravar o ruleset vivo faria a máquina voltar com esse meio-termo em todo boot",
+			"err_forward", forwardErr, "err_input", inputErr)
+	} else if err := s.Persist(ctx); err != nil {
 		slog.Warn("grupos reconciliados, mas não foi possível persistir para o próximo boot", "err", err)
 	}
 	if len(failures) > 0 {

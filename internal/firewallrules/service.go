@@ -67,6 +67,41 @@ type Service struct {
 	// mesmo relógio, senão a janela dura um tempo diferente do que o painel
 	// mostra.
 	now func() time.Time
+	// monoNow é o relógio MONOTÔNICO da janela de confirmação — separado de
+	// `now` de propósito, e não por simetria.
+	//
+	// `now` é relógio de parede: é ele que grava o expires_at que o painel
+	// desenha e que sobrevive a um restart. Só que esta máquina É o servidor
+	// NTP da rede, e o chrony do Debian vem com `makestep` ligado: um passo do
+	// relógio PARA TRÁS maior que a janela (RTC ruim depois de troca de disco,
+	// `timedatectl set-time`, o primeiro sync depois de subir) empurraria o
+	// expires_at para o futuro e o auto-revert não dispararia — o operador
+	// ficaria trancado fora sem conseguir confirmar nem reverter. O deadline
+	// monotônico não se move quando o relógio da máquina se move, e a janela
+	// vence quando QUALQUER UM dos dois vencer (ver windowExpired).
+	//
+	// Injetável pelo mesmo motivo de `now`: é o que permite um teste provar o
+	// salto de relógio sem esperar 90 segundos.
+	monoNow func() time.Time
+	// monoDeadline/monoDeadlineID são o prazo monotônico da janela aberta
+	// NESTE processo. Depois de um restart não existe leitura monotônica
+	// comparável (o expires_at volta do banco por time.Unix(), que não carrega
+	// uma), e quem responde por aquele caso é RevertPendingOnBoot — que
+	// reverte tenha expirado ou não. Daí o ID: o deadline só vale para o
+	// pendente que este processo mesmo abriu.
+	monoDeadline   time.Time
+	monoDeadlineID string
+	// revertingID é o pendente cuja reversão JÁ COMEÇOU (o estado anterior já
+	// voltou ao banco) e ainda não terminou no firewall vivo. Enquanto ele
+	// estiver marcado, confirmar é recusado — confirmar uma mudança que já
+	// saiu do banco deixaria banco e nft em estados diferentes, sem nada para
+	// reconciliá-los — e a próxima passada do WatchPending retoma a reversão
+	// mesmo antes do prazo.
+	revertingID string
+	// lastRevert é a memória curta da última reversão concluída, só para
+	// responder a verdade ao operador que apertou "Confirmar" um segundo
+	// depois de o prazo vencer (m-7).
+	lastRevert *revertRecord
 	// mu serializa o confirmar-ou-reverte (abrir, confirmar, reverter). O
 	// timer em memória (WatchPending) roda numa goroutine própria e o
 	// operador aperta os botões por HTTP: sem isto, o "reverter agora" dele e
@@ -77,7 +112,7 @@ type Service struct {
 
 // NewService creates a firewallrules Service.
 func NewService(db *storage.DB, nft *nftables.Service) *Service {
-	return &Service{db: db, nft: nft, now: time.Now}
+	return &Service{db: db, nft: nft, now: time.Now, monoNow: time.Now}
 }
 
 // SetAlerter liga o serviço de alertas depois da construção (o alerts.Service

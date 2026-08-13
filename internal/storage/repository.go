@@ -1931,11 +1931,20 @@ type PendingChange struct {
 // empilhamento — com dois pendentes, "reverter ao estado anterior" não teria
 // resposta (spec §5.3). Quem chama tem que exigir a confirmação ou a
 // reversão da janela em aberto primeiro.
+//
+// CreatedAt vem do CHAMADOR (m-4): quem abre a janela usa o relógio injetado
+// do serviço, o mesmo de que sai o expires_at, e um time.Now() cru aqui
+// gravaria um created_at que não bate com ele. Zero cai para time.Now() só
+// para não obrigar chamadores que não têm relógio próprio.
 func (db *DB) SavePendingChange(p PendingChange) error {
+	created := p.CreatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
 	_, err := db.conn.Exec(`
         INSERT INTO pending_firewall_change (id, only_row, snapshot, expires_at, applied_by, summary, created_at)
         VALUES (?, 1, ?, ?, ?, ?, ?)`,
-		p.ID, p.Snapshot, p.ExpiresAt.Unix(), p.AppliedBy, p.Summary, time.Now())
+		p.ID, p.Snapshot, p.ExpiresAt.Unix(), p.AppliedBy, p.Summary, created)
 	return err
 }
 
@@ -1968,6 +1977,35 @@ func (db *DB) ClearPendingChange() error {
 	return err
 }
 
+// systemGroupKinds são os dois `kind` de grupo que o próprio LinkGuard mantém
+// (os bloqueios administrativos). Os literais estão repetidos aqui, e não
+// importados, porque internal/storage não depende de internal/nftables — a
+// fonte deles é nftables.GroupKindBlockedHosts/GroupKindBlocklist, e o
+// comentário do campo Kind em FirewallGroup diz o mesmo.
+var systemGroupKinds = map[string]string{
+	"blocked_hosts": "Hosts bloqueados",
+	"blocklist":     "Lista de bloqueio",
+}
+
+// missingSystemGroupKinds devolve, pelo nome que o operador conhece, os grupos
+// do sistema que NÃO aparecem na lista. Ver ReplaceFirewallGroupsAndRules.
+func missingSystemGroupKinds(groups []FirewallGroup) []string {
+	present := make(map[string]bool, len(systemGroupKinds))
+	for _, g := range groups {
+		if _, isSystem := systemGroupKinds[g.Kind]; isSystem {
+			present[g.Kind] = true
+		}
+	}
+	var missing []string
+	// Ordem fixa (e não a do map) para a mensagem de erro ser estável.
+	for _, kind := range []string{"blocked_hosts", "blocklist"} {
+		if !present[kind] {
+			missing = append(missing, systemGroupKinds[kind])
+		}
+	}
+	return missing
+}
+
 // ReplaceFirewallGroupsAndRules substitui, numa transação só, TODOS os grupos
 // e TODAS as regras pelo conteúdo do snapshot — é o lado banco da reversão
 // (spec §5.2).
@@ -1988,9 +2026,23 @@ func (db *DB) ClearPendingChange() error {
 // todas as chains grp_. Nenhum snapshot legítimo é assim (toda máquina tem os
 // dois grupos do sistema); um que seja é corrupção, e obedecer a ele
 // derrubaria o firewall inteiro em nome de uma reversão de segurança.
+//
+// I-2: lista SEM OS DOIS GRUPOS DO SISTEMA é recusada pela mesma razão e é o
+// caso realmente perigoso, porque passava pela guarda de cima. Um snapshot com
+// um único grupo do admin e sem blocked_hosts/blocklist tinha `len(groups) > 0`
+// e o `DELETE FROM firewall_groups` apagava os dois — e nada os recria
+// (firewallrules.EnsureSystemGroups é travado por flag de settings). A partir
+// dali ensureSystemGroupsPresent aborta TODA reconciliação da máquina, para
+// sempre: o firewall congela no último estado aplicado e nenhuma mudança do
+// admin volta a valer. É a MESMA invariante que ensureSystemGroupsPresent
+// defende do outro lado, aqui na única função que consegue violá-la.
 func (db *DB) ReplaceFirewallGroupsAndRules(groups []FirewallGroup, rules []FirewallRule) error {
 	if len(groups) == 0 {
 		return fmt.Errorf("recusando restaurar um snapshot sem nenhum grupo: isso apagaria o firewall inteiro, inclusive os bloqueios administrativos")
+	}
+	if missing := missingSystemGroupKinds(groups); len(missing) > 0 {
+		return fmt.Errorf("recusando restaurar um snapshot sem o grupo do sistema %s: isso apagaria o bloqueio do banco, e nada o recria — toda reconciliação da máquina passaria a abortar",
+			strings.Join(missing, " e "))
 	}
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -2005,7 +2057,13 @@ func (db *DB) ReplaceFirewallGroupsAndRules(groups []FirewallGroup, rules []Fire
 		return err
 	}
 
-	now := time.Now()
+	// created_at E updated_at vêm do SNAPSHOT (m-3). Carimbar time.Now() no
+	// updated_at, como esta função fazia, escrevia num campo de AUDITORIA um
+	// estado que nunca existiu: o operador abriria o histórico e leria "esta
+	// regra foi alterada às 03:14", quando às 03:14 ela foi restaurada
+	// exatamente como estava antes. Restaurar é repor um estado que já
+	// existiu, não criar um novo — a mesma disciplina que faz position e
+	// enabled irem literais.
 	gstmt, err := tx.Prepare(`
         INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
             cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, created_at, updated_at)
@@ -2017,7 +2075,7 @@ func (db *DB) ReplaceFirewallGroupsAndRules(groups []FirewallGroup, rules []Fire
 	for _, g := range groups {
 		if _, err := gstmt.Exec(g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
 			g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope,
-			g.CreatedAt, now); err != nil {
+			g.CreatedAt, g.UpdatedAt); err != nil {
 			return err
 		}
 	}
@@ -2033,7 +2091,7 @@ func (db *DB) ReplaceFirewallGroupsAndRules(groups []FirewallGroup, rules []Fire
 	for _, r := range rules {
 		if _, err := rstmt.Exec(r.ID, r.Position, r.GroupID, r.Enabled, r.Action,
 			r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport, r.Description,
-			r.CreatedAt, now); err != nil {
+			r.CreatedAt, r.UpdatedAt); err != nil {
 			return err
 		}
 	}

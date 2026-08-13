@@ -365,9 +365,9 @@ func run() int {
 	// pode ser chamado de novo quando uma tentativa posterior de instalar a
 	// base finalmente der certo.
 	provisionSystem := func() {
-		// PRIMEIRA COISA, antes de qualquer reconciliação (Fase C2, spec
-		// §5.1): se ficou uma mudança de firewall aplicada e não confirmada,
-		// reverta — tenha ela expirado ou não.
+		// A primeira coisa DESTA função, antes de qualquer reconciliação
+		// (Fase C2, spec §5.1): se ficou uma mudança de firewall aplicada e
+		// não confirmada, reverta — tenha ela expirado ou não.
 		//
 		// A ordem é a proteção, não uma preferência de organização. Reverter
 		// DEPOIS de já ter reconciliado significaria aplicar mais uma vez, na
@@ -375,13 +375,26 @@ func run() int {
 		// derrubado — e regra de escopo input derruba o acesso do OPERADOR
 		// (SSH, painel), numa máquina remota, sem conserto local.
 		//
+		// m-1 — o que isto NÃO é: não é o primeiro instante do boot.
+		// provisionSystem só roda depois de bootstrapdeps.Ensure, que num
+		// link ruim pode levar meia hora (ver a goroutine mais abaixo). O que
+		// cobre esse intervalo é frSvc.WatchPending, que já está de pé desde
+		// a subida: a janela dura 90 s, então na prática é ele quem reverte
+		// primeiro, e esta chamada é a rede para o caso de o processo ter
+		// reiniciado com a janela ainda correndo. A garantia real é "antes de
+		// o LinkGuard reconciliar", não "antes de tudo".
+		//
 		// Reverter mesmo dentro do prazo é decisão registrada: o operador não
 		// estava lá para confirmar, e um reboot dentro da janela normalmente
 		// significa que a máquina caiu por causa da mudança. Ver
 		// RevertPendingOnBoot.
 		//
-		// Erro aqui não derruba o boot: fica no journal e a mudança continua
-		// pendente, com a faixa do painel pedindo confirmação ou reversão.
+		// Erro aqui não derruba o boot nem desarma nada: fica no journal, o
+		// pendente CONTINUA no banco (a faixa do painel segue pedindo
+		// confirmação ou reversão) e o WatchPending retoma a reversão. É o
+		// que salva a máquina cuja tabela `inet linkguard` precisou ser
+		// recriada — aqui, algumas linhas antes do EnsureTable, a
+		// reconciliação da reversão falha de forma determinística.
 		pendingCheckedOnce.Do(func() {
 			if err := frSvc.RevertPendingOnBoot(ctx); err != nil {
 				slog.Error("não foi possível reverter no boot a mudança de firewall não confirmada", "err", err)
@@ -629,6 +642,14 @@ func run() int {
 	// sem confirmação. A rede embaixo dele é a verificação de boot acima —
 	// esta goroutine morre junto com o processo, e é justamente o processo
 	// morrer dentro da janela o caso que não pode deixar a regra valendo.
+	//
+	// Ele sobe AQUI, fora do caminho do bootstrap, e é por isso que numa
+	// máquina que ainda está instalando a base (o que pode demorar meia hora)
+	// existe alguém observando o pendente desde o primeiro segundo — a
+	// verificação de boot, dentro de provisionSystem, só roda depois do
+	// bootstrapdeps.Ensure (m-1). É também ele quem RETOMA uma reversão que
+	// não pôde ser concluída no nft: nesse caso o pendente continua no banco
+	// justamente para dar a ele o que tentar de novo, com backoff.
 	//
 	// Cinco segundos: a contagem que o operador vê sai de expires_at (do
 	// servidor), então isto é só a granularidade da reversão. Custa um SELECT

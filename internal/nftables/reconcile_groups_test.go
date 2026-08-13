@@ -2097,3 +2097,83 @@ func TestCheckGroupsStillValidatesTheJumpsWhenTheNTPStateCannotBeRead(t *testing
 		t.Errorf("o estado do NTP não pôde ser lido, então nenhuma linha de NTP podia ser inventada:\n%s", inp)
 	}
 }
+
+// ─── C-1 (revisão da Fase C2): o ruleset de BOOT não pode ser gravado a
+//     partir de uma passada que não conseguiu reconstruir as chains ────────
+
+// Persist grava o ruleset VIVO em /etc/nftables.conf, e o nftables.service do
+// systemd carrega esse arquivo ANTES de o LinkGuard subir: o que for
+// persistido é o firewall com que a máquina volta em todo boot seguinte.
+//
+// Era incondicional, e o caso que isso quebrava é o pior da Fase C2. Numa
+// REVERSÃO em que a chain forward e/ou a input não puderam ser reescritas
+// (nft recusando com EBUSY, tabela recriada do zero, leitura do estado do NTP
+// falhando — este último deixa a input intocada por desenho), a regra que
+// acabou de trancar o operador continuava viva no ruleset e era gravada no
+// arquivo de boot. A máquina passava a voltar trancada, sozinha, para sempre —
+// e a essa altura já não há reversão nenhuma esperando, porque ela é justamente
+// o que falhou.
+func TestReconcileGroupsDoesNotPersistWhenAStructuralChainCouldNotBeRebuilt(t *testing.T) {
+	exec := &fakeReconcileExec{
+		failOn: func(cmd string) error {
+			if strings.Contains(cmd, "flush chain") {
+				return errors.New("Device or resource busy")
+			}
+			return nil
+		},
+	}
+	s := &Service{exec: exec}
+	wireNoInputExtras(s)
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: true, Position: 1, Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.ReconcileGroups(context.Background(), groups); err == nil {
+		t.Fatal("com o nft recusando o flush, a reconciliação tinha que reportar erro")
+	}
+	for _, r := range exec.reads {
+		if strings.HasPrefix(r, "nft list table") {
+			t.Errorf("o ruleset NÃO podia ter sido persistido: a forward e a input não foram reconstruídas nesta passada, e gravar o que está vivo faz a máquina voltar com esse meio-termo em TODO boot -- leitura de Persist: %q", r)
+		}
+	}
+}
+
+// E o caminho normal continua persistindo — inclusive quando o que falhou foi
+// um GRUPO, não uma chain estrutural. Um grupo com nome de chain inválido é
+// problema do grupo: a forward e a input foram reconstruídas corretamente sem
+// ele, e não persistir por causa disso congelaria o /etc/nftables.conf num
+// estado antigo enquanto o admin acha que salvou.
+func TestReconcileGroupsStillPersistsWhenOnlyAGroupFailed(t *testing.T) {
+	persisted := func(groups []StoredGroup) bool {
+		exec := &fakeReconcileExec{}
+		s := &Service{exec: exec}
+		wireNoInputExtras(s)
+		_ = s.ReconcileGroups(context.Background(), groups)
+		for _, r := range exec.reads {
+			if strings.HasPrefix(r, "nft list table") {
+				return true
+			}
+		}
+		return false
+	}
+
+	system := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: true, Position: 1, Fallthrough: FallthroughContinue},
+	}
+	if !persisted(system) {
+		t.Error("o caminho normal tem que persistir o ruleset para o próximo boot")
+	}
+
+	comGrupoRuim := append(append([]StoredGroup{}, system...), StoredGroup{
+		ID: "x", Name: "Grupo torto", ChainName: "chain; rm -rf /",
+		Kind: GroupKindAdmin, Enabled: true, Position: 2, Fallthrough: FallthroughContinue})
+	if !persisted(comGrupoRuim) {
+		t.Error("uma falha de GRUPO não pode impedir a persistência: a forward e a input foram reconstruídas corretamente sem ele, e não persistir congelaria o /etc/nftables.conf enquanto o admin acha que salvou")
+	}
+}
