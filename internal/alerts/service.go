@@ -131,6 +131,15 @@ func (s *Service) SetNotifier(n Notifier) {
 // Create creates a new alert for an ongoing problem, unless one for the same
 // (type, linkID) is already open.
 //
+// linkID identifica O QUE o alerta é sobre, e não necessariamente um link: é o
+// id do link nos alertas de WAN, o nome da unidade nos de serviço
+// (ServiceOffline), e "" nos que só podem existir uma vez por máquina (disco,
+// CPU, relógio, NAT). O nome da coluna é herança de quando só os alertas de
+// link a usavam; nada fora deste arquivo a lê — não há FK nem JOIN com
+// links(id) e nenhuma tela a exibe. Passar "" para uma condição que pode
+// existir mais de uma vez ao mesmo tempo é um bug: as instâncias colapsam numa
+// vaga só e a recuperação de uma fecha o alerta das outras.
+//
 // (type, linkID) is already this package's identity for "an ongoing
 // problem" — AutoResolve resolves every unresolved row matching that pair in
 // one shot. A second unresolved row for the same pair carries no new
@@ -235,19 +244,49 @@ func (s *Service) LinkOnline(linkName, linkID string) error {
 		"WAN link "+linkName+" has recovered and is reachable.", linkID)
 }
 
-// ServiceOffline raises a critical alert when a monitored service stops.
+// ServiceOffline abre o alerta crítico de que um serviço vigiado parou.
+//
+// O nome da unidade vai no campo de identidade (o mesmo que LinkOffline usa
+// para o id do link) porque a identidade de um alerta em curso é
+// (tipo, identificador) — sem ele, TODO service_offline dividia uma vaga só e
+// o segundo serviço a cair era engolido pelo primeiro. Medido em VM (§14 da
+// validação final): com um service_offline aberto para o nftables, o
+// kea-dhcp4-server foi parado de verdade e nenhum alerta foi criado. Pior
+// ainda, a volta de um serviço fechava o alerta do outro, e a tela passava a
+// dizer que estava tudo bem com um serviço ainda caído — dado falso no painel,
+// que é exatamente o que este projeto não admite.
+//
+// Sobre o nome do campo: a coluna se chama link_id por ter nascido servindo
+// aos alertas de link, mas ela já não é um id de link há muito tempo — a
+// maioria das chamadas de Create passa "" e nada no sistema a lê como
+// chave estrangeira de links(id) (sem FK, sem JOIN, nenhuma tela a exibe).
+// Quem a consome é só este arquivo: dedupe em Create, AutoResolve e
+// ResolveStaleOnStartup, todos comparando string com string.
 func (s *Service) ServiceOffline(name string) error {
 	return s.Create(TypeServiceOffline, SeverityCritical,
 		"Serviço offline: "+name,
-		"O serviço "+name+" parou de responder.", "")
+		"O serviço "+name+" parou de responder.", name)
 }
 
-// ServiceOnline clears the offline alert and notifies recovery.
+// ServiceOnline fecha o alerta DAQUELE serviço e anuncia a recuperação.
+//
+// O AutoResolve é por nome de serviço de propósito: fechar por "" varreria
+// junto o alerta de qualquer outro serviço ainda caído.
+//
+// Alertas gravados por versões anteriores (com o identificador vazio) não
+// ficam órfãos: service_offline está em stateAlertTypes, então o
+// ResolveStaleOnStartup do primeiro boot depois do upgrade — e o postinst
+// reinicia o serviço — fecha as linhas antigas lendo o identificador da
+// própria linha. O que ainda estiver caído volta a ser levantado pelo vigia
+// no ciclo seguinte, agora com o nome do serviço na chave. Por isso não há um
+// AutoResolve(TypeServiceOffline, "") extra aqui: ele só teria efeito numa
+// janela que não chega a existir, e reintroduziria justamente o acoplamento
+// entre serviços que esta correção elimina.
 func (s *Service) ServiceOnline(name string) error {
-	s.AutoResolve(TypeServiceOffline, "")
+	s.AutoResolve(TypeServiceOffline, name)
 	return s.createRecovery(TypeServiceOnline,
 		"Serviço recuperado: "+name,
-		"O serviço "+name+" voltou a responder.", "")
+		"O serviço "+name+" voltou a responder.", name)
 }
 
 // DiskFull raises a critical alert when disk usage crosses the threshold.

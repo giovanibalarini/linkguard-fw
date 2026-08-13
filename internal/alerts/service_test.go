@@ -772,3 +772,175 @@ func TestHighCPUDedupeIgnoresPercentVariance(t *testing.T) {
 		t.Errorf("expected exactly 1 unresolved high_cpu alert despite differing percentages, got %d (%+v)", n, open)
 	}
 }
+
+// openServiceOfflineFor conta os alertas service_offline abertos daquele
+// serviço — a identidade que a correção introduziu é (tipo, nome do serviço).
+func openServiceOfflineFor(t *testing.T, db *storage.DB, name string) int {
+	t.Helper()
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	n := 0
+	for _, a := range open {
+		if a.Type == TypeServiceOffline && a.LinkID == name {
+			n++
+		}
+	}
+	return n
+}
+
+// TestTwoServicesDownRaiseTwoAlerts é o defeito medido na VM (§14 da
+// validação final): com um service_offline aberto para o nftables, o
+// kea-dhcp4-server caiu de verdade e nenhum alerta foi criado, porque Create
+// deduplica por (tipo, identificador) e todo serviço dividia o identificador
+// vazio. Duas quedas reais precisam de dois alertas — colapsar em um faz o
+// operador consertar um serviço e ir embora sem saber do outro.
+func TestTwoServicesDownRaiseTwoAlerts(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.ServiceOffline("nftables"); err != nil {
+		t.Fatalf("ServiceOffline(nftables): %v", err)
+	}
+	if err := s.ServiceOffline("kea-dhcp4-server"); err != nil {
+		t.Fatalf("ServiceOffline(kea-dhcp4-server): %v", err)
+	}
+
+	if n := openServiceOfflineFor(t, db, "nftables"); n != 1 {
+		t.Errorf("service_offline aberto para nftables = %d, quero 1", n)
+	}
+	if n := openServiceOfflineFor(t, db, "kea-dhcp4-server"); n != 1 {
+		t.Errorf("service_offline aberto para kea-dhcp4-server = %d, quero 1 (a queda do segundo serviço foi engolida pela do primeiro)", n)
+	}
+	if len(fn.normal) != 2 {
+		t.Errorf("notificações = %v, quero uma por serviço caído", fn.normal)
+	}
+}
+
+// TestServiceOnlineResolvesOnlyItsOwnService: a volta de um serviço não pode
+// fechar o alerta de outro que continua caído — era assim que a tela passava a
+// dizer que estava tudo bem com um serviço parado, o dado falso que este
+// projeto não admite.
+func TestServiceOnlineResolvesOnlyItsOwnService(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.ServiceOffline("nftables"); err != nil {
+		t.Fatalf("ServiceOffline(nftables): %v", err)
+	}
+	if err := s.ServiceOffline("kea-dhcp4-server"); err != nil {
+		t.Fatalf("ServiceOffline(kea-dhcp4-server): %v", err)
+	}
+
+	if err := s.ServiceOnline("nftables"); err != nil {
+		t.Fatalf("ServiceOnline(nftables): %v", err)
+	}
+
+	if n := openServiceOfflineFor(t, db, "nftables"); n != 0 {
+		t.Errorf("service_offline do nftables continua aberto depois da recuperação (%d abertos)", n)
+	}
+	if n := openServiceOfflineFor(t, db, "kea-dhcp4-server"); n != 1 {
+		t.Errorf("service_offline do kea-dhcp4-server = %d, quero 1 — a recuperação do nftables fechou o alerta do serviço errado", n)
+	}
+}
+
+// TestServiceOfflineStillDedupesPerService: a deduplicação continua valendo,
+// só que por serviço. O estado que decide se a condição é "nova" mora na
+// memória do processo (internal/monitoring), então cada reinício reavalia a
+// queda ainda verdadeira — e ela não pode virar uma linha nova a cada vez.
+// Depois de resolvido, porém, cair de novo é um problema genuinamente novo e
+// abre linha nova.
+func TestServiceOfflineStillDedupesPerService(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.ServiceOffline("unbound"); err != nil {
+		t.Fatalf("ServiceOffline (1ª): %v", err)
+	}
+	if err := s.ServiceOffline("unbound"); err != nil {
+		t.Fatalf("ServiceOffline (2ª): %v", err)
+	}
+	if n := openServiceOfflineFor(t, db, "unbound"); n != 1 {
+		t.Errorf("service_offline aberto para unbound = %d, quero 1 (a mesma queda repetida não pode empilhar)", n)
+	}
+	if len(fn.normal) != 1 {
+		t.Errorf("notificações = %v, quero exatamente 1 para a mesma queda repetida", fn.normal)
+	}
+
+	if err := s.ServiceOnline("unbound"); err != nil {
+		t.Fatalf("ServiceOnline: %v", err)
+	}
+	if err := s.ServiceOffline("unbound"); err != nil {
+		t.Fatalf("ServiceOffline (3ª, depois da recuperação): %v", err)
+	}
+	if n := openServiceOfflineFor(t, db, "unbound"); n != 1 {
+		t.Errorf("service_offline aberto para unbound depois de cair de novo = %d, quero 1", n)
+	}
+
+	all, err := db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	total := 0
+	for _, a := range all {
+		if a.Type == TypeServiceOffline {
+			total++
+		}
+	}
+	if total != 2 {
+		t.Errorf("linhas service_offline no total = %d, quero 2 (a primeira queda resolvida + a nova)", total)
+	}
+}
+
+// TestResolveStaleOnStartupClosesPreFixServiceAlert cobre o que já está
+// gravado nas máquinas em produção: alertas service_offline com o
+// identificador VAZIO, que o código novo nunca mais casaria. Eles não podem
+// ficar órfãos e eternamente vermelhos. Quem os fecha é o
+// ResolveStaleOnStartup do primeiro boot depois do upgrade (o postinst
+// reinicia o serviço) — ele lê o identificador da própria linha, então fecha
+// tanto as antigas quanto as novas. O que ainda estiver caído volta a ser
+// levantado pelo vigia no ciclo seguinte, agora por serviço.
+func TestResolveStaleOnStartupClosesPreFixServiceAlert(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	legacy := &storage.Alert{
+		Type:     TypeServiceOffline,
+		Severity: SeverityCritical,
+		Title:    "Serviço offline: kea-dhcp4-server",
+		Message:  "O serviço kea-dhcp4-server parou de responder.",
+		LinkID:   "", // como a versão anterior gravava
+	}
+	if err := db.CreateAlert(legacy); err != nil {
+		t.Fatalf("CreateAlert (linha antiga): %v", err)
+	}
+	if err := s.ServiceOffline("unbound"); err != nil {
+		t.Fatalf("ServiceOffline(unbound): %v", err)
+	}
+
+	s.ResolveStaleOnStartup()
+
+	open, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	for _, a := range open {
+		if a.Type == TypeServiceOffline {
+			t.Errorf("service_offline continua aberto depois do ResolveStaleOnStartup (órfão): %+v", a)
+		}
+	}
+
+	// E o vigia consegue reabrir por serviço logo depois — a limpeza não deixa
+	// a vaga travada.
+	if err := s.ServiceOffline("kea-dhcp4-server"); err != nil {
+		t.Fatalf("ServiceOffline(kea-dhcp4-server) depois da limpeza: %v", err)
+	}
+	if n := openServiceOfflineFor(t, db, "kea-dhcp4-server"); n != 1 {
+		t.Errorf("service_offline reaberto para kea-dhcp4-server = %d, quero 1", n)
+	}
+}

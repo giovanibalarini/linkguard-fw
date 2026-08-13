@@ -30,6 +30,13 @@ type Link struct {
 // ─── Alert ───────────────────────────────────────────────────────────────────
 
 // Alert represents a system alert.
+//
+// LinkID é o identificador do QUE o alerta é sobre — junto com Type ele forma
+// a identidade de "um problema em curso" que internal/alerts usa para
+// deduplicar e para resolver. Guarda o id do link nos alertas de WAN, o nome
+// da unidade systemd nos de serviço e "" nas condições que só existem uma vez
+// por máquina (disco, CPU, relógio). O nome é herança da época em que só os
+// alertas de link o usavam; não há FK nem JOIN com links(id).
 type Alert struct {
 	ID         string     `json:"id"`
 	Type       string     `json:"type"`
