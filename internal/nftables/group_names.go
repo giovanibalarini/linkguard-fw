@@ -44,6 +44,12 @@ func ApplyGroupNames(chains []ChainInfo, groupNames map[string]string) {
 	}
 }
 
+// newOnlySuffix é como a Visão geral diz, em português, o que `ct state new`
+// faz com a linha. O parêntese não é enfeite: sem ele "só para conexões
+// novas" ainda deixa em aberto o que acontece com o que já está de pé, que é
+// exatamente a dúvida que trouxe esta feature.
+const newOnlySuffix = "só para conexões novas (o que já está estabelecido segue sem passar por ele)"
+
 func rewriteGroupJumpDescription(rule *ChainRule, groupNames map[string]string) {
 	// Same convention MergeGroups already uses to find a jump's target in a
 	// parsed expression (merge_groups.go): the last "jump " in the line,
@@ -75,9 +81,32 @@ func rewriteGroupJumpDescription(rule *ChainRule, groupNames map[string]string) 
 	cond := strings.TrimSpace(rule.Expression[:idx])
 	cond = strings.TrimSpace(strings.TrimSuffix(cond, "counter"))
 
-	if cond == "" {
-		rule.Description = fmt.Sprintf("Avalia o grupo %q (sem condição: vale para todo o tráfego que chegar ali)", name)
-		return
+	// E, logo antes do counter, o `ct state new` de um grupo restrito a
+	// conexões novas (groupJumpTokens, ctStateNewExpr). Ele sai da condição e
+	// vira PROSA: a descrição desta tela é o texto que explica a linha a quem
+	// não lê nftables, e a sintaxe crua já está ali do lado, na coluna da
+	// expressão. Deixá-lo dentro do "quando ..." produzia
+	// `quando ip saddr 192.168.50.0/24 ct state new` — meia frase em
+	// português, meia em nft — e, no grupo sem condição nenhuma, o pior dos
+	// dois: `quando ct state new`.
+	var newOnly bool
+	if trimmed, ok := strings.CutSuffix(cond, ctStateNewExpr); ok {
+		newOnly = true
+		cond = strings.TrimSpace(trimmed)
 	}
-	rule.Description = fmt.Sprintf("Avalia o grupo %q quando %s", name, cond)
+
+	switch {
+	case cond == "" && newOnly:
+		// Sem condição de entrada, mas NÃO "vale para todo o tráfego que
+		// chegar ali": o que já está estabelecido passa reto sem ser
+		// avaliado. Dizer o texto do caso irrestrito aqui seria afirmar uma
+		// proteção mais larga do que a linha faz.
+		rule.Description = fmt.Sprintf("Avalia o grupo %q %s", name, newOnlySuffix)
+	case cond == "":
+		rule.Description = fmt.Sprintf("Avalia o grupo %q (sem condição: vale para todo o tráfego que chegar ali)", name)
+	case newOnly:
+		rule.Description = fmt.Sprintf("Avalia o grupo %q quando %s, e %s", name, cond, newOnlySuffix)
+	default:
+		rule.Description = fmt.Sprintf("Avalia o grupo %q quando %s", name, cond)
+	}
 }

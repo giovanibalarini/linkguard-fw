@@ -113,3 +113,32 @@ func TestExpressionMatchesStillDetectsADifferentAddress(t *testing.T) {
 		t.Error("interfaces diferentes têm que continuar dando mismatch")
 	}
 }
+
+// ─── normalizeExpression e o `ct state new` ──────────────────────────────
+
+// normalizeExpression é o único lugar do pacote onde duas formas da mesma
+// linha viram comparáveis, e ela é estreita de propósito: só toca nos
+// operandos cuja impressão o nft muda. `ct state new` não é um deles — o nft
+// o reimprime literal, no mesmo lugar (medido contra o nft v1.1.3) —, então
+// os três tokens têm que atravessar intactos, ou o classificador do painel
+// deixaria de reconhecer a linha e o grupo restrito apareceria eternamente
+// como "configurada, não aplicada".
+func TestNormalizeExpressionKeepsCtStateNewIntact(t *testing.T) {
+	live := "ip saddr 192.168.50.0/24 ct state new jump grp_aaa"
+	if got := normalizeExpression(live); got != live {
+		t.Errorf("\n  obtive %q\n  queria %q", got, live)
+	}
+}
+
+// E o contrapeso, que é o que realmente importa: normalizar NUNCA pode
+// apagar o `ct state new` para "fazer casar". Se alguém o tirasse aqui para
+// resolver algum desencontro, a linha restrita passaria a comparar igual à
+// irrestrita — e o painel diria "aplicada" para um grupo cuja linha viva faz
+// outra coisa, que é pior do que dizer "não aplicada".
+func TestNormalizeExpressionDoesNotMakeARestrictedLineEqualAnUnrestrictedOne(t *testing.T) {
+	restricted := normalizeExpression("ip saddr 192.168.50.0/24 ct state new jump grp_aaa")
+	plain := normalizeExpression("ip saddr 192.168.50.0/24 jump grp_aaa")
+	if restricted == plain {
+		t.Errorf("a linha restrita a conexões novas não pode normalizar igual à irrestrita: %q", restricted)
+	}
+}

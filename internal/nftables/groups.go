@@ -71,6 +71,19 @@ const (
 	ConnStateNew = "new"
 )
 
+// ctStateNewExpr é a forma EXATA em que a restrição sai de groupJumpTokens e
+// volta do `nft list` — medida contra o nft v1.1.3 dentro de `unshare -rn`,
+// que a reimprime literalmente, no mesmo lugar, sem reordenar nem transformar
+// em `ct state { new }`.
+//
+// Existe porque quem LÊ a linha de volta (ApplyGroupNames, para descrevê-la
+// em português na Visão geral) precisa reconhecer exatamente o que este
+// pacote EMITE. Com as duas pontas escrevendo a string à mão, um ajuste em
+// uma delas deixaria a outra sem casar — e o sintoma seria o `ct state new`
+// cru vazando para a descrição, que é o que a Visão geral existe para
+// eliminar. TestCtStateNewExprIsExactlyWhatTheJumpEmits prende as duas.
+const ctStateNewExpr = "ct state new"
+
 // GroupConnState normaliza o valor gravado: vazio (e qualquer coisa que este
 // código não conheça) vira ConnStateAny. Existe pelo mesmo motivo de
 // GroupScope — para que nenhum renderizador repita a regra do vazio e os dois

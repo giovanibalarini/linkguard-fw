@@ -351,3 +351,31 @@ func TestParsedExpressionKeepsCtStateNewBetweenConditionAndJump(t *testing.T) {
 		t.Errorf("a linha de \"toda conexão\" não pode conter ct state: %q", plain.Expression)
 	}
 }
+
+// A outra metade do M-1: o grupo de escopo INPUT restrito a conexões novas.
+// Ele é o caso mais perigoso da feature (é o que pode trancar o operador
+// fora do painel) e o mais fácil de o painel julgar errado — o jump dele mora
+// na input, não na forward, e a linha ainda carrega `ct state new` no meio.
+// Fixture com a saída REAL do nft: o grupo sem condição nenhuma vira a linha
+// `ct state new counter ... jump grp_aaa`, em que o `ct state` é a PRIMEIRA
+// coisa da expressão.
+func TestMergeGroupsFindsTheJumpOfANewOnlyInputGroupInRealNftOutput(t *testing.T) {
+	byName := map[string]ChainInfo{}
+	var forward ChainInfo
+	for _, c := range parseTableRuleset(liveRulesetWithCtStateNewJumps) {
+		byName[c.Name] = c
+		if c.Name == ForwardChain {
+			forward = c
+		}
+	}
+	g := StoredGroup{ID: "a", Name: "Acesso ao firewall", ChainName: "grp_aaa",
+		Kind: GroupKindAdmin, Enabled: true, Scope: ScopeInput,
+		ConnState: ConnStateNew, Fallthrough: FallthroughContinue}
+	v := MergeGroups([]StoredGroup{g}, byName, forward)[0]
+	if !v.Applied {
+		t.Fatalf("o jump com ct state new está vivo na input e o grupo consta como não aplicado: %+v", byName[InputChain].Rules)
+	}
+	if v.Handle != 7 {
+		t.Errorf("handle tem que vir da linha viva da input (7), obtive %d", v.Handle)
+	}
+}

@@ -182,3 +182,134 @@ func TestApplyGroupNamesAlsoNamesTheJumpsInTheInputChain(t *testing.T) {
 		t.Errorf("uma linha que não é jump de grupo foi reescrita: %q", chains[0].Rules[0].Description)
 	}
 }
+
+// ─── Grupo restrito a conexões novas na Visão geral ──────────────────────
+
+// liveRulesetWithCtStateNewJumps é saída REAL do `nft -a list table inet
+// linkguard` (nftables v1.1.3), capturada num namespace de rede isolado
+// (`unshare -rn`) depois de aplicar as linhas que groupJumpTokens emite —
+// não a renderização dos nossos próprios tokens, que esconderia justamente
+// a classe de bug que este arquivo existe para pegar.
+//
+// Ela cobre os quatro casos que a Visão geral precisa saber descrever: jump
+// restrito com condição (forward), jump irrestrito (forward), jump restrito
+// SEM condição nenhuma (input) e jump restrito com condição composta
+// (input).
+const liveRulesetWithCtStateNewJumps = `table inet linkguard { # handle 1
+	chain input { # handle 1
+		type filter hook input priority filter; policy accept;
+		ct state new counter packets 0 bytes 0 jump grp_aaa # handle 7
+		iifname "enp5s0" ip saddr 10.0.0.0/8 ct state new counter packets 0 bytes 0 jump grp_bbb # handle 8
+	}
+
+	chain forward { # handle 2
+		type filter hook forward priority filter; policy accept;
+		ip saddr 192.168.50.0/24 ct state new counter packets 0 bytes 0 jump grp_aaa # handle 5
+		ip saddr 192.168.60.0/24 counter packets 0 bytes 0 jump grp_bbb # handle 6
+	}
+
+	chain grp_aaa { # handle 3
+	}
+
+	chain grp_bbb { # handle 4
+	}
+}
+`
+
+// A linha de um grupo "só conexões novas" tem que sair da Visão geral em
+// português, dizendo o que muda para o admin: o que já está de pé não passa
+// por ali. `ct state new` cru na descrição seria a única linha da tela que o
+// admin não pediu, não pode editar e ainda por cima não entende — o mesmo
+// defeito que o texto do `ct state related` corrigiu na chain input.
+func TestApplyGroupNamesSaysNewConnectionsOnlyInPortuguese(t *testing.T) {
+	chains := parseTableRuleset(liveRulesetWithCtStateNewJumps)
+	ApplyGroupNames(chains, map[string]string{"grp_aaa": "Wi-Fi visitantes", "grp_bbb": "Convidados"})
+
+	var forward ChainInfo
+	for _, c := range chains {
+		if c.Name == ForwardChain {
+			forward = c
+		}
+	}
+	got := forward.Rules[0].Description
+	if !containsAll(got, `"Wi-Fi visitantes"`, "192.168.50.0/24", "só para conexões novas") {
+		t.Errorf("a linha restrita tem que nomear o grupo, a condição e a restrição, obtive %q", got)
+	}
+	if strings.Contains(got, "ct state") {
+		t.Errorf("a descrição é prosa: a sintaxe nft já aparece na coluna da expressão, obtive %q", got)
+	}
+}
+
+// Grupo restrito SEM condição de entrada: dizer "vale para todo o tráfego
+// que chegar ali" seria falso — o tráfego já estabelecido passa reto sem ser
+// avaliado. Este é o caso em que o texto antigo não só ficava incompleto,
+// mas mentia.
+func TestApplyGroupNamesNewOnlyWithoutConditionDoesNotClaimAllTraffic(t *testing.T) {
+	chains := parseTableRuleset(liveRulesetWithCtStateNewJumps)
+	ApplyGroupNames(chains, map[string]string{"grp_aaa": "Acesso ao firewall", "grp_bbb": "Convidados"})
+
+	var input ChainInfo
+	for _, c := range chains {
+		if c.Name == InputChain {
+			input = c
+		}
+	}
+	got := input.Rules[0].Description
+	if !containsAll(got, `"Acesso ao firewall"`, "só para conexões novas") {
+		t.Errorf("o jump restrito sem condição não foi descrito: %q", got)
+	}
+	if strings.Contains(got, "todo o tráfego") {
+		t.Errorf("com ct state new o grupo NÃO vale para todo o tráfego que chegar ali: %q", got)
+	}
+	if strings.Contains(got, "ct state") {
+		t.Errorf("a descrição é prosa, obtive %q", got)
+	}
+
+	// E a condição composta continua inteira na descrição, sem o ct state
+	// vazar junto.
+	composed := input.Rules[1].Description
+	if !containsAll(composed, `"Convidados"`, "enp5s0", "10.0.0.0/8", "só para conexões novas") {
+		t.Errorf("condição composta perdeu pedaço: %q", composed)
+	}
+	if strings.Contains(composed, "ct state") {
+		t.Errorf("a descrição é prosa, obtive %q", composed)
+	}
+}
+
+// E o contrapeso: o grupo que vale para toda conexão — todo grupo que já
+// existe — não pode ganhar o aviso. Aviso que aparece em tudo é aviso que
+// ninguém lê, e aqui ele diria uma coisa que a linha não faz.
+func TestApplyGroupNamesPlainGroupNeverMentionsNewConnectionsOnly(t *testing.T) {
+	chains := parseTableRuleset(liveRulesetWithCtStateNewJumps)
+	ApplyGroupNames(chains, map[string]string{"grp_aaa": "Wi-Fi visitantes", "grp_bbb": "Convidados"})
+
+	for _, c := range chains {
+		if c.Name != ForwardChain {
+			continue
+		}
+		got := c.Rules[1].Description
+		if strings.Contains(got, "conexões novas") {
+			t.Errorf("grupo de toda conexão ganhou o aviso de conexões novas: %q", got)
+		}
+		if !containsAll(got, `"Convidados"`, "192.168.60.0/24") {
+			t.Errorf("a linha de sempre mudou de descrição: %q", got)
+		}
+	}
+}
+
+// ctStateNewExpr é lido por group_names.go para achar (e tirar da condição) o
+// que groupJumpTokens emite. Se os dois divergirem, o `ct state new` volta a
+// vazar cru para a descrição — e o teste que pegaria isso é este, não o de
+// renderização, porque cada um sozinho continuaria verde.
+func TestCtStateNewExprIsExactlyWhatTheJumpEmits(t *testing.T) {
+	toks, err := groupJumpTokens(StoredGroup{
+		ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true,
+		ConnState: ConnStateNew,
+	})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if !strings.Contains(strings.Join(toks, " "), ctStateNewExpr) {
+		t.Errorf("a linha emitida %q não contém %q", strings.Join(toks, " "), ctStateNewExpr)
+	}
+}

@@ -426,3 +426,35 @@ func TestNTPLinesInTheirCounterFormAreStillRecognised(t *testing.T) {
 		t.Errorf("o contador da linha de drop não foi lido: %+v", drop)
 	}
 }
+
+// O `ct state new` no meio da linha não pode fazer o jump de um grupo perder
+// o dono: sem "rule_groups", ela cai no rótulo genérico "LinkGuard" e vira a
+// única linha acionável da Visão geral sem o link "abrir" — o defeito M-1 da
+// Fase C2, de volta pela porta dos fundos. Os dois escopos, porque o jump
+// restrito mora nas duas chains.
+func TestClassifyRuleKeepsTheGroupOwnerWithCtStateNew(t *testing.T) {
+	for _, tc := range []struct{ chain, expr string }{
+		{ForwardChain, "ip saddr 192.168.50.0/24 ct state new jump grp_a3f21c08"},
+		{InputChain, "ip saddr 192.168.50.0/24 ct state new jump grp_a3f21c08"},
+		{InputChain, "ct state new jump grp_a3f21c08"}, // sem condição de entrada
+	} {
+		managed, owner := classifyRule(tc.chain, tc.expr)
+		if !managed {
+			t.Errorf("%s/%q: a linha de jump é renderizada pelo LinkGuard", tc.chain, tc.expr)
+		}
+		if owner.Key != "rule_groups" {
+			t.Errorf("%s/%q: dono tem que ser a tela de grupos, obtive %+v", tc.chain, tc.expr, owner)
+		}
+	}
+}
+
+// E o texto da proteção base da input (`ct state related accept`) não pode
+// vazar para um jump de grupo restrito: as duas linhas começam com "ct
+// state", e descrever uma com o texto da outra diria, para uma linha que
+// bloqueia, que ela aceita.
+func TestCtStateRelatedDescriptionDoesNotLeakIntoANewOnlyGroupJump(t *testing.T) {
+	got := describeRule(InputChain, "ct state new jump grp_a3f21c08")
+	if strings.Contains(got, "Path MTU Discovery") || strings.Contains(got, "Aceita") {
+		t.Errorf("a descrição da proteção base vazou para o jump de um grupo: %q", got)
+	}
+}
