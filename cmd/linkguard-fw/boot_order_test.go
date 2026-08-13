@@ -74,3 +74,73 @@ func TestEnsureSystemGroupsRunsBeforeTheMigrationsThatReconcile(t *testing.T) {
 		}
 	}
 }
+
+// TestMainWiresTheInputChainSources guarda a ligação de que a chain input
+// depende, e que nenhum teste de pacote consegue enxergar.
+//
+// Desde a Fase C2 a chain input é reconstruída INTEIRA a cada passada, por um
+// renderizador só: as regras de proteção do NTP mais os jumps dos grupos de
+// escopo input. Quem reconcilia o NTP sabe o estado do NTP e precisa dos
+// grupos; quem reconcilia os grupos sabe os grupos e precisa do estado do
+// NTP. nftables.SetInputChainSources é o que entrega a metade que falta em
+// cada caso — e o único lugar que pode ligá-la é este main, porque
+// internal/nftables não pode importar internal/storage.
+//
+// Sem essa chamada nada quebra visivelmente: os testes continuam verdes, o
+// boot continua subindo, e o efeito é salvar um grupo apagar da chain input a
+// proteção do serviço de hora (ou ligar o NTP apagar os grupos do admin) —
+// exatamente o tipo de falha silenciosa que a Fase C2 existe para fechar. Daí
+// o guarda de deriva, sobre a árvore sintática e não por busca de texto.
+func TestMainWiresTheInputChainSources(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("não foi possível localizar o arquivo de teste")
+	}
+	srcPath := filepath.Join(filepath.Dir(thisFile), "main.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parsear main.go: %v", err)
+	}
+
+	wired := -1
+	firstReconcile := -1
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, isCall := n.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel {
+			return true
+		}
+		recv, isIdent := sel.X.(*ast.Ident)
+		if !isIdent {
+			return true
+		}
+		switch {
+		case recv.Name == "nftSvc" && sel.Sel.Name == "SetInputChainSources":
+			if wired == -1 {
+				wired = int(call.Pos())
+			}
+		case recv.Name == "nftSvc" && sel.Sel.Name == "ReconcileNTPInput",
+			recv.Name == "nftSvc" && sel.Sel.Name == "ReconcileGroups",
+			recv.Name == "frSvc" && sel.Sel.Name == "Reconcile":
+			if firstReconcile == -1 || int(call.Pos()) < firstReconcile {
+				firstReconcile = int(call.Pos())
+			}
+		}
+		return true
+	})
+
+	if wired == -1 {
+		t.Fatal("o boot não liga mais nftSvc.SetInputChainSources: salvar um grupo passa a apagar a proteção do NTP da chain input, e reconciliar o NTP passa a apagar os grupos de escopo input")
+	}
+	if firstReconcile == -1 {
+		t.Fatal("o boot não reconcilia mais a chain input por nenhum caminho -- se a sequência mudou de forma, este guarda precisa mudar junto")
+	}
+	if wired > firstReconcile {
+		t.Errorf("nftSvc.SetInputChainSources tem que ser ligado ANTES da primeira reconciliação do boot: a primeira passada reconstruiria a chain input com metade do conteúdo")
+	}
+}

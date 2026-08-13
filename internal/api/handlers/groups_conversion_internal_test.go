@@ -23,7 +23,7 @@ func TestToStoredGroupCarriesEveryFieldThatDecidesBehaviour(t *testing.T) {
 		ID: "g1", Name: "Hosts bloqueados", ChainName: "sys_blocked_hosts",
 		Position: 3, Enabled: true, Kind: "blocked_hosts",
 		CondSaddr: "10.0.0.0/8", CondDaddr: "192.168.1.0/24", CondIif: "enp0s3",
-		Fallthrough: "drop",
+		Fallthrough: "drop", Scope: "input",
 	}
 	got := toStoredGroup(row)
 
@@ -40,6 +40,10 @@ func TestToStoredGroupCarriesEveryFieldThatDecidesBehaviour(t *testing.T) {
 		{"CondDaddr", got.CondDaddr, row.CondDaddr},
 		{"CondIif", got.CondIif, row.CondIif},
 		{"Fallthrough", got.Fallthrough, row.Fallthrough},
+		// Scope decide em QUAL chain o grupo é alcançado (Fase C2): perdê-lo
+		// aqui faria o pré-voo validar um grupo de escopo input como se ele
+		// fosse da forward — validar uma coisa e aplicar outra.
+		{"Scope", got.Scope, row.Scope},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: obtive %q, queria %q", c.name, c.got, c.want)

@@ -213,6 +213,13 @@ func TestReconcileMasqueradeNoopInDryRun(t *testing.T) {
 // per-interface deny, since it also covers a VLAN or guest network that
 // exists on the box but that the admin did NOT authorize (a case the old
 // WAN-only rule let straight through).
+//
+// Fase C2: as duas linhas passaram a carregar `counter`, como toda linha
+// canônica deste pacote (ver ReconcileStructuralChains e forwardChainRules) —
+// é o número que o painel mostra, e a chain input agora é renderizada pelo
+// mesmo caminho da forward. As asserções de comando exato abaixo mudaram
+// junto; o resto do contrato (só udp/123, accept antes do drop, nunca policy
+// drop) é o mesmo.
 
 // TestReconcileNTPInputPolicyIsAcceptNeverDrop is the single most important
 // test in this suite (see the spec, §2): the input chain this feature
@@ -259,11 +266,11 @@ func TestReconcileNTPInputServingAcceptsAllowedNetworksThenDropsRest(t *testing.
 	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24", "10.20.0.0/24"}, true); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
-	wantAccept := `nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } accept`
+	wantAccept := `nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } counter accept`
 	if !ranCommand(exec.executed, wantAccept) {
 		t.Errorf("missing %q; ran: %v", wantAccept, exec.executed)
 	}
-	wantDrop := "nft add rule inet linkguard input udp dport 123 drop"
+	wantDrop := "nft add rule inet linkguard input udp dport 123 counter drop"
 	if !ranCommand(exec.executed, wantDrop) {
 		t.Errorf("missing %q; ran: %v", wantDrop, exec.executed)
 	}
@@ -287,10 +294,10 @@ func TestReconcileNTPInputAcceptRulePrecedesDropRule(t *testing.T) {
 		// accept ; }" — matching that too would let this test pass even if
 		// the actual accept *rule* vanished, since the chain-creation
 		// command always runs before the flush regardless.
-		if strings.HasSuffix(c, "ip saddr { 192.168.3.0/24 } accept") {
+		if strings.HasSuffix(c, "ip saddr { 192.168.3.0/24 } counter accept") {
 			acceptIdx = i
 		}
-		if strings.HasSuffix(c, "udp dport 123 drop") {
+		if strings.HasSuffix(c, "udp dport 123 counter drop") {
 			dropIdx = i
 		}
 	}
@@ -398,7 +405,7 @@ func TestReconcileNTPInputSanitizesInvalidCIDR(t *testing.T) {
 			t.Errorf("invalid CIDR reached the nft command: %q", c)
 		}
 	}
-	wantAccept := "nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } accept"
+	wantAccept := "nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } counter accept"
 	if !ranCommand(exec.executed, wantAccept) {
 		t.Errorf("expected the valid CIDR to still be accepted; ran: %v", exec.executed)
 	}
@@ -456,11 +463,11 @@ func TestReconcileNTPInputSkipsIPv6EntriesButStillProtectsIPv4Ones(t *testing.T)
 			t.Errorf("IPv6 entry reached the nft command: %q", c)
 		}
 	}
-	wantAccept := "nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } accept"
+	wantAccept := "nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } counter accept"
 	if !ranCommand(exec.executed, wantAccept) {
 		t.Errorf("expected the valid IPv4 entry to still be accepted; ran: %v", exec.executed)
 	}
-	wantDrop := "nft add rule inet linkguard input udp dport 123 drop"
+	wantDrop := "nft add rule inet linkguard input udp dport 123 counter drop"
 	if !ranCommand(exec.executed, wantDrop) {
 		t.Errorf("expected the catch-all drop rule to still be present (chain must not end up empty); ran: %v", exec.executed)
 	}

@@ -785,3 +785,43 @@ func TestCheckPendingGroupsAcceptsAWellFormedCandidate(t *testing.T) {
 		t.Fatalf("um candidato bem formado tinha que passar, obtive: %v", err)
 	}
 }
+
+// Fase C2: a conversão banco → nftables tem que carregar o escopo. Ela é o
+// que decide em QUAL chain o grupo é alcançado — perder o campo aqui compila,
+// passa em todo o resto da suíte, e o efeito é um grupo que o admin escreveu
+// para o tráfego destinado ao firewall (SSH, painel) ser aplicado ao tráfego
+// que atravessa. É a mesma razão pela qual Kind já é guardado na outra
+// conversão (handlers.toStoredGroup).
+func TestStoredGroupsCarriesTheScope(t *testing.T) {
+	db := newTestDB(t)
+	nft := nftables.NewService(&fakeExec{})
+	svc := firewallrules.NewService(db, nft)
+
+	for _, g := range []storage.FirewallGroup{
+		{ID: "i", Name: "Acesso ao painel", ChainName: "grp_iii", Position: 0,
+			Enabled: true, Fallthrough: nftables.FallthroughContinue,
+			Kind: nftables.GroupKindAdmin, Scope: nftables.ScopeInput},
+		{ID: "f", Name: "Visitantes", ChainName: "grp_fff", Position: 1,
+			Enabled: true, Fallthrough: nftables.FallthroughContinue,
+			Kind: nftables.GroupKindAdmin, Scope: nftables.ScopeForward},
+	} {
+		row := g
+		if err := db.CreateFirewallGroup(&row); err != nil {
+			t.Fatalf("criar grupo %s: %v", g.ID, err)
+		}
+	}
+
+	got, err := svc.StoredGroups()
+	if err != nil {
+		t.Fatalf("StoredGroups: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("esperava 2 grupos, obtive %d", len(got))
+	}
+	if got[0].Scope != nftables.ScopeInput {
+		t.Errorf("o escopo input não sobreviveu à conversão: %q", got[0].Scope)
+	}
+	if got[1].Scope != nftables.ScopeForward {
+		t.Errorf("o escopo forward não sobreviveu à conversão: %q", got[1].Scope)
+	}
+}

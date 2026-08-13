@@ -1038,3 +1038,88 @@ func TestMigrateAddsKindToADatabaseCreatedBeforeTheColumn(t *testing.T) {
 		db.Close()
 	}
 }
+
+// ─── Fase C2: escopo do grupo (forward × input) ──────────────────────────
+
+func TestFirewallGroupScopeRoundTrips(t *testing.T) {
+	db := newTestDB(t)
+	g := storage.FirewallGroup{ID: "i1", Name: "Acesso ao painel", ChainName: "grp_iii",
+		Kind: "admin", Scope: "input", Position: 0, Enabled: true, Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatalf("criar: %v", err)
+	}
+	got, _ := db.ListFirewallGroups()
+	if len(got) != 1 || got[0].Scope != "input" {
+		t.Fatalf("scope não persistiu: %+v", got)
+	}
+}
+
+// Linha criada sem escopo explícito sai vazia — e vazio conta como forward
+// (nftables.ScopeForward), que é o que todo grupo existente é.
+func TestFirewallGroupWithoutScopeStaysEmpty(t *testing.T) {
+	db := newTestDB(t)
+	g := storage.FirewallGroup{ID: "a", Name: "Antigo", ChainName: "grp_aaa", Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.ListFirewallGroups()
+	if got[0].Scope != "" {
+		t.Errorf("linha sem escopo explícito tem que sair vazia, obtive %q", got[0].Scope)
+	}
+}
+
+// Mesmo raciocínio (e mesmo molde) de
+// TestMigrateAddsKindToADatabaseCreatedBeforeTheColumn: o caminho do ALTER
+// TABLE só roda em banco criado antes da coluna existir, e todo outro teste
+// abre um banco novo onde o CREATE TABLE já a inclui — sem este teste, apagar
+// a chamada de migrate() deixaria a suíte inteira verde.
+//
+// O grupo antigo tem que sobreviver com o escopo VAZIO: ele é tráfego
+// atravessando o firewall, e promovê-lo a escopo input por acidente moveria
+// as regras dele da chain forward para a input — aplicá-las a um tráfego que
+// o admin nunca pretendeu filtrar.
+func TestMigrateAddsScopeToADatabaseCreatedBeforeTheColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old-scope.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("abrir banco cru: %v", err)
+	}
+	if _, err := raw.Exec(`
+        CREATE TABLE firewall_groups (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, chain_name TEXT NOT NULL UNIQUE,
+            position INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+            cond_saddr TEXT NOT NULL DEFAULT '', cond_daddr TEXT NOT NULL DEFAULT '',
+            cond_iif TEXT NOT NULL DEFAULT '', fallthrough TEXT NOT NULL DEFAULT 'continue',
+            kind TEXT NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO firewall_groups (id, name, chain_name, position, enabled)
+        VALUES ('velho', 'Grupo antigo do admin', 'grp_velho01', 0, 1);`); err != nil {
+		t.Fatalf("montar schema antigo: %v", err)
+	}
+	raw.Close()
+
+	for pass := 1; pass <= 2; pass++ {
+		db, err := storage.Open(path)
+		if err != nil {
+			t.Fatalf("passada %d: storage.Open: %v", pass, err)
+		}
+		groups, err := db.ListFirewallGroups()
+		if err != nil {
+			t.Fatalf("passada %d: listar: %v", pass, err)
+		}
+		if len(groups) != 1 {
+			t.Fatalf("passada %d: esperava 1 grupo preservado, obtive %d", pass, len(groups))
+		}
+		if groups[0].ID != "velho" || groups[0].Name != "Grupo antigo do admin" {
+			t.Errorf("passada %d: a linha antiga não sobreviveu: %+v", pass, groups[0])
+		}
+		if groups[0].Scope != "" {
+			t.Errorf("passada %d: linha antiga tem que ficar com escopo vazio (= forward), obtive %q",
+				pass, groups[0].Scope)
+		}
+		db.Close()
+	}
+}

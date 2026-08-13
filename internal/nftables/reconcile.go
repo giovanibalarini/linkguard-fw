@@ -146,39 +146,6 @@ func sanitizeNetworks(in []string) []string {
 	return out
 }
 
-// ReconcileNTPInput rebuilds the input chain's NTP-protection rules from the
-// serve-NTP-to-LAN toggle and the admin's own choice of allowed networks
-// (internal/timesync.Config.AllowedNetworks, spec §3.1), mirroring
-// ReconcileMasquerade's structure and safety properties: it flushes only
-// this chain (never the table or the ruleset), validates every CIDR before
-// it reaches nft, is a no-op in dry-run, and persists afterward.
-//
-// Reshaped 2026-08-11 (spec §4) from an earlier, narrower design that denied
-// NTP by WAN interface: allowedNetworks replaces wanInterfaces because the
-// admin — not the software — decides which networks may use the time
-// service, and a deny-by-WAN rule would silently let an unauthorized VLAN
-// or guest network straight through since neither is a WAN.
-//
-// Unlike the masquerade chain (always present since bootstrap), the input
-// chain may not exist yet on a box provisioned before this feature — so it
-// is created first via an idempotent `nft add chain ... { type filter hook
-// input priority filter; policy accept; }`, which nft treats as a no-op
-// when a base chain with the same declaration already exists (the same
-// convention already in production for DNATChain, see ApplyPortForwards).
-//
-// When serving is true and at least one network survives sanitization, the
-// chain ends up with exactly two rules, in this order — order matters, nft
-// evaluates top to bottom, and a drop before the accept would shadow it:
-//
-//	udp dport 123 ip saddr { <cidr>, ... } accept
-//	udp dport 123 drop
-//
-// Defense in depth alongside chrony's own `allow` directives — see spec §4,
-// "why this matters even with chrony's allow". Both rules match only
-// udp/123; nothing else destined to the firewall (SSH, the panel, DNS,
-// DHCP) is ever touched. When serving is false, or the network list is
-// empty after sanitization, the chain is flushed and left empty — not
-// deleted — so its state is always explicit and idempotent.
 // ForwardChain is rendered from a single ordered list — the admin's own —
 // where each item is either a jump into a rule group or the managed
 // blocklist/host-block drops, in the position the admin chose (see
@@ -248,7 +215,18 @@ func forwardChainRules(groups []StoredGroup) [][]string {
 			continue
 		}
 		if renderer, ok := systemGroupForwardRules[g.Kind]; ok {
+			// Grupo do sistema é sempre forward, qualquer que seja a coluna
+			// scope: o conteúdo dele é um named set de bloqueio de tráfego
+			// ATRAVESSANDO o firewall. Uma linha com scope=input (edição à
+			// mão, corrupção) que tirasse o bloqueio daqui apagaria da forward
+			// a proteção que o admin ligou, sem parecer erro nenhum.
 			rules = append(rules, renderer()...)
+			continue
+		}
+		if GroupScope(g) != ScopeForward {
+			// Grupo de escopo input: o jump dele mora na chain input
+			// (inputChainRules). Emiti-lo aqui aplicaria as regras do admin a
+			// um tráfego que ele não pediu para filtrar.
 			continue
 		}
 		// grupo do admin
@@ -450,38 +428,149 @@ func (s *Service) CheckChainEnsuring(ctx context.Context, chain string, tokenSet
 	return nil
 }
 
+// inputChainRules é o renderizador ÚNICO da chain input (Fase C2), o mesmo
+// molde que forwardChainRules já é para a forward: uma lista ordenada só,
+// emitida de cima para baixo, com tudo que mora ali dentro.
+//
+// Por que ele existe: até a Fase C2 a chain input tinha um dono exclusivo —
+// ReconcileNTPInput dava flush nela e escrevia só as regras de NTP. No
+// momento em que um segundo escritor (os grupos de escopo input) passasse a
+// escrever no mesmo lugar, um apagaria o outro: ligar o NTP sumiria com os
+// grupos do admin, e salvar um grupo sumiria com a proteção do NTP — nos dois
+// casos sem nada na tela mudar. Com um renderizador só, a chain é sempre
+// reconstruída inteira, a partir de tudo que a compõe.
+//
+// A ordem não é arbitrária, e o nft avalia de cima para baixo:
+//
+//  1. as duas linhas de NTP (quando servir NTP está ligado e sobrou pelo
+//     menos uma rede válida): o accept das redes autorizadas ANTES do drop
+//     geral de udp/123 — invertido, o drop sombrearia o accept e ninguém
+//     sincronizaria hora nenhuma. Defesa em profundidade junto do `allow` do
+//     próprio chrony; as duas casam só udp/123, e nada mais destinado ao
+//     firewall (SSH, painel, DNS, DHCP, Samba) é tocado por elas.
+//  2. um `jump` por grupo de escopo input ativado, na ordem de posição — a
+//     mesma que o admin vê na tela. A condição de entrada vai na própria
+//     linha do jump: se não casa, o grupo inteiro é pulado sem o kernel olhar
+//     as regras de dentro.
+//
+// As linhas de NTP vêm primeiro por serem proteção do serviço de hora contra
+// a internet, e não uma regra que o admin ordenou na lista dele. Quando a UI
+// da Fase C2 puser os grupos de input na tela, a posição relativa deles
+// continua sendo escolha do admin — entre eles.
+//
+// Toda linha carrega `counter`: mesma razão de ReconcileStructuralChains e de
+// forwardChainRules — é o número que o painel mostra, e uma definição
+// canônica sem counter faria cada boot zerar a contagem em silêncio.
+//
+// Grupo do sistema nunca entra aqui: o conteúdo dele é um named set de
+// bloqueio de tráfego atravessando, e o lugar dele é a forward.
+func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool) [][]string {
+	var rules [][]string
+
+	networks := sanitizeNetworks(ntpNetworks)
+	if ntpServing {
+		if len(networks) == 0 {
+			slog.Warn("servir NTP para a LAN está ligado, mas nenhuma rede autorizada válida está configurada; a chain input fica sem as regras de proteção do NTP", "requested", ntpNetworks)
+		} else {
+			set := fmt.Sprintf("{ %s }", strings.Join(networks, ", "))
+			rules = append(rules,
+				[]string{"udp", "dport", "123", "ip", "saddr", set, "counter", "accept"},
+				[]string{"udp", "dport", "123", "counter", "drop"},
+			)
+		}
+	}
+
+	sorted := make([]StoredGroup, len(groups))
+	copy(sorted, groups)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
+
+	for _, g := range sorted {
+		if !g.Enabled {
+			// Desligar = sumir do firewall. A chain do grupo e as regras dela
+			// continuam guardadas no nft; só ninguém pula para lá.
+			continue
+		}
+		if IsSystemGroup(g.Kind) || GroupScope(g) != ScopeInput {
+			continue
+		}
+		if !validGroupChainName(g.ChainName) {
+			// Este nome sai do banco e é interpolado no argv do nft, que junta
+			// os argumentos e parseia o resultado — mesma porta que reIface e
+			// ValidMark fecham nos outros geradores deste pacote.
+			slog.Error("grupo ignorado ao montar a chain input: nome de chain inseguro",
+				"grupo", g.ID, "nome", g.Name, "chain", g.ChainName)
+			continue
+		}
+		tokens, err := groupJumpTokens(g)
+		if err != nil {
+			slog.Error("grupo ignorado ao montar a chain input: condição inválida",
+				"grupo", g.ID, "nome", g.Name, "err", err)
+			continue
+		}
+		rules = append(rules, tokens)
+	}
+	return rules
+}
+
+// reconcileInputChain é o único caminho que escreve na chain input: garante
+// que ela existe e a reconstrói inteira a partir de inputChainRules.
+//
+// A chain é criada antes de tudo com um `add chain` idempotente porque, ao
+// contrário da postrouting (existe desde o bootstrap), ela pode não existir
+// numa máquina provisionada antes de 2026-08-11 — e o nft trata o `add chain`
+// como no-op quando uma base chain com a mesma declaração já está lá (mesma
+// convenção já em produção para a DNATChain, ver ApplyPortForwards).
+//
+// A declaração é `policy accept`, e isso não é negociável: uma chain input
+// com `policy drop` cortaria SSH e painel no instante em que fosse aplicada,
+// num firewall que pode não ter outro acesso administrativo. A proteção aqui
+// é por regra específica, nunca por política restritiva (spec §8).
+func (s *Service) reconcileInputChain(ctx context.Context, groups []StoredGroup, ntpNetworks []string, ntpServing bool) error {
+	if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, InputChain,
+		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", "accept", ";", "}"); err != nil {
+		return fmt.Errorf("criar chain %s: %w", InputChain, err)
+	}
+	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing))
+}
+
+// ReconcileNTPInput reconcilia a chain input a partir do toggle "servir NTP
+// para a LAN" e das redes autorizadas que o admin escolheu
+// (internal/timesync.Config.AllowedNetworks, spec §3.1). Mantém as
+// propriedades de segurança de ReconcileMasquerade: só dá flush nesta chain
+// (nunca na tabela nem no ruleset), valida todo CIDR antes de ele chegar ao
+// nft, é no-op em dry-run e persiste ao final.
+//
+// Reformulada 2026-08-11 (spec §4) de um desenho anterior que negava NTP por
+// interface WAN: quem decide quais redes podem usar o serviço de hora é o
+// admin, não o software — e uma negação por WAN deixaria passar uma VLAN ou
+// rede de visitantes não autorizada, já que nenhuma das duas é WAN.
+//
+// Fase C2: esta função DEIXOU de ser a dona da chain. Ela continua sendo a
+// porta de entrada de quem mexe no NTP (o handler e o boot), mas quem escreve
+// é reconcileInputChain, com o renderizador único — por isso ela precisa
+// saber quais grupos de escopo input existem, e os lê de SetInputChainSources.
+// Sem isso, ligar/desligar o NTP apagaria os jumps dos grupos de input.
+//
+// Erro ao ler os grupos ABORTA sem tocar na chain, e não reconstrói com lista
+// vazia: um SELECT que falhou não é "o admin não tem grupo nenhum" — obedecer
+// a essa lista vazia apagaria da chain input todos os jumps do admin por causa
+// de um erro de leitura. É o mesmo contrato do doc-comment de ReconcileGroups.
 func (s *Service) ReconcileNTPInput(ctx context.Context, allowedNetworks []string, serving bool) error {
 	if s.exec.IsDryRun() {
 		return nil
 	}
 
-	if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, InputChain,
-		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", "accept", ";", "}"); err != nil {
-		return fmt.Errorf("criar chain %s: %w", InputChain, err)
+	groups, err := s.inputChainGroups()
+	if err != nil {
+		return fmt.Errorf("ler os grupos de regras para reconstruir a chain %s: %w", InputChain, err)
 	}
 
-	if _, err := s.exec.Execute(ctx, "nft", "flush", "chain", Family, Table, InputChain); err != nil {
-		return fmt.Errorf("limpar chain %s: %w", InputChain, err)
+	if err := s.reconcileInputChain(ctx, groups, allowedNetworks, serving); err != nil {
+		return err
 	}
 
-	networks := sanitizeNetworks(allowedNetworks)
-	if serving {
-		if len(networks) == 0 {
-			slog.Warn("servir NTP para a LAN está ligado, mas nenhuma rede autorizada válida está configurada; chain de proteção ficou vazia", "requested", allowedNetworks)
-		} else {
-			set := fmt.Sprintf("{ %s }", strings.Join(networks, ", "))
-			if _, err := s.exec.Execute(ctx, "nft", "add", "rule", Family, Table, InputChain,
-				"udp", "dport", "123", "ip", "saddr", set, "accept"); err != nil {
-				return fmt.Errorf("aplicar regra de aceite do NTP: %w", err)
-			}
-			if _, err := s.exec.Execute(ctx, "nft", "add", "rule", Family, Table, InputChain,
-				"udp", "dport", "123", "drop"); err != nil {
-				return fmt.Errorf("aplicar regra de proteção do NTP: %w", err)
-			}
-		}
-	}
-
-	slog.Info("chain de proteção do NTP (input) reconciliada", "serving", serving, "allowed_networks", networks)
+	slog.Info("chain input reconciliada (proteção do NTP + grupos de escopo input)",
+		"serving", serving, "allowed_networks", sanitizeNetworks(allowedNetworks), "grupos", len(groups))
 
 	if err := s.Persist(ctx); err != nil {
 		slog.Warn("chain de input reconciliada, mas não foi possível persistir para o próximo boot", "err", err)

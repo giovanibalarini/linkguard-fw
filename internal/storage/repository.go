@@ -1646,24 +1646,30 @@ func (db *DB) ReorderFirewallRules(ids []string) error {
 // FirewallGroup é um grupo de regras do admin: uma chain própria no nft,
 // alcançada por um jump condicional a partir da chain forward.
 type FirewallGroup struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	ChainName   string    `json:"chain_name"`
-	Position    int       `json:"position"`
-	Enabled     bool      `json:"enabled"`
-	CondSaddr   string    `json:"cond_saddr"`
-	CondDaddr   string    `json:"cond_daddr"`
-	CondIif     string    `json:"cond_iif"`
-	Fallthrough string    `json:"fallthrough"` // continue | accept | drop
-	Kind        string    `json:"kind"`        // "" ou "admin" | nftables.GroupKindBlockedHosts | nftables.GroupKindBlocklist
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	ChainName   string `json:"chain_name"`
+	Position    int    `json:"position"`
+	Enabled     bool   `json:"enabled"`
+	CondSaddr   string `json:"cond_saddr"`
+	CondDaddr   string `json:"cond_daddr"`
+	CondIif     string `json:"cond_iif"`
+	Fallthrough string `json:"fallthrough"` // continue | accept | drop
+	Kind        string `json:"kind"`        // "" ou "admin" | nftables.GroupKindBlockedHosts | nftables.GroupKindBlocklist
+	// Scope (Fase C2) diz em qual chain o grupo é alcançado: "" ou
+	// nftables.ScopeForward (tráfego ATRAVESSANDO o firewall) e
+	// nftables.ScopeInput (tráfego DESTINADO ao próprio firewall — SSH,
+	// painel, DNS, Samba). Vazio conta como forward: é o valor de toda linha
+	// criada antes desta coluna existir.
+	Scope     string    `json:"scope"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
 	rows, err := db.conn.Query(`
         SELECT id, name, chain_name, position, enabled, cond_saddr, cond_daddr,
-               cond_iif, fallthrough, kind, created_at, updated_at
+               cond_iif, fallthrough, kind, scope, created_at, updated_at
           FROM firewall_groups ORDER BY position ASC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -1673,7 +1679,7 @@ func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
 	for rows.Next() {
 		var g FirewallGroup
 		if err := rows.Scan(&g.ID, &g.Name, &g.ChainName, &g.Position, &g.Enabled,
-			&g.CondSaddr, &g.CondDaddr, &g.CondIif, &g.Fallthrough, &g.Kind,
+			&g.CondSaddr, &g.CondDaddr, &g.CondIif, &g.Fallthrough, &g.Kind, &g.Scope,
 			&g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -1687,13 +1693,20 @@ func (db *DB) CreateFirewallGroup(g *FirewallGroup) error {
 	g.CreatedAt, g.UpdatedAt = now, now
 	_, err := db.conn.Exec(`
         INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
-            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
-		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.CreatedAt, g.UpdatedAt)
+		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope, g.CreatedAt, g.UpdatedAt)
 	return err
 }
 
+// UpdateFirewallGroup NÃO atualiza scope de propósito (Fase C2). O escopo é
+// escolhido na criação e define em qual chain o grupo é alcançado; deixá-lo
+// nesta lista faria qualquer chamador que monte o FirewallGroup a partir do
+// corpo de uma requisição sem o campo (todo handler de edição existente)
+// rebaixar em silêncio um grupo de escopo input para forward — as regras dele
+// passariam a valer para o tráfego atravessando o firewall, que é justamente
+// o tráfego que o admin não pediu para filtrar ali.
 func (db *DB) UpdateFirewallGroup(g *FirewallGroup) error {
 	g.UpdatedAt = time.Now()
 	res, err := db.conn.Exec(`

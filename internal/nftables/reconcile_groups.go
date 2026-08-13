@@ -103,13 +103,16 @@ func missingSystemKinds(groups []StoredGroup) []string {
 //     no nft, só que ninguém pula para lá.
 //  3. Reconstruir a forward: uma lista ordenada só, em que cada item ativado
 //     vira ou o jump do grupo do admin ou as linhas de set do bloqueio, na
-//     posição que o admin escolheu (ver forwardChainRules).
+//     posição que o admin escolheu (ver forwardChainRules). E, logo depois, a
+//     input pelo mesmo modelo (inputChainRules, Fase C2): as regras de
+//     proteção do NTP mais os jumps dos grupos de escopo input.
 //  4. Só agora apagar as chains órfãs (grupos que o admin removeu), e só se
-//     o passo 3 tiver dado certo. O nft recusa apagar chain ainda
-//     referenciada (EBUSY) — se isto rodasse antes do passo 3, ou depois de
-//     um passo 3 que falhou, a forward ainda teria o jump; o `delete`
-//     falharia, mas o `flush` que vem antes dele não, e a órfã ficaria
-//     vazia e ainda referenciada (fail-open — ver o passo 4 no código).
+//     o passo 3 tiver dado certo NAS DUAS CHAINS. O nft recusa apagar chain
+//     ainda referenciada (EBUSY) — se isto rodasse antes do passo 3, ou
+//     depois de um passo 3 que falhou, a forward (ou a input) ainda teria o
+//     jump; o `delete` falharia, mas o `flush` que vem antes dele não, e a
+//     órfã ficaria vazia e ainda referenciada (fail-open — ver o passo 4 no
+//     código).
 //
 // CONTRATO DO CHAMADOR — lista vazia apaga tudo. `groups` é o conjunto
 // COMPLETO de grupos que devem existir no firewall, não um delta:
@@ -259,6 +262,22 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 		failures = append(failures, forwardErr.Error())
 	}
 
+	// 3b. reconstruir a input (Fase C2). A chain input tem um dono só —
+	// inputChainRules —, e é por isso que ela é reconstruída aqui e não em
+	// ReconcileNTPInput: se cada um escrevesse a sua parte, salvar um grupo
+	// apagaria a proteção do NTP e ligar o NTP apagaria os jumps dos grupos.
+	// O estado do NTP vem da fonte ligada em SetInputChainSources — a metade
+	// que esta função não recebe por parâmetro.
+	//
+	// Sempre, mesmo sem nenhum grupo de escopo input na lista: só assim
+	// APAGAR o último grupo de input tira mesmo o jump dele do firewall.
+	ntpNetworks, ntpServing := s.ntpInputState()
+	inputErr := s.reconcileInputChain(ctx, valid, ntpNetworks, ntpServing)
+	if inputErr != nil {
+		slog.Error("a chain input não pôde ser reconstruída por completo", "err", inputErr)
+		failures = append(failures, inputErr.Error())
+	}
+
 	// 4. remover as órfãs, agora que ninguém mais pula para elas — e SÓ se o
 	// passo 3 deu certo. Com a forward antiga ainda viva, ela ainda tem o
 	// `jump` para a órfã: o `delete` falharia com EBUSY (o nft recusa apagar
@@ -268,9 +287,14 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 	// `drop` daquele grupo passaria a passar. Fail-open num firewall. Uma
 	// chain órfã que sobrevive até o próximo apply não custa nada perto
 	// disso.
-	if forwardErr != nil {
-		slog.Error("chains de grupo órfãs não foram limpas nesta passada: a forward não pôde ser reconstruída e ainda pode referenciá-las",
-			"err", forwardErr)
+	if forwardErr != nil || inputErr != nil {
+		// Vale igual para a input: um grupo de escopo input removido do banco
+		// ainda tem o `jump` dele na chain input viva, e o nft recusa apagar
+		// chain referenciada (EBUSY) — o `delete` falharia, mas nada garante
+		// que o estado intermediário seja seguro. Sem as duas chains
+		// reconstruídas, ninguém apaga nada.
+		slog.Error("chains de grupo órfãs não foram limpas nesta passada: a forward e/ou a input não puderam ser reconstruídas e ainda podem referenciá-las",
+			"err_forward", forwardErr, "err_input", inputErr)
 	} else if live, err := s.listGroupChains(ctx); err != nil {
 		// Sem saber o que está vivo, não se apaga nada — um `delete` no
 		// escuro é pior do que uma chain órfã, que não é alcançada por
@@ -401,6 +425,17 @@ func (s *Service) DeleteUnreferencedChain(ctx context.Context, chain string) err
 // internal/firewallrules.Service.CheckPendingGroups): validação de campo
 // não pega tudo que o nft recusaria, e reconciliar direto numa regra que o
 // nft recusa já custou uma chain truncada em produção.
+//
+// LIMITE CONHECIDO (Fase C2): o pré-voo valida a chain forward, não a input.
+// Um grupo de escopo input tem a chain dele validada como qualquer outra (é o
+// laço abaixo), mas a linha de `jump` que vai para a chain input não passa
+// por `nft -c`. Incluí-la exige um `add chain` da própria input dentro do
+// script validado (a input pode não existir numa máquina anterior a
+// 2026-08-11, e `flush chain` de chain inexistente falha dentro de um script
+// de `nft -c`), e essa forma precisa ser verificada ao vivo contra o nft de
+// verdade antes de entrar aqui — se ela recusar, criar QUALQUER grupo passa a
+// devolver 400. Fica para a tarefa que expõe o escopo na API, com a
+// verificação ao vivo junto.
 //
 // Como roda antes do INSERT, a chain do grupo NOVO ainda não existe no
 // kernel — e no nft (verificado ao vivo) tanto `flush chain` quanto `jump`

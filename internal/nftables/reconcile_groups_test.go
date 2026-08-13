@@ -239,7 +239,10 @@ func TestReconcileGroupsCreatesNoChainForSystemGroups(t *testing.T) {
 		t.Fatalf("erro inesperado: %v", err)
 	}
 	for _, cmd := range exec.executed {
-		if strings.HasPrefix(cmd, "nft add chain") {
+		// A chain input é criada de forma idempotente em toda passada desde a
+		// Fase C2 (ela pode não existir numa máquina provisionada antes de
+		// 2026-08-11) — não é chain de grupo e não é o que este teste guarda.
+		if strings.HasPrefix(cmd, "nft add chain") && !strings.Contains(cmd, "hook input") {
 			t.Errorf("grupo do sistema não pode ganhar chain: %q", cmd)
 		}
 	}
@@ -445,8 +448,12 @@ func TestReconcileGroupsNeverFlushesRulesetOrTable(t *testing.T) {
 			t.Fatalf("deu flush na tabela: %q", joined)
 		}
 		if strings.HasPrefix(joined, "nft flush chain") &&
-			!strings.Contains(joined, ForwardChain) && !strings.Contains(joined, GroupChainPrefix) {
-			t.Fatalf("deu flush numa chain que não é dos grupos nem a forward: %q", joined)
+			!strings.Contains(joined, ForwardChain) && !strings.Contains(joined, GroupChainPrefix) &&
+			!strings.HasSuffix(joined, " "+InputChain) {
+			// A input entra na lista permitida desde a Fase C2: ela também é
+			// reconstruída aqui, pelo renderizador único. Continua sendo flush
+			// de CHAIN — nunca de tabela nem de ruleset.
+			t.Fatalf("deu flush numa chain que não é dos grupos, nem a forward, nem a input: %q", joined)
 		}
 	}
 }
@@ -1586,5 +1593,275 @@ func TestCheckGroupsValidatesTheForwardWithTheBlocksInListPosition(t *testing.T)
 	}
 	if idxBlock < idxJump {
 		t.Errorf("o pré-voo validou os bloqueios no topo, mas a reconciliação os escreveria depois do jump — script validado ≠ script aplicado:\n%s", fwd)
+	}
+}
+
+// ─── Fase C2: escopo do grupo e a chain input com um renderizador só ─────
+
+// inputLines é o equivalente de forwardLines para a chain input: a lista
+// ordenada que o renderizador único emite, uma linha por regra.
+func inputLines(groups []StoredGroup, ntpNetworks []string, ntpServing bool) []string {
+	var lines []string
+	for _, toks := range inputChainRules(groups, ntpNetworks, ntpServing) {
+		lines = append(lines, strings.Join(toks, " "))
+	}
+	return lines
+}
+
+// inputAdds extrai, da sequência de comandos executados, só os `add rule` da
+// chain input — na ordem em que foram emitidos, que é a ordem em que o nft os
+// avalia.
+func inputAdds(executed []string) []string {
+	var out []string
+	for _, c := range executed {
+		if strings.HasPrefix(c, "nft add rule inet linkguard input ") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// A chain input tinha UM dono: ReconcileNTPInput dava flush nela e escrevia
+// só as regras de NTP. Com grupos de escopo input escrevendo no mesmo lugar,
+// os dois se apagavam mutuamente. Um renderizador só, como já foi feito para
+// a forward.
+func TestInputChainRendersNTPAndGroupJumpsTogether(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "a", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_aaa",
+			Enabled: true, Position: 0, CondSaddr: "192.168.50.0/24"},
+		{ID: "b", Kind: GroupKindAdmin, Scope: ScopeForward, ChainName: "grp_bbb",
+			Enabled: true, Position: 1},
+	}
+	lines := inputLines(groups, []string{"192.168.3.0/24"}, true)
+	want := []string{
+		"udp dport 123 ip saddr { 192.168.3.0/24 } counter accept",
+		"udp dport 123 counter drop",
+		"ip saddr 192.168.50.0/24 counter jump grp_aaa",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("esperava %d linhas, obtive %d: %v", len(want), len(lines), lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("linha %d:\n  obtive %q\n  queria %q", i, lines[i], want[i])
+		}
+	}
+}
+
+// Grupo de escopo forward NUNCA aparece na input, e vice-versa. Trocar de
+// chain um grupo que o admin escreveu para atravessar seria aplicá-lo a um
+// tráfego que ele não pretendia filtrar.
+func TestGroupScopeDecidesWhichChainItLandsIn(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii", Enabled: true, Position: 0},
+		{ID: "f", Kind: GroupKindAdmin, Scope: ScopeForward, ChainName: "grp_fff", Enabled: true, Position: 1},
+	}
+	inp := renderChainScript(InputChain, inputChainRules(groups, nil, false))
+	fwd := renderChainScript(ForwardChain, forwardChainRules(groups))
+	if strings.Contains(inp, "grp_fff") {
+		t.Error("grupo de escopo forward vazou para a chain input")
+	}
+	if strings.Contains(fwd, "grp_iii") {
+		t.Error("grupo de escopo input vazou para a chain forward")
+	}
+}
+
+// Escopo vazio é o valor de toda linha criada antes da coluna existir, e todo
+// grupo que existia era de tráfego atravessando: ele tem que continuar caindo
+// na forward, nunca na input.
+func TestEmptyScopeCountsAsForward(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "v", Kind: GroupKindAdmin, ChainName: "grp_velho", Enabled: true, Position: 0},
+	}
+	if lines := forwardLines(groups); len(lines) != 1 || !strings.Contains(lines[0], "jump grp_velho") {
+		t.Errorf("grupo com escopo vazio tinha que entrar na forward, obtive %v", lines)
+	}
+	if lines := inputLines(groups, nil, false); len(lines) != 0 {
+		t.Errorf("grupo com escopo vazio não pode entrar na input, obtive %v", lines)
+	}
+}
+
+// Os dois grupos do sistema são bloqueio de tráfego ATRAVESSANDO o firewall
+// (os named sets valem para a forward). Uma linha de banco com scope=input
+// neles — edição à mão, corrupção — não pode transformar o bloqueio de hosts
+// em regra de input: o admin perderia o bloqueio na forward, que é onde ele
+// existe para valer.
+func TestSystemGroupsStayInForwardEvenWithAnInputScopeRow(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "h", Kind: GroupKindBlockedHosts, Scope: ScopeInput, ChainName: SystemChainBlockedHosts,
+			Enabled: true, Position: 0},
+	}
+	fwd := forwardLines(groups)
+	if len(fwd) != 2 || !strings.Contains(fwd[0], "@blocked_hosts") {
+		t.Fatalf("o bloqueio do sistema tem que continuar na forward, obtive %v", fwd)
+	}
+	if lines := inputLines(groups, nil, false); len(lines) != 0 {
+		t.Errorf("grupo do sistema não pode emitir linha na chain input, obtive %v", lines)
+	}
+}
+
+// A política da chain input é accept, sempre. Se algum dia alguém a mudar
+// para drop, o operador perde SSH e painel no mesmo instante.
+func TestInputChainPolicyIsAlwaysAccept(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	if err := s.ReconcileGroups(context.Background(), []StoredGroup{
+		{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii", Enabled: true},
+	}); err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	for _, cmd := range exec.executed {
+		if strings.Contains(cmd, "hook input") && !strings.Contains(cmd, "policy accept") {
+			t.Fatalf("chain input criada sem policy accept: %q", cmd)
+		}
+		if strings.Contains(cmd, "policy drop") {
+			t.Fatalf("policy drop em qualquer chain é proibido: %q", cmd)
+		}
+	}
+}
+
+// Direção 1 do problema central: salvar um grupo (qualquer um) reconstrói a
+// chain input, e ela não pode sair sem a proteção do NTP. Antes do
+// renderizador único, ReconcileGroups escrevendo na input apagaria as regras
+// que ReconcileNTPInput tinha posto lá — o firewall passaria a responder NTP
+// para a internet inteira sem nada na tela mudar.
+func TestSavingAGroupDoesNotWipeTheNTPProtection(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) { return nil, nil },
+		func() ([]string, bool) { return []string{"192.168.3.0/24"}, true },
+	)
+
+	if err := s.ReconcileGroups(context.Background(), []StoredGroup{
+		{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii",
+			Enabled: true, Position: 0},
+	}); err != nil {
+		t.Fatalf("ReconcileGroups: %v", err)
+	}
+	adds := inputAdds(exec.executed)
+	want := []string{
+		"nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } counter accept",
+		"nft add rule inet linkguard input udp dport 123 counter drop",
+		"nft add rule inet linkguard input counter jump grp_iii",
+	}
+	if len(adds) != len(want) {
+		t.Fatalf("esperava %d regras na input, obtive %d: %v", len(want), len(adds), adds)
+	}
+	for i := range want {
+		if adds[i] != want[i] {
+			t.Errorf("regra %d da input:\n  obtive %q\n  queria %q", i, adds[i], want[i])
+		}
+	}
+}
+
+// Direção 2: ligar/desligar o NTP reconstrói a mesma chain input, e ela não
+// pode sair sem os jumps dos grupos de escopo input — o admin veria o grupo
+// dele ativado no painel e nenhum pacote passando por ele.
+func TestReconcilingNTPDoesNotWipeTheInputGroupJumps(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) {
+			return []StoredGroup{
+				{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii",
+					Enabled: true, Position: 0, CondSaddr: "192.168.50.0/24"},
+				{ID: "f", Kind: GroupKindAdmin, Scope: ScopeForward, ChainName: "grp_fff",
+					Enabled: true, Position: 1},
+			}, nil
+		},
+		func() ([]string, bool) { return nil, false },
+	)
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	adds := inputAdds(exec.executed)
+	want := []string{
+		"nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } counter accept",
+		"nft add rule inet linkguard input udp dport 123 counter drop",
+		"nft add rule inet linkguard input ip saddr 192.168.50.0/24 counter jump grp_iii",
+	}
+	if len(adds) != len(want) {
+		t.Fatalf("esperava %d regras na input, obtive %d: %v", len(want), len(adds), adds)
+	}
+	for i := range want {
+		if adds[i] != want[i] {
+			t.Errorf("regra %d da input:\n  obtive %q\n  queria %q", i, adds[i], want[i])
+		}
+	}
+}
+
+// Desligar o NTP não pode ser o que apaga os grupos de input: a chain é
+// reconstruída inteira, só que sem as duas linhas de udp/123.
+func TestTurningNTPOffKeepsTheInputGroupJumps(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) {
+			return []StoredGroup{
+				{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii", Enabled: true},
+			}, nil
+		},
+		func() ([]string, bool) { return nil, false },
+	)
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, false); err != nil {
+		t.Fatalf("ReconcileNTPInput: %v", err)
+	}
+	adds := inputAdds(exec.executed)
+	if len(adds) != 1 || adds[0] != "nft add rule inet linkguard input counter jump grp_iii" {
+		t.Fatalf("o jump do grupo de input tinha que sobreviver ao NTP desligado, obtive %v", adds)
+	}
+}
+
+// Um SELECT que falhou não é "o admin não tem grupo nenhum": se os grupos não
+// podem ser lidos, a chain input NÃO é tocada. Reconstruí-la com lista vazia
+// apagaria todos os jumps de input por causa de um erro de leitura — o mesmo
+// contrato que ReconcileGroups tem para a forward.
+func TestReconcileNTPInputDoesNotTouchTheChainWhenGroupsCannotBeRead(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) { return nil, errors.New("banco fora do ar") },
+		func() ([]string, bool) { return nil, false },
+	)
+
+	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err == nil {
+		t.Fatal("ler os grupos falhou e mesmo assim a reconciliação disse ok")
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "flush chain inet linkguard input") || strings.HasPrefix(c, "nft add rule inet linkguard input") {
+			t.Errorf("a chain input foi mexida mesmo sem saber quais grupos existem: %q", c)
+		}
+	}
+}
+
+// A chain input é reconstruída ANTES da limpeza de chains órfãs, pela mesma
+// razão que a forward: o nft recusa apagar chain ainda referenciada (EBUSY),
+// e um grupo de input apagado do banco ainda tem o `jump` dele na input viva.
+func TestInputChainIsRebuiltBeforeOrphanChainsAreDeleted(t *testing.T) {
+	exec := &fakeReconcileExec{readOut: map[string]string{
+		"nft list table inet linkguard": liveTableWithOrphanGroup,
+	}}
+	s := &Service{exec: exec}
+	groups := []StoredGroup{
+		{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 0,
+			CondSaddr: "192.168.50.0/24"},
+	}
+	if err := s.ReconcileGroups(context.Background(), groups); err != nil {
+		t.Fatalf("ReconcileGroups: %v", err)
+	}
+	flushInput := indexOfCommand(exec.executed, func(c string) bool {
+		return c == "nft flush chain inet linkguard input"
+	})
+	deleteOrphan := indexOfCommand(exec.executed, func(c string) bool {
+		return strings.HasPrefix(c, "nft delete chain") && strings.HasSuffix(c, "grp_orfa")
+	})
+	if flushInput == -1 || deleteOrphan == -1 {
+		t.Fatalf("esperava flush da input e delete da órfã; executados: %v", exec.executed)
+	}
+	if flushInput > deleteOrphan {
+		t.Errorf("a input foi reconstruída depois de apagar a órfã: um jump de input vivo faria o delete falhar com EBUSY; executados: %v", exec.executed)
 	}
 }

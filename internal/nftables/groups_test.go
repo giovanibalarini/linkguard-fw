@@ -208,3 +208,41 @@ func TestSystemChainNamesAreNeverTakenForGroupChains(t *testing.T) {
 		t.Error("os dois grupos do sistema precisam de chain_name distintos (a coluna é UNIQUE)")
 	}
 }
+
+// ─── Fase C2: escopo ─────────────────────────────────────────────────────
+
+// Escopo desconhecido é recusado, e não normalizado em silêncio: um valor que
+// este código não entende, tratado como forward, poria na chain de tráfego
+// atravessando um grupo escrito para outra coisa.
+func TestValidateGroupRejectsUnknownScope(t *testing.T) {
+	g := StoredGroup{Name: "g", Fallthrough: FallthroughContinue, Scope: "output"}
+	if err := ValidateGroup(g); err == nil {
+		t.Fatal("esperava recusa para um escopo que não é forward nem input")
+	}
+}
+
+func TestValidateGroupAcceptsTheThreeValidScopes(t *testing.T) {
+	for _, scope := range []string{"", ScopeForward, ScopeInput} {
+		g := StoredGroup{Name: "g", Fallthrough: FallthroughContinue, Scope: scope}
+		if err := ValidateGroup(g); err != nil {
+			t.Errorf("escopo %q tinha que ser aceito: %v", scope, err)
+		}
+	}
+}
+
+// Vazio é o valor de toda linha anterior à Fase C2, e todo grupo que existia
+// é de tráfego atravessando o firewall.
+func TestGroupScopeTreatsEmptyAsForward(t *testing.T) {
+	if got := GroupScope(StoredGroup{}); got != ScopeForward {
+		t.Errorf("escopo vazio tinha que valer como %q, obtive %q", ScopeForward, got)
+	}
+	if got := GroupScope(StoredGroup{Scope: ScopeInput}); got != ScopeInput {
+		t.Errorf("escopo input não sobreviveu: %q", got)
+	}
+	// Qualquer coisa fora dos dois conhecidos cai em forward — ValidateGroup
+	// é quem recusa o valor; aqui o que não pode acontecer é uma linha
+	// estranha virar regra de input por acidente.
+	if got := GroupScope(StoredGroup{Scope: "output"}); got != ScopeForward {
+		t.Errorf("escopo desconhecido tinha que cair em %q, obtive %q", ScopeForward, got)
+	}
+}

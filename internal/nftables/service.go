@@ -7,6 +7,7 @@ package nftables
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"regexp"
@@ -29,11 +30,61 @@ const (
 // Service wraps nft operations.
 type Service struct {
 	exec firewall.Executor
+
+	// groupsSource e ntpInputSource são as duas metades da chain input que
+	// este pacote não conhece por si (ver SetInputChainSources).
+	groupsSource   func() ([]StoredGroup, error)
+	ntpInputSource func() (networks []string, serving bool)
 }
 
 // NewService creates an nftables Service.
 func NewService(exec firewall.Executor) *Service {
 	return &Service{exec: exec}
+}
+
+// SetInputChainSources liga o Service às duas coisas que dividem a chain
+// input e que ele não tem como conhecer sozinho — o banco mora em
+// internal/storage, que este pacote não pode importar (ciclo; ver o
+// doc-comment de StoredRule).
+//
+// Desde a Fase C2 a chain input é reconstruída INTEIRA a cada passada, por um
+// renderizador só (inputChainRules). Cada chamador sabe explicitamente uma
+// das metades e precisa da outra para não apagá-la:
+//
+//   - ReconcileNTPInput recebe o estado do NTP por parâmetro e lê os GRUPOS
+//     daqui;
+//   - ReconcileGroups recebe os grupos por parâmetro e lê o ESTADO DO NTP
+//     daqui.
+//
+// Ligar isto é obrigatório em produção, e cmd/linkguard-fw/main.go o faz
+// junto da construção dos serviços (guardado por
+// TestMainWiresTheInputChainSources). Sem a fonte do NTP, salvar um grupo
+// reconstruiria a chain input sem as regras de proteção do serviço de hora —
+// por isso a ausência dela é slog.Error, não silêncio.
+func (s *Service) SetInputChainSources(groups func() ([]StoredGroup, error), ntpInput func() ([]string, bool)) {
+	s.groupsSource = groups
+	s.ntpInputSource = ntpInput
+}
+
+// inputChainGroups devolve os grupos gravados para quem vai reconstruir a
+// chain input sem tê-los recebido por parâmetro. Erro é propagado (o chamador
+// aborta sem tocar na chain); fonte não ligada devolve lista vazia com aviso.
+func (s *Service) inputChainGroups() ([]StoredGroup, error) {
+	if s.groupsSource == nil {
+		slog.Warn("nenhuma fonte de grupos ligada ao serviço de nftables: a chain input será reconstruída só com as regras do NTP (ver SetInputChainSources)")
+		return nil, nil
+	}
+	return s.groupsSource()
+}
+
+// ntpInputState devolve o estado de "servir NTP para a LAN" para quem vai
+// reconstruir a chain input sem tê-lo recebido por parâmetro.
+func (s *Service) ntpInputState() ([]string, bool) {
+	if s.ntpInputSource == nil {
+		slog.Error("nenhuma fonte de configuração do NTP ligada ao serviço de nftables: a chain input será reconstruída SEM as regras de proteção do NTP (ver SetInputChainSources)")
+		return nil, false
+	}
+	return s.ntpInputSource()
 }
 
 // Ruleset returns the full live nftables ruleset (`nft list ruleset`).

@@ -283,7 +283,8 @@ func (s *Service) StoredGroupsWithRules(rules []storage.FirewallRule) ([]nftable
 		out = append(out, nftables.StoredGroup{
 			ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
 			Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
-			CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Rules: byGroup[g.ID],
+			CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
+			Rules: byGroup[g.ID],
 		})
 	}
 	return out, nil

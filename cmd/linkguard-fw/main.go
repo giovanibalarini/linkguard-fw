@@ -232,6 +232,23 @@ func run() int {
 	// para alcançar o operador onde ele estiver, não só para deixar a faixa
 	// vermelha na tela do firewall.
 	frSvc.SetAlerter(alertSvc)
+	// A chain input tem um renderizador só (Fase C2): ela é reconstruída
+	// inteira, com a proteção do NTP E os jumps dos grupos de escopo input,
+	// venha a passada de onde vier. Quem reconcilia o NTP sabe o estado do
+	// NTP e precisa dos grupos; quem reconcilia os grupos sabe os grupos e
+	// precisa do estado do NTP — estas duas funções são o que fecha esse
+	// círculo sem internal/nftables importar internal/storage.
+	//
+	// Ligado aqui, junto da construção, e não perto de um dos reconciles: sem
+	// isto, salvar um grupo apagaria a proteção do NTP da chain input.
+	// TestMainWiresTheInputChainSources guarda essa ligação contra deriva.
+	nftSvc.SetInputChainSources(frSvc.StoredGroups, func() ([]string, bool) {
+		var c timesync.Config
+		if raw, _ := db.GetSetting("ntp_config"); raw != "" {
+			_ = json.Unmarshal([]byte(raw), &c)
+		}
+		return c.AllowedNetworks, c.ServeLAN
+	})
 	balancerSvc := balancer.NewService(db, exec, linkSvc, alertSvc)
 	keaSvc := keaunbound.NewService(exec)
 	// O caminho sob demanda (o admin liga DHCP/DNS no painel) instala

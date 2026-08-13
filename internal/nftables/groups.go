@@ -33,6 +33,35 @@ const (
 	GroupKindBlocklist    = "blocklist"
 )
 
+// Scope diz para qual tráfego o grupo vale, e é o que decide em QUAL chain o
+// `jump` dele é escrito (Fase C2):
+//
+//   - ScopeForward: tráfego ATRAVESSANDO o firewall (chain forward) — a LAN
+//     saindo para a internet, uma VLAN falando com outra. É o único escopo
+//     que existia até aqui.
+//   - ScopeInput: tráfego DESTINADO ao próprio firewall (chain input) — SSH,
+//     o painel, DNS, Samba.
+//
+// Vazio conta como ScopeForward: é o valor de toda linha criada antes desta
+// coluna existir, e todo grupo que já existia é de tráfego atravessando.
+// Tratar vazio como input moveria essas regras para outra chain, aplicando-as
+// a um tráfego que o admin nunca pretendeu filtrar.
+const (
+	ScopeForward = "forward"
+	ScopeInput   = "input"
+)
+
+// GroupScope normaliza o escopo gravado: vazio vira ScopeForward. Existe para
+// que nenhum renderizador precise repetir a regra do vazio — os dois
+// (forwardChainRules e inputChainRules) leem daqui, e não podem divergir
+// sobre onde uma linha antiga cai.
+func GroupScope(g StoredGroup) string {
+	if g.Scope == ScopeInput {
+		return ScopeInput
+	}
+	return ScopeForward
+}
+
 // Nomes de chain reservados dos dois grupos do sistema. Eles NÃO começam com
 // GroupChainPrefix, e isso não é estética: a limpeza de chains órfãs de
 // ReconcileGroups varre o ruleset vivo procurando exatamente o prefixo grp_ e
@@ -141,6 +170,7 @@ type StoredGroup struct {
 	CondIif     string       `json:"cond_iif"`
 	Fallthrough string       `json:"fallthrough"`
 	Kind        string       `json:"kind"`
+	Scope       string       `json:"scope"`
 	Rules       []StoredRule `json:"-"`
 }
 
@@ -193,6 +223,16 @@ func ValidateGroup(g StoredGroup) error {
 	case FallthroughContinue, FallthroughAccept, FallthroughDrop:
 	default:
 		return fmt.Errorf("valor inválido para \"e o que sobrar\" (use continue, accept ou drop)")
+	}
+	// Escopo desconhecido é recusado, e não normalizado para forward: um valor
+	// que este código não entende (banco de uma versão futura, linha editada à
+	// mão) tratado como forward colocaria na chain de tráfego atravessando um
+	// grupo escrito para outra coisa. Vazio continua valendo — é toda linha
+	// anterior à Fase C2 — e GroupScope o resolve como forward.
+	switch g.Scope {
+	case "", ScopeForward, ScopeInput:
+	default:
+		return fmt.Errorf("escopo inválido (use forward ou input)")
 	}
 	return nil
 }

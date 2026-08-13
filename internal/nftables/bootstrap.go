@@ -112,8 +112,10 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	// the LAN"). Empty and policy accept on a fresh install, exactly like an
 	// upgraded box's chain after ReconcileNTPInput with serving=false — a
 	// fresh box and an upgraded box must never diverge. NEVER policy drop:
-	// see ReconcileNTPInput's doc comment (internal/nftables/reconcile.go)
-	// for why.
+	// see reconcileInputChain's doc comment (internal/nftables/reconcile.go)
+	// for why. Desde a Fase C2 o conteúdo dela vem de inputChainRules — a
+	// proteção do NTP mais os jumps dos grupos de escopo input —, e continua
+	// nascendo vazia aqui: quem a preenche é a primeira reconciliação.
 	b.WriteString("\tchain input {\n")
 	b.WriteString("\t\ttype filter hook input priority filter; policy accept;\n")
 	b.WriteString("\t}\n\n")

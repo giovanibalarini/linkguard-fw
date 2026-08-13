@@ -423,6 +423,6 @@ func toStoredGroup(g storage.FirewallGroup) nftables.StoredGroup {
 	return nftables.StoredGroup{
 		ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
 		Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
-		CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind,
+		CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
 	}
 }

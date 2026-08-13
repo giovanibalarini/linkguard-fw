@@ -98,6 +98,9 @@ func (db *DB) migrate() error {
 	if err := db.migrateAddFirewallGroupKind(); err != nil {
 		return fmt.Errorf("migrate add firewall_groups.kind: %w", err)
 	}
+	if err := db.migrateAddFirewallGroupScope(); err != nil {
+		return fmt.Errorf("migrate add firewall_groups.scope: %w", err)
+	}
 
 	return nil
 }
@@ -178,6 +181,35 @@ func (db *DB) migrateAddFirewallGroupKind() error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN kind TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna kind: %w", err)
+	}
+	return tx.Commit()
+}
+
+// migrateAddFirewallGroupScope adiciona firewall_groups.scope (Fase C2) em
+// bancos que já existem. Fica vazio nas linhas antigas de propósito: vazio
+// conta como nftables.ScopeForward, e todo grupo criado antes desta coluna é
+// de tráfego ATRAVESSANDO o firewall. Promover uma linha antiga a escopo
+// input moveria as regras dela da chain forward para a input — ou seja,
+// aplicá-las a um tráfego que o admin nunca pediu para filtrar. Em transação
+// como toda migração deste projeto (incidente de 2026-07-24).
+func (db *DB) migrateAddFirewallGroupScope() error {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('firewall_groups') WHERE name = 'scope'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar coluna scope: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN scope TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("adicionar coluna scope: %w", err)
 	}
 	return tx.Commit()
 }
@@ -554,6 +586,7 @@ CREATE TABLE IF NOT EXISTS firewall_groups (
     cond_iif     TEXT NOT NULL DEFAULT '',
     fallthrough  TEXT NOT NULL DEFAULT 'continue',
     kind         TEXT NOT NULL DEFAULT '',
+    scope        TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
