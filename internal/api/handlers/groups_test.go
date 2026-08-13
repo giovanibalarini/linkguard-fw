@@ -306,6 +306,23 @@ func newGroupTestHandlerNft(t *testing.T) (*handlers.NftablesHandler, *storage.D
 // ficariam indistinguíveis.
 func newGroupTestHandlerFR(t *testing.T) (*handlers.NftablesHandler, *storage.DB, *fakeNft, *firewallrules.Service) {
 	t.Helper()
+	h, db, exec, fr, _ := newGroupTestHandlerConf(t)
+	return h, db, exec, fr
+}
+
+// newGroupTestHandlerConf é a fixture completa, com o caminho do ARQUIVO DE
+// BOOT desta máquina de teste — o /etc/nftables.conf que o nftables.service
+// carregaria antes de o LinkGuard subir.
+//
+// Ele é por teste (t.TempDir()), e não o do TestMain deste pacote, porque a
+// partir da Fase C2 há teste que AFIRMA o conteúdo do arquivo: um arquivo
+// compartilhado por toda a suíte carregaria o dump deixado pelo teste anterior.
+//
+// A guarda do Persist é ligada aqui pela mesma razão que SetInputChainSources:
+// é assim que o binário de produção monta os dois serviços (main.go), e uma
+// fixture sem ela mediria um LinkGuard que não existe.
+func newGroupTestHandlerConf(t *testing.T) (*handlers.NftablesHandler, *storage.DB, *fakeNft, *firewallrules.Service, string) {
+	t.Helper()
 	dir := t.TempDir()
 	db, err := storage.Open(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -314,6 +331,8 @@ func newGroupTestHandlerFR(t *testing.T) (*handlers.NftablesHandler, *storage.DB
 	t.Cleanup(func() { db.Close() })
 	exec := newFakeNft()
 	svc := nftables.NewService(exec)
+	confPath := filepath.Join(dir, "nftables.conf")
+	svc.SetConfPath(confPath)
 	// m3 da revisão da Fase C2: sem uma fonte de NTP ligada, a reconciliação
 	// da chain input agora devolve erro (fechou o fail-open de fonte não
 	// ligada) em vez do antigo "NTP desligado" silencioso — o que faria todo
@@ -325,12 +344,13 @@ func newGroupTestHandlerFR(t *testing.T) (*handlers.NftablesHandler, *storage.DB
 		func() ([]string, bool, error) { return nil, false, nil },
 	)
 	fr := firewallrules.NewService(db, svc)
+	svc.SetPersistGuard(fr.UnconfirmedChangePending)
 	// Como no boot: sem os dois grupos do sistema na lista, o Reconcile de
 	// toda mutação se recusa a reconstruir a chain forward.
 	if err := fr.EnsureSystemGroups(context.Background()); err != nil {
 		t.Fatalf("EnsureSystemGroups: %v", err)
 	}
-	return handlers.NewNftablesHandler(svc, db, fr), db, exec, fr
+	return handlers.NewNftablesHandler(svc, db, fr), db, exec, fr, confPath
 }
 
 // adminGroups são os grupos que o admin criou. Toda máquina carrega também

@@ -545,3 +545,70 @@ func callsRevertPendingOnBoot(n ast.Node) bool {
 	})
 	return found
 }
+
+// TestMainWiresThePersistGuard guarda a ligação que faz o /etc/nftables.conf
+// deixar de receber uma regra ainda não confirmada (I-1 da revisão final da
+// Fase C2).
+//
+// Sem esta linha o binário compila, a suíte inteira passa e o comportamento
+// volta a ser o antigo em silêncio: o arquivo que o nftables.service carrega
+// ANTES de o LinkGuard subir passa a conter a regra de escopo input não
+// confirmada, e uma queda de energia dentro dos 90 segundos faz a máquina voltar
+// com ela valendo — sem SSH e sem painel numa máquina remota, e sem o LinkGuard
+// de pé para reverter.
+//
+// O guarda também exige que a guarda seja ligada ANTES da primeira
+// reconciliação do boot, pela mesma razão de SetInputChainSources: uma passada
+// que rode antes disso persistiria sem consultar ninguém.
+func TestMainWiresThePersistGuard(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("não foi possível localizar o arquivo de teste")
+	}
+	srcPath := filepath.Join(filepath.Dir(thisFile), "main.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parsear main.go: %v", err)
+	}
+
+	wired, firstReconcile := -1, -1
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, isCall := n.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel {
+			return true
+		}
+		recv, isIdent := sel.X.(*ast.Ident)
+		if !isIdent || recv.Name != "nftSvc" && recv.Name != "frSvc" {
+			return true
+		}
+		switch {
+		case recv.Name == "nftSvc" && sel.Sel.Name == "SetPersistGuard":
+			if wired == -1 {
+				wired = int(call.Pos())
+			}
+		case recv.Name == "nftSvc" && sel.Sel.Name == "ReconcileNTPInput",
+			recv.Name == "nftSvc" && sel.Sel.Name == "ReconcileGroups",
+			recv.Name == "frSvc" && sel.Sel.Name == "Reconcile":
+			if firstReconcile == -1 || int(call.Pos()) < firstReconcile {
+				firstReconcile = int(call.Pos())
+			}
+		}
+		return true
+	})
+
+	if wired == -1 {
+		t.Fatal("o boot não liga mais nftSvc.SetPersistGuard: o /etc/nftables.conf volta a receber a regra de escopo input NÃO confirmada, e uma queda de energia dentro dos 90 segundos faz a máquina voltar com ela valendo, antes de o LinkGuard subir para reverter")
+	}
+	if firstReconcile == -1 {
+		t.Fatal("o boot não reconcilia mais por nenhum caminho -- se a sequência mudou de forma, este guarda precisa mudar junto")
+	}
+	if wired > firstReconcile {
+		t.Errorf("nftSvc.SetPersistGuard tem que ser ligado ANTES da primeira reconciliação do boot: até lá, persistir não consulta ninguém")
+	}
+}

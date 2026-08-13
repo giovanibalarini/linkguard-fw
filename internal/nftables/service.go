@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
@@ -45,6 +46,20 @@ type Service struct {
 	// firewall da máquina VAZIO no próximo boot. Nos testes ele aponta para
 	// t.TempDir(); em produção, para /etc/nftables.conf.
 	confPath string
+
+	// unconfirmedChange responde "há uma mudança de firewall aplicada e ainda
+	// NÃO confirmada?" — a única pergunta que pode impedir o Persist (ver
+	// SetPersistGuard e Persist). Fonte injetada porque a janela de confirmação
+	// mora no banco, em internal/firewallrules, e este pacote não pode importar
+	// internal/storage (ciclo; ver o doc-comment de StoredRule).
+	unconfirmedChange func() (bool, error)
+
+	// reconcileMu serializa as reconciliações que reescrevem as chains
+	// estruturais (ver withReconcileLock). Não protege campo nenhum deste
+	// struct: protege a SEQUÊNCIA "ler o estado → flush chain → readicionar
+	// regra por regra", que não é atômica no kernel e cujo entrelaçamento com
+	// outra passada deixa no firewall vivo um estado que ninguém pediu.
+	reconcileMu sync.Mutex
 }
 
 // NewService creates an nftables Service.
@@ -56,6 +71,57 @@ func NewService(exec firewall.Executor) *Service {
 // escreverem em t.TempDir() (ver o campo confPath); em produção o valor vem de
 // NewService e é /etc/nftables.conf.
 func (s *Service) SetConfPath(path string) { s.confPath = path }
+
+// SetPersistGuard liga o Persist à janela de confirmação (Fase C2, I-1 da
+// revisão final): enquanto houver uma mudança de firewall aplicada e ainda não
+// confirmada, o ruleset vivo NÃO vai para o arquivo de boot.
+//
+// O buraco que isto fecha é o único que a revisão achou em que o operador fica
+// trancado sem o LinkGuard poder ajudá-lo. A sequência: o operador cria um
+// grupo de escopo input que dropa `tcp dport 22`; a reconciliação aplica e
+// persiste; aos 30 segundos cai a energia. O nftables.service do systemd carrega
+// /etc/nftables.conf ANTES de o LinkGuard subir, então a máquina volta com a
+// regra valendo — SSH bloqueado. Quem devolveria o acesso é
+// firewallrules.RevertPendingOnBoot, mas ele só roda depois do
+// bootstrapdeps.Ensure e só se o LinkGuard subir; este projeto já teve um boot
+// da aplicação travado por mais de 50 minutos (incidente de 2026-07-24), e
+// nesse intervalo o operador fica sem SSH e sem painel, sem conserto remoto.
+//
+// O custo, dito por inteiro: um boot em que a regra CONFIRMADA ainda não está
+// no arquivo (porque o confirmar-ou-reverte é o que dispara a persistência dela)
+// sobe sem ela até a reconciliação do LinkGuard. É fail-open — a máquina volta
+// com o firewall de antes da mudança arriscada, não com uma regra que pode
+// trancar quem precisa consertá-la —, que é a direção certa para este caso.
+//
+// A fonte NÃO PODE tomar mutex nenhum do chamador: Persist é alcançado de
+// dentro de firewallrules.revert, que já segura o mutex do serviço. É por isso
+// que a implementação de produção (firewallrules.UnconfirmedChangePending) é um
+// SELECT solto.
+//
+// Erro na fonte também impede o Persist, pela mesma razão de tudo mais neste
+// mecanismo: quem não consegue PROVAR que não há janela aberta não pode gravar
+// o arquivo de boot por otimismo.
+func (s *Service) SetPersistGuard(pending func() (bool, error)) { s.unconfirmedChange = pending }
+
+// persistBlocked diz se o Persist deve parar antes de escrever, e já registra
+// o motivo. Sem guarda ligada (testes, binários que não têm banco), nada bloqueia
+// — a ausência de guarda é o comportamento anterior à Fase C2, e ligá-la em
+// produção é obrigação do main (guardado por TestMainWiresThePersistGuard).
+func (s *Service) persistBlocked() bool {
+	if s.unconfirmedChange == nil {
+		return false
+	}
+	pending, err := s.unconfirmedChange()
+	if err != nil {
+		slog.Error("o ruleset NÃO foi persistido para o próximo boot: não foi possível saber se há uma mudança de firewall aguardando confirmação, e gravar o arquivo de boot sem essa resposta pode congelar nele uma regra não confirmada", "err", err)
+		return true
+	}
+	if pending {
+		slog.Info("o ruleset não foi persistido para o próximo boot: há uma mudança de firewall aguardando confirmação; a persistência acontece quando ela for confirmada ou revertida")
+		return true
+	}
+	return false
+}
 
 // persistPath é o arquivo que Persist grava. O fallback para a variável de
 // pacote cobre os Service montados por literal (`&Service{exec: …}`, comum nos
@@ -351,8 +417,19 @@ func (s *Service) DelBlocklist(ctx context.Context, cidr string) (string, error)
 //     table (including whatever else the box's operator or another tool set
 //     up) on every boot, which is the opposite of what this fix is about —
 //     LinkGuard resets only the table it owns.
+//
+// Uma terceira condição, da Fase C2 (I-1 da revisão final): com uma mudança
+// aguardando confirmação, isto NÃO grava nada e devolve nil. O arquivo de boot
+// não pode receber uma regra que ainda não se provou boa — ver SetPersistGuard
+// para o cenário inteiro. Devolve nil, e não erro, porque não é falha: é a
+// decisão de não gravar. Todo chamador trata o erro daqui como "não consegui
+// persistir" e o registra em WARN; um erro sintético encheria o journal de
+// alarme falso a cada reconciliação dos 90 segundos.
 func (s *Service) Persist(ctx context.Context) error {
 	if s.exec.IsDryRun() {
+		return nil
+	}
+	if s.persistBlocked() {
 		return nil
 	}
 	tbl, err := s.exec.ExecuteRead(ctx, "nft", "list", "table", Family, Table)

@@ -467,6 +467,58 @@ func (s *Service) PendingChangeOrError() (*storage.PendingChange, error) {
 	return s.db.GetPendingChange()
 }
 
+// UnconfirmedChangePending diz se há uma mudança de firewall aplicada e ainda
+// não resolvida — aguardando confirmação OU com a reversão em andamento.
+//
+// É a guarda que o Persist do nftables consulta (nftables.SetPersistGuard, I-1
+// da revisão final): enquanto a resposta for "sim", o ruleset vivo não vai para
+// o /etc/nftables.conf que o systemd carrega antes de o LinkGuard subir. Os dois
+// estados contam, e o segundo não é excesso de zelo: durante uma reversão que
+// ainda não reconciliou, a regra perigosa continua VIVA no kernel — é justamente
+// o estado que não pode ser congelado no arquivo de boot.
+//
+// NÃO toma s.mu, e isso é obrigatório, não economia: o Persist é alcançado de
+// dentro de revert → Reconcile, com o mutex do serviço já travado. Tomá-lo aqui
+// travaria a reversão em si mesma. Um SELECT solto é seguro porque a resposta é
+// derivada só do banco.
+func (s *Service) UnconfirmedChangePending() (bool, error) {
+	p, err := s.db.GetPendingChange()
+	if err != nil {
+		return false, fmt.Errorf("ler a janela de confirmação em aberto: %w", err)
+	}
+	return p != nil, nil
+}
+
+// persistBootRuleset grava o ruleset vivo no arquivo de boot agora que a janela
+// se FECHOU — o outro lado de UnconfirmedChangePending.
+//
+// Enquanto a janela existia, toda reconciliação pulou o Persist, então o
+// /etc/nftables.conf ficou congelado no estado anterior à mudança arriscada.
+// Fechada a janela (confirmada, revertida ou concluída por outra mutação), o
+// arquivo tem que voltar a descrever a máquina — inclusive as mutações que NÃO
+// abrem janela e aconteceram no meio dos 90 segundos (bloqueio por host, port
+// forward, NTP), que também pularam o Persist.
+//
+// A ordem importa e é sempre a mesma: isto vem DEPOIS de o pendente ter saído do
+// banco. Antes, a própria guarda o bloquearia.
+//
+// Falhar aqui não desfaz nada nem vira erro do chamador: a mudança está
+// confirmada (ou revertida) e valendo no firewall vivo; o que ficou para trás é
+// o arquivo de boot, e a próxima reconciliação — a próxima mutação ou o próximo
+// boot — o alcança. É a mesma economia de todo Persist deste projeto.
+//
+// Chamada com s.mu travado. Segura porque o Persist não toma mutex nenhum deste
+// serviço (ver UnconfirmedChangePending).
+func (s *Service) persistBootRuleset(ctx context.Context, why string) {
+	if s.nft == nil {
+		return
+	}
+	if err := s.nft.Persist(ctx); err != nil {
+		slog.Error("a janela de confirmação foi fechada, mas o ruleset não pôde ser gravado para o próximo boot (a próxima reconciliação tenta de novo)",
+			"motivo", why, "err", err)
+	}
+}
+
 // windowMismatch é a recusa de agir sobre uma janela que não é mais a que o
 // chamador conhece — a identidade da janela sendo verificada DENTRO do mutex,
 // que é o único lugar onde ela pode ser verificada sem corrida.
@@ -497,7 +549,15 @@ func windowMismatch(p *storage.PendingChange) error {
 // (ver windowMismatch): confirmar é cancelar uma reversão automática, e
 // cancelar a de uma mudança que o operador nunca viu é o oposto do que este
 // mecanismo existe para fazer.
-func (s *Service) ConfirmPending(_ context.Context, id string) error {
+//
+// A ÚNICA escrita que a confirmação faz fora do banco é o arquivo de boot
+// (persistBootRuleset, I-1 da revisão final), e ela vem DEPOIS de o pendente ter
+// sido apagado — isto é, depois de a confirmação ter sido aceita. Não é
+// contradição com o parágrafo acima: Persist não toca no firewall vivo, ele lê
+// `nft list table` e grava o /etc/nftables.conf. É aqui que a regra confirmada
+// passa a valer também no próximo boot; enquanto a janela existia, toda
+// reconciliação pulou o Persist de propósito.
+func (s *Service) ConfirmPending(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -540,6 +600,7 @@ func (s *Service) ConfirmPending(_ context.Context, id string) error {
 		return fmt.Errorf("apagar a mudança pendente: %w", err)
 	}
 	s.clearWindowMemory(p.ID)
+	s.persistBootRuleset(ctx, "a mudança foi confirmada pelo operador")
 	slog.Info("mudança de firewall confirmada pelo operador; ela passa a valer definitivamente",
 		"resumo", p.Summary, "aplicada_por", p.AppliedBy)
 	return nil
@@ -622,7 +683,7 @@ func (s *Service) DiscardWindow(_ context.Context, id string) error {
 // Devolve true quando fechou alguma coisa. Não toca em pendente que não esteja
 // revertendo: uma janela aberta por outra requisição no meio do caminho é dela,
 // não desta mutação.
-func (s *Service) FinishSettledRevert(_ context.Context) (bool, error) {
+func (s *Service) FinishSettledRevert(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -637,6 +698,9 @@ func (s *Service) FinishSettledRevert(_ context.Context) (bool, error) {
 		return false, fmt.Errorf("apagar a mudança pendente já revertida: %w", err)
 	}
 	s.clearWindowMemory(p.ID)
+	// A reconciliação da mutação que chamou isto pulou o Persist (a guarda ainda
+	// via o pendente). Com ele apagado, o arquivo de boot volta a valer (I-1).
+	s.persistBootRuleset(ctx, "a reversão foi concluída pela reconciliação de uma alteração seguinte")
 	reason := "o estado anterior já estava no banco e uma alteração seguinte reconciliou o firewall"
 	s.lastRevert = &revertRecord{summary: p.Summary, reason: reason, at: s.now()}
 	slog.Warn("reversão concluída pela reconciliação de uma alteração seguinte: o pendente foi fechado",
@@ -878,6 +942,22 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 // nada mais) que falta fazer.
 //
 // Chamada com s.mu já travado.
+//
+// DÍVIDA REGISTRADA, NÃO CORRIGIDA (I-2 da revisão final) — a reversão
+// AUTOMÁTICA não atualiza o `nft_live_snapshot`. Esse snapshot é o que o boot
+// restaura quando EnsureTable teve de recriar a tabela `inet linkguard` do zero
+// (recuperação de desastre, como em 2026-08-10), e ele continua contendo a
+// regra que acabou de ser revertida: numa recuperação dessas, ela RESSUSCITA no
+// firewall vivo, sem janela, sem watchdog e sem ninguém para desfazê-la de novo.
+// A reversão MANUAL não tem esse problema — o handler chama saveNftSnapshot
+// depois do 200 (internal/api/handlers/confirm.go, em RevertPendingChange) —, e
+// é justamente isso que a automática não tem como fazer: quem a dispara é o
+// watchdog (WatchPending) ou o boot (RevertPendingOnBoot), sem requisição HTTP,
+// e este pacote não pode importar internal/api/handlers nem duplicar a leitura
+// do ruleset vivo sem virar dono de mais uma cópia da mesma verdade. Fechar isso
+// é mover a atualização do snapshot para cá — trabalho de uma tarefa própria,
+// porque o snapshot cobre o ruleset INTEIRO (host_wan, blocklist, port
+// forwards), não só o que esta função reconcilia.
 func (s *Service) finishRevert(ctx context.Context, p *storage.PendingChange, reason string) error {
 	if err := s.Reconcile(ctx); err != nil {
 		// O pendente FICA. Ver o doc-comment acima: apagá-lo aqui deixaria a
@@ -892,6 +972,11 @@ func (s *Service) finishRevert(ctx context.Context, p *storage.PendingChange, re
 	}
 
 	s.clearWindowMemory(p.ID)
+	// Agora que o pendente saiu do banco, o arquivo de boot volta a descrever a
+	// máquina — e o que ele passa a descrever é o estado ANTERIOR, que é
+	// exatamente o que se quer: a regra não confirmada não vale mais aqui nem no
+	// próximo boot (I-1).
+	s.persistBootRuleset(ctx, "a mudança não confirmada foi revertida")
 	s.lastRevert = &revertRecord{summary: p.Summary, reason: reason, at: s.now()}
 	slog.Warn("reversão concluída: os grupos e as regras anteriores estão de volta no banco e no firewall vivo",
 		"resumo", p.Summary, "aplicada_por", p.AppliedBy, "motivo", reason)

@@ -279,6 +279,14 @@ func run() int {
 	// ver ntpInputStateFrom.
 	ntpInputState := func() ([]string, bool, error) { return ntpInputStateFrom(db.GetSetting) }
 	nftSvc.SetInputChainSources(frSvc.StoredGroups, ntpInputState)
+	// E a guarda do /etc/nftables.conf (I-1 da revisão final da Fase C2):
+	// enquanto houver uma mudança aguardando confirmação, o ruleset vivo NÃO vai
+	// para o arquivo que o nftables.service carrega no boot — senão uma queda de
+	// energia dentro dos 90 segundos faz a máquina voltar com a regra não
+	// confirmada valendo, antes de o LinkGuard subir para reverter. Ligada aqui,
+	// junto da construção, pelo mesmo motivo da linha acima; guardada contra
+	// deriva por TestMainWiresThePersistGuard.
+	nftSvc.SetPersistGuard(frSvc.UnconfirmedChangePending)
 	balancerSvc := balancer.NewService(db, exec, linkSvc, alertSvc)
 	keaSvc := keaunbound.NewService(exec)
 	// O caminho sob demanda (o admin liga DHCP/DNS no painel) instala
