@@ -1,6 +1,9 @@
 package tsdb_test
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,25 +70,122 @@ func TestGetHistoryMergesRxAndTxOnSamePoint(t *testing.T) {
 		t.Fatalf("unexpected response header: %+v", res)
 	}
 
-	var found *struct{ RxBps, TxBps float64 }
+	found := findPointAt(t, res, ts)
+	if found.Interface != "eth0" {
+		t.Fatalf("point Interface = %q, want eth0", found.Interface)
+	}
+	if found.RxBps == nil || *found.RxBps != 500.0 {
+		t.Fatalf("expected rx_bps=500 on the point, got %v", fmtPtr(found.RxBps))
+	}
+	if found.TxBps == nil || *found.TxBps != 200.0 {
+		t.Fatalf("expected tx_bps=200 on the same point, got %v", fmtPtr(found.TxBps))
+	}
+}
+
+// TestGetHistoryReportsMissingSideAsNull is the regression test for the
+// invented zero: rx and tx are two separate series (if.rx_bps / if.tx_bps),
+// so a timestamp can have a bucket for one direction and none for the other.
+// Filling the missing side with 0 hands the UI a measurement that never
+// happened — and a link that is down draws exactly like a link that is idle,
+// which is the one mistake the traffic screen exists to avoid. Absence must
+// reach the wire as null.
+func TestGetHistoryReportsMissingSideAsNull(t *testing.T) {
+	db := newTestDB(t)
+	svc := tsdb.NewService(db)
+
+	now := time.Now().Unix()
+	ts := now - 10
+
+	// Only rx is ever sampled at ts — if.tx_bps has no bucket at all there
+	// (asserted against the database below, so this test fails loudly if the
+	// premise ever stops holding).
+	svc.GaugeForTest("if.rx_bps", "eth0", 500.0, ts)
+	svc.GaugeForTest("if.rx_bps", "eth0", 999.0, ts+1) // closes the bucket at ts
+	svc.FlushForTest(now)
+
+	txRows, err := db.GetMetricSamples("if.tx_bps", "eth0", 1, now-300, now)
+	if err != nil {
+		t.Fatalf("GetMetricSamples: %v", err)
+	}
+	if len(txRows) != 0 {
+		t.Fatalf("premise broken: expected no if.tx_bps buckets stored, got %+v", txRows)
+	}
+
+	res, err := svc.GetHistory("eth0", "5m")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+
+	p := findPointAt(t, res, ts)
+	if p.RxBps == nil || *p.RxBps != 500.0 {
+		t.Fatalf("expected the measured side rx_bps=500, got %v", fmtPtr(p.RxBps))
+	}
+	if p.TxBps != nil {
+		t.Fatalf("expected tx_bps to be nil (not measured at this timestamp), got %v — an invented zero makes a dead link look idle", *p.TxBps)
+	}
+
+	// The contract that matters is the wire format the chart consumes: it has
+	// to be literally null, not 0 and not an omitted field (an omitted field
+	// deserializes to 0 in the frontend just the same).
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"tx_bps":null`) {
+		t.Fatalf("expected the JSON to carry \"tx_bps\":null, got %s", raw)
+	}
+	if strings.Contains(string(raw), `"tx_bps":0`) {
+		t.Fatalf("JSON reports a measured zero for a direction that was never sampled: %s", raw)
+	}
+}
+
+// TestGetHistoryKeepsMeasuredZero is the other half of the rule: a real
+// measured 0 (an interface up and genuinely idle) must stay 0 and must NOT
+// become null — "unknown" and "zero" are different facts and the chart draws
+// them differently.
+func TestGetHistoryKeepsMeasuredZero(t *testing.T) {
+	db := newTestDB(t)
+	svc := tsdb.NewService(db)
+
+	now := time.Now().Unix()
+	ts := now - 10
+
+	svc.GaugeForTest("if.rx_bps", "eth0", 0.0, ts)
+	svc.GaugeForTest("if.tx_bps", "eth0", 0.0, ts)
+	svc.GaugeForTest("if.rx_bps", "eth0", 1.0, ts+1)
+	svc.GaugeForTest("if.tx_bps", "eth0", 1.0, ts+1)
+	svc.FlushForTest(now)
+
+	res, err := svc.GetHistory("eth0", "5m")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+
+	p := findPointAt(t, res, ts)
+	if p.RxBps == nil || *p.RxBps != 0.0 {
+		t.Fatalf("a measured zero must stay 0, got %v", fmtPtr(p.RxBps))
+	}
+	if p.TxBps == nil || *p.TxBps != 0.0 {
+		t.Fatalf("a measured zero must stay 0, got %v", fmtPtr(p.TxBps))
+	}
+}
+
+func findPointAt(t *testing.T, res *tsdb.HistoryResponse, ts int64) tsdb.HistoryPoint {
+	t.Helper()
 	for _, p := range res.Points {
-		if p.Timestamp != ts {
-			continue
+		if p.Timestamp == ts {
+			return p
 		}
-		if p.Interface != "eth0" {
-			t.Fatalf("point Interface = %q, want eth0", p.Interface)
-		}
-		found = &struct{ RxBps, TxBps float64 }{p.RxBps, p.TxBps}
 	}
-	if found == nil {
-		t.Fatalf("expected a point at ts=%d, got points=%+v", ts, res.Points)
+	t.Fatalf("expected a point at ts=%d, got points=%+v", ts, res.Points)
+	return tsdb.HistoryPoint{}
+}
+
+func fmtPtr(v *float64) string {
+	if v == nil {
+		return "nil"
 	}
-	if found.RxBps != 500.0 {
-		t.Fatalf("expected rx_bps=500 on the point, got %v", found.RxBps)
-	}
-	if found.TxBps != 200.0 {
-		t.Fatalf("expected tx_bps=200 on the same point, got %v", found.TxBps)
-	}
+	return fmt.Sprintf("%v", *v)
 }
 
 // fakeRecorder is a Recorder that just records every Gauge call, so

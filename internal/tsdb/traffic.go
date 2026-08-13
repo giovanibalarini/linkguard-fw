@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 )
 
@@ -96,18 +95,41 @@ func (t *TrafficSampler) sampleInterfaces(interfaces []system.InterfaceMetrics, 
 	}
 }
 
+// HistoryPoint is one bucket of the traffic history response.
+//
+// RxBps/TxBps são ponteiros porque **ausência não é zero**: as duas direções
+// são séries separadas (if.rx_bps e if.tx_bps), e um instante pode ter bucket
+// de uma e não da outra. Preencher a que falta com 0 entrega à UI uma medição
+// que nunca existiu — e um zero medido é indistinguível, no gráfico, de um
+// link fora do ar. `null` no JSON é o "não medido" que a tela sabe não
+// desenhar (web/src/lib/series.ts trata `null` como buraco na linha).
+//
+// Os nomes dos campos JSON são exatamente os da antiga
+// storage.TrafficSample (interface/step_seconds/timestamp/rx_bps/tx_bps),
+// que este tipo substitui só nesta resposta — o formato do ponto não muda,
+// muda apenas o domínio do valor, que agora inclui null.
+//
+// Apesar do sufixo _bps, o valor é em BYTES por segundo (TrafficSampler faz
+// rxDelta/dt com os bytes de /proc/net/dev). A conversão para bits mora numa
+// função só, no frontend, de propósito.
+type HistoryPoint struct {
+	Interface   string   `json:"interface"`
+	StepSeconds int      `json:"step_seconds"`
+	Timestamp   int64    `json:"timestamp"`
+	RxBps       *float64 `json:"rx_bps"`
+	TxBps       *float64 `json:"tx_bps"`
+}
+
 // HistoryResponse is returned by the /api/system/traffic-history and
 // /api/monitoring/timeline handlers for chart rendering — same shape the
-// frontend already consumes from the old trafficrrd.HistoryResponse. Points
-// reuses storage.TrafficSample (rather than the generic storage.MetricSample)
-// because the frontend (web/src/pages/Interfaces.tsx) reads rx_bps/tx_bps
-// directly off each point; this endpoint has always been average-only, so
-// there's no min/max to carry here even though tsdb tracks it internally.
+// frontend already consumes from the old trafficrrd.HistoryResponse. This
+// endpoint has always been average-only, so there's no min/max to carry here
+// even though tsdb tracks it internally.
 type HistoryResponse struct {
-	Interface string                  `json:"interface"`
-	Range     string                  `json:"range"`
-	Step      int                     `json:"step_seconds"`
-	Points    []storage.TrafficSample `json:"points"`
+	Interface string         `json:"interface"`
+	Range     string         `json:"range"`
+	Step      int            `json:"step_seconds"`
+	Points    []HistoryPoint `json:"points"`
 }
 
 // GetHistory returns rx/tx history for one interface — drop-in replacement
@@ -158,15 +180,19 @@ func (s *Service) GetHistory(iface, rangeID string) (*HistoryResponse, error) {
 	}
 	sort.Slice(timestamps, func(i, j int) bool { return timestamps[i] < timestamps[j] })
 
-	points := make([]storage.TrafficSample, 0, len(timestamps))
+	points := make([]HistoryPoint, 0, len(timestamps))
 	for _, ts := range timestamps {
-		points = append(points, storage.TrafficSample{
-			Interface:   iface,
-			StepSeconds: step,
-			Timestamp:   ts,
-			RxBps:       rxByTs[ts], // 0 if this timestamp has no rx bucket
-			TxBps:       txByTs[ts], // 0 if this timestamp has no tx bucket
-		})
+		// Presença vem do comma-ok, nunca do valor: ler o mapa direto
+		// devolveria 0 para a chave ausente, e esse 0 sairia no JSON como
+		// medição real. Sem bucket, o lado vai como null.
+		p := HistoryPoint{Interface: iface, StepSeconds: step, Timestamp: ts}
+		if v, ok := rxByTs[ts]; ok {
+			p.RxBps = &v
+		}
+		if v, ok := txByTs[ts]; ok {
+			p.TxBps = &v
+		}
+		points = append(points, p)
 	}
 
 	return &HistoryResponse{Interface: iface, Range: rangeID, Step: step, Points: points}, nil
