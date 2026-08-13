@@ -58,10 +58,21 @@ func classifyRule(chain, expr string) (managed bool, owner RuleOwner) {
 	case MarkHostsChain:
 		return true, RuleOwner{Key: "wan_steering", Label: "Direcionamento por WAN"}
 	case InputChain: // input
-		if strings.Contains(expr, "dport 123") {
+		switch {
+		case strings.Contains(expr, "dport 123"):
 			return true, RuleOwner{Key: "ntp", Label: "NTP"}
+		case strings.Contains(expr, "jump "+GroupChainPrefix):
+			// Desde a Fase C2 a chain input também hospeda o jump dos grupos de
+			// escopo input, e ele é o MESMO objeto que o jump da forward logo
+			// abaixo: linha renderizada por LinkGuard a partir da condição de
+			// entrada do grupo, cujo controle dono é a tela de grupos. Sem este
+			// caso ela caía no rótulo genérico e era a única linha acionável da
+			// tela sem o link "abrir" — e ainda dizia, na coluna de origem,
+			// menos do que o painel sabe.
+			return true, RuleOwner{Key: "rule_groups", Label: "Grupos de regras"}
+		default:
+			return true, RuleOwner{Label: genericLabel}
 		}
-		return true, RuleOwner{Label: genericLabel}
 	case ForwardChain:
 		switch {
 		case strings.Contains(expr, "@blocked_hosts"):

@@ -30,6 +30,11 @@ func (f *fakeOverviewExec) ExecuteRead(_ context.Context, cmd string, args ...st
 }
 func (f *fakeOverviewExec) IsDryRun() bool { return false }
 
+// As duas linhas de NTP carregam `counter packets N bytes M` antes do verbo
+// (M-2 da revisão da Fase C2): é a forma que o nft imprime desde que a chain
+// input passou a ser renderizada com `counter`, como toda linha canônica deste
+// projeto. Um fixture sem counter descreveria uma saída que a produção não
+// gera mais.
 const overviewFixture = `table inet linkguard {
 	chain user_rules {
 	}
@@ -42,8 +47,8 @@ const overviewFixture = `table inet linkguard {
 
 	chain input {
 		type filter hook input priority filter; policy accept;
-		udp dport 123 ip saddr 192.168.3.0/24 accept
-		udp dport 123 drop
+		udp dport 123 ip saddr 192.168.3.0/24 counter packets 5 bytes 380 accept
+		udp dport 123 counter packets 2 bytes 152 drop
 	}
 }
 `
@@ -221,3 +226,65 @@ func (failingExec) ExecuteRead(context.Context, string, ...string) (string, erro
 	return "", context.DeadlineExceeded
 }
 func (failingExec) IsDryRun() bool { return false }
+
+// M-1 da revisão da Fase C2: o jump de um grupo de escopo input mora na chain
+// input, e a Visão geral tem que lê-lo do mesmo jeito que lê o da forward —
+// com o nome que o admin deu ao grupo e o dono ("Grupos de regras"), nunca a
+// sintaxe nft crua com o rótulo genérico.
+func TestOverviewNamesTheGroupOnAnInputChainJump(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	g := newRuleGroup(t, db)
+
+	fixture := `table inet linkguard {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		udp dport 123 counter packets 2 bytes 152 drop
+		ip saddr 192.168.50.0/24 counter packets 0 bytes 0 jump ` + g.ChainName + `
+	}
+}
+`
+	svc := nftables.NewService(&fakeOverviewExec{table: fixture})
+	fr := firewallrules.NewService(db, svc)
+	h := handlers.NewNftablesHandler(svc, db, fr)
+
+	r := httptest.NewRequest("GET", "/api/nftables/overview", nil)
+	w := httptest.NewRecorder()
+	h.Overview(w, r)
+	if w.Code != 200 {
+		t.Fatalf("Overview: status %d, body %s", w.Code, w.Body.String())
+	}
+
+	var chains []nftables.ChainInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &chains); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var in *nftables.ChainInfo
+	for i := range chains {
+		if chains[i].Name == "input" {
+			in = &chains[i]
+		}
+	}
+	if in == nil {
+		t.Fatal("input chain missing from response")
+	}
+	var jumpRule *nftables.ChainRule
+	for i := range in.Rules {
+		if strings.Contains(in.Rules[i].Expression, g.ChainName) {
+			jumpRule = &in.Rules[i]
+		}
+	}
+	if jumpRule == nil {
+		t.Fatalf("group jump rule missing from input chain: %+v", in.Rules)
+	}
+	if !strings.Contains(jumpRule.Description, g.Name) {
+		t.Errorf("a descrição tem que nomear o grupo %q, obtive %q", g.Name, jumpRule.Description)
+	}
+	if jumpRule.Owner.Key != "rule_groups" {
+		t.Errorf("o dono do jump na input tem que ser a tela de grupos, obtive %+v", jumpRule.Owner)
+	}
+}

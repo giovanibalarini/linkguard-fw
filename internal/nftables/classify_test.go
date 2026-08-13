@@ -315,3 +315,55 @@ func TestClassifyRuleGivesTheGroupJumpItsOwnOwner(t *testing.T) {
 		t.Error("o dono precisa de rótulo para a tela exibir")
 	}
 }
+
+// ─── Correções da revisão da Fase C2 ─────────────────────────────────────
+
+// M-1. Desde a Fase C2 a chain input também hospeda o jump dos grupos de
+// escopo input, e ele é a mesma linha da forward: gerada pelo LinkGuard a
+// partir da condição de entrada, cujo controle dono é a tela de grupos. Sem
+// este caso ela caía no rótulo genérico "LinkGuard" — a única regra acionável
+// da tela sem o link "abrir".
+func TestClassifyRuleGivesTheInputGroupJumpItsOwnOwner(t *testing.T) {
+	managed, owner := classifyRule(InputChain, "ip saddr 192.168.50.0/24 jump grp_a3f21c08")
+	if !managed {
+		t.Error("a linha de jump é renderizada pelo LinkGuard, não escrita à mão")
+	}
+	if owner.Key != "rule_groups" {
+		t.Errorf("o dono do jump na input tem que ser a tela de grupos, obtive %+v", owner)
+	}
+	if owner.Label == "" {
+		t.Error("o dono precisa de rótulo para a tela exibir")
+	}
+}
+
+// M-2. As duas regras de NTP passaram a carregar `counter`, e é assim que o
+// nft as imprime de volta: `counter packets N bytes M`, ANTES do verbo. Os
+// fixtures sem counter acima continuam valendo (é o que uma máquina que ainda
+// não reconciliou tem vivo), mas deixaram de ser a saída real do que este
+// código gera — e é justamente um token a mais no meio da linha que poderia
+// quebrar um classificador que casa por sufixo. Aqui a linha entra INTEIRA,
+// como o nft a imprime, e passa pelo mesmo parser da produção.
+func TestNTPLinesInTheirCounterFormAreStillRecognised(t *testing.T) {
+	accept := parseChainRuleLine(InputChain,
+		"udp dport 123 ip saddr 192.168.3.0/24 counter packets 5 bytes 380 accept")
+	if !accept.Managed || accept.Owner.Key != "ntp" {
+		t.Errorf("a linha de accept do NTP com counter perdeu o dono: %+v", accept)
+	}
+	if accept.Description != "Aceita NTP vindo de 192.168.3.0/24" {
+		t.Errorf("descrição da linha de accept com counter = %q", accept.Description)
+	}
+	if !accept.HasCounter || accept.Packets != 5 || accept.Bytes != 380 {
+		t.Errorf("o contador da linha de NTP não foi lido: %+v", accept)
+	}
+
+	drop := parseChainRuleLine(InputChain, "udp dport 123 counter packets 2 bytes 152 drop")
+	if !drop.Managed || drop.Owner.Key != "ntp" {
+		t.Errorf("a linha de drop do NTP com counter perdeu o dono: %+v", drop)
+	}
+	if drop.Description != "Bloqueia NTP de qualquer outra origem" {
+		t.Errorf("descrição da linha de drop com counter = %q", drop.Description)
+	}
+	if !drop.HasCounter || drop.Packets != 2 || drop.Bytes != 152 {
+		t.Errorf("o contador da linha de drop não foi lido: %+v", drop)
+	}
+}

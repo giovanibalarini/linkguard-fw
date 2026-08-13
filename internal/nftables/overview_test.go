@@ -320,3 +320,57 @@ func (e *fakeReadExec) ExecuteRead(_ context.Context, cmd string, args ...string
 	return e.out, nil
 }
 func (e *fakeReadExec) IsDryRun() bool { return false }
+
+// ─── Correções da revisão da Fase C2 ─────────────────────────────────────
+
+// M-2. prodTableFixture acima é uma captura REAL de produção, e por isso
+// continua como está: é o que uma máquina que ainda não reconciliou com esta
+// versão tem vivo na chain input. Mas deixou de ser o que este código EMITE —
+// as duas linhas de NTP passaram a carregar `counter`, que o nft imprime de
+// volta como `counter packets N bytes M` antes do verbo, e com o `-a` da
+// produção ainda vem o `# handle N` no fim. Fixture que não é mais a saída do
+// que geramos não prova nada sobre a próxima linha que vamos gerar.
+func TestParseTableRulesetReadsTheNTPLinesInTheCounterFormWeNowEmit(t *testing.T) {
+	fixture := `table inet linkguard {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } counter packets 5 bytes 380 accept # handle 14
+		udp dport 123 counter packets 2 bytes 152 drop # handle 15
+		ip saddr 192.168.50.0/24 counter packets 0 bytes 0 jump grp_a3f21c08 # handle 16
+	}
+}
+`
+	in := chainByName(parseTableRuleset(fixture), "input")
+	if in == nil {
+		t.Fatal("input chain not found")
+	}
+	if len(in.Rules) != 3 {
+		t.Fatalf("expected 3 rules, got %d: %+v", len(in.Rules), in.Rules)
+	}
+
+	accept := in.Rules[0]
+	if accept.Handle != 14 || !accept.HasCounter || accept.Packets != 5 || accept.Bytes != 380 {
+		t.Errorf("handle/contador da linha de accept não foram lidos: %+v", accept)
+	}
+	if accept.Expression != "udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } accept" {
+		t.Errorf("a cláusula counter vazou para a expressão: %q", accept.Expression)
+	}
+	if accept.Owner.Key != "ntp" || accept.Description != "Aceita NTP vindo de 192.168.3.0/24, 10.20.0.0/24" {
+		t.Errorf("linha de accept do NTP mal classificada/descrita: %+v", accept)
+	}
+
+	drop := in.Rules[1]
+	if drop.Handle != 15 || !drop.HasCounter || drop.Packets != 2 || drop.Bytes != 152 {
+		t.Errorf("handle/contador da linha de drop não foram lidos: %+v", drop)
+	}
+	if drop.Owner.Key != "ntp" || drop.Description != "Bloqueia NTP de qualquer outra origem" {
+		t.Errorf("linha de drop do NTP mal classificada/descrita: %+v", drop)
+	}
+
+	// E o jump de um grupo de escopo input, que a Fase C2 pôs nesta mesma
+	// chain, tem o dono dele — não o rótulo genérico.
+	jump := in.Rules[2]
+	if jump.Owner.Key != "rule_groups" {
+		t.Errorf("o jump do grupo na input não tem dono: %+v", jump)
+	}
+}

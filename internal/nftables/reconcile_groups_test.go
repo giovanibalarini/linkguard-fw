@@ -1254,6 +1254,24 @@ func TestReconcileGroupsNoopInDryRun(t *testing.T) {
 
 // ─── CheckGroups ─────────────────────────────────────────────────────────
 
+// scriptFor devolve, dentre os scripts validados por `nft -c`, aquele que
+// reconstrói a chain pedida — identificado pelo `flush chain` dela, que é a
+// linha que só existe no script daquela chain. Pescar por posição no slice
+// (`checkScripts[len-1]`) amarrava o teste à ORDEM em que CheckGroups valida
+// as chains, e foi exatamente o que quebrou quando a input entrou como um
+// terceiro script.
+func scriptFor(t *testing.T, scripts []string, chain string) string {
+	t.Helper()
+	marker := "flush chain " + Family + " " + Table + " " + chain + "\n"
+	for _, s := range scripts {
+		if strings.Contains(s, marker) {
+			return s
+		}
+	}
+	t.Fatalf("nenhum script validado reconstrói a chain %s:\n%s", chain, strings.Join(scripts, "\n---\n"))
+	return ""
+}
+
 // A validação prévia (`nft -c`) tem que passar exatamente pelo que a
 // reconciliação de verdade vai emitir depois — mesma renderização, mesma
 // ordem, chain do grupo E forward — senão ela aprova uma coisa e o firewall
@@ -1263,8 +1281,8 @@ func TestCheckGroupsValidatesEveryGroupChainAndTheForward(t *testing.T) {
 	s := &Service{exec: exec}
 	// ATUALIZADO: os dois grupos do sistema entram na lista — é deles que
 	// saem, agora, as linhas de set que este teste exige no script validado.
-	// Eles não acrescentam script nenhum (não têm chain própria), então
-	// continuam sendo 3 validações.
+	// Eles não acrescentam script nenhum (não têm chain própria). São 4
+	// validações: as duas chains de grupo, a forward e a input (Fase C2).
 	groups := []StoredGroup{
 		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
 			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
@@ -1284,8 +1302,8 @@ func TestCheckGroupsValidatesEveryGroupChainAndTheForward(t *testing.T) {
 	if len(exec.executed) != 0 {
 		t.Fatalf("a validação prévia não pode mudar nada no firewall, rodou: %v", exec.executed)
 	}
-	if len(exec.checkScripts) != 3 {
-		t.Fatalf("esperava 3 validações (duas chains de grupo + forward), vieram %d", len(exec.checkScripts))
+	if len(exec.checkScripts) != 4 {
+		t.Fatalf("esperava 4 validações (duas chains de grupo + forward + input), vieram %d", len(exec.checkScripts))
 	}
 	all := strings.Join(exec.checkScripts, "\n")
 	for _, want := range []string{
@@ -1301,7 +1319,7 @@ func TestCheckGroupsValidatesEveryGroupChainAndTheForward(t *testing.T) {
 	}
 	// A forward validada é a mesma que a reconciliação escreveria: bloqueios
 	// antes dos jumps.
-	fwd := exec.checkScripts[len(exec.checkScripts)-1]
+	fwd := scriptFor(t, exec.checkScripts, ForwardChain)
 	if strings.Index(fwd, "@blocklist") > strings.Index(fwd, "jump grp_aaa") {
 		t.Errorf("a forward validada não está na ordem da §3:\n%s", fwd)
 	}
@@ -1327,12 +1345,12 @@ func TestCheckGroupsCreatesTheGroupChainBeforeUsingIt(t *testing.T) {
 	if err := s.CheckGroups(context.Background(), groups); err != nil {
 		t.Fatalf("CheckGroups: %v", err)
 	}
-	if len(exec.checkScripts) != 2 {
-		t.Fatalf("esperava 2 validações (chain do grupo + forward), vieram %d", len(exec.checkScripts))
+	if len(exec.checkScripts) != 3 {
+		t.Fatalf("esperava 3 validações (chain do grupo + forward + input), vieram %d", len(exec.checkScripts))
 	}
 
 	// 1. no script da própria chain do grupo: add chain antes do flush.
-	own := exec.checkScripts[0]
+	own := scriptFor(t, exec.checkScripts, "grp_novo")
 	idxAdd := strings.Index(own, "add chain inet linkguard grp_novo\n")
 	idxFlush := strings.Index(own, "flush chain inet linkguard grp_novo\n")
 	if idxAdd < 0 {
@@ -1346,7 +1364,7 @@ func TestCheckGroupsCreatesTheGroupChainBeforeUsingIt(t *testing.T) {
 	}
 
 	// 2. no script da forward: add chain antes do jump correspondente.
-	fwd := exec.checkScripts[1]
+	fwd := scriptFor(t, exec.checkScripts, ForwardChain)
 	idxAddFwd := strings.Index(fwd, "add chain inet linkguard grp_novo\n")
 	idxJump := strings.Index(fwd, "jump grp_novo")
 	if idxAddFwd < 0 {
@@ -1585,7 +1603,7 @@ func TestCheckGroupsValidatesTheForwardWithTheBlocksInListPosition(t *testing.T)
 	if len(exec.checkScripts) == 0 {
 		t.Fatal("nenhum script foi validado")
 	}
-	fwd := exec.checkScripts[len(exec.checkScripts)-1]
+	fwd := scriptFor(t, exec.checkScripts, ForwardChain)
 	idxJump := strings.Index(fwd, "jump grp_aaa")
 	idxBlock := strings.Index(fwd, "@blocked_hosts")
 	if idxJump < 0 || idxBlock < 0 {
@@ -1658,6 +1676,15 @@ func TestGroupScopeDecidesWhichChainItLandsIn(t *testing.T) {
 	}
 	inp := renderChainScript(InputChain, inputChainRules(groups, nil, false))
 	fwd := renderChainScript(ForwardChain, forwardChainRules(groups))
+	// Presença primeiro: só com as ausências, este teste passaria com os dois
+	// renderizadores devolvendo lista vazia — nenhum grupo em chain nenhuma,
+	// que é um firewall sem as regras do admin, e o teste diria verde.
+	if !strings.Contains(inp, "jump grp_iii") {
+		t.Errorf("o grupo de escopo input não entrou na chain input:\n%s", inp)
+	}
+	if !strings.Contains(fwd, "jump grp_fff") {
+		t.Errorf("o grupo de escopo forward não entrou na chain forward:\n%s", fwd)
+	}
 	if strings.Contains(inp, "grp_fff") {
 		t.Error("grupo de escopo forward vazou para a chain input")
 	}
@@ -1730,7 +1757,7 @@ func TestSavingAGroupDoesNotWipeTheNTPProtection(t *testing.T) {
 	s := &Service{exec: exec}
 	s.SetInputChainSources(
 		func() ([]StoredGroup, error) { return nil, nil },
-		func() ([]string, bool) { return []string{"192.168.3.0/24"}, true },
+		func() ([]string, bool, error) { return []string{"192.168.3.0/24"}, true, nil },
 	)
 
 	if err := s.ReconcileGroups(context.Background(), []StoredGroup{
@@ -1770,7 +1797,7 @@ func TestReconcilingNTPDoesNotWipeTheInputGroupJumps(t *testing.T) {
 					Enabled: true, Position: 1},
 			}, nil
 		},
-		func() ([]string, bool) { return nil, false },
+		func() ([]string, bool, error) { return nil, false, nil },
 	)
 
 	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
@@ -1803,7 +1830,7 @@ func TestTurningNTPOffKeepsTheInputGroupJumps(t *testing.T) {
 				{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii", Enabled: true},
 			}, nil
 		},
-		func() ([]string, bool) { return nil, false },
+		func() ([]string, bool, error) { return nil, false, nil },
 	)
 
 	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, false); err != nil {
@@ -1824,7 +1851,7 @@ func TestReconcileNTPInputDoesNotTouchTheChainWhenGroupsCannotBeRead(t *testing.
 	s := &Service{exec: exec}
 	s.SetInputChainSources(
 		func() ([]StoredGroup, error) { return nil, errors.New("banco fora do ar") },
-		func() ([]string, bool) { return nil, false },
+		func() ([]string, bool, error) { return nil, false, nil },
 	)
 
 	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err == nil {
@@ -1863,5 +1890,154 @@ func TestInputChainIsRebuiltBeforeOrphanChainsAreDeleted(t *testing.T) {
 	}
 	if flushInput > deleteOrphan {
 		t.Errorf("a input foi reconstruída depois de apagar a órfã: um jump de input vivo faria o delete falhar com EBUSY; executados: %v", exec.executed)
+	}
+}
+
+// ─── Correções da revisão da Fase C2 ─────────────────────────────────────
+
+// I-1. A ponta do NTP é simétrica à dos grupos: um erro de LEITURA não pode
+// virar "servir NTP está desligado". Se virasse, salvar um grupo qualquer com
+// o banco travado daria flush na chain input e a reescreveria só com os jumps
+// — as duas linhas de udp/123 sumiriam do firewall vivo, o painel continuaria
+// mostrando o toggle ligado, e o apply seria reportado ok. Fail-open em
+// silêncio, que é justamente o que o lado dos grupos já evita de propósito.
+func TestReconcileGroupsDoesNotTouchTheInputChainWhenTheNTPStateCannotBeRead(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, errors.New("banco travado") },
+	)
+
+	err := s.ReconcileGroups(context.Background(), []StoredGroup{
+		{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 0},
+	})
+	if err == nil {
+		t.Fatal("ler o estado do NTP falhou e mesmo assim o apply foi reportado ok")
+	}
+	for _, c := range exec.executed {
+		if strings.Contains(c, "flush chain inet linkguard input") ||
+			strings.HasPrefix(c, "nft add rule inet linkguard input") {
+			t.Errorf("a chain input foi mexida sem saber o estado do NTP: %q", c)
+		}
+	}
+	// A forward não é refém disso: a contenção de falha deste pacote é por
+	// chain, e o grupo do admin continua sendo aplicado.
+	if indexOfCommand(exec.executed, func(c string) bool {
+		return c == "nft flush chain inet linkguard forward"
+	}) == -1 {
+		t.Errorf("a forward deixou de ser reconciliada por causa de um erro que é só da input: %v", exec.executed)
+	}
+}
+
+// I-1, continuação: com a input intocada, a limpeza de chains órfãs não pode
+// rodar — a input viva ainda pode ter o `jump` da órfã, e o nft recusa apagar
+// chain referenciada (EBUSY); o `flush` que viria antes, não. É a mesma razão
+// pela qual o passo 4 espera o passo 3.
+func TestOrphanChainsAreNotDeletedWhenTheInputChainWasNotRebuilt(t *testing.T) {
+	exec := &fakeReconcileExec{readOut: map[string]string{
+		"nft list table inet linkguard": liveTableWithOrphanGroup,
+	}}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, errors.New("banco travado") },
+	)
+
+	if err := s.ReconcileGroups(context.Background(), []StoredGroup{
+		{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 0},
+	}); err == nil {
+		t.Fatal("esperava erro")
+	}
+	for _, c := range exec.executed {
+		if strings.HasPrefix(c, "nft delete chain") {
+			t.Errorf("chain apagada numa passada em que a input não foi reconstruída: %q", c)
+		}
+	}
+}
+
+// I-3. O pré-voo valida a chain input e o `jump` que vai para ela, não só a
+// forward. Sem isto, no dia em que a API expuser o campo `scope`, uma
+// condição de entrada que o nft recusa passaria pelo gate de 400, entraria no
+// banco, e só falharia no apply — depois de o flush já ter esvaziado a chain
+// input viva.
+func TestCheckGroupsValidatesTheInputChainToo(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return []string{"192.168.3.0/24"}, true, nil },
+	)
+	groups := []StoredGroup{
+		{ID: "i", Name: "Acesso ao firewall", ChainName: "grp_iii", Kind: GroupKindAdmin,
+			Scope: ScopeInput, Enabled: true, Position: 0, CondSaddr: "192.168.50.0/24",
+			Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.CheckGroups(context.Background(), groups); err != nil {
+		t.Fatalf("CheckGroups: %v", err)
+	}
+	if len(exec.executed) != 0 {
+		t.Fatalf("a validação prévia não pode mudar nada no firewall, rodou: %v", exec.executed)
+	}
+
+	inp := scriptFor(t, exec.checkScripts, InputChain)
+	// O jump do grupo de escopo input tem que estar no script validado — é a
+	// linha que só existe por causa do que o admin acabou de digitar.
+	idxJump := strings.Index(inp, "add rule inet linkguard input ip saddr 192.168.50.0/24 counter jump grp_iii")
+	if idxJump < 0 {
+		t.Fatalf("o pré-voo não validou o jump do grupo de escopo input:\n%s", inp)
+	}
+	// E as duas linhas de NTP, na mesma renderização que a reconciliação
+	// emitiria: validar uma forma diferente é validar outra coisa.
+	if !strings.Contains(inp, "add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } counter accept") {
+		t.Errorf("o script da input não é o que a reconciliação escreveria:\n%s", inp)
+	}
+
+	// A própria chain input entra no `ensure`: numa máquina anterior a
+	// 2026-08-11 ela não existe, e `flush chain` de chain inexistente derruba
+	// o script inteiro dentro de um `nft -c -f` (verificado ao vivo, nft
+	// v1.1.3). Sem isto, criar QUALQUER grupo passaria a devolver 400.
+	idxAddInput := strings.Index(inp, "add chain inet linkguard input\n")
+	idxFlush := strings.Index(inp, "flush chain inet linkguard input\n")
+	if idxAddInput < 0 {
+		t.Fatalf("o script da input não garante a própria chain input:\n%s", inp)
+	}
+	if idxAddInput > idxFlush {
+		t.Errorf("o `add chain` da input veio depois do flush — o nft já teria recusado:\n%s", inp)
+	}
+	// E a chain do grupo NOVO também, senão o jump não parseia.
+	idxAddGroup := strings.Index(inp, "add chain inet linkguard grp_iii\n")
+	if idxAddGroup < 0 || idxAddGroup > idxJump {
+		t.Errorf("o script da input pula para uma chain que ainda não existe:\n%s", inp)
+	}
+}
+
+// Não conseguir ler o estado do NTP não pode REPROVAR o grupo do admin: aqui
+// não se escreve nada, e devolver 400 em toda mutação de grupo por causa de um
+// SELECT de settings que falhou trancaria o admin fora do painel. Os jumps —
+// a parte que vem do que ele digitou — continuam sendo validados.
+func TestCheckGroupsStillValidatesTheJumpsWhenTheNTPStateCannotBeRead(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, errors.New("banco travado") },
+	)
+	groups := []StoredGroup{
+		{ID: "i", Name: "Acesso ao firewall", ChainName: "grp_iii", Kind: GroupKindAdmin,
+			Scope: ScopeInput, Enabled: true, Position: 0, CondSaddr: "192.168.50.0/24",
+			Fallthrough: FallthroughContinue},
+	}
+
+	if err := s.CheckGroups(context.Background(), groups); err != nil {
+		t.Fatalf("um erro de leitura do NTP reprovou o grupo do admin: %v", err)
+	}
+	inp := scriptFor(t, exec.checkScripts, InputChain)
+	if !strings.Contains(inp, "jump grp_iii") {
+		t.Errorf("o jump do grupo deixou de ser validado:\n%s", inp)
+	}
+	if strings.Contains(inp, "dport 123") {
+		t.Errorf("o estado do NTP não pôde ser lido, então nenhuma linha de NTP podia ser inventada:\n%s", inp)
 	}
 }

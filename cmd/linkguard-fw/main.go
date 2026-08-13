@@ -66,6 +66,38 @@ func main() {
 	os.Exit(run())
 }
 
+// ntpInputStateFrom lê o estado de "servir NTP para a LAN" da chave de
+// settings "ntp_config" (dona: internal/api/handlers.NTPHandler) e é a ÚNICA
+// leitura dela fora da camada HTTP: alimenta tanto a fonte ligada em
+// nftables.SetInputChainSources quanto a reconciliação do boot, para que as
+// duas nunca discordem sobre o que está configurado.
+//
+// NENHUM dos dois erros pode ser engolido (I-1 da revisão da Fase C2).
+// db.GetSetting devolve ("", nil) só quando a chave não existe; qualquer outra
+// falha (banco travado, IO) é erro de verdade, e um `_` ali transformava "não
+// consegui ler" em "servir NTP está desligado" — o que faria a passada
+// seguinte de ReconcileGroups dar flush na chain input e reescrevê-la só com
+// os jumps, apagando do firewall vivo as duas linhas de udp/123 enquanto o
+// painel continua mostrando o toggle ligado e o apply é reportado ok. JSON
+// corrompido tem exatamente o mesmo efeito, e por isso também é erro.
+//
+// Recebe a leitura por parâmetro (e não o *storage.DB) para que o teste possa
+// exercitar as quatro saídas sem inventar um banco quebrado.
+func ntpInputStateFrom(getSetting func(string) (string, error)) ([]string, bool, error) {
+	raw, err := getSetting("ntp_config")
+	if err != nil {
+		return nil, false, fmt.Errorf("ler a configuração de NTP do banco: %w", err)
+	}
+	if raw == "" {
+		return nil, false, nil // nunca configurado: servir NTP nasce desligado
+	}
+	var c timesync.Config
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return nil, false, fmt.Errorf("interpretar a configuração de NTP gravada: %w", err)
+	}
+	return c.AllowedNetworks, c.ServeLAN, nil
+}
+
 func run() int {
 	configPath := flag.String("config", "/etc/linkguard-fw/config.json", "Path to config file")
 	addr := flag.String("addr", "", "Listen address override")
@@ -242,13 +274,11 @@ func run() int {
 	// Ligado aqui, junto da construção, e não perto de um dos reconciles: sem
 	// isto, salvar um grupo apagaria a proteção do NTP da chain input.
 	// TestMainWiresTheInputChainSources guarda essa ligação contra deriva.
-	nftSvc.SetInputChainSources(frSvc.StoredGroups, func() ([]string, bool) {
-		var c timesync.Config
-		if raw, _ := db.GetSetting("ntp_config"); raw != "" {
-			_ = json.Unmarshal([]byte(raw), &c)
-		}
-		return c.AllowedNetworks, c.ServeLAN
-	})
+	//
+	// O erro de leitura viaja junto e NÃO vira "servir NTP está desligado" —
+	// ver ntpInputStateFrom.
+	ntpInputState := func() ([]string, bool, error) { return ntpInputStateFrom(db.GetSetting) }
+	nftSvc.SetInputChainSources(frSvc.StoredGroups, ntpInputState)
 	balancerSvc := balancer.NewService(db, exec, linkSvc, alertSvc)
 	keaSvc := keaunbound.NewService(exec)
 	// O caminho sob demanda (o admin liga DHCP/DNS no painel) instala
@@ -377,26 +407,6 @@ func run() int {
 				slog.Warn("não foi possível reconciliar a regra de NAT no boot", "err", err)
 			}
 
-			// Reconcile the NTP-protection input chain on every boot too — same
-			// self-healing reasoning as the masquerade rule above: a box upgraded
-			// from before this feature (2026-08-11) has no input chain at all, and
-			// EnsureTable/ReconcileNTPInput being no-ops on an already-provisioned
-			// box means only an explicit reconcile keeps it in sync with the
-			// admin's chosen networks and the serve-to-LAN toggle. Reads both
-			// straight from the "ntp_config" settings key (owned by
-			// internal/api/handlers.NTPHandler) since main wires the HTTP layer
-			// after this point and has no handler instance yet. Reshaped
-			// 2026-08-11 (spec §4): the chain is keyed on
-			// timesync.Config.AllowedNetworks, not the WAN interface set — see
-			// ReconcileNTPInput's doc comment.
-			var ntpCfg timesync.Config
-			if raw, _ := db.GetSetting("ntp_config"); raw != "" {
-				_ = json.Unmarshal([]byte(raw), &ntpCfg)
-			}
-			if err := nftSvc.ReconcileNTPInput(ctx, ntpCfg.AllowedNetworks, ntpCfg.ServeLAN); err != nil {
-				slog.Warn("não foi possível reconciliar a chain de proteção do NTP no boot", "err", err)
-			}
-
 			// Reconcile the structural chain (mark_hosts) on every boot too.
 			// Until this feature (2026-08-11, firewall page redesign spec §6)
 			// it was only ever created once at EnsureTable/bootstrap and never
@@ -475,6 +485,39 @@ func run() int {
 			}
 			if err := frSvc.Reconcile(ctx); err != nil {
 				slog.Warn("não foi possível reconciliar os grupos de regras (chain forward) a partir do banco no boot", "err", err)
+			}
+
+			// Reconcile the NTP-protection input chain on every boot too — same
+			// self-healing reasoning as the masquerade rule above: a box upgraded
+			// from before this feature (2026-08-11) has no input chain at all, and
+			// EnsureTable/ReconcileNTPInput being no-ops on an already-provisioned
+			// box means only an explicit reconcile keeps it in sync with the
+			// admin's chosen networks and the serve-to-LAN toggle. It reads that
+			// state through the very same function wired into
+			// SetInputChainSources — one single reader of the "ntp_config"
+			// settings key (owned by internal/api/handlers.NTPHandler), since
+			// main wires the HTTP layer after this point and has no handler
+			// instance yet. Reshaped 2026-08-11 (spec §4): the chain is keyed on
+			// timesync.Config.AllowedNetworks, not the WAN interface set — see
+			// ReconcileNTPInput's doc comment.
+			//
+			// DEPOIS de frSvc.Reconcile, e a ordem é o ponto (I-4 da revisão da
+			// Fase C2): desde a Fase C2 a chain input carrega também um `jump`
+			// por grupo de escopo input, e quem CRIA as chains grp_ é o passo 1
+			// de ReconcileGroups, que roda ali em cima. Numa máquina cujo ruleset
+			// foi recriado do zero por EnsureTable (recuperação de desastre, como
+			// em 2026-08-10) e cujo banco tenha um grupo de escopo input, emitir
+			// o jump antes disso falha com "No such file or directory": a passada
+			// seguinte conserta, mas o log de boot fica com um erro que não é
+			// erro — e log de boot de firewall é lido em emergência.
+			//
+			// Erro de LEITURA não vira reconciliação: reconstruir a chain com
+			// "servir NTP: desligado" que na verdade é "não consegui ler"
+			// apagaria a proteção do serviço de hora do firewall vivo (I-1).
+			if networks, serving, err := ntpInputState(); err != nil {
+				slog.Warn("não foi possível ler a configuração de NTP no boot; a chain input não foi tocada nesta passada", "err", err)
+			} else if err := nftSvc.ReconcileNTPInput(ctx, networks, serving); err != nil {
+				slog.Warn("não foi possível reconciliar a chain de proteção do NTP no boot", "err", err)
 			}
 		}
 

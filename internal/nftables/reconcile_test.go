@@ -309,9 +309,16 @@ func TestReconcileNTPInputAcceptRulePrecedesDropRule(t *testing.T) {
 	}
 }
 
-// TestReconcileNTPInputRulesMatchOnlyPort123: nothing else destined to the
-// firewall (SSH 22, the panel 9997, DNS 53, DHCP 67) may ever be touched by
-// this chain.
+// TestReconcileNTPInputRulesMatchOnlyPort123: as regras que a PROTEÇÃO DO NTP
+// escreve casam só udp/123 — nada mais destinado ao firewall (SSH 22, painel
+// 9997, DNS 53, DHCP 67) é tocado por elas.
+//
+// A garantia é do bloco de NTP, não da chain (M-4 da revisão): desde a Fase C2
+// a chain input também hospeda os jumps dos grupos de escopo input, e um grupo
+// desses pode legitimamente falar de SSH — é para isso que ele existe. Este
+// teste roda sem nenhuma fonte de grupos ligada justamente para isolar as
+// linhas que este código gera por conta própria; quem garante que um grupo só
+// entra na chain do escopo dele é TestGroupScopeDecidesWhichChainItLandsIn.
 func TestReconcileNTPInputRulesMatchOnlyPort123(t *testing.T) {
 	exec := &fakeReconcileExec{}
 	s := &Service{exec: exec}

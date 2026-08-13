@@ -1700,13 +1700,20 @@ func (db *DB) CreateFirewallGroup(g *FirewallGroup) error {
 	return err
 }
 
-// UpdateFirewallGroup NÃO atualiza scope de propósito (Fase C2). O escopo é
-// escolhido na criação e define em qual chain o grupo é alcançado; deixá-lo
-// nesta lista faria qualquer chamador que monte o FirewallGroup a partir do
-// corpo de uma requisição sem o campo (todo handler de edição existente)
-// rebaixar em silêncio um grupo de escopo input para forward — as regras dele
-// passariam a valer para o tráfego atravessando o firewall, que é justamente
-// o tráfego que o admin não pediu para filtrar ali.
+// UpdateFirewallGroup NÃO atualiza scope (Fase C2): hoje o escopo é escolhido
+// na criação, nenhum handler aceita alterá-lo, e este UPDATE gravar uma coluna
+// que ninguém edita só daria a impressão de um caminho de escrita que não
+// existe.
+//
+// ATENÇÃO PARA QUEM FOR EXPOR O CAMPO NA API: as duas pontas mudam JUNTAS. O
+// único chamador de hoje (internal/api/handlers.UpdateGroup) faz `row :=
+// existing` — a struct nasce da linha lida do banco e só os campos editáveis
+// são sobrescritos, então row.Scope já carrega o valor gravado e nada é
+// rebaixado por esta lista. O perigo real é o oposto: um handler futuro que
+// passe a ler `scope` do corpo da requisição e NÃO mexa aqui produz o pior
+// tipo de bug de painel — o admin muda o escopo na tela, a resposta é 200, a
+// tela mostra o valor novo até o próximo F5, e o banco (e portanto o firewall)
+// continua exatamente como estava. Mudei na tela e não aconteceu nada.
 func (db *DB) UpdateFirewallGroup(g *FirewallGroup) error {
 	g.UpdatedAt = time.Now()
 	res, err := db.conn.Exec(`

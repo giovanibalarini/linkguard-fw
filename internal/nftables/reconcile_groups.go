@@ -271,9 +271,23 @@ func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) err
 	//
 	// Sempre, mesmo sem nenhum grupo de escopo input na lista: só assim
 	// APAGAR o último grupo de input tira mesmo o jump dele do firewall.
-	ntpNetworks, ntpServing := s.ntpInputState()
-	inputErr := s.reconcileInputChain(ctx, valid, ntpNetworks, ntpServing)
-	if inputErr != nil {
+	//
+	// Erro ao LER o estado do NTP aborta a chain input sem tocar nela, exata-
+	// mente como ReconcileNTPInput já faz quando não consegue ler os grupos
+	// (I-1 da revisão). Um erro de leitura não é "servir NTP está desligado":
+	// reconstruir a chain obedecendo a esse valor daria flush nela e reescre-
+	// veria só os jumps, apagando do firewall vivo as duas linhas de udp/123
+	// enquanto o painel continua mostrando o toggle ligado. A forward já foi
+	// reconstruída acima e continua valendo — a contenção de falha deste
+	// pacote é por chain, não tudo ou nada.
+	ntpNetworks, ntpServing, ntpErr := s.ntpInputState()
+	var inputErr error
+	if ntpErr != nil {
+		inputErr = fmt.Errorf("ler o estado do NTP para reconstruir a chain %s: %w", InputChain, ntpErr)
+		slog.Error("a chain input NÃO foi tocada nesta passada: não foi possível ler o estado do NTP, e reconstruí-la sem ele apagaria a proteção do serviço de hora do firewall vivo",
+			"err", ntpErr)
+		failures = append(failures, inputErr.Error())
+	} else if inputErr = s.reconcileInputChain(ctx, valid, ntpNetworks, ntpServing); inputErr != nil {
 		slog.Error("a chain input não pôde ser reconstruída por completo", "err", inputErr)
 		failures = append(failures, inputErr.Error())
 	}
@@ -426,16 +440,12 @@ func (s *Service) DeleteUnreferencedChain(ctx context.Context, chain string) err
 // não pega tudo que o nft recusaria, e reconciliar direto numa regra que o
 // nft recusa já custou uma chain truncada em produção.
 //
-// LIMITE CONHECIDO (Fase C2): o pré-voo valida a chain forward, não a input.
-// Um grupo de escopo input tem a chain dele validada como qualquer outra (é o
-// laço abaixo), mas a linha de `jump` que vai para a chain input não passa
-// por `nft -c`. Incluí-la exige um `add chain` da própria input dentro do
-// script validado (a input pode não existir numa máquina anterior a
-// 2026-08-11, e `flush chain` de chain inexistente falha dentro de um script
-// de `nft -c`), e essa forma precisa ser verificada ao vivo contra o nft de
-// verdade antes de entrar aqui — se ela recusar, criar QUALQUER grupo passa a
-// devolver 400. Fica para a tarefa que expõe o escopo na API, com a
-// verificação ao vivo junto.
+// São TRÊS scripts validados, e a input é um deles (I-3 da revisão da Fase
+// C2): a chain de cada grupo, a forward e a input. Deixar a input de fora
+// quebrava a promessa do parágrafo acima justamente onde ela custa mais — no
+// dia em que a API expuser o campo `scope`, uma condição de entrada que o nft
+// recusa passaria pelo gate de 400, entraria no banco e só falharia no apply,
+// depois de o flush já ter esvaziado a chain input viva.
 //
 // Como roda antes do INSERT, a chain do grupo NOVO ainda não existe no
 // kernel — e no nft (verificado ao vivo) tanto `flush chain` quanto `jump`
@@ -443,6 +453,16 @@ func (s *Service) DeleteUnreferencedChain(ctx context.Context, chain string) err
 // cada script validado é precedido do `add chain` das chains de grupo que
 // ele usa (CheckChainEnsuring): sem isso, a validação recusaria todo grupo
 // novo — ou seja, criar qualquer grupo devolveria 400.
+//
+// A própria chain input entra nesse mesmo `ensure`, e pelo mesmo motivo: ela
+// pode não existir numa máquina anterior a 2026-08-11, e aí o `flush chain`
+// dela derrubaria o script inteiro. Forma verificada ao vivo contra o nft de
+// verdade (v1.1.3, Debian 13, dentro de um netns), nos dois estados que
+// importam: com a input já existindo como base chain (`add chain` sem
+// declaração é aceito como no-op) e com ela ausente (o `add chain` do script
+// é o que faz o resto parsear). Nos dois casos `nft -c` aceitou e não
+// materializou nada — a mesma verificação, sem o `add chain`, falha com "No
+// such file or directory".
 func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 	ensure := make([]string, 0, len(groups))
 	for _, g := range groups {
@@ -462,5 +482,33 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 			return fmt.Errorf("grupo %q: %w", g.Name, err)
 		}
 	}
-	return s.CheckChainEnsuring(ctx, ForwardChain, forwardChainRules(groups), ensure)
+	if err := s.CheckChainEnsuring(ctx, ForwardChain, forwardChainRules(groups), ensure); err != nil {
+		return err
+	}
+
+	// A input é validada com o MESMO renderizador que a reconciliação usa
+	// (inputChainRules), incluindo as linhas de proteção do NTP: validar uma
+	// forma diferente da que vai ser aplicada é validar outra coisa.
+	//
+	// Não conseguir ler o estado do NTP NÃO reprova o grupo do admin. Aqui não
+	// se está escrevendo nada — as linhas de udp/123 são geradas por este
+	// pacote a partir de CIDRs já saneados (sanitizeNetworks), não é delas que
+	// vem a recusa que este pré-voo existe para pegar —, e devolver 400 para
+	// toda mutação de grupo por causa de um SELECT de settings que falhou seria
+	// trancar o admin fora do painel. O que se valida então são os jumps, que é
+	// exatamente a parte que vem do que ele acabou de digitar. (Na hora de
+	// APLICAR o mesmo erro tem o efeito oposto e obrigatório: ReconcileGroups
+	// aborta sem tocar na chain.)
+	ntpNetworks, ntpServing, err := s.ntpInputState()
+	if err != nil {
+		slog.Warn("não foi possível ler o estado do NTP para o pré-voo da chain input; os jumps dos grupos continuam sendo validados, as linhas de NTP não", "err", err)
+		ntpNetworks, ntpServing = nil, false
+	}
+	// Cópia antes do append: `ensure` foi construído com capacidade de sobra no
+	// laço acima, e escrever direto nele poderia sobrescrever o array que o
+	// script da forward acabou de usar.
+	ensureInput := make([]string, 0, len(ensure)+1)
+	ensureInput = append(ensureInput, ensure...)
+	ensureInput = append(ensureInput, InputChain)
+	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing), ensureInput)
 }

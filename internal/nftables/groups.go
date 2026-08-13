@@ -62,6 +62,25 @@ func GroupScope(g StoredGroup) string {
 	return ScopeForward
 }
 
+// GroupHostChain devolve o nome da chain onde o `jump` deste grupo é escrito —
+// a chain "hospedeira" dele. É a mesma decisão que os dois renderizadores
+// tomam (forwardChainRules pula quem é de input, inputChainRules pula quem
+// não é), aqui em uma função só para que quem PROCURA o jump no firewall vivo
+// não possa procurar na chain errada: um grupo de escopo input cujo jump fosse
+// procurado na forward apareceria eternamente como "configurado, não
+// aplicado" no painel, com o jump vivo o tempo todo na input — mentira na
+// tela, que é o que este painel existe para não fazer.
+//
+// Grupo do sistema é sempre forward, qualquer que seja a coluna scope: o
+// conteúdo dele é um named set de bloqueio de tráfego atravessando (as linhas
+// dele nem são jumps).
+func GroupHostChain(g StoredGroup) string {
+	if !IsSystemGroup(g.Kind) && GroupScope(g) == ScopeInput {
+		return InputChain
+	}
+	return ForwardChain
+}
+
 // Nomes de chain reservados dos dois grupos do sistema. Eles NÃO começam com
 // GroupChainPrefix, e isso não é estética: a limpeza de chains órfãs de
 // ReconcileGroups varre o ruleset vivo procurando exatamente o prefixo grp_ e

@@ -161,3 +161,24 @@ func TestJumpTargetIsTheLastJumpOnTheLine(t *testing.T) {
 		t.Error("MergeGroups não enxergou o mesmo alvo de jump que ApplyGroupNames")
 	}
 }
+
+// M-1. Desde a Fase C2 o jump de um grupo também mora na chain input, e é a
+// mesma linha renderizada pelo mesmo código. Sem varrer a input, o admin lia
+// o jump da forward em português e o da input em sintaxe nft crua.
+func TestApplyGroupNamesAlsoNamesTheJumpsInTheInputChain(t *testing.T) {
+	chains := []ChainInfo{
+		{Name: InputChain, Rules: []ChainRule{
+			{Expression: "udp dport 123 drop", Description: "Bloqueia NTP de qualquer outra origem"},
+			{Expression: "ip saddr 192.168.50.0/24 jump grp_a3f21c08", Description: "ip saddr 192.168.50.0/24 jump grp_a3f21c08"},
+		}},
+	}
+	ApplyGroupNames(chains, map[string]string{"grp_a3f21c08": "Acesso ao firewall"})
+
+	if !containsAll(chains[0].Rules[1].Description, "Acesso ao firewall", "192.168.50.0/24") {
+		t.Errorf("o jump na chain input não foi nomeado: %q", chains[0].Rules[1].Description)
+	}
+	// E nenhuma outra linha da input é tocada.
+	if chains[0].Rules[0].Description != "Bloqueia NTP de qualquer outra origem" {
+		t.Errorf("uma linha que não é jump de grupo foi reescrita: %q", chains[0].Rules[0].Description)
+	}
+}

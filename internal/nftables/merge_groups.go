@@ -19,6 +19,38 @@ type GroupView struct {
 	Rules      ChainInfo `json:"rules"`
 }
 
+// liveRule é o que uma linha viva do nft tem a dizer sobre o grupo que ela
+// alcança: o handle e o contador, quando medido.
+type liveRule struct {
+	handle         int
+	packets, bytes uint64
+	hasCounter     bool
+}
+
+// indexGroupJumps indexa, por chain de destino, toda linha de `jump` para uma
+// chain de grupo (GroupChainPrefix) dentro de UMA chain viva. Recebe as regras
+// de uma chain só de propósito: um jump para grp_x achado na forward não prova
+// nada sobre um grupo que deveria morar na input, e vice-versa.
+//
+// O alvo é lido pela mesma convenção de ApplyGroupNames — o último "jump " da
+// linha, e o que vier depois —, e as duas não podem discordar sobre qual chain
+// uma linha alcança.
+func indexGroupJumps(rules []ChainRule) map[string]liveRule {
+	out := make(map[string]liveRule, len(rules))
+	for _, r := range rules {
+		idx := strings.LastIndex(r.Expression, "jump ")
+		if idx < 0 {
+			continue
+		}
+		target := strings.TrimSpace(r.Expression[idx+len("jump "):])
+		if !strings.HasPrefix(target, GroupChainPrefix) {
+			continue
+		}
+		out[target] = liveRule{handle: r.Handle, packets: r.Packets, bytes: r.Bytes, hasCounter: r.HasCounter}
+	}
+	return out
+}
+
 // systemGroupExpressions rende as linhas que systemGroupForwardRules emite
 // para este kind na forma normalizada de ChainRule.Expression — a mesma
 // fonte que forwardChainRules usa para EMITIR essas linhas, aqui usada para
@@ -51,15 +83,26 @@ func systemGroupExpressions(kind string) []string {
 // MergeGroups produz a visão honesta dos grupos: todos os grupos do banco,
 // em ordem, cada um dizendo se está de fato valendo no firewall.
 //
-// Para um grupo do admin, Applied só é verdadeiro quando existe, na chain
-// forward viva, uma linha de jump para a chain deste grupo — nunca inferido
-// de Enabled. Para um grupo do sistema (bloqueado por host, bloqueado por
+// Para um grupo do admin, Applied só é verdadeiro quando existe, NA CHAIN
+// HOSPEDEIRA DELE, uma linha de jump para a chain deste grupo — nunca
+// inferido de Enabled. A chain hospedeira sai de GroupHostChain: forward para
+// um grupo de tráfego atravessando, input para um de escopo input (Fase C2).
+// Procurar sempre na forward faria todo grupo de escopo input aparecer
+// eternamente como "configurado, não aplicado", com o jump vivo o tempo todo
+// na input. Para um grupo do sistema (bloqueado por host, bloqueado por
 // destino) não existe chain própria nem jump: o conteúdo dele é o named set,
 // e as linhas de drop moram direto na forward — Applied vem de todas essas
 // linhas estarem vivas ali (systemGroupExpressions/IsSystemGroup). Nos dois
 // casos, Enabled é o que o admin pediu; Applied é o que o kernel está
 // fazendo. Confundir os dois é exatamente a confiança falsa que este painel
 // existe para eliminar, e foi um achado crítico da revisão da Fase B.
+//
+// A forward continua vindo por parâmetro (o chamador a trata em separado: uma
+// forward ausente é "nenhum grupo em vigor", nunca um erro — ver
+// handlers.indexChains) e a input é lida de `chains`, o índice por nome que
+// esta função já recebe. Uma input ausente do índice vira ChainInfo vazia,
+// que diz exatamente a verdade: sem chain input, nenhum grupo de escopo input
+// está em vigor.
 //
 // Sem contrapartida viva, o contador fica com HasCounter=false — "não
 // medido" —, jamais com um zero, que significaria "medido, e deu zero".
@@ -68,29 +111,16 @@ func MergeGroups(groups []StoredGroup, chains map[string]ChainInfo, forward Chai
 	copy(sorted, groups)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
 
-	// Indexa os jumps vivos por nome de chain de destino (grupos do admin) e,
-	// separadamente, toda linha da forward por sua expressão normalizada
-	// (grupos do sistema, cujas linhas não são jumps).
-	type live struct {
-		handle         int
-		packets, bytes uint64
-		hasCounter     bool
+	// Indexa os jumps vivos por chain hospedeira e nome de chain de destino
+	// (grupos do admin) e, separadamente, toda linha da forward por sua
+	// expressão normalizada (grupos do sistema, cujas linhas não são jumps).
+	jumpsByHost := map[string]map[string]liveRule{
+		ForwardChain: indexGroupJumps(forward.Rules),
+		InputChain:   indexGroupJumps(chains[InputChain].Rules),
 	}
-	jumps := map[string]live{}
-	byExpr := map[string]live{}
+	byExpr := map[string]liveRule{}
 	for _, r := range forward.Rules {
-		l := live{handle: r.Handle, packets: r.Packets, bytes: r.Bytes, hasCounter: r.HasCounter}
-		byExpr[r.Expression] = l
-
-		idx := strings.LastIndex(r.Expression, "jump ")
-		if idx < 0 {
-			continue
-		}
-		target := strings.TrimSpace(r.Expression[idx+len("jump "):])
-		if !strings.HasPrefix(target, GroupChainPrefix) {
-			continue
-		}
-		jumps[target] = l
+		byExpr[r.Expression] = liveRule{handle: r.Handle, packets: r.Packets, bytes: r.Bytes, hasCounter: r.HasCounter}
 	}
 
 	out := make([]GroupView, 0, len(sorted))
@@ -128,7 +158,7 @@ func MergeGroups(groups []StoredGroup, chains map[string]ChainInfo, forward Chai
 			continue
 		}
 
-		if l, ok := jumps[g.ChainName]; ok {
+		if l, ok := jumpsByHost[GroupHostChain(g)][g.ChainName]; ok {
 			v.Applied = true
 			v.Handle = l.handle
 			v.Packets, v.Bytes, v.HasCounter = l.packets, l.bytes, l.hasCounter

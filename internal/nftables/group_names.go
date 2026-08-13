@@ -5,11 +5,15 @@ import (
 	"strings"
 )
 
-// ApplyGroupNames rewrites, in place, the Description of every forward-chain
-// rule that jumps into a rule-group chain (GroupChainPrefix, "grp_") so it
-// names the group and states when it is evaluated, instead of the generic
-// text describeRule falls back to for a chain it doesn't specifically
-// recognise.
+// ApplyGroupNames rewrites, in place, the Description of every rule that jumps
+// into a rule-group chain (GroupChainPrefix, "grp_") so it names the group and
+// states when it is evaluated, instead of the generic text describeRule falls
+// back to for a chain it doesn't specifically recognise.
+//
+// As duas chains que hospedam esses jumps são varridas — a forward e, desde a
+// Fase C2, a input (ver GroupHostChain). São a mesma linha, renderizada pelo
+// mesmo código a partir da condição de entrada do grupo, e o admin não tem por
+// que ler uma delas em português e a outra em sintaxe nft crua.
 //
 // This is deliberately a separate post-processing pass over already-parsed
 // chains, not a parameter threaded through describeRule (and, from there,
@@ -31,7 +35,7 @@ import (
 // blank (the project's no-fake-data rule applies to this panel above all).
 func ApplyGroupNames(chains []ChainInfo, groupNames map[string]string) {
 	for i := range chains {
-		if chains[i].Name != ForwardChain {
+		if chains[i].Name != ForwardChain && chains[i].Name != InputChain {
 			continue
 		}
 		for j := range chains[i].Rules {

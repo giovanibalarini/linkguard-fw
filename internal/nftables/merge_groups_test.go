@@ -206,3 +206,70 @@ func TestMergeGroupsSystemGroupHasEmptyNotNilRuleChain(t *testing.T) {
 		t.Errorf("grupo de sistema não tem regras de chain: %+v", v.Rules.Rules)
 	}
 }
+
+// ─── Correções da revisão da Fase C2 ─────────────────────────────────────
+
+// M-1. Applied tem que olhar a chain onde o grupo REALMENTE mora. Um grupo de
+// escopo input tem o jump dele na chain input, e procurá-lo só na forward o
+// deixava eternamente como "configurado, não aplicado" no painel — com o jump
+// vivo o tempo todo. Mentira na tela, que é o que este painel existe para não
+// fazer.
+func TestMergeGroupsAppliedFromTheInputChainForAnInputScopeGroup(t *testing.T) {
+	g := StoredGroup{ID: "i", Name: "Acesso ao firewall", ChainName: "grp_iii",
+		Kind: GroupKindAdmin, Scope: ScopeInput, Enabled: true,
+		CondSaddr: "192.168.50.0/24", Fallthrough: FallthroughContinue}
+
+	chains := map[string]ChainInfo{InputChain: {Name: InputChain, Rules: []ChainRule{
+		{Expression: "udp dport 123 drop"},
+		{Expression: "ip saddr 192.168.50.0/24 jump grp_iii", Handle: 12,
+			HasCounter: true, Packets: 340, Bytes: 21000},
+	}}}
+
+	v := MergeGroups([]StoredGroup{g}, chains, ChainInfo{Name: ForwardChain})[0]
+	if !v.Applied {
+		t.Fatal("o jump está vivo na chain input e o grupo consta como não aplicado")
+	}
+	if v.Handle != 12 || !v.HasCounter || v.Packets != 340 || v.Bytes != 21000 {
+		t.Errorf("o contador do grupo tem que vir da linha do jump na input, obtive %+v", v)
+	}
+}
+
+// E a recíproca: um jump para a chain do grupo achado na chain ERRADA não
+// prova nada. Um grupo de escopo input com jump só na forward (linha velha
+// que a reconciliação ainda não removeu) não está em vigor para o tráfego que
+// o admin escolheu — dizer "aplicado" ali seria pior do que não dizer nada.
+func TestMergeGroupsIgnoresAJumpFoundInTheWrongChain(t *testing.T) {
+	inputGroup := StoredGroup{ID: "i", Name: "Acesso ao firewall", ChainName: "grp_iii",
+		Kind: GroupKindAdmin, Scope: ScopeInput, Enabled: true, Fallthrough: FallthroughContinue}
+	forward := ChainInfo{Name: ForwardChain, Rules: []ChainRule{
+		{Expression: "counter jump grp_iii", Handle: 3},
+	}}
+	if v := MergeGroups([]StoredGroup{inputGroup}, map[string]ChainInfo{}, forward)[0]; v.Applied {
+		t.Error("um jump na forward não põe em vigor um grupo de escopo input")
+	}
+
+	forwardGroup := StoredGroup{ID: "f", Name: "Visitantes", ChainName: "grp_fff",
+		Kind: GroupKindAdmin, Scope: ScopeForward, Enabled: true, Fallthrough: FallthroughContinue}
+	chains := map[string]ChainInfo{InputChain: {Name: InputChain, Rules: []ChainRule{
+		{Expression: "counter jump grp_fff", Handle: 4},
+	}}}
+	if v := MergeGroups([]StoredGroup{forwardGroup}, chains, ChainInfo{Name: ForwardChain})[0]; v.Applied {
+		t.Error("um jump na input não põe em vigor um grupo de escopo forward")
+	}
+}
+
+// Grupo do sistema é sempre da forward, qualquer que seja a coluna scope: o
+// conteúdo dele é um named set de bloqueio de tráfego atravessando. Uma linha
+// de banco com scope=input nele não pode mandar MergeGroups procurar as
+// linhas de drop na chain errada e reportar o bloqueio como não aplicado.
+func TestMergeGroupsSystemGroupIsReadFromTheForwardEvenWithAnInputScopeRow(t *testing.T) {
+	g := StoredGroup{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+		Kind: GroupKindBlockedHosts, Scope: ScopeInput, Enabled: true}
+	forward := ChainInfo{Name: ForwardChain, Rules: []ChainRule{
+		{Expression: "ip saddr @blocked_hosts drop", HasCounter: true},
+		{Expression: "ip daddr @blocked_hosts drop", HasCounter: true},
+	}}
+	if v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, forward)[0]; !v.Applied {
+		t.Error("o bloqueio do sistema está vivo na forward e consta como não aplicado")
+	}
+}

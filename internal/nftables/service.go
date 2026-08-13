@@ -34,7 +34,7 @@ type Service struct {
 	// groupsSource e ntpInputSource são as duas metades da chain input que
 	// este pacote não conhece por si (ver SetInputChainSources).
 	groupsSource   func() ([]StoredGroup, error)
-	ntpInputSource func() (networks []string, serving bool)
+	ntpInputSource func() (networks []string, serving bool, err error)
 }
 
 // NewService creates an nftables Service.
@@ -61,7 +61,17 @@ func NewService(exec firewall.Executor) *Service {
 // TestMainWiresTheInputChainSources). Sem a fonte do NTP, salvar um grupo
 // reconstruiria a chain input sem as regras de proteção do serviço de hora —
 // por isso a ausência dela é slog.Error, não silêncio.
-func (s *Service) SetInputChainSources(groups func() ([]StoredGroup, error), ntpInput func() ([]string, bool)) {
+//
+// AS DUAS FONTES DEVOLVEM ERRO, e pela mesma razão (I-1 da revisão da Fase
+// C2): quem lê "não consegui ler" NÃO pode tratar isso como "está
+// desligado"/"não existe". Uma leitura de settings que falha (banco travado,
+// IO, JSON corrompido) devolvendo "servir NTP: não" faria ReconcileGroups dar
+// flush na chain input e reescrevê-la só com os jumps — as duas linhas de
+// udp/123 sumiriam do firewall vivo, o painel continuaria mostrando o toggle
+// ligado, e o apply seria reportado ok. Fail-open silencioso. Com o erro
+// explícito, quem reconcilia ABORTA sem tocar na chain, exatamente como já
+// fazia do lado dos grupos.
+func (s *Service) SetInputChainSources(groups func() ([]StoredGroup, error), ntpInput func() ([]string, bool, error)) {
 	s.groupsSource = groups
 	s.ntpInputSource = ntpInput
 }
@@ -78,11 +88,19 @@ func (s *Service) inputChainGroups() ([]StoredGroup, error) {
 }
 
 // ntpInputState devolve o estado de "servir NTP para a LAN" para quem vai
-// reconstruir a chain input sem tê-lo recebido por parâmetro.
-func (s *Service) ntpInputState() ([]string, bool) {
+// reconstruir a chain input sem tê-lo recebido por parâmetro. Erro é
+// propagado (o chamador aborta sem tocar na chain); fonte não ligada devolve
+// "desligado" com alarme.
+//
+// A diferença entre as duas saídas é deliberada. Fonte NÃO LIGADA é um erro
+// de programação deste binário, visível em todo boot e guardado por teste de
+// deriva; ERRO DE LEITURA é uma máquina em produção com o banco momentanea-
+// mente fora do ar, e obedecer ao valor zero dele apagaria da chain viva uma
+// proteção que o admin ligou — por isso ele nunca vira "desligado".
+func (s *Service) ntpInputState() ([]string, bool, error) {
 	if s.ntpInputSource == nil {
 		slog.Error("nenhuma fonte de configuração do NTP ligada ao serviço de nftables: a chain input será reconstruída SEM as regras de proteção do NTP (ver SetInputChainSources)")
-		return nil, false
+		return nil, false, nil
 	}
 	return s.ntpInputSource()
 }

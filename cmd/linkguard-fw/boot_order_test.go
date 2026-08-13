@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -142,5 +143,100 @@ func TestMainWiresTheInputChainSources(t *testing.T) {
 	}
 	if wired > firstReconcile {
 		t.Errorf("nftSvc.SetInputChainSources tem que ser ligado ANTES da primeira reconciliação do boot: a primeira passada reconstruiria a chain input com metade do conteúdo")
+	}
+}
+
+// ─── Correções da revisão da Fase C2 ─────────────────────────────────────
+
+// I-4. A chain input passou a carregar também um `jump` por grupo de escopo
+// input, e quem CRIA as chains grp_ é o passo 1 de ReconcileGroups — alcançado
+// no boot por frSvc.Reconcile. Numa máquina cujo ruleset foi recriado do zero
+// por EnsureTable (recuperação de desastre, como em 2026-08-10) e cujo banco
+// tenha um grupo de escopo input, reconciliar a input ANTES disso emite um
+// jump para uma chain que ainda não existe: o nft recusa com "No such file or
+// directory" e o boot registra um aviso alarmante. A passada seguinte conserta
+// sozinha — então o custo não é o firewall, é o log de boot de um firewall de
+// produção sendo lido na próxima emergência com um erro que não é erro.
+//
+// Guarda de deriva sobre a árvore sintática, como os dois acima.
+func TestNTPInputIsReconciledAfterTheGroupChainsExist(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("não foi possível localizar o arquivo de teste")
+	}
+	srcPath := filepath.Join(filepath.Dir(thisFile), "main.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parsear main.go: %v", err)
+	}
+
+	reconcileGroups, reconcileNTP := -1, -1
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, isCall := n.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel {
+			return true
+		}
+		recv, isIdent := sel.X.(*ast.Ident)
+		if !isIdent {
+			return true
+		}
+		switch {
+		case recv.Name == "frSvc" && sel.Sel.Name == "Reconcile":
+			if reconcileGroups == -1 {
+				reconcileGroups = int(call.Pos())
+			}
+		case recv.Name == "nftSvc" && sel.Sel.Name == "ReconcileNTPInput":
+			if reconcileNTP == -1 {
+				reconcileNTP = int(call.Pos())
+			}
+		}
+		return true
+	})
+
+	if reconcileGroups == -1 || reconcileNTP == -1 {
+		t.Fatalf("o boot não chama mais frSvc.Reconcile (%d) e/ou nftSvc.ReconcileNTPInput (%d) -- se a sequência mudou de forma, este guarda precisa mudar junto",
+			reconcileGroups, reconcileNTP)
+	}
+	if reconcileNTP < reconcileGroups {
+		t.Errorf("nftSvc.ReconcileNTPInput tem que vir DEPOIS de frSvc.Reconcile: as chains grp_ que os jumps de escopo input alcançam são criadas lá, e emitir o jump antes disso enche o log de boot de erro que não é erro")
+	}
+}
+
+// I-1, a outra ponta: a fonte que o boot e SetInputChainSources usam para ler
+// o estado do NTP não pode devolver "desligado" quando o que aconteceu foi um
+// erro de leitura. As quatro saídas, uma a uma.
+func TestNtpInputStateFromNeverTurnsAReadErrorIntoServingOff(t *testing.T) {
+	boom := errors.New("banco travado")
+	if _, serving, err := ntpInputStateFrom(func(string) (string, error) { return "", boom }); err == nil {
+		t.Errorf("erro de leitura foi engolido e virou serving=%v", serving)
+	} else if !errors.Is(err, boom) {
+		t.Errorf("o erro original tem que chegar ao chamador, veio %v", err)
+	}
+
+	if _, serving, err := ntpInputStateFrom(func(string) (string, error) { return "{isso não é json", nil }); err == nil {
+		t.Errorf("JSON corrompido foi engolido e virou serving=%v", serving)
+	}
+
+	// Chave nunca gravada: aí sim "desligado" é a verdade, e não pode virar
+	// erro — seria um aviso em todo boot de máquina nova.
+	networks, serving, err := ntpInputStateFrom(func(string) (string, error) { return "", nil })
+	if err != nil || serving || len(networks) != 0 {
+		t.Errorf("chave ausente tinha que ser desligado sem erro, obtive %v/%v/%v", networks, serving, err)
+	}
+
+	networks, serving, err = ntpInputStateFrom(func(key string) (string, error) {
+		if key != "ntp_config" {
+			t.Errorf("chave lida = %q, queria ntp_config", key)
+		}
+		return `{"serve_lan":true,"allowed_networks":["192.168.3.0/24"]}`, nil
+	})
+	if err != nil || !serving || len(networks) != 1 || networks[0] != "192.168.3.0/24" {
+		t.Errorf("configuração válida mal lida: %v/%v/%v", networks, serving, err)
 	}
 }
