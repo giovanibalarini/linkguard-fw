@@ -12,14 +12,19 @@ import { useAuth } from '../context/AuthContext';
 import { adminGroupsAbove as groupsAbove, isSystemGroup, KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../lib/blockGroups';
 import type {
   FirewallGroup, FirewallGroupsData, FirewallPendingChange, FirewallPendingResponse,
-  FirewallRule, FirewallRulesData, GroupFallthrough, GroupScope, LastApply, NetHost,
+  FirewallRule, FirewallRulesData, GroupFallthrough, GroupScope, LastApply, MsgLevel, NetHost,
   NftChainRule, NftManaged,
 } from '../types';
 
 interface Props {
   ifaces: string[];
   canWrite: boolean;
-  onMsg: (m: string) => void;
+  // O tom é OPCIONAL: sem ele a faixa do pai continua decidindo como sempre
+  // decidiu (vermelho quando o texto começa com "Erro", verde no resto). Ele
+  // existe para a única mensagem daqui que não é nem uma coisa nem outra — a
+  // reversão por prazo esgotado, que em verde diria ao operador que deu tudo
+  // certo com uma mudança que acabou de ser desfeita.
+  onMsg: (m: string, level?: MsgLevel) => void;
 }
 
 export type Action = 'accept' | 'drop' | 'reject';
@@ -262,21 +267,44 @@ function splitGroupRules(g: FirewallGroup): { rules: NftChainRule[]; extras: Nft
 }
 
 /**
- * secondsLeft é quanto falta para o LinkGuard reverter sozinho, medido contra
- * o `expires_at` que o SERVIDOR mandou — nunca contra um contador local que
- * começa em 90 quando a faixa aparece.
+ * countdownAnchor é o ponto de partida da contagem regressiva: quantos segundos
+ * o SERVIDOR disse que faltavam, e o instante local em que essa resposta
+ * chegou.
  *
- * A diferença aparece na hora que importa: recarregando a página aos 85
- * segundos, um contador local mostraria 90 de novo e o operador acharia que
- * tem um minuto e meio para testar o acesso quando tem cinco segundos.
+ * A âncora existe porque quem conta é o servidor e quem desenha é o navegador.
+ * O relógio local só mede o INTERVALO desde a resposta (uma duração, que não
+ * depende de os dois relógios concordarem); o valor absoluto vem sempre de
+ * `seconds_left`, e cada resposta do poll re-ancora. Um relógio de estação
+ * adiantado em 40 segundos deixou de errar o número.
  *
- * Data inválida devolve null — "não sei", que a faixa mostra como não sabido,
- * e não como zero (que afirmaria que o prazo acabou).
+ * `left` null é "não sei" — a faixa mostra como não sabido, nunca como zero,
+ * que afirmaria que o prazo acabou.
  */
-function secondsLeft(expiresAt: string, now: number): number | null {
-  const t = Date.parse(expiresAt);
-  if (Number.isNaN(t)) return null;
-  return Math.max(0, Math.round((t - now) / 1000));
+interface countdownAnchor {
+  at: number;
+  left: number | null;
+}
+
+/**
+ * anchorFrom lê a contagem que o servidor mandou. `expires_at` é a reserva para
+ * um corpo sem `seconds_left` (servidor mais velho que este painel): pior que a
+ * contagem do servidor, melhor que nenhuma contagem.
+ */
+function anchorFrom(p: FirewallPendingChange): countdownAnchor {
+  const now = Date.now();
+  if (Number.isFinite(p.seconds_left)) {
+    return { at: now, left: Math.max(0, Math.trunc(p.seconds_left)) };
+  }
+  const t = Date.parse(p.expires_at);
+  return { at: now, left: Number.isNaN(t) ? null : Math.max(0, Math.round((t - now) / 1000)) };
+}
+
+// countdownNow desconta localmente o tempo passado desde a âncora — é o que dá
+// a suavidade de segundo a segundo entre dois polls. O servidor corrige o ponto
+// de partida; daqui até a próxima resposta, quem anda é o relógio local.
+function countdownNow(a: countdownAnchor, now: number): number | null {
+  if (a.left === null) return null;
+  return Math.max(0, a.left - Math.max(0, Math.round((now - a.at) / 1000)));
 }
 
 // formatCountdown escreve o prazo do jeito que se lê de relance: segundos
@@ -351,6 +379,9 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const [pending, setPending] = useState<FirewallPendingChange | null>(null);
   const [pendingUnknown, setPendingUnknown] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  // A âncora da contagem regressiva, recolocada a cada resposta do servidor
+  // (ver countdownAnchor). Sem pendente ela não é lida.
+  const [anchor, setAnchor] = useState<countdownAnchor>({ at: Date.now(), left: null });
   // pendingRef acompanha o último pendente visto para que o poll saiba
   // distinguir "continua igual" de "sumiu" sem depender do estado do React.
   const pendingRef = useRef<FirewallPendingChange | null>(null);
@@ -400,6 +431,20 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     }
   };
 
+  // takePending é o único lugar que adota um pendente vindo do servidor — do
+  // GET ou do corpo da própria mutação. Junto com ele vem sempre a âncora da
+  // contagem: toda resposta re-ancora, e é isso que mantém o relógio da tela
+  // preso ao do firewall em vez de ao da estação do operador.
+  const takePending = (next: FirewallPendingChange | null) => {
+    pendingRef.current = next;
+    setPending(next);
+    setPendingUnknown(false);
+    if (next) {
+      setAnchor(anchorFrom(next));
+      setNow(Date.now());
+    }
+  };
+
   /**
    * refreshPending lê a janela de confirmação — a fonte do id que confirmar e
    * reverter exigem, e da contagem regressiva.
@@ -421,9 +466,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       const { data } = await client.get<FirewallPendingResponse>('/api/nftables/pending');
       const next = data?.pending ?? null;
       const prev = pendingRef.current;
-      pendingRef.current = next;
-      setPending(next);
-      setPendingUnknown(false);
+      takePending(next);
       if (prev && !next) {
         // A janela fechou. Só a MENSAGEM depende de quem a fechou; o recarregar
         // é incondicional, e a diferença é visível: uma reversão que a gente
@@ -434,7 +477,9 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
         if (resolvedRef.current === prev.id) {
           resolvedRef.current = '';
         } else {
-          onMsg('O prazo acabou sem confirmação: a alteração foi revertida e os grupos e as regras voltaram ao estado anterior.');
+          // Em ÂMBAR, não em verde: uma alteração desfeita pelo relógio não é
+          // uma boa notícia, e a cor é a primeira coisa que o operador lê.
+          onMsg('O prazo acabou sem confirmação: a alteração foi revertida e os grupos e as regras voltaram ao estado anterior.', 'warn');
         }
         await load();
       }
@@ -480,7 +525,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     return () => clearInterval(t);
   }, [hasPending]);
 
-  const pendingSeconds = pending ? secondsLeft(pending.expires_at, now) : null;
+  const pendingSeconds = pending ? countdownNow(anchor, now) : null;
 
   // Prazo vencido com a página aberta: pede o estado ao servidor na hora, em
   // vez de esperar o próximo poll de 3 s olhando uma faixa que já morreu. Uma
@@ -532,10 +577,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const adoptPending = (res: unknown) => {
     const p = (res as { data?: { pending?: FirewallPendingChange | null } } | undefined)?.data?.pending;
     if (!p) return;
-    pendingRef.current = p;
-    setPending(p);
-    setPendingUnknown(false);
-    setNow(Date.now());
+    takePending(p);
   };
 
   const run = async (fn: () => Promise<unknown>, ok: string): Promise<boolean> => {
@@ -565,20 +607,23 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   };
 
   // ─── Confirmar-ou-reverte ──────────────────────────────────────────────
-  // locked é a trava do backend refletida na tela: com uma janela aberta,
-  // TODA mutação de grupo e de regra responde 409. Um 409 cru numa tela sem
-  // explicação é pior que um botão desabilitado que diz por quê — daí
-  // lockReason, que vai no `title` de cada controle desabilitado e no texto ao
-  // lado deles.
+  // locked é a trava do backend refletida na tela — nada mais e nada menos.
+  // Aguardando confirmação, TODA mutação de grupo e de regra responde 409, e um
+  // 409 cru numa tela sem explicação é pior que um botão desabilitado que diz
+  // por quê: daí lockReason, no `title` de cada controle e no texto ao lado.
   //
-  // O estado "revertendo" também tranca aqui, ainda que o backend libere
-  // mutações nele (o banco já voltou; falta o firewall vivo): oferecer edição
-  // no meio de uma reconciliação em curso convidaria o operador a empilhar
-  // mudança em cima de um firewall que ainda não é o que a tela mostra.
-  const locked = !!pending;
-  const lockReason = pending?.reverting
-    ? 'A reversão de uma alteração de escopo input está em curso. A edição volta quando ela terminar.'
-    : 'Há uma alteração aguardando confirmação. Confirme o acesso ou reverta agora, na faixa no topo, para voltar a editar.';
+  // E o estado "revertendo" NÃO tranca, porque o backend não tranca nele — e
+  // essa liberação foi deliberada e cara. Neste produto o banco é a verdade e o
+  // nftables é o resultado renderizado: com a reversão já concluída no banco, o
+  // que resta é uma reconciliação que qualquer mutação seguinte também faz.
+  //
+  // Travar aqui refazia, pela tela, o beco sem saída que o backend acabou de
+  // fechar: numa máquina onde o `nft` recusa persistentemente (a regra passa no
+  // `nft -c` e é rejeitada no apply), o painel virava somente-leitura por tempo
+  // indefinido — sem apagar a regra que causa a falha, sem confirmar, sem
+  // reverter, e com reboot não ajudando. A saída era `sqlite3` na máquina.
+  const locked = !!pending && !pending.reverting;
+  const lockReason = 'Há uma alteração aguardando confirmação. Confirme o acesso ou reverta agora, na faixa no topo, para voltar a editar.';
   const editDisabled = busy || locked;
 
   const confirmPending = () => {
@@ -834,8 +879,9 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               <Timer className="w-5 h-5 text-amber-400" aria-hidden="true" />
               {/* O relógio diz "reverte em", nunca "expira em": ele informa o
                   que vai acontecer, não que um prazo terminou. E o número sai
-                  de expires_at, hora do servidor — recarregar a página não
-                  reinicia nada. */}
+                  do seconds_left do SERVIDOR, recalculado a cada resposta —
+                  recarregar a página não reinicia nada, e o relógio da estação
+                  do operador não tem como deslocá-lo. */}
               <span className="text-xs text-amber-300/80">reverte em</span>
               <span className="font-mono text-2xl font-semibold text-amber-300 tabular-nums" aria-live="off">
                 {pendingSeconds === null ? '—' : formatCountdown(pendingSeconds)}
@@ -896,16 +942,22 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
 
       {/* Revertendo: o estado anterior JÁ voltou ao banco e o que falta é o
           firewall vivo aceitar — o LinkGuard repete até conseguir. Aqui não
-          cabe nenhum dos dois botões (confirmar é recusado pelo backend), e o
-          texto tem que dizer que a reversão está em curso, não perguntar. */}
+          cabe nenhum dos dois botões (o backend recusa confirmar e reverter), e
+          o texto tem que dizer que a reversão está em curso, não perguntar.
+          E não pode prometer trava: a edição está LIBERADA neste estado, do
+          mesmo jeito que no backend — é assim que o operador consegue apagar a
+          regra que está fazendo o `nft` recusar. */}
       {pending?.reverting && (
         <div className="rounded-xl border border-blue-500/40 bg-blue-500/10 p-4 flex flex-col sm:flex-row sm:items-start gap-3">
           <RotateCcw className="w-5 h-5 text-blue-400 shrink-0 animate-spin" aria-hidden="true" />
           <div className="min-w-0 flex-1 text-sm text-blue-100">
-            <p className="font-medium">A reversão está em curso.</p>
+            <p className="font-medium">A reversão está em curso — e você já pode editar normalmente.</p>
             <p className="text-blue-200/80 mt-0.5 break-words">{pending.summary}</p>
             <p className="text-blue-200/70 text-xs mt-1.5">
               Os grupos e as regras já voltaram ao estado anterior aqui no LinkGuard; falta o firewall aceitar a reconfiguração, e ele repete a tentativa até conseguir. Não há o que confirmar: esta alteração não vai mais valer.
+            </p>
+            <p className="text-blue-200/70 text-xs mt-1.5">
+              A edição continua liberada: se foi uma regra que fez o firewall recusar, é editando ou apagando ela que você resolve — a sua próxima alteração aplica os dois estados de uma vez.
             </p>
             <p className="text-blue-200/60 text-xs mt-1.5">
               A reversão desfaz apenas grupos e regras. Bloqueios por host, encaminhamentos de porta e o NTP continuam como estão.
@@ -1576,7 +1628,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                     Este grupo passa a filtrar o que chega no próprio firewall — SSH, este painel, DNS. A alteração é aplicada na hora e, se ninguém confirmar em 90 segundos, o LinkGuard desfaz os grupos e as regras sozinho.
                   </p>
                   <p className="text-orange-200/70">
-                    Enquanto a janela estiver aberta, a edição de grupos e regras fica bloqueada. Tenha um segundo acesso à máquina à mão se puder.
+                    Enquanto ela estiver aguardando confirmação, a edição de grupos e regras fica bloqueada. Tenha um segundo acesso à máquina à mão se puder.
                   </p>
                 </div>
               </div>
