@@ -47,14 +47,39 @@ import (
 //     voltou ao banco e o que falta é o firewall vivo aceitar — não cabe
 //     nenhum dos dois botões (ConfirmPending recusa), e o texto tem que dizer
 //     que a reversão está em curso.
+//
+// SecondsLeft é a contagem regressiva medida pelo RELÓGIO DO SERVIDOR — o mesmo
+// relógio que o watchdog usa para decidir a hora de reverter. Ele existe porque
+// ExpiresAt sozinho obriga o painel a comparar um instante do servidor com o
+// Date.now() da estação do operador: um relógio adiantado em 40 segundos mostra
+// "45 s" quando restam 5, e o operador usa exatamente esse número para decidir
+// se ainda dá tempo de testar o SSH antes de confirmar.
+//
+// Ele é RECALCULADO a cada resposta e não é gravado em lugar nenhum: um
+// seconds_left persistido seria a contagem de quando a linha foi escrita. E
+// ExpiresAt continua no corpo — é a verdade persistida, e é dela que este campo
+// sai.
 type pendingView struct {
 	ID          string     `json:"id"`
 	Summary     string     `json:"summary"`
 	AppliedBy   string     `json:"applied_by"`
 	ExpiresAt   time.Time  `json:"expires_at"`
+	SecondsLeft int        `json:"seconds_left"`
 	CreatedAt   time.Time  `json:"created_at"`
 	Reverting   bool       `json:"reverting"`
 	RevertingAt *time.Time `json:"reverting_at,omitempty"`
+}
+
+// secondsUntil trunca em vez de arredondar, e nunca devolve negativo: com 89,6
+// segundos restando ele diz 89. O erro fica sempre do lado de mostrar MENOS
+// tempo do que há — um operador que acha que tem um segundo a menos confirma um
+// segundo mais cedo; um que acha que tem um a mais descobre pelo acesso caindo.
+func secondsUntil(t time.Time) int {
+	s := int(time.Until(t).Seconds())
+	if s < 0 {
+		return 0
+	}
+	return s
 }
 
 func newPendingView(p *storage.PendingChange) *pendingView {
@@ -62,12 +87,13 @@ func newPendingView(p *storage.PendingChange) *pendingView {
 		return nil
 	}
 	v := &pendingView{
-		ID:        p.ID,
-		Summary:   p.Summary,
-		AppliedBy: p.AppliedBy,
-		ExpiresAt: p.ExpiresAt,
-		CreatedAt: p.CreatedAt,
-		Reverting: p.Reverting(),
+		ID:          p.ID,
+		Summary:     p.Summary,
+		AppliedBy:   p.AppliedBy,
+		ExpiresAt:   p.ExpiresAt,
+		SecondsLeft: secondsUntil(p.ExpiresAt),
+		CreatedAt:   p.CreatedAt,
+		Reverting:   p.Reverting(),
 	}
 	if p.Reverting() {
 		at := p.RevertingAt

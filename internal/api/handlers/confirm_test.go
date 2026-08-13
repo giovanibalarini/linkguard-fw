@@ -33,11 +33,12 @@ import (
 // importado do handler (é privado), justamente para que a suíte cobre o
 // CONTRATO da API: um campo renomeado no servidor quebra este teste.
 type pendingJSON struct {
-	ID        string    `json:"id"`
-	Summary   string    `json:"summary"`
-	AppliedBy string    `json:"applied_by"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Reverting bool      `json:"reverting"`
+	ID          string    `json:"id"`
+	Summary     string    `json:"summary"`
+	AppliedBy   string    `json:"applied_by"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	SecondsLeft int       `json:"seconds_left"`
+	Reverting   bool      `json:"reverting"`
 }
 
 type pendingBody struct {
@@ -325,6 +326,49 @@ func TestPendingIsNullWhenThereIsNothing(t *testing.T) {
 	}
 	if string(v) != "null" {
 		t.Errorf("esperava null, obtive %s", string(v))
+	}
+}
+
+// A contagem regressiva da faixa não pode depender do relógio da ESTAÇÃO do
+// operador. Com só o expires_at no corpo, o painel compara um instante do
+// servidor com o Date.now() do navegador e erra o número na medida exata do
+// deslocamento entre os dois relógios — e é esse número que o operador usa para
+// decidir se ainda dá tempo de testar o SSH antes de confirmar.
+//
+// Duas coisas juntas aqui: o campo existe e é coerente com o expires_at, e ele
+// é RECALCULADO a cada resposta (um valor gravado seria a contagem de quando a
+// linha foi escrita, e ficaria parado em 90 para sempre).
+func TestPendingCarriesTheServerSideCountdown(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+	createGroupViaAPI(t, h, db, inputGroupBody)
+
+	first := getPending(t, h)
+	if first == nil {
+		t.Fatalf("esperava a janela aberta")
+	}
+	if first.SecondsLeft <= 0 || first.SecondsLeft > 90 {
+		t.Fatalf("seconds_left fora da janela de 90 s: %d", first.SecondsLeft)
+	}
+	// Coerente com a verdade persistida: os dois descrevem o mesmo instante,
+	// medidos com o mesmo relógio. A folga de 2 s é o tempo do próprio teste.
+	if d := time.Until(first.ExpiresAt).Seconds() - float64(first.SecondsLeft); d < 0 || d > 2 {
+		t.Errorf("seconds_left (%d) não bate com expires_at (%v): diferença de %.1f s",
+			first.SecondsLeft, first.ExpiresAt, d)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	second := getPending(t, h)
+	if second == nil {
+		t.Fatalf("a janela sumiu no meio do teste")
+	}
+	if second.SecondsLeft >= first.SecondsLeft {
+		t.Errorf("seconds_left não foi recalculado: %d depois de %d, com 1,1 s de intervalo",
+			second.SecondsLeft, first.SecondsLeft)
+	}
+	// E o expires_at continua no corpo, inalterado: ele é a verdade persistida,
+	// e o painel ainda o usa (é dele que sai o horário absoluto).
+	if !second.ExpiresAt.Equal(first.ExpiresAt) {
+		t.Errorf("expires_at mudou entre duas leituras: %v vs %v", first.ExpiresAt, second.ExpiresAt)
 	}
 }
 
