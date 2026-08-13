@@ -90,9 +90,16 @@ export default function Hosts() {
   const onlineCount = useMemo(() => hosts.filter((h) => h.online).length, [hosts]);
   const blockedCount = useMemo(() => hosts.filter((h) => h.blocked).length, [hosts]);
 
-  // enforcement é a resposta a "bloquear aqui adianta alguma coisa?" — a
-  // mesma função que a lista de grupos usa para o aviso de ordem, para as
-  // duas telas nunca discordarem sobre o mesmo bloqueio.
+  // enforcement é a resposta a "bloquear aqui adianta alguma coisa?".
+  //
+  // O que as duas telas compartilham de verdade é o critério de "quem decide
+  // antes deste bloqueio" (lib/blockGroups.adminGroupsAbove), usado aqui por
+  // dentro do blockEnforcement e lá direto, no aviso de ordem da lista de
+  // grupos — era isso que tinha duas implementações e já divergia. O resto
+  // não é compartilhado nem deveria ser: a lista de grupos fala de UM item
+  // que o admin está olhando, esta tela responde por um inventário inteiro e
+  // por isso precisa também dos estados que a outra não tem o que dizer
+  // (grupo ausente da lista, sem permissão para consultá-la).
   const enforcement = useMemo(() => blockEnforcement(fwGroups, KIND_BLOCKED_HOSTS), [fwGroups]);
   // `off_but_live` fica DE FORA daqui de propósito: nesse estado o kernel
   // está descartando o tráfego: dizer "podem não estar sendo bloqueados de

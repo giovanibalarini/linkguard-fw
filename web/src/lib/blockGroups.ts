@@ -15,6 +15,31 @@ export function isSystemGroup(kind: string): boolean {
 }
 
 /**
+ * adminGroupsAbove é a resposta a "quem decide antes deste bloqueio?": os
+ * nomes dos grupos do admin LIGADOS que estão antes de `index` na ordem de
+ * avaliação (spec §2.2).
+ *
+ * Só grupo do admin ligado conta. Um grupo desligado não põe linha nenhuma
+ * na forward, então não tem como liberar nada antes — avisar por causa dele
+ * seria alarme falso. Um grupo do sistema acima de outro também não conta:
+ * os dois só descartam, nunca liberam.
+ *
+ * Vive aqui, e não em cada tela, porque as duas telas que fazem esta
+ * pergunta — o aviso de ordem na lista de grupos e o cruzamento da tela de
+ * Hosts — têm que dar a MESMA resposta sobre o MESMO bloqueio. Elas já
+ * tinham duas implementações separadas, e a de baixo (esta) reordenava por
+ * `position` enquanto a da lista confiava na ordem que a API devolveu.
+ *
+ * `groups` tem que vir na ordem de avaliação (é o que `index` indexa).
+ */
+export function adminGroupsAbove(groups: FirewallGroup[], index: number): string[] {
+  return groups
+    .slice(0, Math.max(0, index))
+    .filter((g) => !isSystemGroup(g.kind) && g.enabled)
+    .map((g) => g.name);
+}
+
+/**
  * BlockEnforcement é a resposta honesta a "este bloqueio está mesmo em
  * vigor?".
  *
@@ -129,13 +154,7 @@ export function blockEnforcement(
     };
   }
 
-  // Só grupo do admin LIGADO conta: um grupo desligado não põe linha nenhuma
-  // na forward, então não tem como liberar nada antes — avisar por causa dele
-  // seria alarme falso.
-  const above = ordered
-    .slice(0, idx)
-    .filter((g) => !isSystemGroup(g.kind) && g.enabled)
-    .map((g) => g.name);
+  const above = adminGroupsAbove(ordered, idx);
   if (above.length > 0) {
     return {
       status: 'shadowed',

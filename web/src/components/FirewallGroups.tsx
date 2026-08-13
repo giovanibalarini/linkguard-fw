@@ -8,7 +8,7 @@ import client from '../api/client';
 import Modal from './ui/Modal';
 import IconButton from './ui/IconButton';
 import { useAuth } from '../context/AuthContext';
-import { isSystemGroup, KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../lib/blockGroups';
+import { adminGroupsAbove as groupsAbove, isSystemGroup, KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../lib/blockGroups';
 import type {
   FirewallGroup, FirewallGroupsData, FirewallRule, FirewallRulesData,
   GroupFallthrough, LastApply, NetHost, NftChainRule, NftManaged,
@@ -386,8 +386,11 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   // adminGroupsAbove devolve os grupos do admin LIGADOS que estão antes da
   // posição `i` na lista — a condição do aviso da spec §2.2. `groups` já vem
   // ordenado por position, e é essa mesma ordem que a forward tem.
-  const adminGroupsAbove = (i: number): string[] =>
-    groups.slice(0, i).filter((g) => !isSystemGroup(g.kind) && g.enabled).map((g) => g.name);
+  //
+  // O critério em si mora em lib/blockGroups: a tela de Hosts faz a MESMA
+  // pergunta sobre o MESMO bloqueio (via blockEnforcement) e as duas não
+  // podem discordar. Eram duas implementações separadas até a revisão final.
+  const adminGroupsAbove = (i: number): string[] => groupsAbove(groups, i);
 
   const addCidr = () => {
     const cidr = newCidr.trim();
