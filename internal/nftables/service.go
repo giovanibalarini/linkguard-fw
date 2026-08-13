@@ -299,21 +299,100 @@ func (s *Service) Save(ctx context.Context) (string, error) {
 	return s.Ruleset(ctx)
 }
 
-// Restore atomically reloads a previously saved ruleset via `nft -f`.
+// ErrNoLinkguardTable é a recusa de restaurar um snapshot que não contém a
+// tabela que o LinkGuard possui — ver LinkguardTableBlock e Restore.
+var ErrNoLinkguardTable = fmt.Errorf("o snapshot não contém a tabela %s %s", Family, Table)
+
+// LinkguardTableBlock extrai de um dump de `nft list ruleset` APENAS o bloco
+// `table inet linkguard { … }`. É o que torna o Restore escopado (ver lá).
+//
+// O reconhecimento é ancorado no formato que o próprio nft emite, e não numa
+// contagem de chaves: o dump abre a tabela com `table inet linkguard {` na
+// coluna 0 e a fecha com um `}` sozinho, também na coluna 0, enquanto TODA
+// linha do corpo — chain, set, map, elemento de lista quebrada em várias
+// linhas, comentário — começa com tabulação. Medido contra o nft 1.1.3 de
+// verdade (v. .superpowers/sdd/rollback-trava-e-flush.md): nem um comentário
+// contendo `}` (`comment "chave } com chave"`), nem uma lista de elementos
+// longa o bastante para o nft quebrar em várias linhas produzem `}` na coluna
+// 0. Contar chaves, ao contrário, se perderia justamente nesse comentário e
+// devolveria um bloco TRUNCADO — que é o pior desfecho possível aqui, porque
+// um bloco truncado ainda pode ser um ruleset válido e seria aplicado
+// atomicamente como se fosse o snapshot inteiro.
+//
+// Um dump sem a nossa tabela devolve ErrNoLinkguardTable, nunca string vazia:
+// um snapshot antigo, ou de uma máquina onde a tabela ainda não existia, tem
+// que virar recusa VISÍVEL, não um restore que não restaura nada e responde
+// "pronto".
+func LinkguardTableBlock(dump string) (string, error) {
+	header := fmt.Sprintf("table %s %s {", Family, Table)
+	lines := strings.Split(dump, "\n")
+	start := -1
+	for i, l := range lines {
+		if strings.TrimRight(l, " \t\r") == header {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return "", ErrNoLinkguardTable
+	}
+	for i := start + 1; i < len(lines); i++ {
+		if strings.TrimRight(lines[i], " \t\r") == "}" {
+			return strings.Join(lines[start:i+1], "\n"), nil
+		}
+	}
+	return "", fmt.Errorf("o bloco de `table %s %s` do snapshot não está fechado (dump truncado?)", Family, Table)
+}
+
+// Restore reaplica um snapshot de ruleset — ESCOPADO à tabela `inet linkguard`.
+//
+// O que ele NÃO faz mais: `flush ruleset`. A versão anterior mandava ao `nft -f`
+// um arquivo que começava por `flush ruleset` e seguia com o dump inteiro que o
+// Save guardou. Isso viola a regra de ouro do produto ("o LinkGuard só mexe na
+// tabela dele") de duas formas, as duas medidas contra o nft real:
+//
+//   - toda tabela de terceiro criada DEPOIS do snapshot (docker, libvirt,
+//     tailscale, ou uma do próprio admin) desaparecia, e nenhum desses
+//     programas a recria sozinho: quem cria a tabela do Docker é o daemon, na
+//     inicialização dele;
+//   - as que existiam no instante do snapshot voltavam ao conteúdo ANTIGO
+//     delas, o que é pior do que sumir — a máquina fica com regras de terceiro
+//     ressuscitadas que ninguém pediu de volta, e foi assim que uma
+//     `iptables -t nat -A POSTROUTING -j MASQUERADE` capturada por engano
+//     sobreviveu à própria remoção nesta produção (ver Persist).
+//
+// O que ele faz agora é o mesmo idioma já provado em produção pelo Persist: um
+// `table inet linkguard` (cria se não existir, então a linha nunca falha),
+// seguido de `delete table inet linkguard` (agora garantidamente seguro) e da
+// definição inteira vinda do snapshot. O resultado é EXATAMENTE a tabela do
+// snapshot — nada da tabela antiga sobrevive, o que uma reconstrução chain a
+// chain não conseguiria garantir sem reimplementar um diff — e nenhuma outra
+// tabela da máquina é tocada. `nft -f` é uma transação: ou entra tudo, ou não
+// entra nada.
+//
+// O pré-voo `nft -c -f` roda antes do apply de verdade pelo motivo de sempre
+// neste projeto: separar "o snapshot não compila" (backup ruim, e nada foi
+// aplicado) de "o kernel recusou".
 func (s *Service) Restore(ctx context.Context, ruleset string) (string, error) {
+	block, err := LinkguardTableBlock(ruleset)
+	if err != nil {
+		return "", err
+	}
 	f, err := os.CreateTemp("", "linkguard-nft-*.conf")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
 	defer os.Remove(f.Name())
-	// Ensure a clean load: flush before applying the snapshot.
-	body := "flush ruleset\n" + ruleset
+	body := fmt.Sprintf("table %s %s\ndelete table %s %s\n\n%s\n", Family, Table, Family, Table, block)
 	if _, err := f.WriteString(body); err != nil {
 		f.Close()
 		return "", fmt.Errorf("write ruleset: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("close temp file: %w", err)
+	}
+	if out, err := s.exec.ExecuteRead(ctx, "nft", "-c", "-f", f.Name()); err != nil {
+		return out, fmt.Errorf("o snapshot não passou na validação do nft (`nft -c -f`), nada foi aplicado: %w", err)
 	}
 	return s.exec.Execute(ctx, "nft", "-f", f.Name())
 }

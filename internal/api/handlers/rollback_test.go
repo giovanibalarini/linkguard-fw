@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -88,5 +89,111 @@ func TestRollbackIsRefusedWhileAConfirmWindowIsOpen(t *testing.T) {
 	// que Restore aplica o snapshot inteiro.
 	if exec.ranWith("nft -f") {
 		t.Error("o rollback recusado chegou a reescrever o ruleset")
+	}
+}
+
+// A OUTRA METADE da trava, e a que impede que ela vire um beco sem saída (N-2):
+// no estado "revertendo" com o estado anterior JÁ de volta ao banco, a trava
+// LIBERA — o banco é a verdade do produto e o trabalho da reversão terminou nele;
+// o que falta é o nft aceitar, e toda mutação seguinte também reconcilia.
+//
+// Se o rollback travasse aqui, ele recriaria exatamente o beco que custou caro
+// consertar nas mutações de grupo e regra: numa máquina cujo reconcile não passa,
+// restaurar um snapshot bom é uma das poucas saídas que sobram ao operador, e ela
+// não pode estar trancada justamente pela reversão que não consegue terminar.
+func TestRollbackIsAllowedOnceTheRevertHasSettledInTheDB(t *testing.T) {
+	h, db, exec, fr := newGroupTestHandlerFR(t)
+
+	backup := &storage.IptablesBackup{Label: "antes-do-incidente", Rules: "table inet linkguard {\n\tchain user_rules {\n\t}\n}\n"}
+	if err := db.CreateIptablesBackup(backup); err != nil {
+		t.Fatalf("CreateIptablesBackup: %v", err)
+	}
+	// Janela aberta e marcada como revertendo, com o banco intocado desde o
+	// snapshot: é a definição de "a reversão já terminou na camada que manda"
+	// (firewallrules.RevertSettled), o estado em que a máquina fica quando o
+	// nft recusa e o watchdog não consegue concluir.
+	id := openWindow(t, fr)
+	if err := db.MarkPendingReverting(id, time.Now()); err != nil {
+		t.Fatalf("MarkPendingReverting: %v", err)
+	}
+
+	w := doJSON(t, h.Rollback, "POST", "/api/nftables/rollback", `{"backup_id":"`+backup.ID+`"}`)
+	if w.Code == http.StatusConflict {
+		t.Fatalf("o rollback foi travado por uma reversão que já terminou no banco — é o beco sem saída de volta: %s", w.Body.String())
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("Rollback: status %d, body %s", w.Code, w.Body.String())
+	}
+	if !exec.ranWith("nft -f") {
+		t.Errorf("o rollback passou pela trava mas não chegou a restaurar nada: %v", exec.executed)
+	}
+}
+
+// A reconciliação que falha DEPOIS do restore não pode responder 200.
+//
+// O que era: `slog.Warn` no journal e "Ruleset restaurado." na tela, com o
+// firewall vivo sendo o conteúdo do snapshot e as regras do banco — as que o
+// painel mostra — fora dele. Um rollback que responde "pronto" e deixa o
+// firewall diferente do que a tela afirma é a mesma classe de mentira que este
+// projeto vem eliminando (o Persist mudo, §10 da validação em VM).
+func TestRollbackReportsAReconcileThatFailedAfterRestoring(t *testing.T) {
+	h, db, exec, _ := newGroupTestHandlerFR(t)
+
+	// A máquina com defeito: um grupo com regra que passa no `nft -c` e é
+	// recusada no apply — a categoria de falha que faz o Reconcile devolver erro.
+	g := createGroupViaAPI(t, h, db, `{"name":"LAN","cond_saddr":"192.168.3.0/24","fallthrough":"continue"}`)
+	createRuleViaAPI(t, h, db, `{"group_id":"`+g.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	exec.refuseApplyIn(g.ChainName)
+
+	backup := &storage.IptablesBackup{Label: "antes-do-incidente", Rules: "table inet linkguard {\n\tchain user_rules {\n\t}\n}\n"}
+	if err := db.CreateIptablesBackup(backup); err != nil {
+		t.Fatalf("CreateIptablesBackup: %v", err)
+	}
+
+	w := doJSON(t, h.Rollback, "POST", "/api/nftables/rollback", `{"backup_id":"`+backup.ID+`"}`)
+	if w.Code == http.StatusOK {
+		t.Fatalf("o rollback respondeu sucesso com as regras do banco fora do firewall: %s", w.Body.String())
+	}
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("esperava 500, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	// E a mensagem tem que dizer o que ficou valendo — o snapshot —, não o
+	// genérico "erro interno do servidor", que mandaria o operador procurar
+	// defeito no LinkGuard sem saber em que estado o firewall dele ficou.
+	body := w.Body.String()
+	if !strings.Contains(body, backup.Label) || !strings.Contains(body, "reaplicadas") {
+		t.Errorf("a resposta não diz o que aconteceu com o firewall: %s", body)
+	}
+}
+
+// Um snapshot que não contém a tabela `inet linkguard` (gravado antes de ela
+// existir, ou vindo de outra máquina) tem que ser RECUSADO, com o motivo na
+// tela. Antes do escopo, ele era o pior caso do `flush ruleset`: apagava o
+// ruleset inteiro da máquina — a nossa tabela e as de terceiros — e carregava
+// no lugar um snapshot que não tem firewall nenhum do LinkGuard dentro.
+func TestRollbackRefusesASnapshotWithoutOurTable(t *testing.T) {
+	h, db, exec, _ := newGroupTestHandlerFR(t)
+
+	// Saída REAL do nft 1.1.3 para uma máquina que só tem a tabela do Docker.
+	semNossaTabela := "table ip docker {\n" +
+		"\tchain postrouting {\n" +
+		"\t\ttype nat hook postrouting priority srcnat; policy accept;\n" +
+		"\t\tip saddr 172.17.0.0/16 oifname != \"docker0\" masquerade\n" +
+		"\t}\n}\n"
+	backup := &storage.IptablesBackup{Label: "de-outra-maquina", Rules: semNossaTabela}
+	if err := db.CreateIptablesBackup(backup); err != nil {
+		t.Fatalf("CreateIptablesBackup: %v", err)
+	}
+	exec.executed = nil
+
+	w := doJSON(t, h.Rollback, "POST", "/api/nftables/rollback", `{"backup_id":"`+backup.ID+`"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("esperava 400 para um snapshot sem a nossa tabela, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "inet linkguard") {
+		t.Errorf("a resposta não diz por que o snapshot não serve: %s", w.Body.String())
+	}
+	if exec.ranWith("nft -f") {
+		t.Errorf("a recusa chegou a tocar no firewall: %v", exec.executed)
 	}
 }

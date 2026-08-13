@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -860,25 +861,31 @@ func (h *NftablesHandler) ListBackups(w http.ResponseWriter, r *http.Request) {
 
 // Rollback restores a stored ruleset snapshot via nft.
 //
-// Este é o único endpoint de mutação que reescreve o firewall INTEIRO —
-// Service.Restore emite `flush ruleset`, a dívida conhecida deste projeto —, e é
-// a operação que mais briga com uma reversão em andamento: um rollback disparado
-// enquanto o watchdog tenta restaurar o estado anterior escreve por cima do que
-// ele acabou de impor, e o Reconcile que vem logo abaixo — a única coisa que
-// devolve o banco ao comando — falha em silêncio, com um slog.Warn e um HTTP 200
-// na tela.
+// Este é o endpoint de mutação que reescreve de uma vez toda a tabela
+// `inet linkguard`, e é a operação que mais briga com uma reversão em
+// andamento: um rollback disparado enquanto o watchdog tenta restaurar o estado
+// anterior escreve por cima do que ele acabou de impor.
 //
-// M-3 da revisão final: por isso ele passou a consultar confirmWindowBlocks,
-// como toda mutação de grupo e regra. Ele continua não ABRINDO janela (não mexe
-// em grupo nem em regra do banco, e o snapshot da janela não cobre o que ele
-// restaura), mas recusá-lo enquanto uma janela corre custa ao operador esperar
-// 90 segundos e evita que ele desfaça por baixo a rede de proteção de outra
-// pessoa. O estado "revertendo" com o banco já restaurado LIBERA sozinho
-// (RevertSettled), então isto não cria beco: a saída do operador cuja
-// reconciliação não passa continua existindo.
+// M-3 da revisão final: por isso ele consulta confirmWindowBlocks, como toda
+// mutação de grupo e regra. Ele continua não ABRINDO janela (não mexe em grupo
+// nem em regra do banco, e o snapshot da janela não cobre o que ele restaura),
+// mas recusá-lo enquanto uma janela corre custa ao operador esperar 90 segundos
+// e evita que ele desfaça por baixo a rede de proteção de outra pessoa. O estado
+// "revertendo" com o banco já restaurado LIBERA sozinho (RevertSettled), então
+// isto não cria beco: a saída do operador cuja reconciliação não passa continua
+// existindo.
 //
-// O que continua REGISTRADO e não corrigido: o `slog.Warn` do Reconcile abaixo
-// segue respondendo 200 na tela.
+// O `flush ruleset` que o Service.Restore emitia — a dívida conhecida deste
+// projeto — deixou de existir: o restore agora é escopado à tabela
+// `inet linkguard` (ver nftables.Service.Restore). Duas consequências para quem
+// lê este handler:
+//
+//   - um snapshot que não contenha a nossa tabela é RECUSADO em vez de
+//     restaurar o vazio (nftables.ErrNoLinkguardTable);
+//   - o que o snapshot guardou de tabelas de terceiros continua guardado (o
+//     backup é o dump inteiro do `nft list ruleset`) e não é mais aplicado. Isso
+//     é intencional: reimpor a versão antiga da tabela do Docker é dano, não
+//     restauração.
 func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		BackupID string `json:"backup_id"`
@@ -910,6 +917,18 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := h.svc.Restore(r.Context(), target.Rules)
 	if err != nil {
+		// Um snapshot sem a nossa tabela não é pane do servidor: é um snapshot
+		// que não serve para este botão — gravado antes de a tabela existir, ou
+		// vindo de um backup de outra máquina. O 500 genérico ("erro interno do
+		// servidor") mandaria o operador procurar defeito no LinkGuard em vez de
+		// escolher outro snapshot.
+		if errors.Is(err, nftables.ErrNoLinkguardTable) {
+			slog.Warn("rollback recusado: o snapshot escolhido não contém a tabela do LinkGuard", "snapshot", target.Label)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"o snapshot %q não contém a tabela `inet linkguard` e por isso não pode ser restaurado; nada foi alterado no firewall",
+				target.Label))
+			return
+		}
 		writeInternalError(w, fmt.Errorf("rollback failed: %w", err))
 		return
 	}
@@ -930,8 +949,31 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	// at backup time — consistent with "the DB is the source of truth for
 	// the admin's rules", but worth knowing before relying on a rollback to
 	// also undo a rule change.
+	//
+	// E a falha desta reconciliação NÃO é mais um WARN com 200 na tela. Era: o
+	// operador via "Ruleset restaurado.", e o firewall vivo tinha ficado sendo o
+	// conteúdo do snapshot — as regras que o painel mostra, que moram no banco,
+	// não tinham entrado. Um rollback que responde "pronto" e deixa o firewall
+	// diferente do que a tela afirma é a mesma mentira que este projeto vem
+	// eliminando (a mesma classe do Persist mudo, §10 da validação em VM).
+	//
+	// Por que 500 e não uma reversão automática, como em abortArmedWindow: aqui
+	// não há estado anterior guardado para voltar (o rollback não abre janela, e
+	// o snapshot da janela não cobre o que ele restaura). O que cabe é dizer com
+	// precisão o que ficou valendo, para o operador decidir — restaurar outro
+	// snapshot, corrigir o que impede a reconciliação, ou salvar qualquer
+	// alteração de regra, que reconcilia de novo.
 	if err := h.fr.Reconcile(r.Context()); err != nil {
-		slog.Warn("rollback restaurou o ruleset, mas não foi possível reconciliar user_rules a partir do banco em seguida", "err", err)
+		slog.Error("o rollback restaurou o snapshot, mas as regras do banco não puderam ser reaplicadas por cima dele",
+			"err", err, "snapshot", target.Label)
+		// O snapshot vivo é atualizado ANTES de responder mesmo neste caminho: o
+		// firewall MUDOU, e a cópia que um bootstrap futuro restauraria tem que
+		// descrever o que está valendo de verdade, não o estado anterior.
+		saveNftSnapshot(r.Context(), h.db, h.svc)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf(
+			"o snapshot %q foi restaurado no firewall, mas as regras do banco não puderam ser reaplicadas por cima dele: o que está valendo agora é o conteúdo do snapshot, que pode não corresponder ao que o painel mostra. Veja o motivo no journal e salve qualquer alteração de regra para reconciliar de novo.",
+			target.Label))
+		return
 	}
 	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "rollback completed", "output": out})
