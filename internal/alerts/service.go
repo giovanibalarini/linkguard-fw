@@ -568,9 +568,16 @@ func (s *Service) WANInterfaceOK() error {
 // Gritar Critical por algo que só se materializa no próximo boot treina o
 // operador a ignorar Critical — que é a razão pela qual este projeto já teve de
 // corrigir um alerta crítico falso.
+//
+// A mensagem termina dizendo COMO SAIR, porque o alerta é lido por quem chega
+// depois e não tem o contexto: devolver a permissão de escrita e REINICIAR o
+// serviço. Medido em VM (cenário 5 da validação de 2026-08-13): uma mutação nova
+// não resolve, por causa de `ProtectSystem=strict` +
+// `ReadWritePaths=-/etc/nftables.conf` — ver nftables.Service.Persist.
 func (s *Service) FirewallBootPersistFailed(detail string) error {
 	return s.Create(TypeFirewallBootPersistFailed, SeverityWarning, "Regras não gravadas para o próximo boot",
-		"O firewall em vigor não foi gravado no arquivo de boot; as regras valem agora, mas um reboot não as traria de volta: "+detail, "")
+		"O firewall em vigor não foi gravado no arquivo de boot; as regras valem agora, mas um reboot não as traria de volta: "+detail+
+			". Para resolver: devolva a permissão de escrita em /etc/nftables.conf e reinicie o serviço (systemctl restart linkguard-fw). Aplicar outra regra NÃO resolve.", "")
 }
 
 // FirewallBootPersistOK fecha FirewallBootPersistFailed e anuncia a volta.

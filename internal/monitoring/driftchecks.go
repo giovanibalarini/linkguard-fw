@@ -57,6 +57,17 @@ func (c *Collector) SetBootPersistSource(src BootPersistSource) { c.bootPersist 
 // isolado seria criado uma vez e o operador o resolveria sem a condição ter
 // mudado.
 //
+// COMO O ITEM APAGA, MEDIDO (validação em VM de 2026-08-13, cenário 5): o
+// operador devolve a permissão de escrita e REINICIA O SERVIÇO
+// (`systemctl restart linkguard-fw`). Aplicar outra regra não apaga o item — a
+// unidade tem `ProtectSystem=strict` com `ReadWritePaths=-/etc/nftables.conf`, e
+// um caminho ausente no start do serviço não entra gravável no namespace, de
+// modo que o processo já rodando continua enxergando o arquivo como somente
+// leitura por mais mutações que venham. Só um start novo remonta o namespace.
+// Por isso o rótulo do item carrega essa instrução na tela (web/src/components/
+// SystemHealth.tsx): a primeira coisa que o operador tentaria é justamente a que
+// não funciona, e o silêncio o levaria a concluir que o produto está quebrado.
+//
 // As duas perguntas que ele faz, ambas baratas e ambas honestas:
 //
 //  1. a última tentativa REAL de gravar falhou? (nftables.PersistState — sem

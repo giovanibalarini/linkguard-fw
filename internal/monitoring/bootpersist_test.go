@@ -289,3 +289,69 @@ func TestBootPersistEndToEndWithARealUnwritableDir(t *testing.T) {
 		t.Error("o alerta tinha que ter sido fechado sozinho")
 	}
 }
+
+// ─── A recuperação documentada tem que ser a que FUNCIONA ────────────────────
+//
+// O relatório e os comentários diziam que a condição se resolve "na próxima
+// mutação ou no próximo boot". O cenário 5 da validação em VM (2026-08-13)
+// mediu a primeira metade e ela é FALSA: depois de `chattr -i /etc`, uma mutação
+// nova devolveu 200, chegou ao kernel, e o apply_status continuou
+// `ok: false` com o arquivo ainda ausente. A causa é a armadilha de namespace do
+// systemd — `ProtectSystem=strict` com `ReadWritePaths=-/etc/nftables.conf`, e um
+// caminho que não existia no start do serviço não entra gravável no namespace.
+//
+// Só `systemctl restart linkguard-fw` resolve. Estes testes guardam a instrução
+// nas superfícies que o operador lê, porque a primeira coisa que ele tentaria é
+// justamente a que não funciona — e, sem a instrução, ele conclui que o produto
+// está quebrado numa máquina que só alcança por SSH.
+
+func TestBootPersistAlertTellsTheOperatorToRestartTheService(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.SetBootPersistSource(&fakeBootPersist{
+		state: nftables.PersistState{
+			Attempted: true,
+			Err:       "open /etc/nftables.conf: read-only file system",
+			At:        1,
+		},
+		path: "/etc/nftables.conf",
+	})
+	c.checkBootPersist()
+	c.checkBootPersist()
+
+	al := findBootPersistAlert(t, c)
+	if al == nil {
+		t.Fatal("pré-condição: o alerta tinha que estar aberto")
+	}
+	if !strings.Contains(al.Message, "systemctl restart linkguard-fw") {
+		t.Errorf("o alerta tem que nomear o comando que resolve — mexer numa regra NÃO resolve (cenário 5 da validação em VM). Veio: %q", al.Message)
+	}
+	if !strings.Contains(strings.ToLower(al.Message), "aplicar outra regra") {
+		t.Errorf("o alerta tem que desmentir explicitamente a saída que o operador tentaria primeiro. Veio: %q", al.Message)
+	}
+}
+
+// TestBootPersistScreensTellTheOperatorToRestartTheService lê os dois
+// componentes do painel. É um teste de TEXTO de propósito: a instrução só vale
+// se estiver onde o operador olha, e as duas telas não têm outra cobertura
+// automática — a validação em VM as conferiu com Playwright, à mão.
+func TestBootPersistScreensTellTheOperatorToRestartTheService(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		why  string
+	}{
+		{"../../web/src/components/FirewallGroups.tsx", "a faixa âmbar do apply_status fala com quem ACABOU de aplicar uma regra"},
+		{"../../web/src/components/SystemHealth.tsx", "o item \"Regras no próximo boot\" fala com quem chega depois e não clicou em nada"},
+	} {
+		b, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", tc.path, err)
+		}
+		src := string(b)
+		if !strings.Contains(src, "systemctl restart linkguard-fw") {
+			t.Errorf("%s não manda reiniciar o serviço (%s). Sem isso o operador tenta a mutação, vê que não resolve e conclui que o produto está quebrado.", tc.path, tc.why)
+		}
+		if !strings.Contains(strings.ToLower(src), "aplicar outra regra") {
+			t.Errorf("%s não desmente a saída errada (\"aplicar outra regra\"), que é a primeira que o operador tenta (%s)", tc.path, tc.why)
+		}
+	}
+}

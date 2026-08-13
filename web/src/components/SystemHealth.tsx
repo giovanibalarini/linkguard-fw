@@ -20,6 +20,23 @@ const LABEL: Record<string, string> = {
   'system-updates': 'Atualizações do sistema',
 };
 
+// O que fazer quando o vigia está fora do ar — só para os itens em que a saída
+// NÃO é óbvia a partir do nome. Aparece apenas com `up: false`, de modo que o
+// cartão saudável continua do tamanho de sempre.
+//
+// "Regras no próximo boot" é o caso que motivou isto. A validação em VM de
+// 2026-08-13 (cenário 5) mediu que a primeira coisa que o operador tentaria —
+// aplicar outra regra — NÃO apaga o item: a unidade tem ProtectSystem=strict
+// com ReadWritePaths=-/etc/nftables.conf, e um caminho que não existia no start
+// do serviço não entra gravável no namespace, então o processo já rodando
+// continua sem conseguir escrever por mais mutações que venham. Sem esta linha o
+// operador tenta a mutação, vê que nada muda e conclui que o produto está
+// quebrado — às 3 da manhã, numa máquina que ele só alcança por SSH.
+const FIX_HINT: Record<string, string> = {
+  'firewall-boot-persist':
+    'Devolva a permissão de escrita em /etc/nftables.conf e reinicie o serviço: systemctl restart linkguard-fw. Aplicar outra regra não resolve.',
+};
+
 export default function SystemHealth() {
   const [items, setItems] = useState<HealthItem[]>([]);
   const [updates, setUpdates] = useState<UpdatesReport | null>(null);
@@ -57,21 +74,32 @@ export default function SystemHealth() {
           janela) um widget de 4 colunas numa tela larga tentava caber 4 vigias
           lado a lado e todos os rótulos viravam "Sinc...", "Inte...", "Tem...". */}
       <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(8.5rem,1fr))]">
-        {items.map((it) => (
+        {items.map((it) => {
+          const hint = it.up ? undefined : FIX_HINT[it.name];
+          return (
           <div key={`${it.kind}:${it.name}`}
-            className={`flex items-center gap-2 rounded-lg border p-3 ${it.up ? 'border-green-500/20 bg-green-500/5' : 'border-red-500/30 bg-red-500/10'}`}>
-            {it.up ? <ShieldCheck className="w-4 h-4 text-green-400 shrink-0" /> : <ShieldAlert className="w-4 h-4 text-red-400 shrink-0" />}
-            <div className="min-w-0">
-              {/* O `truncate` corta o rótulo dentro de um cartão estreito, e
-                  "Regras no ..." em vermelho não diz ao operador o que está
-                  fora do ar. O title devolve o nome inteiro no hover — vale
-                  para todos os vigias, não só o novo ("Sincroniza...",
-                  "Temperatu...", "Atualizaçõ..." já sofriam do mesmo). */}
-              <div className="text-white text-sm truncate" title={LABEL[it.name] ?? it.name}>{LABEL[it.name] ?? it.name}</div>
-              <div className={`text-xs ${it.up ? 'text-green-400' : 'text-red-400'}`}>{it.up ? 'no ar' : 'fora do ar'}</div>
+            className={`rounded-lg border p-3 ${it.up ? 'border-green-500/20 bg-green-500/5' : 'border-red-500/30 bg-red-500/10'}`}>
+            <div className="flex items-center gap-2">
+              {it.up ? <ShieldCheck className="w-4 h-4 text-green-400 shrink-0" /> : <ShieldAlert className="w-4 h-4 text-red-400 shrink-0" />}
+              <div className="min-w-0">
+                {/* O `truncate` corta o rótulo dentro de um cartão estreito, e
+                    "Regras no ..." em vermelho não diz ao operador o que está
+                    fora do ar. O title devolve o nome inteiro no hover — vale
+                    para todos os vigias, não só o novo ("Sincroniza...",
+                    "Temperatu...", "Atualizaçõ..." já sofriam do mesmo). */}
+                <div className="text-white text-sm truncate" title={LABEL[it.name] ?? it.name}>{LABEL[it.name] ?? it.name}</div>
+                <div className={`text-xs ${it.up ? 'text-green-400' : 'text-red-400'}`}>{it.up ? 'no ar' : 'fora do ar'}</div>
+              </div>
             </div>
+            {/* Visível, não só no `title`: em tela de toque não há hover, e esta
+                é a única instrução que tira a máquina do estado. Só existe com o
+                item vermelho, então o cartão saudável não muda de tamanho. */}
+            {hint && (
+              <p className="mt-2 text-[11px] leading-snug text-red-300/90 break-words">{hint}</p>
+            )}
           </div>
-        ))}
+          );
+        })}
       </div>
       {updates && updates.total > 0 && (
         <div className="mt-3 pt-3 border-t border-gray-800/50">

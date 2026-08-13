@@ -1074,6 +1074,17 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
           <p className="mt-1 text-amber-200/80">
             O firewall em vigor não pôde ser gravado no arquivo que a máquina carrega no boot: {applyStatus.boot_persist_error}. Se a máquina reiniciar antes de isso ser resolvido, ela volta com o firewall anterior — não com o que está nesta tela.
           </p>
+          {/* A instrução de saída, e não só o diagnóstico. Medido em VM
+              (cenário 5 da validação de 2026-08-13): depois de devolver a
+              permissão de escrita, APLICAR OUTRA REGRA NÃO RESOLVE — a unidade
+              tem ProtectSystem=strict com ReadWritePaths=-/etc/nftables.conf, e
+              um caminho ausente no start do serviço não entra gravável no
+              namespace do processo já rodando. Sem esta frase o operador tenta
+              exatamente isso primeiro, vê que não muda nada e conclui que o
+              produto está quebrado. */}
+          <p className="mt-2 text-amber-200/80">
+            <span className="font-medium text-amber-300">Como resolver:</span> devolva a permissão de escrita em <code className="font-mono text-xs">/etc/nftables.conf</code> e depois <span className="font-medium text-amber-300">reinicie o serviço</span> — <code className="font-mono text-xs break-all">systemctl restart linkguard-fw</code>. Aplicar outra regra não apaga este aviso: o serviço em execução continua sem poder escrever no arquivo até ser reiniciado.
+          </p>
         </div>
       )}
 

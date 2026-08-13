@@ -373,6 +373,7 @@ func LinkguardTableBlock(dump string) (string, error) {
 // O pré-voo `nft -c -f` roda antes do apply de verdade pelo motivo de sempre
 // neste projeto: separar "o snapshot não compila" (backup ruim, e nada foi
 // aplicado) de "o kernel recusou".
+
 func (s *Service) Restore(ctx context.Context, ruleset string) (string, error) {
 	block, err := LinkguardTableBlock(ruleset)
 	if err != nil {
@@ -608,6 +609,22 @@ func (s *Service) DelBlocklist(ctx context.Context, cidr string) (string, error)
 //   - monitoring.Collector.checkBootPersist, o item "Regras no próximo boot" da
 //     Saúde do sistema, que é a superfície certa para uma CONDIÇÃO contínua e
 //     some sozinha quando o arquivo volta a ser gravado.
+//
+// COMO A CONDIÇÃO SE RESOLVE, MEDIDO (validação em VM de 2026-08-13, cenário 5):
+// **reiniciando o serviço** — `systemctl restart linkguard-fw` — depois de
+// devolver a permissão de escrita no host. Uma mutação nova NÃO resolve, e esta
+// é a metade que a documentação anterior errava (dizia "até a próxima mutação ou
+// o próximo boot"). O motivo é a armadilha de namespace do systemd que este
+// projeto já pisou duas vezes: a unidade tem `ProtectSystem=strict` com
+// `ReadWritePaths=-/etc/nftables.conf`, e um caminho que NÃO EXISTIA no start do
+// serviço não entra gravável no namespace. Devolver a permissão ao /etc do host
+// não remonta nada — o processo já rodando continua vendo o caminho como
+// somente leitura, então a mutação seguinte falha exatamente igual, o
+// apply_status continua `ok: false` e o arquivo continua ausente. Só um start
+// novo monta o namespace de novo. É por isso que as duas superfícies de tela (a
+// faixa âmbar e o item de saúde) mandam reiniciar o serviço, e não mexer numa
+// regra: mandar o operador tentar a mutação primeiro é mandá-lo concluir que o
+// produto está quebrado.
 //
 // Continua devolvendo o erro ao chamador, e todo chamador continua tratando-o
 // como WARN e seguindo em frente: as regras estão valendo, e abortar por causa
