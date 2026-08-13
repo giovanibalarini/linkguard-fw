@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 )
 
@@ -71,5 +72,42 @@ func TestMaxBodySizeRejectsOverGlobalLimitForOtherPaths(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a body over the global 2MB cap, got %d", w.Code)
+	}
+}
+
+// ─── As rotas legadas de iptables não voltam ─────────────────────────────────
+//
+// POST /api/firewall/backup e POST /api/firewall/rollback foram removidas em
+// 2026-08-13, antes do deploy em produção. O rollback legado não tinha trava de
+// janela de confirmação, não reconciliava o banco depois, e lia AS MESMAS LINHAS
+// da tabela `iptables_backups` que o botão do painel lê. Era inofensivo por
+// acidente — o conteúdo gravado hoje é dump do `nft` e o `iptables-restore`
+// falha na linha 1 —, mas o backup legado gravava `iptables-save` na MESMA
+// tabela, e uma linha nesse formato seria recusada com 400 pelo botão novo e
+// APLICADA pela rota legada. `iptables-restore` sem `-n` dá flush em
+// `ip filter/nat/mangle`: as chains do Docker.
+//
+// Este teste lê o código-fonte de propósito. Montar um *Server de verdade aqui
+// exigiria as vinte e poucas dependências que o main injeta, e o que precisa ser
+// guardado é textual e exato: que ninguém registre estas duas rotas de novo. A
+// verificação é por REGISTRO (`Post("…"`), não pela substring do caminho, para
+// que o comentário que explica a remoção — e que cita os dois caminhos — não
+// faça o teste passar por engano nem falhar por engano.
+func TestLegacyIptablesBackupAndRollbackRoutesStayRemoved(t *testing.T) {
+	src, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("ReadFile server.go: %v", err)
+	}
+	for _, path := range []string{"/api/firewall/backup", "/api/firewall/rollback"} {
+		if bytes.Contains(src, []byte(`Post("`+path+`"`)) {
+			t.Errorf("a rota legada POST %s voltou a ser registrada. Ela dá flush nas chains do Docker (`ip filter/nat/mangle`) sem trava de janela e sem reconciliar; o que faz backup e rollback do firewall é o par /api/nftables/*.", path)
+		}
+	}
+	// E o par que substitui as duas continua de pé — remover a rota errada seria
+	// tirar do operador o botão de recuperação.
+	for _, path := range []string{"/api/nftables/backup", "/api/nftables/rollback"} {
+		if !bytes.Contains(src, []byte(`Post("`+path+`"`)) {
+			t.Errorf("POST %s sumiu: é ele que faz backup/rollback do firewall desde a migração para nftables", path)
+		}
 	}
 }

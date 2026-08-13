@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -82,24 +81,18 @@ func (s *Service) Save(ctx context.Context) (string, error) {
 	return s.exec.ExecuteRead(ctx, "iptables-save")
 }
 
-// Restore applies rules from an iptables-save dump. The rules are written to a
-// temp file and passed to iptables-restore as an argument (the command runs
-// without a shell, so stdin redirection is not available).
-func (s *Service) Restore(ctx context.Context, rules string) (string, error) {
-	f, err := os.CreateTemp("", "linkguard-iptables-*.rules")
-	if err != nil {
-		return "", fmt.Errorf("create temp file: %w", err)
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(rules); err != nil {
-		f.Close()
-		return "", fmt.Errorf("write rules: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("close temp file: %w", err)
-	}
-	return s.exec.Execute(ctx, "iptables-restore", f.Name())
-}
+// Restore FOI REMOVIDO (2026-08-13, antes do deploy em produção). Ele rodava
+// `iptables-restore <arquivo>`, e o único chamador era o rollback legado
+// (POST /api/firewall/rollback), removido junto — nenhuma tela o chamava.
+//
+// Por que não fica "só por precaução": `iptables-restore` SEM `-n` dá flush em
+// `ip filter/nat/mangle` antes de carregar, e essas são justamente as chains do
+// Docker numa máquina de produção. O texto que ele receberia vinha da tabela
+// `iptables_backups`, que hoje guarda dump do `nft` — ou seja, um caminho que
+// só não destruía nada por acidente (o parse falha na linha 1). Deixar a função
+// viva é deixar a arma carregada esperando o próximo chamador distraído. O que
+// restaura firewall neste produto é nftables.Service.Restore, escopado à tabela
+// `inet linkguard` e com pré-voo `nft -c -f`.
 
 // CreateRule inserts/appends a rule in the specified table and chain.
 // ruleSpec should contain only rule arguments (e.g. "-s 10.0.0.0/24 -j ACCEPT").

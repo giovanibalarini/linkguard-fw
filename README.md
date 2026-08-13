@@ -304,10 +304,15 @@ GET  /api/routes/all              - List all routing tables
 
 GET  /api/iptables/rules          - List all iptables tables
 GET  /api/iptables/{table}        - List specific table (filter, nat, mangle)
-GET  /api/iptables/backups        - List iptables backups
+GET  /api/firewall/backups        - List firewall snapshots
 POST /api/firewall/preview        - Preview command
-POST /api/firewall/apply          - Apply firewall changes (with auto-backup)
-POST /api/firewall/rollback       - Rollback to previous backup
+POST /api/firewall/rules          - Legacy iptables rule (WAN-balance wizard only)
+
+GET  /api/nftables/overview       - Live firewall overview (table inet linkguard)
+GET  /api/nftables/ruleset        - Full live ruleset
+GET  /api/nftables/backups        - List firewall snapshots
+POST /api/nftables/backup         - Take a firewall snapshot
+POST /api/nftables/rollback       - Restore a snapshot (scoped to inet linkguard)
 
 GET  /api/alerts                  - List alerts
 PUT  /api/alerts/{id}/resolve     - Resolve an alert

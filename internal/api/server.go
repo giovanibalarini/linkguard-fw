@@ -225,8 +225,25 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallRead)).Get("/api/iptables/mangle", iptH.ListMangle)
 		r.With(require(auth.PermFirewallRead)).Get("/api/iptables/filter", iptH.ListFilter)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/preview", iptH.Preview)
-		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/backup", iptH.Backup)
-		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/rollback", iptH.Rollback)
+		// POST /api/firewall/backup e POST /api/firewall/rollback FORAM REMOVIDAS
+		// (2026-08-13, antes do deploy em produção). Eram do tempo do iptables e
+		// nenhuma tela as chamava — o painel só usa /api/nftables/*. O que elas
+		// eram, medido na revisão:
+		//
+		//   - o rollback legado NÃO tinha trava de janela de confirmação e NÃO
+		//     reconciliava o banco depois, e lia AS MESMAS LINHAS da tabela
+		//     `iptables_backups` que o botão do painel lê (esse já corrigido);
+		//   - era inofensivo por acidente: o conteúdo gravado hoje é dump do
+		//     `nft`, e o `iptables-restore` falha na linha 1 sem mudar nada;
+		//   - mas o backup legado gravava saída de `iptables-save` na MESMA
+		//     tabela, e uma linha nesse formato seria recusada com 400 pelo botão
+		//     novo e APLICADA pela rota legada. `iptables-restore` sem `-n` dá
+		//     flush em `ip filter/nat/mangle` — que são as chains do Docker.
+		//
+		// Ou seja: as duas juntas formavam um caminho para apagar as chains de
+		// terceiros de uma máquina de produção, sem trava e sem tela, para quem
+		// tivesse o token. Backup e rollback do firewall são
+		// POST /api/nftables/backup e POST /api/nftables/rollback.
 		r.With(require(auth.PermFirewallRead)).Get("/api/firewall/backups", iptH.ListBackups)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/rules", iptH.CreateRule)
 		r.With(require(auth.PermFirewallWrite)).Put("/api/firewall/rules", iptH.UpdateRule)

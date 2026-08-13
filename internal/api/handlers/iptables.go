@@ -71,29 +71,13 @@ func (h *IptablesHandler) Preview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Backup saves current iptables rules to the database.
-func (h *IptablesHandler) Backup(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Label string `json:"label"`
-	}
-	_ = decodeJSON(r, &body)
-	if body.Label == "" {
-		body.Label = "manual-" + time.Now().Format("2006-01-02T15:04:05")
-	}
-
-	rules, err := h.svc.Save(r.Context())
-	if err != nil {
-		writeInternalError(w, fmt.Errorf("failed to save iptables rules: %w", err))
-		return
-	}
-
-	backup := &storage.IptablesBackup{Label: body.Label, Rules: rules}
-	if err := h.db.CreateIptablesBackup(backup); err != nil {
-		writeInternalError(w, fmt.Errorf("failed to store backup: %w", err))
-		return
-	}
-	writeJSON(w, http.StatusCreated, backup)
-}
+// Backup e Rollback FORAM REMOVIDOS daqui (2026-08-13). Ver o comentário em
+// internal/api/server.go, onde as rotas viviam: eram do tempo do iptables,
+// nenhuma tela as chamava, e juntas formavam um caminho sem trava para dar
+// flush nas chains `ip filter/nat/mangle` (as do Docker) de uma máquina de
+// produção. Backup e rollback do firewall são o par nftables.
+//
+// iptables.Service.Restore saiu junto: este era o único chamador dele.
 
 // ListBackups returns iptables rule backups.
 func (h *IptablesHandler) ListBackups(w http.ResponseWriter, r *http.Request) {
@@ -106,47 +90,6 @@ func (h *IptablesHandler) ListBackups(w http.ResponseWriter, r *http.Request) {
 		backups = []storage.IptablesBackup{}
 	}
 	writeJSON(w, http.StatusOK, backups)
-}
-
-// Rollback restores iptables rules from a backup.
-func (h *IptablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		BackupID string `json:"backup_id"`
-	}
-	if err := decodeJSON(r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	backups, err := h.db.GetIptablesBackups(100)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-
-	var target *storage.IptablesBackup
-	for i := range backups {
-		if backups[i].ID == body.BackupID {
-			target = &backups[i]
-			break
-		}
-	}
-	if target == nil {
-		writeError(w, http.StatusNotFound, "backup not found")
-		return
-	}
-
-	out, err := h.svc.Restore(r.Context(), target.Rules)
-	if err != nil {
-		writeInternalError(w, fmt.Errorf("rollback failed: %w", err))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message": "rollback completed",
-		"output":  out,
-		"backup":  target,
-	})
 }
 
 // CreateRule adds a firewall rule to a table/chain.
