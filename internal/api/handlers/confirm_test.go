@@ -224,15 +224,28 @@ func TestRuleMutationOpensTheWindowOnlyInsideAnInputGroup(t *testing.T) {
 
 // ─── As saídas ────────────────────────────────────────────────────────────
 
-// confirmWindow aperta "Confirmar" e exige que tenha funcionado. Usado pelos
+// confirmWindow aperta "Confirmar" na janela que o painel está mostrando —
+// isto é, mandando o id que veio do GET, como o painel manda. Usado pelos
 // testes que precisam ENCERRAR uma janela para seguir com o que realmente
 // estão medindo.
 func confirmWindow(t *testing.T, h *handlers.NftablesHandler) {
 	t.Helper()
-	w := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", "")
+	w := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", confirmBody(t, h))
 	if w.Code != http.StatusOK {
 		t.Fatalf("confirmar: status %d, body %s", w.Code, w.Body.String())
 	}
+}
+
+// confirmBody é o corpo de confirmar/reverter com o id da janela em aberto —
+// o mesmo caminho do painel, que lê o id da faixa antes de oferecer os botões.
+// Sem janela aberta manda um id inexistente, para que o teste meça a recusa do
+// servidor e não a do próprio corpo.
+func confirmBody(t *testing.T, h *handlers.NftablesHandler) string {
+	t.Helper()
+	if p := getPending(t, h); p != nil {
+		return `{"id":"` + p.ID + `"}`
+	}
+	return `{"id":"nenhuma-janela-aberta"}`
 }
 
 // Confirmar fecha a janela e NÃO mexe no firewall vivo: o que está valendo já
@@ -258,7 +271,7 @@ func TestConfirmClosesTheWindowAndKeepsTheChange(t *testing.T) {
 	}
 	// Confirmar duas vezes é conflito com o estado do servidor (409), nunca
 	// 500: quem apertou o botão de novo é o operador, não uma pane.
-	again := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", "")
+	again := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", confirmBody(t, h))
 	if again.Code != http.StatusConflict {
 		t.Errorf("esperava 409 ao confirmar sem janela, obtive %d (%s)", again.Code, again.Body.String())
 	}
@@ -269,7 +282,7 @@ func TestRevertUndoesTheChangeAndClosesTheWindow(t *testing.T) {
 	h, db, exec := newGroupTestHandlerNft(t)
 	g := createGroupViaAPI(t, h, db, inputGroupBody)
 
-	w := doJSON(t, h.RevertPendingChange, "POST", "/api/nftables/pending/revert", "")
+	w := doJSON(t, h.RevertPendingChange, "POST", "/api/nftables/pending/revert", confirmBody(t, h))
 	if w.Code != http.StatusOK {
 		t.Fatalf("reverter: status %d, body %s", w.Code, w.Body.String())
 	}
@@ -287,7 +300,7 @@ func TestRevertUndoesTheChangeAndClosesTheWindow(t *testing.T) {
 			t.Errorf("a chain input continua pulando para o grupo revertido: %v", exec.chains[nftables.InputChain])
 		}
 	}
-	again := doJSON(t, h.RevertPendingChange, "POST", "/api/nftables/pending/revert", "")
+	again := doJSON(t, h.RevertPendingChange, "POST", "/api/nftables/pending/revert", confirmBody(t, h))
 	if again.Code != http.StatusConflict {
 		t.Errorf("esperava 409 ao reverter sem janela, obtive %d (%s)", again.Code, again.Body.String())
 	}
@@ -341,7 +354,7 @@ func TestPendingSaysWhenARevertIsAlreadyUnderway(t *testing.T) {
 	}
 	// E confirmar é recusado com 409 — conflito de estado, não erro do
 	// servidor e não sucesso silencioso.
-	w := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", "")
+	w := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", confirmBody(t, h))
 	if w.Code != http.StatusConflict {
 		t.Errorf("esperava 409 ao confirmar uma reversão em andamento, obtive %d (%s)", w.Code, w.Body.String())
 	}
@@ -439,9 +452,15 @@ func TestAFailedReconcileLeavesTheWindowArmedAndTheWatchdogFinishesTheRevert(t *
 		if g.Scope == nftables.ScopeInput {
 			t.Errorf("o grupo de escopo input não confirmado continuou no banco: %+v", g)
 		}
-		if exec.chainHasJumpTo(nftables.InputChain, g.ChainName) && g.Scope == nftables.ScopeInput {
-			t.Errorf("a chain input viva continua pulando para o grupo revertido: %+v", g)
-		}
+	}
+	// A asserção que importa, e a única que enxerga o defeito de verdade (N-5):
+	// a chain input VIVA não pode ter sobrado com um jump para uma chain cujo
+	// grupo já saiu do banco. Percorrer os grupos que sobreviveram nunca
+	// alcança esse caso — depois de uma reversão bem-sucedida não existe grupo
+	// de input no banco para o laço visitar, e um jump órfão passaria
+	// despercebido com a suíte inteira em verde.
+	if jumps := jumpsIn(exec, nftables.InputChain); len(jumps) != 0 {
+		t.Errorf("a chain input viva continua pulando para grupo nenhum depois da reversão: %v", jumps)
 	}
 }
 
@@ -503,6 +522,321 @@ func TestTwoConcurrentInputMutationsOnlyOneIsEverApplied(t *testing.T) {
 	}
 	if !strings.Contains(p.Summary, winner.Name) {
 		t.Errorf("a janela aberta descreve outra mudança que não a que valeu (%q): %q", winner.Name, p.Summary)
+	}
+}
+
+// ─── O que cada falha depois do arme desfaz ───────────────────────────────
+
+// N-3. A ESCRITA NO BANCO que falha não mudou nada em lugar nenhum, e desfazer
+// a janela aí não pode custar uma reescrita das chains vivas.
+//
+// A sonda do revisor: com o banco recusando o UPDATE de ToggleGroup (zero
+// linhas alteradas), a mutação ainda emitia dez comandos de nft — `flush chain`
+// da input e da forward seguidos da reconstrução —, porque o abort rodava a
+// reversão inteira. Reescrever as chains de um firewall de produção por causa
+// de um erro sem efeito nenhum é risco criado do nada.
+func TestAFailedWriteDiscardsTheWindowWithoutTouchingTheFirewall(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db, inputGroupBody)
+	confirmWindow(t, h)
+
+	// O banco recusando a escrita, como na sonda: um gatilho que aborta todo
+	// UPDATE em firewall_groups.
+	if _, err := db.Conn().Exec(
+		`CREATE TRIGGER recusa_update BEFORE UPDATE ON firewall_groups
+         BEGIN SELECT RAISE(ABORT, 'o banco recusou a escrita'); END`); err != nil {
+		t.Fatalf("criar o gatilho: %v", err)
+	}
+	antes := len(exec.executed)
+
+	w := doJSON(t, h.ToggleGroup, "POST", "/api/nftables/groups/toggle", `{"id":"`+g.ID+`","enabled":false}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("erro de banco é 500, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "RAISE") || strings.Contains(w.Body.String(), "TRIGGER") {
+		t.Errorf("o texto cru do banco não pode chegar à tela: %s", w.Body.String())
+	}
+	if depois := exec.executed[antes:]; len(depois) != 0 {
+		t.Errorf("uma escrita que não mudou nada mandou %d comandos ao nft (a chain input e a forward foram reescritas à toa): %v",
+			len(depois), depois)
+	}
+	if p := getPending(t, h); p != nil {
+		t.Errorf("a janela armada por uma mutação que não chegou a valer tinha que ser apagada, não vencer em 90 segundos travando a edição: %+v", p)
+	}
+	if got := adminGroups(t, db)[0]; !got.Enabled {
+		t.Errorf("nada podia ter mudado no banco: %+v", got)
+	}
+}
+
+// N-4. A RECONCILIAÇÃO que falha é o outro ramo: a mudança já está no banco e
+// pode estar pela metade no firewall vivo, então aí a reversão inteira é o que
+// se quer. Quando ela DÁ CERTO, a resposta tem que dizer isso.
+//
+// Antes, esse caminho respondia o genérico "erro interno do servidor" — o
+// operador não tinha como saber se a alteração valeu, valeu pela metade ou não
+// valeu —, e a auditoria ficava com a linha da mutação (um nft.rule.add de uma
+// regra que já não existe) sem nada dizendo que ela foi desfeita.
+func TestAFailedApplyIsUndoneAndTheAnswerSaysSo(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+	g := createGroupViaAPI(t, h, db, inputGroupBody)
+	confirmWindow(t, h)
+	// A chain do grupo passa no `nft -c` e é recusada no apply — a categoria de
+	// falha que produz o `failures` de ReconcileGroups.
+	exec.refuseApplyIn(g.ChainName)
+
+	w := doJSON(t, h.CreateRule, "POST", "/api/nftables/rules",
+		`{"group_id":"`+g.ID+`","action":"accept","proto":"tcp","dport":"22"}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("o apply falhou; esperava 500, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "estado anterior foi restaurado") {
+		t.Errorf("a reversão deu certo e o operador precisa saber que o firewall ficou como estava; obtive %s", w.Body.String())
+	}
+	if p := getPending(t, h); p != nil {
+		t.Errorf("a reversão concluiu; a janela não podia ter ficado: %+v", p)
+	}
+	rules, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Errorf("a regra que não pôde ser aplicada continuou no banco: %+v", rules)
+	}
+	// A linha compensatória da auditoria: sem ela o histórico afirma uma
+	// alteração que nunca chegou a valer.
+	logs, err := db.GetAuditLogs(50)
+	if err != nil {
+		t.Fatalf("GetAuditLogs: %v", err)
+	}
+	var add, undo bool
+	for _, l := range logs {
+		if l.Action == "nft.rule.add" {
+			add = true
+		}
+		if l.Action == "nft.pending.revert" {
+			undo = true
+		}
+	}
+	if !add {
+		t.Fatalf("a mutação tinha que ter deixado a linha dela na auditoria: %+v", logs)
+	}
+	if !undo {
+		t.Errorf("a auditoria ficou com a criação da regra e nada dizendo que ela foi desfeita: %+v", logs)
+	}
+}
+
+// ─── A janela em que se age é a que o operador viu ────────────────────────
+
+// N-1. Confirmar cancela a reversão automática de uma mudança. Cancelar a de
+// uma mudança que o operador NUNCA VIU é o oposto do que a janela existe para
+// fazer — e é o que acontecia enquanto confirmar agisse sobre "a janela que
+// estiver aberta" em vez de sobre a que o painel mostrou.
+//
+// O caminho é real num produto multi-admin: o operador abre a tela com a
+// janela de A na faixa, e no segundo em que ele decide, A confirma (ou o prazo
+// vence e outra mudança é aplicada). O clique dele passava a valer sobre a
+// janela de B.
+func TestConfirmingAWindowThatIsNoLongerTheOpenOneIsRefused(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+
+	primeira := createGroupViaAPI(t, h, db, inputGroupBody)
+	velha := getPending(t, h)
+	if velha == nil {
+		t.Fatalf("esperava a janela da primeira mudança")
+	}
+	confirmWindow(t, h) // a janela que o operador tinha na tela some
+
+	// Outra mudança de escopo input entra no lugar — a janela agora é OUTRA.
+	segunda := createGroupViaAPI(t, h, db,
+		`{"name":"Outro acesso","scope":"input","cond_saddr":"10.0.0.0/24","fallthrough":"continue"}`)
+	nova := getPending(t, h)
+	if nova == nil || nova.ID == velha.ID {
+		t.Fatalf("esperava uma janela nova, obtive %+v", nova)
+	}
+
+	w := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", `{"id":"`+velha.ID+`"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("confirmar com um id obsoleto tinha que ser 409, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	// E a janela da outra mudança continua de pé, com os 90 segundos dela: ela
+	// não pode ter sido confirmada por um clique dirigido a outra coisa.
+	ainda := getPending(t, h)
+	if ainda == nil || ainda.ID != nova.ID {
+		t.Fatalf("a janela da mudança que ninguém viu foi resolvida pelo clique errado: %+v", ainda)
+	}
+	if !strings.Contains(ainda.Summary, segunda.Name) {
+		t.Errorf("a janela em aberto tinha que ser a da segunda mudança (%q): %q", segunda.Name, ainda.Summary)
+	}
+	if primeira.ID == segunda.ID {
+		t.Fatal("os dois grupos do teste tinham que ser diferentes")
+	}
+}
+
+// A mesma exigência para reverter: "Reverter agora" desfaz uma mudança. Se a
+// janela já é outra, o clique desfaria a mudança de outra pessoa — e o operador
+// leria "revertido" sobre a que ele queria desfazer, que continua valendo.
+func TestRevertingAWindowThatIsNoLongerTheOpenOneIsRefused(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+
+	createGroupViaAPI(t, h, db, inputGroupBody)
+	velha := getPending(t, h)
+	if velha == nil {
+		t.Fatalf("esperava a janela da primeira mudança")
+	}
+	confirmWindow(t, h)
+	createGroupViaAPI(t, h, db,
+		`{"name":"Outro acesso","scope":"input","cond_saddr":"10.0.0.0/24","fallthrough":"continue"}`)
+
+	w := doJSON(t, h.RevertPendingChange, "POST", "/api/nftables/pending/revert", `{"id":"`+velha.ID+`"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("reverter com um id obsoleto tinha que ser 409, obtive %d (%s)", w.Code, w.Body.String())
+	}
+	if len(adminGroups(t, db)) != 2 {
+		t.Errorf("a mudança de outra janela foi desfeita pelo clique errado: %+v", adminGroups(t, db))
+	}
+}
+
+// Sem id não dá para saber em qual janela o operador está agindo, e o servidor
+// não escolhe por ele: 400 com a explicação, nunca "resolvo a que estiver
+// aberta".
+func TestConfirmAndRevertRequireTheWindowId(t *testing.T) {
+	h, db := newGroupTestHandler(t)
+	createGroupViaAPI(t, h, db, inputGroupBody)
+
+	for _, c := range []struct {
+		name string
+		fn   http.HandlerFunc
+		path string
+	}{
+		{"confirmar", h.ConfirmPendingChange, "/api/nftables/pending/confirm"},
+		{"reverter", h.RevertPendingChange, "/api/nftables/pending/revert"},
+	} {
+		w := doJSON(t, c.fn, "POST", c.path, `{}`)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s sem id: esperava 400, obtive %d (%s)", c.name, w.Code, w.Body.String())
+		}
+	}
+	if getPending(t, h) == nil {
+		t.Error("nenhuma das duas chamadas sem id podia ter resolvido a janela")
+	}
+}
+
+// ─── O beco sem saída da reversão que não reconcilia (N-2) ────────────────
+
+// A sonda do revisor, numa máquina em que o reconcile continua quebrado (uma
+// regra que o `nft -c` aprova e o apply recusa). Antes desta correção, TODA
+// saída estava fechada:
+//
+//	mutação de escopo input:                 500 (o pendente fica, revertendo)
+//	apagar a regra que quebra o reconcile:   409 "a reversão está em andamento"
+//	desligar o grupo ruim:                   409 (idem)
+//	confirmar:                               409 "a reversão já começou"
+//	reverter agora:                          500 "não foi possível concluir"
+//
+// Reboot não ajudava (RevertPendingOnBoot falha igual e mantém o pendente), e a
+// única saída era sqlite3 na máquina. Este teste percorre a sonda inteira e
+// exige que a linha que importa — apagar a regra que quebra a reconciliação —
+// passe.
+func TestAFailedRevertDoesNotTrapTheOperator(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+
+	// A máquina com defeito: um grupo de forward com uma regra que passa no
+	// `nft -c` e é recusada no apply.
+	lan := createGroupViaAPI(t, h, db, `{"name":"LAN","cond_saddr":"192.168.3.0/24","fallthrough":"continue"}`)
+	quebra := createRuleViaAPI(t, h, db, `{"group_id":"`+lan.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	exec.refuseApplyIn(lan.ChainName)
+
+	// A mutação de escopo input falha no reconcile; a reversão é tentada na
+	// hora e também não passa. O pendente fica, revertendo.
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups", inputGroupBody)
+	if w.Code == http.StatusOK {
+		t.Fatalf("o reconcile falhou; a mutação não podia responder 200: %s", w.Body.String())
+	}
+	p := getPending(t, h)
+	if p == nil || !p.Reverting {
+		t.Fatalf("esperava o pendente em reversão depois da falha: %+v", p)
+	}
+
+	// As duas saídas da janela continuam fechadas — e é assim mesmo: confirmar
+	// uma mudança cujo estado anterior já voltou ao banco seria dizer "fica
+	// valendo" sobre o que já saiu de lá, e reverter de novo esbarra na mesma
+	// máquina quebrada.
+	if c := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", `{"id":"`+p.ID+`"}`); c.Code != http.StatusConflict {
+		t.Errorf("confirmar uma reversão em andamento: esperava 409, obtive %d (%s)", c.Code, c.Body.String())
+	}
+	if rv := doJSON(t, h.RevertPendingChange, "POST", "/api/nftables/pending/revert", `{"id":"`+p.ID+`"}`); rv.Code != http.StatusInternalServerError {
+		t.Errorf("reverter com o nft ainda recusando: esperava 500, obtive %d (%s)", rv.Code, rv.Body.String())
+	}
+
+	// A saída que o operador precisa ter: apagar a regra que quebra a
+	// reconciliação. É uma mutação de grupo de forward, e ela reconcilia
+	// também — o banco já está no estado anterior, então ela é parte da
+	// solução, não um risco.
+	del := doJSON(t, h.DeleteRule, "DELETE", "/api/nftables/rules", `{"id":"`+quebra.ID+`"}`)
+	if del.Code != http.StatusOK {
+		t.Fatalf("o operador ficou sem saída: apagar a regra que quebra o reconcile deu %d (%s)", del.Code, del.Body.String())
+	}
+
+	// E o beco fechou de verdade: a reconciliação desta mutação cumpriu a
+	// única pendência que restava à reversão, então o pendente sai do caminho
+	// em vez de travar a próxima edição.
+	if p := getPending(t, h); p != nil {
+		t.Fatalf("o pendente da reversão já concluída continuou travando a edição: %+v", p)
+	}
+	// A mudança de escopo input não confirmada NÃO ficou valendo, nem no banco
+	// nem no firewall vivo — a reversão foi de verdade.
+	for _, g := range adminGroups(t, db) {
+		if g.Scope == nftables.ScopeInput {
+			t.Errorf("a mudança de input que falhou continuou no banco: %+v", g)
+		}
+	}
+	if jumps := jumpsIn(exec, nftables.InputChain); len(jumps) != 0 {
+		t.Errorf("a chain input viva ficou com jump para um grupo que não existe: %v", jumps)
+	}
+	// E a máquina voltou a aceitar edição normal.
+	again := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups", `{"name":"Depois","fallthrough":"continue"}`)
+	if again.Code != http.StatusOK {
+		t.Fatalf("a edição continuou travada depois de tudo resolvido: %d (%s)", again.Code, again.Body.String())
+	}
+}
+
+// A outra saída da mesma sonda: a mutação que o operador precisa fazer pode ser
+// de ESCOPO INPUT (é comum: o grupo de input que ele acabou de mexer é
+// justamente o que ele quer desligar). Ela arma a própria janela, e a janela da
+// reversão já concluída no banco dá lugar a ela — nada se perde, porque o banco
+// É o snapshot dela neste instante.
+func TestAnInputMutationAlsoEscapesAStalledRevert(t *testing.T) {
+	h, db, exec := newGroupTestHandlerNft(t)
+
+	lan := createGroupViaAPI(t, h, db, `{"name":"LAN","cond_saddr":"192.168.3.0/24","fallthrough":"continue"}`)
+	createRuleViaAPI(t, h, db, `{"group_id":"`+lan.ID+`","action":"drop","saddr":"10.0.0.5"}`)
+	heal := exec.refuseApplyIn(lan.ChainName)
+
+	w := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups", inputGroupBody)
+	if w.Code == http.StatusOK {
+		t.Fatalf("o reconcile falhou; a mutação não podia responder 200: %s", w.Body.String())
+	}
+	travada := getPending(t, h)
+	if travada == nil || !travada.Reverting {
+		t.Fatalf("esperava o pendente em reversão depois da falha: %+v", travada)
+	}
+
+	// A máquina volta ao normal e o operador aplica uma mudança de input.
+	heal()
+	nova := doJSON(t, h.CreateGroup, "POST", "/api/nftables/groups",
+		`{"name":"Acesso novo","scope":"input","cond_saddr":"10.0.0.0/24","fallthrough":"continue"}`)
+	if nova.Code != http.StatusOK {
+		t.Fatalf("a mutação de input ficou sem saída: %d (%s)", nova.Code, nova.Body.String())
+	}
+	p := getPending(t, h)
+	if p == nil {
+		t.Fatalf("a mudança de input nova ficou sem rede de proteção")
+	}
+	if p.ID == travada.ID || p.Reverting {
+		t.Fatalf("a janela em aberto tinha que ser a da mudança nova: %+v", p)
+	}
+	if !strings.Contains(p.Summary, "Acesso novo") {
+		t.Errorf("a janela aberta descreve outra mudança: %q", p.Summary)
 	}
 }
 

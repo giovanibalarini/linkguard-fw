@@ -24,6 +24,7 @@ package handlers
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
@@ -136,12 +137,16 @@ func (h *NftablesHandler) PendingChange(w http.ResponseWriter, r *http.Request) 
 // Qualquer outra falha é do servidor (500) e vira a mensagem genérica — um
 // erro de banco não pode virar 400 com SQL cru na tela.
 func (h *NftablesHandler) ConfirmPendingChange(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.windowIDFromBody(w, r)
+	if !ok {
+		return
+	}
 	p, err := h.fr.PendingChangeOrError()
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	if err := h.fr.ConfirmPending(r.Context()); err != nil {
+	if err := h.fr.ConfirmPending(r.Context(), id); err != nil {
 		// A classificação sai do PRÓPRIO erro (firewallrules.IsWindowConflict),
 		// nunca do `p` lido lá em cima: entre a leitura e a chamada o estado
 		// pode ter mudado, e o caso em que isso acontece é o que mais dói — o
@@ -158,20 +163,44 @@ func (h *NftablesHandler) ConfirmPendingChange(w http.ResponseWriter, r *http.Re
 		writeInternalError(w, err)
 		return
 	}
-	if p == nil {
-		// A confirmação deu certo sobre uma janela que não existia na leitura:
-		// outro admin (ou um retry) armou uma no meio do caminho. Sem `p` não há
-		// id nem resumo para auditar — e usá-lo mesmo assim seria um nil
-		// dereference —, e o que ficou registrado é a única coisa verdadeira:
-		// alguém confirmou uma mudança que não é a que estava na tela dele.
-		slog.Warn("confirmação aplicada a uma janela aberta entre a leitura e a confirmação: o operador confirmou uma mudança que não chegou a ver")
-		auditAction(h.db, r, "nft.pending.confirm", "pending:desconhecido",
-			"janela aberta por outra requisição no meio da confirmação")
-		writeJSON(w, http.StatusOK, okResult(nil))
-		return
+	// A auditoria registra a janela que foi CONFIRMADA — o id que o cliente
+	// mandou —, e o resumo só quando ele descreve essa mesma janela. `p` foi
+	// lido antes da chamada e pode já ser outro pendente (ou nenhum): usá-lo
+	// sem conferir registrava, no caso que mais dói, o resumo de uma mudança
+	// diferente da que acabou de passar a valer para sempre.
+	summary := ""
+	if p != nil && p.ID == id {
+		summary = p.Summary
 	}
-	auditAction(h.db, r, "nft.pending.confirm", "pending:"+p.ID, p.Summary)
+	auditAction(h.db, r, "nft.pending.confirm", "pending:"+id, summary)
 	writeJSON(w, http.StatusOK, okResult(nil))
+}
+
+// windowIDFromBody lê o id da janela que o cliente está resolvendo. Ele é
+// OBRIGATÓRIO em confirmar e em reverter, e é a única forma de as duas saídas
+// agirem sobre a janela que o operador viu na tela em vez de sobre a que
+// estiver aberta no instante da chamada.
+//
+// Sem ele, num painel multi-admin: A aplica uma mudança de escopo input, B
+// confirma a janela de A achando que confirma a dele, e a rede de proteção de
+// uma alteração que B nunca viu é cancelada. O id sai da mesma faixa que
+// mostra a contagem regressiva (GET /api/nftables/pending), então o painel
+// sempre o tem; um cliente de linha de comando faz o GET antes.
+func (h *NftablesHandler) windowIDFromBody(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var b struct {
+		ID string `json:"id"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return "", false
+	}
+	id := strings.TrimSpace(b.ID)
+	if id == "" {
+		writeError(w, http.StatusBadRequest,
+			"informe o id da mudança pendente (o mesmo que a faixa do painel mostra, em GET /api/nftables/pending): sem ele esta ação agiria sobre a janela que estiver aberta, e não sobre a que você viu")
+		return "", false
+	}
+	return id, true
 }
 
 // RevertPendingChange (POST /api/nftables/pending/revert) é o "Reverter agora":
@@ -182,6 +211,10 @@ func (h *NftablesHandler) ConfirmPendingChange(w http.ResponseWriter, r *http.Re
 // mensagem de erro diz — o operador precisa saber que ainda há alguém tentando
 // devolver o acesso dele, e não que a reversão fracassou e acabou.
 func (h *NftablesHandler) RevertPendingChange(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.windowIDFromBody(w, r)
+	if !ok {
+		return
+	}
 	p, err := h.fr.PendingChangeOrError()
 	if err != nil {
 		writeInternalError(w, err)
@@ -191,7 +224,7 @@ func (h *NftablesHandler) RevertPendingChange(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "não há mudança aguardando confirmação")
 		return
 	}
-	if err := h.fr.RevertPending(r.Context()); err != nil {
+	if err := h.fr.RevertPending(r.Context(), id); err != nil {
 		// Mesma simetria do handler de confirmar: a janela que fechou entre a
 		// leitura e a chamada (o watchdog reverteu primeiro, ou outro admin
 		// confirmou) é conflito de estado — 409 com a mensagem escrita para o
@@ -206,7 +239,7 @@ func (h *NftablesHandler) RevertPendingChange(w http.ResponseWriter, r *http.Req
 			"não foi possível concluir a reversão agora; a mudança continua pendente e o LinkGuard vai tentar de novo sozinho")
 		return
 	}
-	auditAction(h.db, r, "nft.pending.revert", "pending:"+p.ID, p.Summary)
+	auditAction(h.db, r, "nft.pending.revert", "pending:"+id, p.Summary)
 	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, okResult(nil))
 }
@@ -214,8 +247,15 @@ func (h *NftablesHandler) RevertPendingChange(w http.ResponseWriter, r *http.Req
 // armedWindow é a janela que ESTA mutação armou, carregada dela até a
 // resposta. `armed` falso é o caminho de toda mutação de tráfego atravessando,
 // que não abre janela nenhuma.
+//
+// `id` é o que separa desfazer A NOSSA janela de desfazer a que estiver aberta.
+// Sem ele, um abort de uma mutação que falhou revertia a mudança de outro
+// admin que tivesse confirmado e aplicado a dele no meio do caminho — a
+// mudança do outro voltava atrás, a nossa (que falhou) ficava valendo, e a
+// tela dizia "o estado anterior foi restaurado".
 type armedWindow struct {
 	armed bool
+	id    string
 	view  *pendingView
 }
 
@@ -224,9 +264,12 @@ type armedWindow struct {
 //
 // A ordem é a rede de proteção inteira, e as duas metades dela:
 //
-//   - o snapshot sai daqui, do estado que ainda é o anterior. Depois da escrita
-//     ele já não existe em lugar nenhum para ser copiado;
-//   - o pendente é GRAVADO aqui. A tabela aceita uma linha só (UNIQUE only_row)
+//   - o snapshot é tirado LÁ DENTRO (firewallrules.OpenConfirmWindow), do
+//     estado que ainda é o anterior e sob o mesmo mutex que grava o pendente.
+//     Depois da escrita ele já não existe em lugar nenhum para ser copiado, e
+//     tirá-lo aqui fora abria um intervalo em que uma mutação alheia entrava no
+//     snapshot e seria desfeita pela reversão (N-8);
+//   - o pendente é GRAVADO ali. A tabela aceita uma linha só (UNIQUE only_row)
 //     e OpenConfirmWindow serializa sob o mesmo mutex, então esta é a fila de
 //     uma pessoa por vez: a segunda mutação de escopo input simultânea leva 409
 //     AQUI, sem ter escrito no banco nem tocado no firewall. Armando depois de
@@ -234,20 +277,17 @@ type armedWindow struct {
 //     mudança dela já valendo e sem reversão automática nenhuma.
 //
 // Quem chama esta função assume uma obrigação: qualquer passo seguinte que
-// falhe tem que chamar abortArmedWindow. A janela armada tranca as mutações de
-// grupo e regra (confirmWindowBlocks), e deixá-la para trás por causa de uma
-// mudança que nem chegou a valer travaria a edição do firewall por 90 segundos
-// à toa.
+// falhe tem que desfazer a janela — discardArmedWindow quando foi a escrita no
+// banco (nada mudou), abortArmedWindow quando foi a reconciliação. A janela
+// armada tranca as mutações de grupo e regra (confirmWindowBlocks), e deixá-la
+// para trás por causa de uma mudança que nem chegou a valer travaria a edição
+// do firewall por 90 segundos à toa.
 func (h *NftablesHandler) openConfirmWindow(w http.ResponseWriter, r *http.Request, needed bool, summary string) (armedWindow, bool) {
 	if !needed {
 		return armedWindow{}, true
 	}
-	snap, err := h.fr.SnapshotState()
+	id, err := h.fr.OpenConfirmWindow(r.Context(), actingUser(r), summary)
 	if err != nil {
-		writeInternalError(w, err)
-		return armedWindow{}, false
-	}
-	if err := h.fr.OpenConfirmWindow(r.Context(), snap, actingUser(r), summary); err != nil {
 		// Já há uma janela aberta é CONFLITO (409), e a mensagem é a de lá
 		// dentro: ela nomeia a mudança e quem a aplicou, que é o que o operador
 		// precisa para decidir entre confirmar e reverter. Nada foi aplicado —
@@ -269,22 +309,53 @@ func (h *NftablesHandler) openConfirmWindow(w http.ResponseWriter, r *http.Reque
 		// faixa é melhor do que abortar: a mudança vai ser aplicada com rede
 		// embaixo, e o painel busca o pendente pelo GET assim que monta.
 		slog.Error("janela de confirmação aberta, mas não foi possível reler o pendente para a resposta", "err", err)
-		return armedWindow{armed: true}, true
+		return armedWindow{armed: true, id: id}, true
 	}
-	return armedWindow{armed: true, view: newPendingView(p)}, true
+	if p != nil && p.ID != id {
+		// O pendente que voltou já é outro: entre o arme e esta releitura, a
+		// nossa janela foi resolvida e outra foi aberta. A faixa desenhada com
+		// ELE mostraria ao operador a contagem de uma mudança que não é a dele.
+		slog.Warn("a janela armada por esta mutação já não é a que está aberta; a resposta vai sem a faixa", "armada", id)
+		return armedWindow{armed: true, id: id}, true
+	}
+	return armedWindow{armed: true, id: id, view: newPendingView(p)}, true
 }
 
-// abortArmedWindow desfaz a janela quando a mutação que ela protegia falhou
-// DEPOIS do arme — a escrita no banco não passou, ou a reconciliação não
-// passou. Responde ao cliente e devolve.
+// discardArmedWindow desfaz a janela quando a mutação falhou na ESCRITA NO
+// BANCO — isto é, quando nada chegou a mudar em lugar nenhum. Responde ao
+// cliente e devolve.
+//
+// Apagar o pendente é tudo o que cabe, e a diferença para abortArmedWindow é
+// medível (N-3): rodar a reversão inteira aqui mandava dez comandos ao nft —
+// `flush chain` da input e da forward seguidos da reconstrução — por causa de
+// um erro que não alterou uma única linha do banco. Reescrever as chains vivas
+// de um firewall de produção é a última coisa que se quer fazer em cima de um
+// erro sem efeito.
+//
+// É seguro porque cada escrita destas é atômica: uma linha só, ou uma
+// transação (ReplaceFirewallGroupsAndRules, ReorderFirewallGroups,
+// ReorderFirewallRules, DeleteFirewallGroup). Falhou, não sobrou meia mudança
+// para desfazer.
+func (h *NftablesHandler) discardArmedWindow(w http.ResponseWriter, r *http.Request, win armedWindow, cause error) {
+	if win.armed {
+		if err := h.fr.DiscardWindow(r.Context(), win.id); err != nil {
+			// A janela fica e vence sozinha em 90 segundos, revertendo para um
+			// estado idêntico ao atual. Chato (trava as mutações até lá), nunca
+			// perigoso — e o operador vê a faixa explicando.
+			slog.Error("a escrita no banco falhou e a janela recém-armada não pôde ser apagada; ela vence sozinha",
+				"err", err, "causa", cause, "janela", win.id)
+		}
+	}
+	writeInternalError(w, cause)
+}
+
+// abortArmedWindow desfaz a janela quando a RECONCILIAÇÃO falhou — o caso em
+// que a mudança já está no banco e pode estar pela metade no firewall vivo.
+// Responde ao cliente e devolve.
 //
 // Reverter aqui é o mesmo caminho do "Reverter agora" do operador: restaura o
-// snapshot no banco e reconcilia. Ele é seguro nos dois casos:
-//
-//   - escrita que falhou: restaurar o estado anterior é reescrever as mesmas
-//     linhas (ReplaceFirewallGroupsAndRules é idempotente);
-//   - reconcile que falhou: é justamente o caso em que a mudança pode estar
-//     PELA METADE no firewall vivo, e desfazê-la é o que se quer.
+// snapshot no banco e reconcilia. E é o caso em que ele é indispensável, porque
+// a mudança pode ter sido aplicada em parte.
 //
 // A reversão que também não conclui NÃO é caminho perdido, e é por isso que
 // armar antes conserta o defeito em vez de mudá-lo de lugar: o pendente FICA no
@@ -297,7 +368,7 @@ func (h *NftablesHandler) abortArmedWindow(w http.ResponseWriter, r *http.Reques
 		writeInternalError(w, cause)
 		return
 	}
-	if err := h.fr.RevertPending(r.Context()); err != nil {
+	if err := h.fr.RevertPending(r.Context(), win.id); err != nil {
 		slog.Error("a mutação falhou e a reversão da janela recém-aberta não pôde ser concluída; o pendente fica e o LinkGuard tenta de novo",
 			"err", err, "causa", cause)
 		writeError(w, http.StatusInternalServerError,
@@ -306,7 +377,17 @@ func (h *NftablesHandler) abortArmedWindow(w http.ResponseWriter, r *http.Reques
 	}
 	saveNftSnapshot(r.Context(), h.db, h.svc)
 	slog.Warn("mutação falhou depois de a janela ter sido aberta; o estado anterior foi restaurado", "err", cause)
-	writeInternalError(w, cause)
+	// A linha de auditoria do DESFAZER (N-4). A mutação já gravou a dela — um
+	// `nft.group.add` de um grupo que, a esta altura, não existe mais —, e sem
+	// esta o histórico afirma uma alteração que nunca chegou a valer.
+	auditAction(h.db, r, "nft.pending.revert", "pending:"+win.id,
+		"a alteração falhou ao ser aplicada no firewall e o estado anterior foi restaurado")
+	// E a resposta é a boa notícia, não o genérico "erro interno do servidor"
+	// (N-4): a reversão DEU CERTO, e quem está na tela precisa saber que o
+	// firewall ficou exatamente como estava — a mensagem genérica deixava o
+	// operador sem saber se a mudança valeu pela metade.
+	writeError(w, http.StatusInternalServerError,
+		"a alteração não foi aplicada no firewall e o estado anterior foi restaurado; nada mudou")
 }
 
 // reconcileArmed reconstrói as chains do LinkGuard a partir do banco e
@@ -326,6 +407,22 @@ func (h *NftablesHandler) reconcileArmed(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 	saveNftSnapshot(r.Context(), h.db, h.svc)
+	if !win.armed {
+		// Esta mutação pode ter passado pela trava porque havia uma reversão
+		// cujo trabalho no BANCO já tinha terminado e cuja única pendência era
+		// o firewall vivo (ver firewallrules.RevertSettled). A reconciliação
+		// acima acabou de cumprir essa pendência — o pendente não tem mais o que
+		// fazer, e mantê-lo travaria a próxima mutação por causa de um trabalho
+		// concluído. Quase sempre não há nada a fechar: um SELECT.
+		if closed, err := h.fr.FinishSettledRevert(r.Context()); err != nil {
+			// Não é motivo para transformar uma mutação bem-sucedida em erro: o
+			// watchdog fecha o pendente na próxima passada.
+			slog.Error("a alteração foi aplicada, mas o pendente da reversão já concluída não pôde ser fechado", "err", err)
+		} else if closed {
+			auditAction(h.db, r, "nft.pending.revert", "pending:concluido",
+				"a reversão em andamento foi concluída pela reconciliação desta alteração")
+		}
+	}
 	return true
 }
 

@@ -1390,15 +1390,13 @@ func TestUpdateRuleRefusesToMoveARuleIntoASystemGroup(t *testing.T) {
 // handler nenhum. É de propósito: o que estes testes medem é a trava, e abrir
 // a janela por uma mutação misturaria dois defeitos possíveis num resultado só
 // — uma trava quebrada e um arme quebrado dariam o mesmo vermelho.
-func openWindow(t *testing.T, fr *firewallrules.Service) {
+func openWindow(t *testing.T, fr *firewallrules.Service) string {
 	t.Helper()
-	snap, err := fr.SnapshotState()
+	id, err := fr.OpenConfirmWindow(context.Background(), "admin", "regra de escopo input aplicada")
 	if err != nil {
-		t.Fatalf("SnapshotState: %v", err)
-	}
-	if err := fr.OpenConfirmWindow(context.Background(), snap, "admin", "regra de escopo input aplicada"); err != nil {
 		t.Fatalf("OpenConfirmWindow: %v", err)
 	}
+	return id
 }
 
 // Com janela aberta, nenhuma mutação de grupo ou regra é aceita. Sem isso,
@@ -1484,16 +1482,16 @@ func TestEveryMutationIsRefusedWhileAConfirmWindowIsOpen(t *testing.T) {
 func TestConfirmAndRevertAreAllowedWhileTheWindowIsOpen(t *testing.T) {
 	// Confirmar.
 	h, _, _, fr := newGroupTestHandlerFR(t)
-	openWindow(t, fr)
-	w := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", "")
+	id := openWindow(t, fr)
+	w := doJSON(t, h.ConfirmPendingChange, "POST", "/api/nftables/pending/confirm", `{"id":"`+id+`"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("confirmar com a janela aberta: esperava 200, obtive %d (%s)", w.Code, w.Body.String())
 	}
 
 	// Reverter, em uma máquina limpa (a janela é uma só por vez).
 	h2, _, _, fr2 := newGroupTestHandlerFR(t)
-	openWindow(t, fr2)
-	w = doJSON(t, h2.RevertPendingChange, "POST", "/api/nftables/pending/revert", "")
+	id2 := openWindow(t, fr2)
+	w = doJSON(t, h2.RevertPendingChange, "POST", "/api/nftables/pending/revert", `{"id":"`+id2+`"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reverter com a janela aberta: esperava 200, obtive %d (%s)", w.Code, w.Body.String())
 	}
@@ -1509,18 +1507,29 @@ func TestConfirmAndRevertAreAllowedWhileTheWindowIsOpen(t *testing.T) {
 	}
 }
 
-// Uma reversão que começou e ainda não terminou no firewall também tranca a
-// edição, e com outra mensagem: o estado anterior já voltou ao banco e o que
-// falta é o nft aceitar. Mutar aqui escreveria por cima de um estado que o
-// LinkGuard ainda não conseguiu impor.
-func TestMutationIsRefusedWhileARevertIsUnderway(t *testing.T) {
+// Uma reversão marcada como em andamento mas cujo estado anterior AINDA NÃO
+// voltou ao banco tranca a edição. É a metade que continua travando depois do
+// N-2: o que libera a mutação não é a marca de "revertendo", é o banco já ser,
+// linha por linha, o estado anterior (firewallrules.RevertSettled). Enquanto
+// não for, mutar escreveria por cima de um estado que ninguém sabe qual é.
+//
+// A marca é gravada à mão, sem o trabalho que ela afirma ter sido feito — que
+// é exatamente a forma de uma linha corrompida ou de uma reversão interrompida
+// entre a transação e a marca.
+func TestMutationIsRefusedWhileARevertHasNotRestoredTheDBYet(t *testing.T) {
 	h, db, _, fr := newGroupTestHandlerFR(t)
-	openWindow(t, fr)
-	p, err := fr.PendingChangeOrError()
-	if err != nil || p == nil {
-		t.Fatalf("esperava a janela aberta: %+v, %v", p, err)
+	id := openWindow(t, fr)
+	// O banco anda DEPOIS do snapshot da janela: agora ele não descreve mais o
+	// estado que o pendente guardou. Direto no banco porque, pela API, a janela
+	// aberta recusaria — é o estado que se quer montar, não o caminho.
+	if err := db.CreateFirewallGroup(&storage.FirewallGroup{
+		ID: "depois-do-snapshot", Name: "Depois do snapshot",
+		ChainName: nftables.GroupChainName("depois-do-snapshot"), Position: 9,
+		Enabled: true, Fallthrough: nftables.FallthroughContinue, Kind: nftables.GroupKindAdmin,
+	}); err != nil {
+		t.Fatalf("CreateFirewallGroup: %v", err)
 	}
-	if err := db.MarkPendingReverting(p.ID, time.Now()); err != nil {
+	if err := db.MarkPendingReverting(id, time.Now()); err != nil {
 		t.Fatalf("MarkPendingReverting: %v", err)
 	}
 
@@ -1531,8 +1540,10 @@ func TestMutationIsRefusedWhileARevertIsUnderway(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "revers") {
 		t.Errorf("a mensagem tem que dizer que a reversão está em curso, obtive %s", w.Body.String())
 	}
-	if len(adminGroups(t, db)) != 0 {
-		t.Errorf("nada podia ter sido gravado durante a reversão")
+	for _, g := range adminGroups(t, db) {
+		if g.Name == "Novo" {
+			t.Errorf("nada podia ter sido gravado durante a reversão: %+v", g)
+		}
 	}
 }
 

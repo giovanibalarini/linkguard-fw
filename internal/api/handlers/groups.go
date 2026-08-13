@@ -32,8 +32,11 @@ import (
 // assim o snapshot é o estado anterior de verdade, uma segunda requisição
 // simultânea é recusada antes de tocar no firewall, e qualquer passo seguinte
 // que falhe cai na rede de proteção em vez de deixar uma regra de escopo input
-// valendo sem reversão automática. Todo caminho de erro depois do arme passa
-// por abortArmedWindow.
+// valendo sem reversão automática. Todo caminho de erro depois do arme desfaz
+// a janela: discardArmedWindow quando a escrita no banco falhou (nada mudou em
+// lugar nenhum, então basta apagar o pendente) e abortArmedWindow quando foi a
+// reconciliação que falhou (a mudança pode estar pela metade no firewall vivo,
+// e aí a reversão inteira é o que se quer).
 
 // groupBody é o corpo aceito na criação e na edição de um grupo.
 //
@@ -198,7 +201,7 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.CreateFirewallGroup(row); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.group.add", row.ChainName+":"+row.ID, row.Name)
@@ -292,7 +295,7 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	// modo que o que sobra é uma pane — e o 400 com o texto cru punha a
 	// mensagem interna do SQLite na tela do operador.
 	if err := h.db.UpdateFirewallGroup(&row); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.group.update", row.ChainName+":"+row.ID, row.Name)
@@ -358,7 +361,7 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 	// erro aqui é pane do servidor. O 400 com o texto cru do banco — a mesma
 	// assimetria que este handler dizia ter corrigido — sobrevivia neste ramo.
 	if err := h.db.DeleteFirewallGroup(id); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.group.del", id, "")
@@ -425,7 +428,7 @@ func (h *NftablesHandler) ToggleGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.SetFirewallGroupEnabled(id, b.Enabled); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	action := "nft.group.disable"
@@ -503,7 +506,7 @@ func (h *NftablesHandler) ReorderGroups(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := h.db.ReorderFirewallGroups(b.IDs); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.group.reorder", "forward", fmt.Sprintf("%d grupos", len(b.IDs)))

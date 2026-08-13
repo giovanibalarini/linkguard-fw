@@ -44,13 +44,14 @@ func TestInputOrderChanged(t *testing.T) {
 			want:    true,
 		},
 		{
-			name: "o de input ficou no mesmo índice, mas um forward passou por baixo dele",
-			// Critério largo: aqui a ordem RELATIVA entre os de input não
-			// mudou (só há um), e mesmo assim não abre — porque o índice dele
-			// não mudou. É o limite exato do critério, escrito para que
-			// afrouxá-lo ou apertá-lo seja uma decisão visível.
+			name: "o de input ficou no mesmo índice, mas dois de forward trocaram por baixo dele",
+			// O limite exato do critério: `b` e `c` trocaram de lugar, e `a`
+			// (o único de input) continua no índice 0 — não abre. Escrito com
+			// listas DIFERENTES de propósito: com `current` e `next` iguais
+			// isto seria o primeiro caso com outro mapa, e nada teria passado
+			// por baixo de nada.
 			current: []string{"a", "b", "c"},
-			next:    []string{"a", "b", "c"},
+			next:    []string{"a", "c", "b"},
 			isInput: map[string]bool{"a": true},
 			want:    false,
 		},

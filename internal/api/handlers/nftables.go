@@ -80,12 +80,36 @@ func (h *NftablesHandler) confirmWindowBlocks(w http.ResponseWriter, _ *http.Req
 		return false
 	}
 	if p.Reverting() {
-		// Estado "revertendo": o estado anterior já voltou ao banco e o que
-		// falta é o firewall vivo aceitar. Confirmar já é recusado lá dentro, e
-		// mutar aqui escreveria por cima de um estado que o LinkGuard ainda não
-		// conseguiu impor.
+		// Estado "revertendo": a reversão já restaurou o estado anterior no
+		// BANCO e o que falta é o firewall vivo aceitar.
+		//
+		// Aqui a trava LIBERA, e essa é a diferença entre um mecanismo de
+		// segurança e um beco sem saída (N-2). O banco é a verdade deste
+		// produto e o nftables é o resultado renderizado, reconstruído a cada
+		// boot: se o banco já está no estado anterior, o trabalho da reversão
+		// terminou na camada que manda, e toda mutação seguinte TAMBÉM
+		// reconcilia — ela é parte da solução, não um risco. Travando, uma
+		// máquina cuja reconciliação falha (uma regra que o `nft -c` aprova e o
+		// apply recusa) prendia o operador sem saída nenhuma: não dava para
+		// apagar a regra que quebra o reconcile, nem desligar o grupo, nem
+		// confirmar (recusado), nem reverter (falha pelo mesmo motivo), e o
+		// reboot repetia tudo. A única saída era sqlite3 na máquina.
+		//
+		// Quem prova que a reversão terminou no banco é RevertSettled, e é ele
+		// que compara linha por linha — a marca de "revertendo" sozinha não
+		// basta como prova.
+		settled, err := h.fr.RevertSettled(p)
+		if err != nil {
+			// Não deu para PROVAR que a reversão terminou: fail closed, como o
+			// erro de leitura acima e pelo mesmo motivo.
+			writeInternalError(w, err)
+			return true
+		}
+		if settled {
+			return false
+		}
 		writeError(w, http.StatusConflict, fmt.Sprintf(
-			"a reversão da mudança %q está em andamento e ainda não terminou no firewall; espere ela concluir antes de alterar grupos ou regras",
+			"a reversão da mudança %q está em andamento e o estado anterior ainda não voltou por completo ao banco; espere ela concluir antes de alterar grupos ou regras",
 			p.Summary))
 		return true
 	}
@@ -484,7 +508,7 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.CreateFirewallRule(row); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	// I-2: audit the DB mutation itself, not just a successful apply — a
@@ -575,7 +599,7 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	// passaram por ValidateRuleFields, então o que sobra é pane do servidor — e
 	// o 400 com o texto cru levava a mensagem interna do SQLite para a tela.
 	if err := h.db.UpdateFirewallRule(row); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.update", "user_rules:"+b.ID, b.Action)
@@ -622,7 +646,7 @@ func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	// Id inexistente já morreu em findRule; o que chega aqui é pane do banco,
 	// que é 500 e não 400 com o texto cru dele.
 	if err := h.db.DeleteFirewallRule(b.ID); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.del", "user_rules:"+b.ID, "")
@@ -695,7 +719,7 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.SetFirewallRuleEnabled(b.ID, b.Enabled); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	action := "nft.rule.disable"
@@ -780,7 +804,7 @@ func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.ReorderFirewallRules(b.IDs); err != nil {
-		h.abortArmedWindow(w, r, win, err)
+		h.discardArmedWindow(w, r, win, err)
 		return
 	}
 	auditAction(h.db, r, "nft.rule.reorder", "user_rules", fmt.Sprintf("%d regras", len(b.IDs)))

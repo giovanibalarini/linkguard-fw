@@ -64,6 +64,19 @@ func pending(t *testing.T, svc *Service) *storage.PendingChange {
 	return p
 }
 
+// currentWindowID é o id da janela em aberto, ou "" quando não há nenhuma —
+// o que confirmar e reverter recebem do painel (a faixa mostra esse id). Um
+// teste que passe outro id está pedindo, de propósito, para agir sobre uma
+// janela que não é a que está aberta.
+func currentWindowID(t *testing.T, svc *Service) string {
+	t.Helper()
+	p := pending(t, svc)
+	if p == nil {
+		return ""
+	}
+	return p.ID
+}
+
 // fakeClock é o par de relógios do serviço — o de PAREDE (de onde sai o
 // expires_at que o painel desenha) e o MONOTÔNICO (que mede tempo decorrido).
 //
@@ -109,13 +122,12 @@ func mutatingCommands(exec *migrateExec) []string {
 func TestPendingChangeSurvivesRestart(t *testing.T) {
 	db := newTestDB(t)
 	svc, _ := newBootedService(t, db)
-	ctx := context.Background()
 
 	snapshot, err := svc.SnapshotState()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "grupo X aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(snapshot, "admin", "grupo X aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 	// simula o processo morrendo e voltando: novo serviço, mesmo banco
@@ -145,11 +157,11 @@ func TestConfirmClearsWithoutTouchingTheFirewall(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000001", "Trava SSH")
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 
-	if err := svc.ConfirmPending(ctx); err != nil {
+	if err := svc.ConfirmPending(ctx, currentWindowID(t, svc)); err != nil {
 		t.Fatalf("confirmar: %v", err)
 	}
 
@@ -187,12 +199,12 @@ func TestRevertRestoresTheGroupsAndReconciles(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateFirewallRule: %v", err)
 	}
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava painel aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava painel aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 	exec.executed = nil
 
-	if err := svc.RevertPending(ctx); err != nil {
+	if err := svc.RevertPending(ctx, currentWindowID(t, svc)); err != nil {
 		t.Fatalf("reverter: %v", err)
 	}
 
@@ -295,7 +307,7 @@ func TestExpiredWindowRevertsOnCheck(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000003", "Trava SSH")
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 
@@ -349,7 +361,7 @@ func TestTheWindowExpiresEvenWhenTheClockJumpsBackwards(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000009", "Trava SSH")
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 
@@ -393,7 +405,7 @@ func TestTheWindowDoesNotEndEarlyWhenTheClockJumpsForward(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000010", "Trava SSH")
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 	exec.executed = nil
@@ -447,7 +459,7 @@ func TestBootRevertsAnUnconfirmedChangeEvenBeforeItExpires(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000004", "Trava SSH")
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 	exec.executed = nil
@@ -502,16 +514,15 @@ func TestBootCheckIsANoopWithoutAPendingChange(t *testing.T) {
 func TestOpeningASecondWindowIsRefused(t *testing.T) {
 	db := newTestDB(t)
 	svc, _ := newBootedService(t, db)
-	ctx := context.Background()
 
 	snapshot, err := svc.SnapshotState()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "primeira"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(snapshot, "admin", "primeira"); err != nil {
 		t.Fatalf("abrir a primeira janela: %v", err)
 	}
-	if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "segunda"); err == nil {
+	if _, err := svc.openWindowWithSnapshot(snapshot, "admin", "segunda"); err == nil {
 		t.Fatal("abrir uma segunda janela tinha que falhar; empilhar pendentes torna a reversão ambígua")
 	}
 	p := pending(t, svc)
@@ -539,10 +550,10 @@ func TestWindowConflictsAreMarkedAsConflictsAndServerFailuresAreNot(t *testing.T
 		if err != nil {
 			t.Fatalf("snapshot: %v", err)
 		}
-		if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "primeira"); err != nil {
+		if _, err := svc.openWindowWithSnapshot(snapshot, "admin", "primeira"); err != nil {
 			t.Fatalf("abrir a primeira janela: %v", err)
 		}
-		err = svc.OpenConfirmWindow(ctx, snapshot, "admin", "segunda")
+		_, err = svc.openWindowWithSnapshot(snapshot, "admin", "segunda")
 		if err == nil || !IsWindowConflict(err) {
 			t.Errorf("a segunda requisição simultânea precisa levar CONFLITO (409 sem ter tocado no firewall), obtive %v", err)
 		}
@@ -551,7 +562,7 @@ func TestWindowConflictsAreMarkedAsConflictsAndServerFailuresAreNot(t *testing.T
 	t.Run("confirmar sem janela nenhuma", func(t *testing.T) {
 		db := newTestDB(t)
 		svc, _ := newBootedService(t, db)
-		err := svc.ConfirmPending(ctx)
+		err := svc.ConfirmPending(ctx, currentWindowID(t, svc))
 		if err == nil || !IsWindowConflict(err) {
 			t.Errorf("confirmar sem janela é conflito de estado, obtive %v", err)
 		}
@@ -567,14 +578,14 @@ func TestWindowConflictsAreMarkedAsConflictsAndServerFailuresAreNot(t *testing.T
 		if err != nil {
 			t.Fatalf("snapshot: %v", err)
 		}
-		if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "grupo Trava SSH aplicado"); err != nil {
+		if _, err := svc.openWindowWithSnapshot(snapshot, "admin", "grupo Trava SSH aplicado"); err != nil {
 			t.Fatalf("abrir janela: %v", err)
 		}
 		clock.advance(ConfirmWindow + time.Second)
 		if err := svc.CheckPendingExpired(ctx); err != nil {
 			t.Fatalf("a reversão automática falhou: %v", err)
 		}
-		err = svc.ConfirmPending(ctx)
+		err = svc.ConfirmPending(ctx, currentWindowID(t, svc))
 		if err == nil || !IsWindowConflict(err) {
 			t.Fatalf("confirmar um segundo depois do prazo é conflito, obtive %v", err)
 		}
@@ -592,14 +603,14 @@ func TestWindowConflictsAreMarkedAsConflictsAndServerFailuresAreNot(t *testing.T
 		if err != nil {
 			t.Fatalf("snapshot: %v", err)
 		}
-		if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "grupo X"); err != nil {
+		if _, err := svc.openWindowWithSnapshot(snapshot, "admin", "grupo X"); err != nil {
 			t.Fatalf("abrir janela: %v", err)
 		}
 		p := pending(t, svc)
 		if err := db.MarkPendingReverting(p.ID, time.Now()); err != nil {
 			t.Fatalf("MarkPendingReverting: %v", err)
 		}
-		err = svc.ConfirmPending(ctx)
+		err = svc.ConfirmPending(ctx, currentWindowID(t, svc))
 		if err == nil || !IsWindowConflict(err) {
 			t.Errorf("confirmar uma reversão já começada é conflito de estado, obtive %v", err)
 		}
@@ -608,7 +619,7 @@ func TestWindowConflictsAreMarkedAsConflictsAndServerFailuresAreNot(t *testing.T
 	t.Run("reverter sem janela nenhuma", func(t *testing.T) {
 		db := newTestDB(t)
 		svc, _ := newBootedService(t, db)
-		err := svc.RevertPending(ctx)
+		err := svc.RevertPending(ctx, currentWindowID(t, svc))
 		if err == nil || !IsWindowConflict(err) {
 			t.Errorf("reverter sem janela é conflito de estado (409), não 500, obtive %v", err)
 		}
@@ -621,11 +632,11 @@ func TestWindowConflictsAreMarkedAsConflictsAndServerFailuresAreNot(t *testing.T
 		if err != nil {
 			t.Fatalf("snapshot: %v", err)
 		}
-		if err := svc.OpenConfirmWindow(ctx, snapshot, "admin", "grupo X"); err != nil {
+		if _, err := svc.openWindowWithSnapshot(snapshot, "admin", "grupo X"); err != nil {
 			t.Fatalf("abrir janela: %v", err)
 		}
 		exec.failOn = func([]string) error { return errors.New("nft fora do ar") }
-		err = svc.RevertPending(ctx)
+		err = svc.RevertPending(ctx, currentWindowID(t, svc))
 		if err == nil {
 			t.Fatal("a reversão tinha que falhar com o nft fora do ar")
 		}
@@ -649,7 +660,7 @@ func TestOpenConfirmWindowUsesTheServerClockAndNinetySeconds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if err := svc.OpenConfirmWindow(context.Background(), snapshot, "gov", "grupo X"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(snapshot, "gov", "grupo X"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 	p := pending(t, svc)
@@ -679,18 +690,17 @@ func TestOpenConfirmWindowUsesTheServerClockAndNinetySeconds(t *testing.T) {
 func TestOpenConfirmWindowRefusesASnapshotTheRevertWouldReject(t *testing.T) {
 	db := newTestDB(t)
 	svc, _ := newBootedService(t, db)
-	ctx := context.Background()
 
 	// (a) sem nenhum grupo — o formato que ReplaceFirewallGroupsAndRules
 	// recusa, e que SnapshotState produz se ListFirewallGroups voltar vazio.
-	if err := svc.OpenConfirmWindow(ctx, `{"groups":[],"rules":[]}`, "admin", "grupo X"); err == nil {
+	if _, err := svc.openWindowWithSnapshot(`{"groups":[],"rules":[]}`, "admin", "grupo X"); err == nil {
 		t.Error("abrir janela com snapshot sem grupos tinha que falhar: a reversão dela seria recusada para sempre")
 	}
 	// (b) com grupo do admin mas SEM os dois do sistema — passa pela guarda
 	// de "lista vazia" e ainda assim é irreversível (restaurá-lo apagaria os
 	// bloqueios administrativos, e nada os recria).
 	semSistema := `{"groups":[{"id":"g1","name":"Minhas regras","chain_name":"grp_g1","kind":"admin"}],"rules":[]}`
-	if err := svc.OpenConfirmWindow(ctx, semSistema, "admin", "grupo X"); err == nil {
+	if _, err := svc.openWindowWithSnapshot(semSistema, "admin", "grupo X"); err == nil {
 		t.Error("abrir janela com snapshot sem os grupos do sistema tinha que falhar: restaurá-lo apagaria os bloqueios administrativos e travaria toda reconciliação da máquina")
 	}
 	if p := pending(t, svc); p != nil {
@@ -726,7 +736,7 @@ func TestRevertRefusesAnEmptySnapshotInsteadOfWipingTheFirewall(t *testing.T) {
 	}
 	exec.executed = nil
 
-	if err := svc.RevertPending(ctx); err == nil {
+	if err := svc.RevertPending(ctx, currentWindowID(t, svc)); err == nil {
 		t.Fatal("reverter para um snapshot vazio tinha que falhar, não apagar o firewall")
 	}
 	if got := groupNames(t, db); strings.Join(got, "|") != strings.Join(antes, "|") {
@@ -784,7 +794,7 @@ func TestARevertThatCannotReachNftKeepsThePendingAndHealsItself(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateFirewallRule: %v", err)
 	}
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 
@@ -811,7 +821,7 @@ func TestARevertThatCannotReachNftKeepsThePendingAndHealsItself(t *testing.T) {
 		t.Errorf("o lado banco da reversão tinha que ter acontecido:\n  obtive %v\n  queria %v", got, antes)
 	}
 	// E confirmar deixa de ser possível: o estado anterior já saiu do banco.
-	if err := svc.ConfirmPending(ctx); err == nil {
+	if err := svc.ConfirmPending(ctx, currentWindowID(t, svc)); err == nil {
 		t.Error("confirmar uma mudança cuja reversão já começou tinha que falhar: o estado anterior já voltou ao banco, e 'confirmar' deixaria banco e nft em estados diferentes")
 	}
 
@@ -861,7 +871,7 @@ func TestConfirmAfterTheWindowExpiredSaysItWasReverted(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000006", "Trava SSH")
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 
@@ -870,7 +880,7 @@ func TestConfirmAfterTheWindowExpiredSaysItWasReverted(t *testing.T) {
 		t.Fatalf("expirar a janela: %v", err)
 	}
 
-	err = svc.ConfirmPending(ctx)
+	err = svc.ConfirmPending(ctx, currentWindowID(t, svc))
 	if err == nil {
 		t.Fatal("confirmar depois da reversão tinha que falhar")
 	}
@@ -907,7 +917,7 @@ func TestAStuckRevertCannotBeConfirmedAfterARestart(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	g := inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000011", "Trava SSH")
-	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 
@@ -933,7 +943,7 @@ func TestAStuckRevertCannotBeConfirmedAfterARestart(t *testing.T) {
 
 	// ── o LinkGuard reinicia: Service NOVO sobre o MESMO banco
 	svc2, exec2 := newTestServiceWithExec(t, db)
-	if err := svc2.ConfirmPending(ctx); err == nil {
+	if err := svc2.ConfirmPending(ctx, currentWindowID(t, svc2)); err == nil {
 		t.Fatal("FURO: um processo novo aceitou confirmar uma reversão já começada -- o pendente some, a alteração do operador já não existe no banco, ninguém retoma a reversão no nft, e ele é informado de que a mudança 'passa a valer definitivamente' com o acesso dele ainda cortado")
 	} else if !strings.Contains(err.Error(), "reversão desta mudança já começou") {
 		t.Errorf("a recusa tem que dizer POR QUE não dá mais para confirmar, obtive %q", err.Error())
@@ -1008,7 +1018,7 @@ func TestTheRevertMarkIsOnlyWrittenAfterTheDatabaseRestoreCommits(t *testing.T) 
 		t.Fatalf("SavePendingChange: %v", err)
 	}
 
-	if err := svc.RevertPending(ctx); err == nil {
+	if err := svc.RevertPending(ctx, currentWindowID(t, svc)); err == nil {
 		t.Fatal("com a restauração falhando no banco, a reversão tinha que reportar erro")
 	}
 	p := pending(t, svc)
@@ -1032,7 +1042,7 @@ func TestTheRevertMarkIsOnlyWrittenAfterTheDatabaseRestoreCommits(t *testing.T) 
 
 	// Consequência 2: o operador ainda pode confirmar — é o que ele tem, e
 	// nada foi restaurado no banco para impedi-lo.
-	if err := svc.ConfirmPending(ctx); err != nil {
+	if err := svc.ConfirmPending(ctx, currentWindowID(t, svc)); err != nil {
 		t.Errorf("confirmar tinha que continuar possível: nada foi restaurado no banco. Obtive %q", err)
 	}
 }
@@ -1056,7 +1066,7 @@ func TestOnlyAFailedRevertSlowsTheWatchdogDown(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000012", "Trava SSH")
-	if err := svc.OpenConfirmWindow(context.Background(), before, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc.openWindowWithSnapshot(before, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 	db.Close() // o banco sai debaixo do laço: GetPendingChange passa a falhar
@@ -1082,7 +1092,7 @@ func TestOnlyAFailedRevertSlowsTheWatchdogDown(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 	inputGroup(t, db2, "aaaaaaaa-0000-4000-8000-000000000013", "Trava SSH")
-	if err := svc2.OpenConfirmWindow(context.Background(), before2, "admin", "grupo Trava SSH aplicado"); err != nil {
+	if _, err := svc2.openWindowWithSnapshot(before2, "admin", "grupo Trava SSH aplicado"); err != nil {
 		t.Fatalf("abrir janela: %v", err)
 	}
 	exec2.failOn = func(args []string) error {
@@ -1163,6 +1173,172 @@ func TestRevertBackoffGrowsAndIsCapped(t *testing.T) {
 	}
 	if d != maxRevertBackoff {
 		t.Errorf("depois de muitas falhas o backoff tem que estar no teto (%v), obtive %v", maxRevertBackoff, d)
+	}
+}
+
+// ─── N-1: a janela em que se age é a que o chamador conhece ───────────────
+
+// A intercalação que o revisor provou, agora determinística — e é a costura
+// do id que a torna testável.
+//
+// O admin A faz uma mutação de escopo input: a janela dele é armada e a mudança
+// é gravada. O reconcile de A demora (dezenas de invocações de nft numa máquina
+// de verdade). Nesse intervalo o admin B confirma a janela de A — confirmar
+// nunca é travado — e aplica a mudança DELE, armando a janela dele. Aí o
+// reconcile de A falha e o abort de A pede "reverter o pendente".
+//
+// Sem identidade, quem era desfeito era o pendente de B: a mudança de B voltava
+// atrás, a de A (que falhou) ficava valendo, e A lia na tela "o estado anterior
+// foi restaurado".
+func TestRevertingAWindowThatIsNoLongerTheOpenOneIsRefused(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newBootedService(t, db)
+	ctx := context.Background()
+
+	// A arma a janela dele e grava a mudança dele.
+	inicial, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	janelaA, err := svc.openWindowWithSnapshot(inicial, "admin-a", "grupo de A")
+	if err != nil {
+		t.Fatalf("abrir a janela de A: %v", err)
+	}
+	inputGroup(t, db, "a1aaaaaa-0000-4000-8000-000000000001", "Mudança de A")
+
+	// B confirma a janela de A e aplica a mudança dele, com a janela dele.
+	if err := svc.ConfirmPending(ctx, janelaA); err != nil {
+		t.Fatalf("B confirmando a janela de A: %v", err)
+	}
+	comA, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	janelaB, err := svc.openWindowWithSnapshot(comA, "admin-b", "grupo de B")
+	if err != nil {
+		t.Fatalf("abrir a janela de B: %v", err)
+	}
+	inputGroup(t, db, "b1aaaaaa-0000-4000-8000-000000000001", "Mudança de B")
+	exec.executed = nil
+
+	// Só agora o reconcile de A falha e o abort de A tenta reverter.
+	err = svc.RevertPending(ctx, janelaA)
+	if err == nil {
+		t.Fatal("reverter uma janela que já não é a que está aberta tinha que ser recusado: isso desfaz a mudança de outra pessoa")
+	}
+	if !IsWindowConflict(err) {
+		t.Errorf("é conflito de estado (409 na tela), não pane do servidor: %v", err)
+	}
+	if cmds := mutatingCommands(exec); len(cmds) != 0 {
+		t.Errorf("uma reversão recusada não pode ter tocado no firewall vivo: %v", cmds)
+	}
+	// A mudança de B continua valendo, e a janela dela também.
+	if names := groupNames(t, db); !contains(names, "Mudança de B") {
+		t.Errorf("a mudança de B foi desfeita pelo abort de A: %v", names)
+	}
+	p := pending(t, svc)
+	if p == nil || p.ID != janelaB {
+		t.Errorf("a janela de B tinha que continuar aberta, obtive %+v", p)
+	}
+}
+
+// A mesma exigência em confirmar: quem confirma cancela uma reversão
+// automática, e cancelar a de uma mudança que o operador nunca viu é o oposto
+// do que os 90 segundos existem para fazer.
+func TestConfirmingAWindowThatIsNoLongerTheOpenOneIsRefused(t *testing.T) {
+	db := newTestDB(t)
+	svc, _ := newBootedService(t, db)
+	ctx := context.Background()
+
+	inicial, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	velha, err := svc.openWindowWithSnapshot(inicial, "admin-a", "grupo de A")
+	if err != nil {
+		t.Fatalf("abrir a janela de A: %v", err)
+	}
+	if err := svc.ConfirmPending(ctx, velha); err != nil {
+		t.Fatalf("confirmar a janela de A: %v", err)
+	}
+	nova, err := svc.openWindowWithSnapshot(inicial, "admin-b", "grupo de B")
+	if err != nil {
+		t.Fatalf("abrir a janela de B: %v", err)
+	}
+
+	err = svc.ConfirmPending(ctx, velha)
+	if err == nil || !IsWindowConflict(err) {
+		t.Fatalf("confirmar com um id obsoleto tinha que ser conflito, obtive %v", err)
+	}
+	p := pending(t, svc)
+	if p == nil || p.ID != nova {
+		t.Errorf("a janela de B foi resolvida por um clique dirigido a outra: %+v", p)
+	}
+}
+
+// ─── N-2: o beco sem saída da reversão que não reconcilia ─────────────────
+
+// Com o estado anterior JÁ de volta ao banco e só o nft pendente, a reversão
+// terminou na camada que é a verdade — e é isso que RevertSettled responde.
+// Quem pergunta é a trava das mutações: neste estado ela LIBERA, porque a
+// mutação seguinte também reconcilia. Enquanto ela travava, uma máquina cujo
+// reconcile falha prendia o operador sem saída nenhuma.
+func TestRevertSettledSaysWhenTheDatabaseIsAlreadyBack(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newBootedService(t, db)
+	ctx := context.Background()
+
+	antes, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if _, err := svc.openWindowWithSnapshot(antes, "admin", "grupo Trava SSH aplicado"); err != nil {
+		t.Fatalf("abrir janela: %v", err)
+	}
+	inputGroup(t, db, "c1aaaaaa-0000-4000-8000-000000000001", "Trava SSH")
+
+	// Enquanto a mudança está valendo, o banco NÃO bate com o snapshot: aqui
+	// travar é o certo.
+	p := pending(t, svc)
+	if settled, err := svc.RevertSettled(p); err != nil || settled {
+		t.Fatalf("sem reversão nenhuma em curso, nada está resolvido: settled=%v err=%v", settled, err)
+	}
+
+	// A reversão restaura o banco e o nft recusa: o pendente fica, revertendo.
+	exec.failOn = func(args []string) error {
+		if len(args) > 0 && args[0] == "flush" {
+			return errors.New("Device or resource busy")
+		}
+		return nil
+	}
+	if err := svc.RevertPending(ctx, p.ID); err == nil {
+		t.Fatal("com o nft recusando, a reversão tinha que reportar erro")
+	}
+	p = pending(t, svc)
+	if p == nil || !p.Reverting() {
+		t.Fatalf("o pendente tinha que ficar, marcado como revertendo: %+v", p)
+	}
+	settled, err := svc.RevertSettled(p)
+	if err != nil {
+		t.Fatalf("RevertSettled: %v", err)
+	}
+	if !settled {
+		t.Fatal("o estado anterior JÁ está no banco: travar a edição aqui prende o operador sem saída — não dá para apagar a regra que quebra o reconcile, nem confirmar, nem reverter")
+	}
+
+	// E a retomada NÃO restaura o banco de novo: a alteração deliberada que o
+	// operador fizer neste estado (tipicamente a que conserta a máquina) tem
+	// que sobreviver à próxima passada do watchdog.
+	exec.failOn = nil
+	inputGroup(t, db, "c2aaaaaa-0000-4000-8000-000000000001", "Conserto")
+	if err := svc.CheckPendingExpired(ctx); err != nil {
+		t.Fatalf("a retomada tinha que concluir com o nft de volta: %v", err)
+	}
+	if names := groupNames(t, db); !contains(names, "Conserto") {
+		t.Errorf("a retomada da reversão apagou a alteração que o operador fez depois de o banco já ter voltado: %v", names)
+	}
+	if pending(t, svc) != nil {
+		t.Error("com o nft reconciliado, o pendente tinha que sair do caminho")
 	}
 }
 

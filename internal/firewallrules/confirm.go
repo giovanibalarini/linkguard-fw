@@ -94,19 +94,114 @@ type stateSnapshot struct {
 // incluídos. É a mesma armadilha que o CONTRATO DO CHAMADOR de
 // nftables.ReconcileGroups descreve, aqui do lado de quem grava.
 func (s *Service) SnapshotState() (string, error) {
-	groups, err := s.db.ListFirewallGroups()
+	st, err := s.readState()
 	if err != nil {
-		return "", fmt.Errorf("ler os grupos para o snapshot: %w", err)
+		return "", err
 	}
-	rules, err := s.db.ListFirewallRules()
-	if err != nil {
-		return "", fmt.Errorf("ler as regras para o snapshot: %w", err)
-	}
-	b, err := json.Marshal(stateSnapshot{Groups: groups, Rules: rules})
+	b, err := json.Marshal(st)
 	if err != nil {
 		return "", fmt.Errorf("serializar o snapshot: %w", err)
 	}
 	return string(b), nil
+}
+
+// readState lê os grupos e as regras na ordem em que o banco os devolve — a
+// mesma ordem dos dois lados de toda comparação (ORDER BY position), para que
+// "o banco bate com o snapshot" seja uma pergunta com resposta estável.
+func (s *Service) readState() (stateSnapshot, error) {
+	groups, err := s.db.ListFirewallGroups()
+	if err != nil {
+		return stateSnapshot{}, fmt.Errorf("ler os grupos para o snapshot: %w", err)
+	}
+	rules, err := s.db.ListFirewallRules()
+	if err != nil {
+		return stateSnapshot{}, fmt.Errorf("ler as regras para o snapshot: %w", err)
+	}
+	return stateSnapshot{Groups: groups, Rules: rules}, nil
+}
+
+// canonicalState serializa um estado numa forma COMPARÁVEL byte a byte.
+//
+// Duas normalizações, e as duas existem por uma armadilha real:
+//
+//   - slice nil e slice vazia viram a mesma coisa (`[]`). ListFirewallGroups
+//     devolve nil quando não há linha e ListFirewallRules devolve uma slice
+//     vazia; comparar os dois JSONs crus diria "mudou" onde nada mudou;
+//   - todo instante vai para UTC. O mesmo instante lido em fusos diferentes
+//     serializa diferente, e o snapshot atravessa uma ida e volta pelo banco
+//     antes de ser comparado com o que está lá agora.
+//
+// A ordem das listas NÃO é normalizada de propósito: ela é significativa (é a
+// ordem de avaliação do firewall) e os dois lados saem do mesmo ORDER BY.
+func canonicalState(st stateSnapshot) (string, error) {
+	out := stateSnapshot{
+		Groups: make([]storage.FirewallGroup, len(st.Groups)),
+		Rules:  make([]storage.FirewallRule, len(st.Rules)),
+	}
+	for i, g := range st.Groups {
+		g.CreatedAt, g.UpdatedAt = g.CreatedAt.UTC(), g.UpdatedAt.UTC()
+		out.Groups[i] = g
+	}
+	for i, r := range st.Rules {
+		r.CreatedAt, r.UpdatedAt = r.CreatedAt.UTC(), r.UpdatedAt.UTC()
+		out.Rules[i] = r
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", fmt.Errorf("serializar o estado para comparação: %w", err)
+	}
+	return string(b), nil
+}
+
+// stateMatchesSnapshot diz se os grupos e as regras do banco são HOJE,
+// linha por linha, o que o snapshot descreve.
+//
+// É a pergunta que decide se a reversão já terminou o trabalho dela na camada
+// que é a verdade (ver RevertSettled). Custa dois SELECTs e dois Marshal —
+// barato o bastante para rodar na trava de toda mutação.
+func (s *Service) stateMatchesSnapshot(snapshot string) (bool, error) {
+	var want stateSnapshot
+	if err := json.Unmarshal([]byte(snapshot), &want); err != nil {
+		return false, fmt.Errorf("snapshot da mudança pendente ilegível: %w", err)
+	}
+	now, err := s.readState()
+	if err != nil {
+		return false, err
+	}
+	a, err := canonicalState(want)
+	if err != nil {
+		return false, err
+	}
+	b, err := canonicalState(now)
+	if err != nil {
+		return false, err
+	}
+	return a == b, nil
+}
+
+// RevertSettled diz se a reversão desta janela já TERMINOU na camada que é a
+// verdade: o pendente está marcado como "revertendo" e o banco já é, linha por
+// linha, o estado anterior que o snapshot descreve. O que falta é só a
+// reconciliação com o nft.
+//
+// Quem pergunta é a trava das mutações (handlers.confirmWindowBlocks), e a
+// resposta muda o que ela faz: neste estado a mutação seguinte é LIBERADA, não
+// travada. A arquitetura deste produto é "o banco é a verdade, o nftables é o
+// resultado renderizado, reconstruído a cada boot" — se o banco já voltou ao
+// estado anterior, a reversão acabou, e qualquer mutação seguinte também
+// reconcilia. Travá-la só prenderia o operador: sem isto, uma mutação de
+// escopo input que falhou no reconcile deixava o painel sem saída nenhuma —
+// não dava para apagar a regra que quebra a reconciliação, nem desligar o
+// grupo, nem confirmar (recusado), nem reverter (falha pelo mesmo motivo). A
+// única saída era o sqlite3 na máquina.
+//
+// Erro viaja como erro: quem não conseguiu PROVAR que a reversão terminou não
+// pode liberar a mutação por otimismo.
+func (s *Service) RevertSettled(p *storage.PendingChange) (bool, error) {
+	if p == nil || !p.Reverting() {
+		return false, nil
+	}
+	return s.stateMatchesSnapshot(p.Snapshot)
 }
 
 // validateSnapshotGroups é a MESMA invariante que ensureSystemGroupsPresent
@@ -240,28 +335,86 @@ func IsWindowConflict(err error) bool {
 // aqui, porque o operador acredita que o estado anterior voltou. Enquanto
 // esta limitação existir, a regra é: SÓ mutação de grupo/regra pode chamar
 // esta função (é a Task 4 que precisa garantir isso do lado dos handlers).
-func (s *Service) OpenConfirmWindow(_ context.Context, snapshot, by, summary string) error {
-	if snapshot == "" {
-		return fmt.Errorf("snapshot vazio: sem ele não há para onde reverter")
-	}
-	var parsed stateSnapshot
-	if err := json.Unmarshal([]byte(snapshot), &parsed); err != nil {
-		return fmt.Errorf("snapshot ilegível (a reversão dependeria dele): %w", err)
-	}
-	if err := validateSnapshotGroups(parsed.Groups); err != nil {
-		return fmt.Errorf("janela de confirmação NÃO aberta, porque a reversão dela seria recusada: %w", err)
-	}
-
+func (s *Service) OpenConfirmWindow(_ context.Context, by, summary string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// O snapshot sai daqui de DENTRO, sob o mesmo mutex que grava o pendente
+	// (N-8). Tirá-lo fora do lock, no chamador, abria um intervalo em que uma
+	// mutação que NÃO abre janela (escopo forward, port forward, bloqueio por
+	// host) entrava no snapshot e seria desfeita por uma reversão que o
+	// operador acredita cirúrgica. São dois statements adjacentes, e agora não
+	// existe mais um caminho de chamada capaz de armar a janela com um
+	// snapshot de outro instante.
+	snapshot, err := s.SnapshotState()
+	if err != nil {
+		return "", err
+	}
+	return s.openWindowLocked(snapshot, by, summary)
+}
+
+// openWindowWithSnapshot arma a janela com um snapshot ESCOLHIDO pelo
+// chamador, em vez do estado atual. Não exportada, e sem chamador em produção
+// de propósito: em produção o snapshot é sempre o de agora, tirado sob o mesmo
+// mutex (ver OpenConfirmWindow, e o N-8 que ela fecha). Ela existe para os
+// testes deste pacote poderem armar janelas cujo estado anterior é arbitrário
+// — inclusive um irreversível, que é o que a recusa de openWindowLocked
+// precisa exercitar.
+func (s *Service) openWindowWithSnapshot(snapshot, by, summary string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.openWindowLocked(snapshot, by, summary)
+}
+
+// openWindowLocked é o arme propriamente dito. Chamada com s.mu já travado.
+//
+// Recebe o snapshot em vez de tirá-lo porque os testes precisam armar uma
+// janela cujo snapshot descreve um estado anterior ARBITRÁRIO — inclusive um
+// irreversível, para exercitar a recusa. Em produção o único chamador é
+// OpenConfirmWindow, e lá o snapshot é sempre o do estado atual.
+func (s *Service) openWindowLocked(snapshot, by, summary string) (string, error) {
+	if snapshot == "" {
+		return "", fmt.Errorf("snapshot vazio: sem ele não há para onde reverter")
+	}
+	var parsed stateSnapshot
+	if err := json.Unmarshal([]byte(snapshot), &parsed); err != nil {
+		return "", fmt.Errorf("snapshot ilegível (a reversão dependeria dele): %w", err)
+	}
+	if err := validateSnapshotGroups(parsed.Groups); err != nil {
+		return "", fmt.Errorf("janela de confirmação NÃO aberta, porque a reversão dela seria recusada: %w", err)
+	}
+
 	existing, err := s.db.GetPendingChange()
 	if err != nil {
-		return fmt.Errorf("ler a janela de confirmação em aberto: %w", err)
+		return "", fmt.Errorf("ler a janela de confirmação em aberto: %w", err)
 	}
 	if existing != nil {
-		return windowConflict("já há uma mudança aguardando confirmação (%q, aplicada por %s): confirme ou reverta antes de aplicar outra",
-			existing.Summary, existing.AppliedBy)
+		// A ÚNICA janela que dá lugar a outra é a da reversão que já terminou
+		// no banco e só não terminou no nft (RevertSettled). Nada se perde na
+		// troca, e é isso que a torna aceitável: o banco É o snapshot dela
+		// neste instante, logo o snapshot da janela nova é o MESMO estado
+		// anterior — mais 90 segundos de prazo e um watchdog observando. Sem a
+		// troca, o operador cuja reversão não reconcilia não consegue aplicar
+		// nem a mudança de escopo input que consertaria a máquina.
+		settled, serr := s.RevertSettled(existing)
+		if serr != nil || !settled {
+			if serr != nil {
+				slog.Error("não foi possível verificar se a reversão em andamento já tinha terminado no banco", "err", serr)
+			}
+			return "", windowConflict("já há uma mudança aguardando confirmação (%q, aplicada por %s): confirme ou reverta antes de aplicar outra",
+				existing.Summary, existing.AppliedBy)
+		}
+		if err := s.db.ClearPendingChange(); err != nil {
+			return "", fmt.Errorf("apagar a janela da reversão já concluída no banco: %w", err)
+		}
+		s.clearWindowMemory(existing.ID)
+		s.lastRevert = &revertRecord{
+			summary: existing.Summary,
+			reason:  "o estado anterior já tinha voltado ao banco e uma alteração seguinte reconciliou o firewall",
+			at:      s.now(),
+		}
+		slog.Warn("a janela de uma reversão já concluída no banco deu lugar à janela desta alteração; o estado anterior guardado é o mesmo",
+			"reversao", existing.Summary, "alteracao", summary)
 	}
 
 	now := s.now()
@@ -274,7 +427,7 @@ func (s *Service) OpenConfirmWindow(_ context.Context, snapshot, by, summary str
 		CreatedAt: now,
 	}
 	if err := s.db.SavePendingChange(p); err != nil {
-		return fmt.Errorf("gravar a mudança pendente: %w", err)
+		return "", fmt.Errorf("gravar a mudança pendente: %w", err)
 	}
 
 	// O prazo MONOTÔNICO desta janela, além do expires_at de relógio de
@@ -296,7 +449,7 @@ func (s *Service) OpenConfirmWindow(_ context.Context, snapshot, by, summary str
 
 	slog.Warn("mudança de firewall aplicada com prazo para confirmação: sem confirmar, o LinkGuard reverte sozinho",
 		"resumo", summary, "aplicada_por", by, "reverte_em", p.ExpiresAt.Format(time.RFC3339))
-	return nil
+	return p.ID, nil
 }
 
 // PendingChangeOrError devolve a janela em aberto, ou nil quando não há
@@ -314,6 +467,23 @@ func (s *Service) PendingChangeOrError() (*storage.PendingChange, error) {
 	return s.db.GetPendingChange()
 }
 
+// windowMismatch é a recusa de agir sobre uma janela que não é mais a que o
+// chamador conhece — a identidade da janela sendo verificada DENTRO do mutex,
+// que é o único lugar onde ela pode ser verificada sem corrida.
+//
+// O cenário que ela fecha é alcançável num produto multi-admin: o admin A faz
+// uma mutação de escopo input, a janela dele é armada, e o reconcile dele
+// demora (dezenas de invocações de nft numa máquina de verdade). Nesse
+// intervalo o admin B aperta "Confirmar" — confirmar nunca é travado —, aplica
+// a mudança DELE e arma a janela dele. O reconcile de A falha e o abort de A
+// chamava "reverter o pendente", sem identidade nenhuma: quem era desfeito era
+// o pendente de B. A mudança de B voltava atrás, a de A (que falhou) ficava
+// valendo, e A lia na tela "o estado anterior foi restaurado".
+func windowMismatch(p *storage.PendingChange) error {
+	return windowConflict("esta não é mais a mudança que está aguardando confirmação: a janela em aberto agora é %q, aplicada por %s. Recarregue a tela antes de decidir — agir aqui resolveria a janela de outra pessoa, e não a que você viu.",
+		p.Summary, p.AppliedBy)
+}
+
 // ConfirmPending fecha a janela aceitando a mudança: apaga o pendente e NÃO
 // mexe no firewall.
 //
@@ -322,7 +492,12 @@ func (s *Service) PendingChangeOrError() (*storage.PendingChange, error) {
 // reconciliação "por garantia" aqui daria flush e reescreveria a chain input
 // no exato instante em que o acesso foi provado bom, abrindo uma janela de
 // risco criada do nada pela linha que existia para não fazer nada.
-func (s *Service) ConfirmPending(_ context.Context) error {
+//
+// `id` é a janela que o chamador ESTÁ vendo, e ela é conferida aqui dentro
+// (ver windowMismatch): confirmar é cancelar uma reversão automática, e
+// cancelar a de uma mudança que o operador nunca viu é o oposto do que este
+// mecanismo existe para fazer.
+func (s *Service) ConfirmPending(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -340,6 +515,9 @@ func (s *Service) ConfirmPending(_ context.Context) error {
 				r.summary, r.reason)
 		}
 		return windowConflict("não há mudança aguardando confirmação")
+	}
+	if p.ID != id {
+		return windowMismatch(p)
 	}
 	if p.Reverting() {
 		// A reversão desta mudança já começou e não terminou (o estado
@@ -370,7 +548,13 @@ func (s *Service) ConfirmPending(_ context.Context) error {
 // RevertPending desfaz a mudança a pedido do operador ("Reverter agora").
 // Sem alerta: quem apertou o botão foi ele, e um alerta contando o que ele
 // mesmo acabou de fazer é ruído que ensina a ignorar os alertas de verdade.
-func (s *Service) RevertPending(ctx context.Context) error {
+//
+// `id` é a janela que o chamador conhece, conferida aqui dentro pela mesma
+// razão de ConfirmPending — e aqui a razão é mais forte ainda, porque o outro
+// chamador desta função é o abort de uma mutação que falhou: sem a
+// identidade, ele desfazia a janela de QUEM ESTIVESSE aberto, isto é, a
+// mudança de outro admin (ver windowMismatch).
+func (s *Service) RevertPending(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -381,7 +565,83 @@ func (s *Service) RevertPending(ctx context.Context) error {
 	if p == nil {
 		return windowConflict("não há mudança aguardando confirmação")
 	}
+	if p.ID != id {
+		return windowMismatch(p)
+	}
 	return s.revert(ctx, p, "a pedido do operador", false)
+}
+
+// DiscardWindow apaga a janela armada por uma mutação que falhou ANTES de
+// mudar qualquer coisa: a escrita no banco não passou, e nada foi aplicado
+// nem reconciliado.
+//
+// Apagar é tudo o que cabe fazer, e é o ponto (N-3): a alternativa — rodar a
+// reversão inteira — restaurava no banco linhas idênticas às que já estavam lá
+// e, pior, mandava dez comandos ao nft, incluindo `flush chain` da input e da
+// forward seguido da reconstrução, por causa de um erro que não mudou uma
+// única linha. Reescrever as chains vivas do firewall é a última coisa que se
+// quer fazer em cima de um erro que não teve efeito nenhum.
+//
+// Só apaga a janela que o chamador armou (o id), e nunca uma que já esteja
+// sendo revertida — essa tem trabalho pela frente e é do watchdog.
+func (s *Service) DiscardWindow(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, err := s.db.GetPendingChange()
+	if err != nil {
+		return fmt.Errorf("ler a mudança pendente: %w", err)
+	}
+	if p == nil {
+		return nil // já não existe: não há o que descartar
+	}
+	if p.ID != id {
+		return windowMismatch(p)
+	}
+	if p.Reverting() {
+		return windowConflict("a reversão desta janela já começou; o LinkGuard vai concluí-la")
+	}
+	if err := s.db.ClearPendingChange(); err != nil {
+		return fmt.Errorf("apagar a mudança pendente: %w", err)
+	}
+	s.clearWindowMemory(p.ID)
+	return nil
+}
+
+// FinishSettledRevert fecha o pendente cuja reversão já tinha terminado no
+// banco e cuja única pendência era o nft — depois de OUTRA mutação ter
+// reconciliado com sucesso.
+//
+// Ela é a outra metade da liberação descrita em RevertSettled. A mutação que
+// passou pela trava naquele estado acabou de reconstruir as chains a partir do
+// banco, e o banco contém o estado anterior restaurado (mais a alteração
+// deliberada que o operador acabou de fazer em cima). A única obrigação que
+// restava ao pendente — impor esse estado ao firewall vivo — está cumprida, e
+// mantê-lo seria trancar as mutações por causa de um trabalho que já acabou.
+//
+// Devolve true quando fechou alguma coisa. Não toca em pendente que não esteja
+// revertendo: uma janela aberta por outra requisição no meio do caminho é dela,
+// não desta mutação.
+func (s *Service) FinishSettledRevert(_ context.Context) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, err := s.db.GetPendingChange()
+	if err != nil {
+		return false, fmt.Errorf("ler a mudança pendente: %w", err)
+	}
+	if p == nil || !p.Reverting() {
+		return false, nil
+	}
+	if err := s.db.ClearPendingChange(); err != nil {
+		return false, fmt.Errorf("apagar a mudança pendente já revertida: %w", err)
+	}
+	s.clearWindowMemory(p.ID)
+	reason := "o estado anterior já estava no banco e uma alteração seguinte reconciliou o firewall"
+	s.lastRevert = &revertRecord{summary: p.Summary, reason: reason, at: s.now()}
+	slog.Warn("reversão concluída pela reconciliação de uma alteração seguinte: o pendente foi fechado",
+		"resumo", p.Summary, "aplicada_por", p.AppliedBy)
+	return true, nil
 }
 
 // CheckPendingExpired reverte a janela cujo prazo já passou. É a
@@ -540,14 +800,36 @@ func (s *Service) RevertPendingOnBoot(ctx context.Context) error {
 // nem tocada, isto é, justamente a chain que contém a regra que trancou o
 // operador.
 //
-// Manter o pendente é seguro porque cada passo é repetível:
-// ReplaceFirewallGroupsAndRules é idempotente (DELETE + INSERT das mesmas
-// linhas), Reconcile é idempotente por construção, e alerts.Create já suprime
-// alerta duplicado enquanto houver um aberto do mesmo tipo. O custo de manter
-// é que as mutações de firewall seguem travadas (spec §5.3) enquanto a
-// reversão não conclui — e isso é exatamente o certo: o firewall está num
-// estado que o LinkGuard ainda não conseguiu impor.
+// Manter o pendente é seguro porque cada passo é repetível: Reconcile é
+// idempotente por construção e alerts.Create já suprime alerta duplicado
+// enquanto houver um aberto do mesmo tipo. A retomada NÃO repete a restauração
+// do banco — ver o primeiro bloco da função.
+//
+// E manter o pendente não tranca mais o operador: com o banco já no estado
+// anterior, a trava das mutações libera (RevertSettled). Enquanto ela travava,
+// uma reconciliação que não passasse deixava o painel sem saída nenhuma —
+// nem apagar a regra que quebra o reconcile, nem desligar o grupo, nem
+// confirmar, nem reverter.
 func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason string, alert bool) error {
+	// Retomada: a reversão deste pendente já tinha começado, e a marca só é
+	// gravada DEPOIS de a transação de restauração ter commitado. Então o banco
+	// já está no estado anterior e o que restou é a reconciliação — o passo
+	// abaixo, e só ele.
+	//
+	// Restaurar de novo seria ERRADO, não só redundante: desde que a trava
+	// libera as mutações neste estado (ver RevertSettled), o banco pode ter
+	// recebido, depois da restauração, uma alteração DELIBERADA do operador —
+	// tipicamente a que conserta a máquina em que a reconciliação falha. Um
+	// segundo ReplaceFirewallGroupsAndRules apagaria essa alteração e devolveria
+	// a máquina ao estado em que ela não reconcilia, para sempre.
+	//
+	// E o snapshot deixa de ser necessário aqui: uma retomada que não restaura
+	// nada não depende de ele estar legível, o que também tira do beco o
+	// pendente cujo snapshot corrompeu no meio de uma reversão.
+	if p.Reverting() {
+		return s.finishRevert(ctx, p, reason)
+	}
+
 	var snap stateSnapshot
 	if err := json.Unmarshal([]byte(p.Snapshot), &snap); err != nil {
 		return revertFailed(fmt.Errorf("snapshot da mudança pendente ilegível, nada foi revertido: %w", err))
@@ -555,11 +837,6 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 	if err := validateSnapshotGroups(snap.Groups); err != nil {
 		return revertFailed(fmt.Errorf("a mudança pendente NÃO foi revertida: %w", err))
 	}
-
-	// Retomada: se a reversão deste pendente já tinha começado, nada aqui é
-	// anunciado de novo (o alerta já saiu na primeira tentativa) — o que se
-	// repete é só o trabalho.
-	resuming := p.Reverting()
 
 	if err := s.db.ReplaceFirewallGroupsAndRules(snap.Groups, snap.Rules); err != nil {
 		return revertFailed(fmt.Errorf("restaurar o estado anterior dos grupos e regras: %w", err))
@@ -572,30 +849,36 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 	// banco" sobre um banco intocado, e a verificação de expiração passaria a
 	// reverter antes do prazo — tirando do operador justamente o tempo que este
 	// mecanismo existe para dar a ele.
-	if !resuming {
-		if err := s.db.MarkPendingReverting(p.ID, s.now()); err != nil {
-			// O pendente FICA e segue confirmável: sem a marca gravada, nada
-			// no sistema sabe que a reversão começou, e é mais honesto tentar
-			// tudo de novo na próxima passada (ReplaceFirewallGroupsAndRules é
-			// idempotente) do que seguir com uma marca que não existe.
-			return revertFailed(fmt.Errorf("estado anterior restaurado no banco, mas não foi possível marcar a reversão em andamento (a próxima passada tenta de novo): %w", err))
+	if err := s.db.MarkPendingReverting(p.ID, s.now()); err != nil {
+		// O pendente FICA e segue confirmável: sem a marca gravada, nada
+		// no sistema sabe que a reversão começou, e é mais honesto tentar
+		// tudo de novo na próxima passada (ReplaceFirewallGroupsAndRules é
+		// idempotente) do que seguir com uma marca que não existe.
+		return revertFailed(fmt.Errorf("estado anterior restaurado no banco, mas não foi possível marcar a reversão em andamento (a próxima passada tenta de novo): %w", err))
+	}
+
+	slog.Warn("mudança de firewall NÃO confirmada foi revertida no banco: restaurando o estado anterior dos grupos e regras no firewall vivo",
+		"resumo", p.Summary, "aplicada_por", p.AppliedBy, "motivo", reason,
+		"grupos_restaurados", len(snap.Groups), "regras_restauradas", len(snap.Rules))
+
+	if alert && s.alerter != nil {
+		detail := fmt.Sprintf("A alteração %q, aplicada por %s, foi desfeita automaticamente porque %s. O estado anterior dos grupos e regras do firewall foi restaurado.",
+			p.Summary, p.AppliedBy, reason)
+		if err := s.alerter.FirewallChangeReverted(detail); err != nil {
+			slog.Error("não foi possível registrar o alerta da reversão automática", "err", err)
 		}
 	}
 
-	if !resuming {
-		slog.Warn("mudança de firewall NÃO confirmada foi revertida no banco: restaurando o estado anterior dos grupos e regras no firewall vivo",
-			"resumo", p.Summary, "aplicada_por", p.AppliedBy, "motivo", reason,
-			"grupos_restaurados", len(snap.Groups), "regras_restauradas", len(snap.Rules))
+	return s.finishRevert(ctx, p, reason)
+}
 
-		if alert && s.alerter != nil {
-			detail := fmt.Sprintf("A alteração %q, aplicada por %s, foi desfeita automaticamente porque %s. O estado anterior dos grupos e regras do firewall foi restaurado.",
-				p.Summary, p.AppliedBy, reason)
-			if err := s.alerter.FirewallChangeReverted(detail); err != nil {
-				slog.Error("não foi possível registrar o alerta da reversão automática", "err", err)
-			}
-		}
-	}
-
+// finishRevert é a metade final da reversão — a que impõe ao firewall vivo o
+// estado que já está no banco e, só então, apaga o pendente. É também a
+// retomada inteira: quando a reversão já tinha restaurado o banco, é isto (e
+// nada mais) que falta fazer.
+//
+// Chamada com s.mu já travado.
+func (s *Service) finishRevert(ctx context.Context, p *storage.PendingChange, reason string) error {
 	if err := s.Reconcile(ctx); err != nil {
 		// O pendente FICA. Ver o doc-comment acima: apagá-lo aqui deixaria a
 		// regra perigosa viva no nft sem ninguém para tentar de novo.
@@ -603,8 +886,8 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 	}
 	if err := s.db.ClearPendingChange(); err != nil {
 		// O firewall vivo já está no estado anterior — o pendente sobrando
-		// trava as mutações, o que é chato, mas a próxima passada refaz tudo
-		// e apaga. Erro, não silêncio.
+		// mantém a faixa na tela, o que é chato, mas a próxima passada
+		// reconcilia de novo e apaga. Erro, não silêncio.
 		return revertFailed(fmt.Errorf("estado anterior restaurado e reconciliado, mas não foi possível apagar a mudança pendente (a próxima passada tenta de novo): %w", err))
 	}
 
