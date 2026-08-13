@@ -1,316 +1,341 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { Cpu, MemoryStick, HardDrive, Clock, AlertTriangle } from 'lucide-react';
-import MetricCard, { ProgressCard } from '../components/MetricCard';
-import GettingStarted from '../components/GettingStarted';
-import Recipes from '../components/Recipes';
-import SystemHealth from '../components/SystemHealth';
-import Panel from '../components/ui/Panel';
-import Stat from '../components/ui/Stat';
-import Tag, { type TagVariant } from '../components/ui/Tag';
-import Sparkline, { type SparklinePoint } from '../components/ui/Sparkline';
-import { AlertBadge } from '../components/StatusBadge';
-import { deriveRate, type RateCounter } from '../lib/interfaceRates';
-import { formatBps, pointsFromHistory } from '../lib/series';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Check, LayoutGrid, Plus, RotateCcw, Sliders } from 'lucide-react';
 import client from '../api/client';
+import Modal from '../components/ui/Modal';
+import WidgetGrid, { useNarrowScreen } from '../components/WidgetGrid';
+import WidgetView from '../components/widgets/registry';
+import { DISMISS_KEY, useOnboardingSteps } from '../components/GettingStarted';
+import { nextFreeSpot, normalize } from '../lib/grid';
+import type { LayoutItem } from '../lib/grid';
+import {
+  DEFAULT_LAYOUT,
+  WIDGET_CATALOG,
+  keepRenderable,
+  widgetMinSize,
+  widgetSpec,
+  widgetTitle,
+} from '../lib/widgets';
 import { useI18n } from '../i18n';
-import type { SystemMetrics, WanLink, Alert, NetHost, TrafficHistoryResponse, HostTraffic } from '../types';
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
-}
-
-// Taxa: bits/s, formatada por `formatBps` (lib/series.ts). Não existe um
-// `formatRate` local aqui de propósito — a versão antiga formatava com
-// `formatBytes` e escrevia "MB/s", e o app hoje fala Mb/s em todas as telas
-// (a unidade do link: os "100 mega" da operadora são bits). Um formatador por
-// tela é exatamente como as unidades divergem.
+// O painel que cada admin monta (spec §4).
 //
-// `formatBytes` continua abaixo, e continua certo, para VOLUME acumulado
-// (memória, disco, bytes trafegados) — que é outra grandeza.
+// O que esta tela deixou de ser: uma lista fixa em que "Primeiros passos"
+// ocupava os primeiros 60% da altura — parado em 5 de 6 há meses, por causa do
+// usuário padrão — e a informação operacional só começava abaixo da dobra. Numa
+// máquina que roda há meses, isso é tratar quem a usa como quem acabou de
+// instalar.
+//
+// Quem decide o que aparece é o backend: `GET /api/dashboard/layout` devolve o
+// layout DESTE usuário e, em `available`, o catálogo que ELE pode ver. O painel
+// não recalcula permissão — uma segunda fonte de verdade fica livre para
+// divergir da primeira, e o sintoma seria um widget oferecido no catálogo que
+// só sabe mostrar um 403.
 
-function formatRelativeTime(iso: string, lang: 'pt' | 'en'): string {
-  const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
-  const diffMin = Math.round((new Date(iso).getTime() - Date.now()) / 60000);
-  if (Math.abs(diffMin) < 60) return rtf.format(diffMin, 'minute');
-  const diffHour = Math.round(diffMin / 60);
-  if (Math.abs(diffHour) < 24) return rtf.format(diffHour, 'hour');
-  return rtf.format(Math.round(diffHour / 24), 'day');
+interface LayoutResponse {
+  items: LayoutItem[];
+  available: string[];
 }
 
-const statusVariant: Record<string, TagVariant> = {
-  online: 'ok',
-  offline: 'crit',
-  degraded: 'warn',
-  unknown: 'idle',
-};
-
-const statusLabel: Record<string, string> = {
-  online: 'online',
-  offline: 'offline',
-  degraded: 'degradado',
-  unknown: 'desconhecido',
-};
+type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 export default function Dashboard() {
-  const { t, lang } = useI18n();
-  const [sys, setSys] = useState<SystemMetrics | null>(null);
-  const [wanLinks, setWanLinks] = useState<WanLink[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [hosts, setHosts] = useState<NetHost[]>([]);
-  const [talkers, setTalkers] = useState<HostTraffic[]>([]);
-  const [rates, setRates] = useState<Record<string, { rx: number; tx: number }>>({});
-  const [sparklines, setSparklines] = useState<Record<string, SparklinePoint[]>>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
-  const prevCountersRef = useRef<Record<string, RateCounter>>({});
+  const { t } = useI18n();
+  const narrow = useNarrowScreen();
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [sysRes, linksRes, alertsRes, hostsRes] = await Promise.all([
-        client.get<SystemMetrics>('/api/system/status'),
-        client.get<WanLink[]>('/api/links'),
-        client.get<Alert[]>('/api/alerts?unresolved=true'),
-        client.get<NetHost[]>('/api/hosts'),
-      ]);
-      setSys(sysRes.data);
-      setWanLinks(linksRes.data ?? []);
-      setAlerts(alertsRes.data ?? []);
-      setHosts(hostsRes.data ?? []);
+  const [layout, setLayout] = useState<LayoutItem[] | null>(null);
+  const [available, setAvailable] = useState<string[]>([]);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>('idle');
 
-      client.get<HostTraffic[]>('/api/hosts/traffic').then(
-        (res) => setTalkers(res.data ?? []),
-        () => setTalkers([]),
-      );
+  const onboarding = useOnboardingSteps();
+  const [onboardingDismissed, setOnboardingDismissed] = useState(
+    () => localStorage.getItem(DISMISS_KEY) === '1',
+  );
 
-      const now = Date.now();
-      const nextRates: Record<string, { rx: number; tx: number }> = {};
-      for (const iface of sysRes.data.interfaces ?? []) {
-        const prev = prevCountersRef.current[iface.name];
-        const rate = deriveRate(prev, iface, now);
-        if (rate) nextRates[iface.name] = rate;
-        prevCountersRef.current[iface.name] = { ts: now, rx: iface.rx_bytes, tx: iface.tx_bytes };
+  const availableSet = useMemo(() => new Set(available), [available]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await client.get<LayoutResponse>('/api/dashboard/layout');
+        if (!alive) return;
+        setAvailable(data.available ?? []);
+        setLayout(normalize(data.items ?? []));
+        setLoadFailed(false);
+      } catch {
+        if (!alive) return;
+        // Layout de fábrica é melhor que uma tela em branco com uma mensagem de
+        // erro (spec §6): o operador ainda vê o estado da máquina, que é o que
+        // ele veio ver. O aviso fica discreto, e nada é gravado por cima do que
+        // ele tinha salvo.
+        setAvailable(WIDGET_CATALOG.map((w) => w.name));
+        setLayout(normalize(DEFAULT_LAYOUT));
+        setLoadFailed(true);
       }
-      setRates((prev) => ({ ...prev, ...nextRates }));
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
-      setLastUpdated(new Date());
-      setError(false);
-    } catch (e) {
-      console.error('Dashboard fetch error:', e);
-      setError(true);
-    } finally {
-      setLoading(false);
+  /**
+   * O que a grade desenha.
+   *
+   * "Primeiros passos" **sai do painel quando os 6 passos terminam** (spec
+   * §4.5): numa instalação nova ele aparece no topo, como hoje; numa máquina
+   * que já foi configurada ele não entra, e some de um layout salvo que o
+   * contenha. Ele não está no layout de fábrica de propósito.
+   */
+  const items = useMemo(() => {
+    const base = keepRenderable(layout ?? [], availableSet);
+    const mostrarOnboarding = onboarding.ready && !onboarding.allDone && !onboardingDismissed;
+
+    if (!mostrarOnboarding) {
+      return normalize(base.filter((it) => it.widget !== 'onboarding'));
+    }
+    if (base.some((it) => it.widget === 'onboarding')) return normalize(base);
+
+    const spec = widgetSpec('onboarding');
+    const novo: LayoutItem = {
+      widget: 'onboarding',
+      x: 0,
+      y: 0,
+      w: spec?.defaultW ?? 12,
+      h: spec?.defaultH ?? 5,
+    };
+    // Entra como "quem invadiu": ganha o topo, e o resto do painel desce em
+    // cascata em vez de ficar por baixo dele.
+    return normalize([novo, ...base], novo);
+  }, [layout, availableSet, onboarding.ready, onboarding.allDone, onboardingDismissed]);
+
+  const save = useCallback(async (next: LayoutItem[]) => {
+    setSaveState('saving');
+    try {
+      const { data } = await client.put<LayoutResponse>('/api/dashboard/layout', { items: next });
+      setAvailable(data.available ?? []);
+      setSaveState('saved');
+    } catch {
+      setSaveState('error');
     }
   }, []);
 
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 15000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+  /**
+   * Grava a cada gesto concluído, e não num botão "Salvar".
+   *
+   * Um painel que só grava quando o operador se lembra de apertar um botão é um
+   * painel que ele perde ao fechar a aba — e o projeto já tem a decisão tomada
+   * para o mesmo problema em DHCP/DNS: salvar aplica.
+   */
+  const aplicar = useCallback(
+    (next: LayoutItem[]) => {
+      setLayout(next);
+      void save(next);
+    },
+    [save],
+  );
 
-  // Sparkline dos últimos 30 min por link WAN, via tsdb (mesmo endpoint usado
-  // em Interfaces.tsx). Roda numa cadência mais espaçada — não precisa do
-  // mesmo ritmo do polling de taxa/status.
-  useEffect(() => {
-    if (wanLinks.length === 0) return;
-    let alive = true;
-    const load = async () => {
-      const results = await Promise.all(
-        wanLinks.map(async (link) => {
-          try {
-            const { data } = await client.get<TrafficHistoryResponse>(
-              `/api/system/traffic-history?iface=${encodeURIComponent(link.interface)}&range=30m`,
-            );
-            // Pelo conversor, nunca pelos campos crus: `rx_bps` guarda
-            // bytes/s apesar do nome, e a sparkline tem que falar a mesma
-            // unidade que o número grande logo acima dela.
-            const points: SparklinePoint[] = pointsFromHistory(data.points).map((p) => ({ ts: p.t, rx: p.rx, tx: p.tx }));
-            return [link.interface, points] as const;
-          } catch {
-            return [link.interface, []] as const;
-          }
-        }),
+  const remover = useCallback(
+    (widget: string) => {
+      if (widget === 'onboarding') {
+        // Tirar "Primeiros passos" é o mesmo gesto que o X antigo do cartão: ele
+        // não volta sozinho na próxima abertura.
+        localStorage.setItem(DISMISS_KEY, '1');
+        setOnboardingDismissed(true);
+      }
+      aplicar(normalize(items.filter((it) => it.widget !== widget)));
+    },
+    [items, aplicar],
+  );
+
+  const adicionar = useCallback(
+    (widget: string) => {
+      const spec = widgetSpec(widget);
+      if (!spec) return;
+      if (widget === 'onboarding') {
+        localStorage.removeItem(DISMISS_KEY);
+        setOnboardingDismissed(false);
+      }
+      const spot = nextFreeSpot(items, spec.defaultW, spec.defaultH);
+      aplicar(
+        normalize([...items, { widget, x: spot.x, y: spot.y, w: spec.defaultW, h: spec.defaultH }]),
       );
-      if (!alive) return;
-      setSparklines(Object.fromEntries(results));
-    };
-    load();
-    const t = setInterval(load, 30000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [wanLinks]);
+      setCatalogOpen(false);
+    },
+    [items, aplicar],
+  );
 
-  if (loading) {
+  const restaurarPadrao = useCallback(async () => {
+    setSaveState('saving');
+    try {
+      const { data } = await client.delete<LayoutResponse>('/api/dashboard/layout');
+      setAvailable(data.available ?? []);
+      setLayout(normalize(data.items ?? []));
+      setSaveState('saved');
+    } catch {
+      setSaveState('error');
+    }
+  }, []);
+
+  // O catálogo oferece só o que este usuário pode ver e ainda não tem no
+  // painel. "Primeiros passos" não é oferecido depois dos 6 passos concluídos:
+  // seria oferecer um widget que já não tem o que mostrar.
+  const paraAdicionar = WIDGET_CATALOG.filter(
+    (w) =>
+      availableSet.has(w.name) &&
+      !items.some((it) => it.widget === w.name) &&
+      !(w.name === 'onboarding' && onboarding.allDone),
+  );
+
+  if (layout === null) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-gray-500 animate-pulse">Carregando...</div>
+      <div className="flex h-full items-center justify-center">
+        <div className="animate-pulse text-gray-500">Carregando…</div>
       </div>
     );
   }
 
-  const onlineLinks = wanLinks.filter((l) => l.status === 'online').length;
-  const criticalAlerts = alerts.filter((a) => a.severity === 'critical').length;
-  const hostsOnline = hosts.filter((h) => h.online).length;
-  // bits/s: `deriveRate` já converte os contadores de /proc (bytes).
-  const trafficNowBits = wanLinks.reduce((sum, l) => sum + (rates[l.interface]?.rx ?? 0) + (rates[l.interface]?.tx ?? 0), 0);
-  const hasTrafficSample = wanLinks.some((l) => rates[l.interface]);
-
   return (
-    <div className="p-6 space-y-6">
-      <GettingStarted />
-      <Recipes />
-      <SystemHealth />
-
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div className="space-y-6 p-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-bold text-white">{t('dashboard.title')}</h1>
-          <p className="text-gray-500 text-sm mt-0.5">{t('dashboard.subtitle')}</p>
-        </div>
-        <div className="text-xs">
-          {error ? (
-            <span className="text-amber-400">Dados desatualizados desde {lastUpdated.toLocaleTimeString()}</span>
-          ) : (
-            <span className="text-gray-600">Atualizado às {lastUpdated.toLocaleTimeString()}</span>
-          )}
-        </div>
-      </div>
-
-      {error && (
-        <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm flex items-center justify-between">
-          <span>Falha ao carregar dados do firewall. Exibindo últimos dados conhecidos.</span>
-          <button onClick={fetchData} className="btn-secondary">Tentar novamente</button>
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {sys && (
-          <Stat
-            label="WAN ativas"
-            value={`${onlineLinks}/${wanLinks.length}`}
-            variant={wanLinks.length > 0 && onlineLinks === wanLinks.length ? 'ok' : wanLinks.length > 0 ? 'crit' : 'idle'}
-          />
-        )}
-        {sys && <Stat label="Tráfego agora" value={hasTrafficSample ? formatBps(trafficNowBits) : '—'} />}
-        {sys && <Stat label="Hosts ativos" value={hostsOnline} sub={`${hosts.length} conhecidos`} />}
-        {sys && <Stat label="Uptime" value={sys.uptime_str || '—'} />}
-      </div>
-
-      {wanLinks.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {wanLinks.map((link) => {
-            const rate = rates[link.interface];
-            const variant = statusVariant[link.status] ?? 'idle';
-            return (
-              <Panel
-                key={link.id}
-                title={link.name}
-                action={<Tag variant={variant} dot>{statusLabel[link.status] ?? link.status}</Tag>}
-              >
-                <div className="flex items-baseline justify-between mb-2">
-                  <div className="text-2xl font-bold text-white font-mono">
-                    {rate ? formatBps(rate.rx + rate.tx) : '—'}
-                  </div>
-                  <div className="text-gray-500 text-xs">
-                    {link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'} · {link.packet_loss > 0 ? `${link.packet_loss.toFixed(1)}%` : '0%'} perda
-                  </div>
-                </div>
-                <Sparkline data={sparklines[link.interface] ?? []} height={48} />
-              </Panel>
-            );
-          })}
-        </div>
-      )}
-
-      {sys && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard
-            title="Uptime"
-            value={sys.uptime_str || '—'}
-            icon={Clock}
-            iconColor="text-green-400"
-            subtitle={`Load: ${(sys.load_avg?.[0] ?? 0).toFixed(2)} ${(sys.load_avg?.[1] ?? 0).toFixed(2)} ${(sys.load_avg?.[2] ?? 0).toFixed(2)}`}
-          />
-          <ProgressCard
-            title="CPU"
-            percent={sys.cpu_percent ?? 0}
-            value={`${(sys.cpu_percent ?? 0).toFixed(1)}%`}
-            icon={Cpu}
-            iconColor="text-blue-400"
-          />
-          <ProgressCard
-            title="Memória"
-            percent={sys.mem_percent ?? 0}
-            value={`${formatBytes(sys.mem_used_bytes ?? 0)} / ${formatBytes(sys.mem_total_bytes ?? 0)}`}
-            icon={MemoryStick}
-            iconColor="text-purple-400"
-          />
-          <ProgressCard
-            title="Disco"
-            percent={sys.disk_percent ?? 0}
-            value={`${formatBytes(sys.disk_used_bytes ?? 0)} / ${formatBytes(sys.disk_total_bytes ?? 0)}`}
-            icon={HardDrive}
-            iconColor="text-orange-400"
-          />
-        </div>
-      )}
-
-      {talkers.length > 0 && (
-        <Panel title="Top consumidores agora">
-          <p className="text-gray-500 text-xs -mt-2 mb-3">Fluxos ativos no momento — não é total acumulado.</p>
-          <div className="space-y-2">
-            {talkers.slice(0, 8).map((tlk) => {
-              const host = hosts.find((h) => h.ip === tlk.ip);
-              const name = host?.alias || host?.hostname || tlk.ip;
-              const total = tlk.rx_bytes + tlk.tx_bytes;
-              const max = (talkers[0].rx_bytes + talkers[0].tx_bytes) || 1;
-              const pct = Math.max(4, Math.round((total / max) * 100));
-              return (
-                <div key={tlk.ip} className="flex items-center gap-3">
-                  <span className="text-gray-300 text-sm w-32 truncate flex-shrink-0">{name}</span>
-                  <div className="flex-1 bg-gray-800 rounded-full h-2">
-                    <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${pct}%` }} />
-                  </div>
-                  <span className="text-gray-500 text-xs font-mono w-20 text-right flex-shrink-0">{formatBytes(total)}</span>
-                </div>
-              );
-            })}
-          </div>
-        </Panel>
-      )}
-
-      {alerts.length > 0 && (
-        <Panel title="Precisa de atenção">
-          <div className="space-y-2">
-            {alerts.slice(0, 5).map((alert) => (
-              <div key={alert.id} className="flex items-start gap-3 p-3 bg-gray-800 rounded-lg">
-                <AlertBadge severity={alert.severity} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-white text-sm font-medium">{alert.title}</p>
-                  <p className="text-gray-500 text-xs mt-0.5">{alert.message}</p>
-                </div>
-                <span className="text-gray-600 text-xs flex-shrink-0">{formatRelativeTime(alert.created_at, lang)}</span>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
-
-      {criticalAlerts > 0 && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-center gap-3">
-          <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0" />
-          <p className="text-red-300 text-sm">
-            {criticalAlerts} alerta{criticalAlerts !== 1 ? 's' : ''} crítico{criticalAlerts !== 1 ? 's' : ''} ativo{criticalAlerts !== 1 ? 's' : ''}.
-            Verifique a aba de Alertas.
+          <p className="mt-0.5 text-sm text-gray-500">
+            {editing ? 'Arraste para mover, use o canto para redimensionar.' : t('dashboard.subtitle')}
           </p>
         </div>
+
+        {/* Em tela estreita não há edição: o layout é uma coluna na ordem que o
+            admin definiu no desktop, e não existe um segundo layout para
+            manter (spec §4.4). Oferecer alças aqui seria oferecer um gesto que
+            não muda nada. */}
+        {!narrow && (
+          <div className="flex flex-wrap items-center gap-2">
+            {saveState === 'saving' && <span className="text-xs text-gray-500">salvando…</span>}
+            {saveState === 'saved' && <span className="text-xs text-gray-600">painel salvo</span>}
+            {saveState === 'error' && <span className="text-xs text-crit">não consegui salvar o painel</span>}
+
+            {editing && (
+              <>
+                <button
+                  type="button"
+                  data-testid="add-widget"
+                  onClick={() => setCatalogOpen(true)}
+                  className="btn-secondary inline-flex items-center gap-1.5 py-1.5 text-sm"
+                >
+                  <Plus className="h-4 w-4" /> Adicionar widget
+                </button>
+                <button
+                  type="button"
+                  data-testid="restore-default"
+                  onClick={restaurarPadrao}
+                  title="Volta ao painel de fábrica"
+                  className="btn-secondary inline-flex items-center gap-1.5 py-1.5 text-sm"
+                >
+                  <RotateCcw className="h-4 w-4" /> Restaurar padrão
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              data-testid="toggle-edit"
+              onClick={() => setEditing((v) => !v)}
+              className={`${editing ? 'btn-primary' : 'btn-secondary'} inline-flex items-center gap-1.5 py-1.5 text-sm`}
+            >
+              {editing ? (
+                <>
+                  <Check className="h-4 w-4" /> Concluir
+                </>
+              ) : (
+                <>
+                  <Sliders className="h-4 w-4" /> Personalizar
+                </>
+              )}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {loadFailed && (
+        <div className="rounded-xl border border-warn-border bg-warn-bg px-4 py-2.5 text-sm text-warn">
+          Não consegui ler o seu painel salvo. Isto aqui é o layout de fábrica — nada do que você montou foi perdido.
+        </div>
       )}
+
+      {items.length === 0 ? (
+        <div className="card flex flex-col items-center gap-3 py-10 text-center">
+          <LayoutGrid className="h-8 w-8 text-gray-600" />
+          <div>
+            <p className="text-white">Seu painel está vazio.</p>
+            <p className="mt-0.5 text-sm text-gray-500">
+              Escolha os widgets que te interessam — ou volte ao painel de fábrica.
+            </p>
+          </div>
+          {!narrow && (
+            <div className="flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                data-testid="add-widget-empty"
+                onClick={() => {
+                  setEditing(true);
+                  setCatalogOpen(true);
+                }}
+                className="btn-primary inline-flex items-center gap-1.5 py-1.5 text-sm"
+              >
+                <Plus className="h-4 w-4" /> Adicionar widget
+              </button>
+              <button type="button" onClick={restaurarPadrao} className="btn-secondary py-1.5 text-sm">
+                Restaurar padrão
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <WidgetGrid
+          items={items}
+          editing={editing}
+          onChange={aplicar}
+          onRemove={remover}
+          titleOf={widgetTitle}
+          minSizeOf={widgetMinSize}
+          renderItem={(item) => <WidgetView item={item} onSelfRemove={() => remover(item.widget)} />}
+        />
+      )}
+
+      <Modal
+        open={catalogOpen}
+        onClose={() => setCatalogOpen(false)}
+        closeOnBackdropClick
+        title="Adicionar widget"
+        className="rounded-xl border border-gray-800 bg-gray-900"
+      >
+        <div className="space-y-2 p-4">
+          {paraAdicionar.length === 0 ? (
+            <p className="py-2 text-sm text-gray-500">
+              Todos os widgets disponíveis para você já estão no painel.
+            </p>
+          ) : (
+            paraAdicionar.map((w) => (
+              <button
+                key={w.name}
+                type="button"
+                data-testid={`add-${w.name}`}
+                onClick={() => adicionar(w.name)}
+                className="flex w-full items-start gap-3 rounded-lg border border-gray-800 bg-gray-800/40 p-3 text-left transition-colors hover:border-blue-500/40 hover:bg-gray-800"
+              >
+                <Plus className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-white">{w.title}</span>
+                  <span className="block text-xs text-gray-500">{w.description}</span>
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

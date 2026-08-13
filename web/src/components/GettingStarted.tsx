@@ -16,15 +16,34 @@ interface Step {
   body: string;
 }
 
-const DISMISS_KEY = 'lg_hide_getting_started';
+export const DISMISS_KEY = 'lg_hide_getting_started';
 
-export default function GettingStarted() {
+export interface OnboardingProgress {
+  /** `null` enquanto o estado da máquina ainda não voltou. */
+  steps: Step[] | null;
+  /** false enquanto ainda não se sabe nada — nem "pronto", nem "faltando". */
+  ready: boolean;
+  done: number;
+  total: number;
+  allDone: boolean;
+}
+
+/**
+ * O estado dos seis passos, medido na própria máquina.
+ *
+ * Virou hook porque o painel precisa da MESMA resposta que este cartão:
+ * "Primeiros passos" sai do painel quando os 6 passos terminam (spec §4.5), e
+ * quem decide isso é o Dashboard, que não desenha os passos. Duas cópias da
+ * regra divergiriam no primeiro passo novo que alguém acrescentasse — e o
+ * sintoma seria um cartão de onboarding que reaparece sozinho numa máquina que
+ * roda há meses, que é exatamente a queixa que originou esta entrega.
+ */
+export function useOnboardingSteps(): OnboardingProgress {
   const { user } = useAuth();
   const [steps, setSteps] = useState<Step[] | null>(null);
-  const [hidden, setHidden] = useState(localStorage.getItem(DISMISS_KEY) === '1');
 
   useEffect(() => {
-    if (hidden) return;
+    let alive = true;
     (async () => {
       const [sys, links, dhcp, ruleset] = await Promise.allSettled([
         client.get<SystemMetrics>('/api/system/status'),
@@ -37,6 +56,7 @@ export default function GettingStarted() {
       const leases = dhcp.status === 'fulfilled' ? (dhcp.value.data.leases ?? []) : [];
       const rs = ruleset.status === 'fulfilled' ? (ruleset.value.data.ruleset ?? '') : '';
 
+      if (!alive) return;
       setSteps([
         {
           key: 'iface', title: 'Identifique suas conexões', to: '/interfaces', cta: 'Ver interfaces',
@@ -70,17 +90,37 @@ export default function GettingStarted() {
         },
       ]);
     })();
-  }, [hidden, user]);
+    return () => { alive = false; };
+  }, [user]);
 
-  if (hidden || !steps) return null;
-  const doneCount = steps.filter((s) => s.done).length;
-  const allDone = doneCount === steps.length;
+  const done = steps ? steps.filter((s) => s.done).length : 0;
+  const total = steps ? steps.length : 0;
+  return { steps, ready: steps !== null, done, total, allDone: steps !== null && done === total };
+}
+
+/**
+ * `onDismiss` existe porque este cartão virou widget do painel: quando ele vem,
+ * o X é o mesmo gesto que remover o widget, e quem grava a remoção é o painel.
+ * Sem ele, o comportamento antigo continua valendo.
+ */
+export default function GettingStarted({ onDismiss }: { onDismiss?: () => void } = {}) {
+  const { steps, done: doneCount, allDone } = useOnboardingSteps();
+  const [hidden, setHidden] = useState(localStorage.getItem(DISMISS_KEY) === '1');
+
+  if ((hidden && !onDismiss) || !steps) return null;
   const next = steps.find((s) => !s.done);
 
-  const dismiss = () => { localStorage.setItem(DISMISS_KEY, '1'); setHidden(true); };
+  const dismiss = () => {
+    if (onDismiss) {
+      onDismiss();
+      return;
+    }
+    localStorage.setItem(DISMISS_KEY, '1');
+    setHidden(true);
+  };
 
   return (
-    <div className="card border border-blue-500/30 bg-gradient-to-b from-blue-500/5 to-transparent">
+    <div className="card h-full overflow-y-auto border border-blue-500/30 bg-gradient-to-b from-blue-500/5 to-transparent">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           {allDone ? <PartyPopper className="w-5 h-5 text-green-400" /> : <GraduationCap className="w-5 h-5 text-blue-400" />}

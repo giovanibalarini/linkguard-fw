@@ -123,16 +123,29 @@ const recipes: Recipe[] = [
 
 const DISMISS_KEY = 'lg_hide_recipes';
 
-export default function Recipes() {
+/**
+ * `onDismiss` existe porque este cartão virou widget do painel (spec §4.5).
+ * Quando ele vem, "Ocultar" é o mesmo gesto que remover o widget: quem tira o
+ * widget da grade é o painel, que também o grava. Sem ele, o comportamento
+ * antigo continua valendo (esconder por localStorage).
+ */
+export default function Recipes({ onDismiss }: { onDismiss?: () => void } = {}) {
   const [hidden, setHidden] = useState(localStorage.getItem(DISMISS_KEY) === '1');
   const [open, setOpen] = useState<string | null>(null);
 
-  if (hidden) return null;
+  if (hidden && !onDismiss) return null;
 
-  const dismiss = () => { localStorage.setItem(DISMISS_KEY, '1'); setHidden(true); };
+  const dismiss = () => {
+    if (onDismiss) {
+      onDismiss();
+      return;
+    }
+    localStorage.setItem(DISMISS_KEY, '1');
+    setHidden(true);
+  };
 
   return (
-    <Panel title="O que você quer fazer?">
+    <Panel title="O que você quer fazer?" className="h-full overflow-y-auto">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <Wand2 className="w-5 h-5 text-blue-400" />

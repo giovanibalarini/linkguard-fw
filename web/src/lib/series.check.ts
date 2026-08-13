@@ -24,6 +24,7 @@ import {
   formatBps,
   formatVolume,
   isEmptySeries,
+  latestSample,
   niceScale,
   pointsFromHistory,
   reduceToWidth,
@@ -522,6 +523,47 @@ grupo('resolução por janela');
 
   assert(windowFor('12h').step === 60, 'windowFor acha a janela pelo range');
   assert(windowFor('nao-existe').step === 1, 'range desconhecido cai na mais fina, que é a de menor custo por ponto');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A "taxa agora" dos widgets do painel
+// ─────────────────────────────────────────────────────────────────────────────
+// Pegar o último elemento da janela seria o defeito: o último intervalo pode
+// não ter amostra, e viraria um `0` na tela — link fora do ar com cara de link
+// ocioso, que é o mesmo erro que a Fase A já pegou duas vezes.
+grupo('última amostra medida');
+{
+  assert(latestSample([]) === null, 'série vazia não tem última amostra');
+  assert(
+    latestSample([{ t: 0, rx: null, tx: null }]) === null,
+    'série só de ausências não tem última amostra — `—`, e não `0`',
+  );
+  assert(
+    latestSample([
+      { t: 0, rx: 1_000, tx: 2_000 },
+      { t: 1, rx: null, tx: null },
+      { t: 2, rx: null, tx: null },
+    ])?.rx === 1_000,
+    'com o fim da janela vazio, vale a última MEDIDA, e não o último elemento',
+  );
+  assert(
+    latestSample([
+      { t: 0, rx: 1_000, tx: null },
+      { t: 1, rx: 9_000, tx: null },
+    ])?.rx === 9_000,
+    'a mais recente é a do fim, não a do começo',
+  );
+  assert(
+    latestSample([{ t: 0, rx: 0, tx: 0 }])?.rx === 0,
+    'zero medido É uma amostra: zero é medição, ausência não',
+  );
+  assert(
+    latestSample([
+      { t: 0, rx: 500, tx: 500 },
+      { t: 1, rx: null, tx: 700 },
+    ])?.tx === 700,
+    'um instante com só um dos sentidos medido ainda é uma amostra',
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

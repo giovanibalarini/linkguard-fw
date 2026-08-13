@@ -130,6 +130,22 @@ export function isEmptySeries(points: Point[]): boolean {
 }
 
 /**
+ * A amostra MEDIDA mais recente, ou `null` quando a série não tem nenhuma.
+ *
+ * É a "taxa agora" dos widgets: a série de 1 s do tsdb é a medição mais fresca
+ * que a máquina tem. Pegar `points[points.length - 1]` direto seria o defeito:
+ * o último ponto da janela pode ser um intervalo sem amostra, e ele viraria um
+ * `0` na tela — um link fora do ar com cara de link ocioso.
+ */
+export function latestSample(points: Point[]): Point | null {
+  for (let i = points.length - 1; i >= 0; i--) {
+    const p = points[i];
+    if (p.rx !== null || p.tx !== null) return p;
+  }
+  return null;
+}
+
+/**
  * Pico da janela em bits/s, ou `null` quando não há **nenhuma** amostra.
  *
  * `seriesMax` devolve `0` para uma série sem amostra, o que serve ao desenho

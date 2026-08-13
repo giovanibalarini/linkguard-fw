@@ -202,6 +202,10 @@ export default function WidgetGrid({
     const onMove = (e: PointerEvent) => {
       const r = resizeRef.current;
       if (!r) return;
+      // Ponteiro que saiu da janela: o Firefox passa a reportar (0, -86) e
+      // coisas do gênero, e o widget encolheria até o mínimo justamente quando
+      // o operador está tentando aumentá-lo. Vale a última posição boa.
+      if (e.clientX <= 0 || e.clientY <= 0) return;
       const atual = items.find((it) => it.widget === r.widget);
       if (!atual) return;
       const cw = colWidth();
@@ -309,7 +313,7 @@ export default function WidgetGrid({
               // está aí, nenhum clique chega ao conteúdo do widget, e o painel
               // inteiro é só superfície de arrasto. Fora do modo de edição ela
               // não existe, e a tela volta a ser a tela.
-              <div className="absolute inset-0 z-10 flex flex-col rounded-xl border-2 border-dashed border-blue-500/50 bg-gray-950/60 cursor-move">
+              <div className="absolute inset-0 z-10 flex flex-col rounded-xl border-2 border-dashed border-blue-500/50 bg-gray-950/85 cursor-move">
                 <div className="flex items-start justify-between gap-2 p-2">
                   <span className="flex min-w-0 items-center gap-1.5 rounded-md bg-gray-900/95 px-2 py-1 text-xs text-gray-200">
                     <GripVertical className="h-3.5 w-3.5 shrink-0 text-gray-500" />

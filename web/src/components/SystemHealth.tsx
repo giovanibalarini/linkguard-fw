@@ -36,10 +36,26 @@ export default function SystemHealth() {
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  if (items.length === 0) return null;
+  // Vira widget do painel (spec §5): o cartão preenche a célula que o operador
+  // lhe deu, e o excedente rola dentro dele em vez de esticar a grade.
+  //
+  // Sem vigia nenhum, o widget diz isso — e não some. Sumir deixaria um buraco
+  // no painel, e o operador não teria como saber se o widget está quebrado ou
+  // se não há o que vigiar.
+  if (items.length === 0) {
+    return (
+      <Panel title="Saúde do sistema" className="h-full overflow-y-auto">
+        <p className="py-2 text-sm text-gray-500">Nenhum vigia configurado ainda.</p>
+      </Panel>
+    );
+  }
   return (
-    <Panel title="Saúde do sistema">
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+    <Panel title="Saúde do sistema" className="h-full overflow-y-auto">
+      {/* auto-fill, e não `sm:`/`lg:`: dentro de um widget quem manda é a largura
+          do CARTÃO, não a da janela. Com os breakpoints do Tailwind (que olham a
+          janela) um widget de 4 colunas numa tela larga tentava caber 4 vigias
+          lado a lado e todos os rótulos viravam "Sinc...", "Inte...", "Tem...". */}
+      <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(8.5rem,1fr))]">
         {items.map((it) => (
           <div key={`${it.kind}:${it.name}`}
             className={`flex items-center gap-2 rounded-lg border p-3 ${it.up ? 'border-green-500/20 bg-green-500/5' : 'border-red-500/30 bg-red-500/10'}`}>
