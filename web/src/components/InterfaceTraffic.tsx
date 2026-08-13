@@ -4,11 +4,14 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import client from '../api/client';
 import type { SystemMetrics, TrafficHistoryResponse } from '../types';
 import { deriveRate } from '../lib/interfaceRates';
+import { formatBps, pointsFromHistory } from '../lib/series';
 
 interface RatePoint {
   ts: number;
   label: string;
+  /** bits/s — a unidade do app (ver lib/series.ts). */
   rx: number;
+  /** bits/s — a unidade do app (ver lib/series.ts). */
   tx: number;
 }
 
@@ -19,6 +22,9 @@ interface RateStats {
   min: number;
 }
 
+// Volume acumulado, em bytes: rx_bytes/tx_bytes dos contadores, memória,
+// disco. As TAXAS não passam por aqui — elas são bits/s e usam `formatBps`
+// (lib/series.ts), porque a unidade do link é Mb/s.
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -147,16 +153,24 @@ export default function InterfaceTraffic() {
 
       const next: Record<string, RatePoint[]> = {};
       for (const res of results) {
-        const points = (res.data.points ?? []).map((p) => ({
-          ts: p.timestamp * 1000,
-          label: new Date(p.timestamp * 1000).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-            second: range === '30d' ? undefined : '2-digit',
-          }),
-          rx: p.rx_bps,
-          tx: p.tx_bps,
-        }));
+        // Pelo conversor, nunca pelos campos crus: apesar do nome `_bps`, o
+        // backend grava bytes/s (internal/tsdb/traffic.go), e o gráfico fala
+        // bits/s como o resto do app.
+        //
+        // O ponto sem medição é descartado, não zerado: zero é uma medição, e
+        // um zero inventado faria um link fora do ar parecer um link ocioso.
+        const points = pointsFromHistory(res.data.points ?? [])
+          .filter((p): p is { t: number; rx: number; tx: number } => p.rx !== null && p.tx !== null)
+          .map((p) => ({
+            ts: p.t,
+            label: new Date(p.t).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: range === '30d' ? undefined : '2-digit',
+            }),
+            rx: p.rx,
+            tx: p.tx,
+          }));
         next[res.data.interface] = points;
       }
       setRrdHistory(next);
@@ -237,7 +251,10 @@ export default function InterfaceTraffic() {
     return rrdHistory[ifaceName] ?? [];
   };
 
-  const formatRate = (bytesPerSecond: number): string => `${formatBytes(bytesPerSecond)}/s`;
+  // Taxa em bits/s: `deriveRate` e `pointsFromHistory` já entregam nesta
+  // unidade. Era `${formatBytes(bytesPerSecond)}/s` — MB/s, bytes — e a
+  // troca move rótulo e valor juntos, senão o número passa a mentir por 8×.
+  const formatRate = formatBps;
 
   return (
     <div className="p-6 space-y-6">
@@ -442,8 +459,8 @@ export default function InterfaceTraffic() {
                             <YAxis
                               domain={[-chartMax, chartMax]}
                               tick={{ fill: '#6b7280', fontSize: 10 }}
-                              tickFormatter={(v) => formatBytes(Math.abs(Number(v)))}
-                              width={60}
+                              tickFormatter={(v) => formatBps(Math.abs(Number(v)))}
+                              width={68}
                             />
                             <ReferenceLine y={0} stroke="#4b5563" strokeDasharray="6 6" />
                             <Tooltip

@@ -2,8 +2,10 @@ import { LineChart, Line, ResponsiveContainer } from 'recharts';
 
 export interface SparklinePoint {
   ts: number;
-  rx: number;
-  tx: number;
+  /** bits/s; `null` é intervalo sem amostra, e não se desenha. */
+  rx: number | null;
+  /** bits/s; `null` é intervalo sem amostra, e não se desenha. */
+  tx: number | null;
 }
 
 interface SparklineProps {

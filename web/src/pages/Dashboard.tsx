@@ -10,6 +10,7 @@ import Tag, { type TagVariant } from '../components/ui/Tag';
 import Sparkline, { type SparklinePoint } from '../components/ui/Sparkline';
 import { AlertBadge } from '../components/StatusBadge';
 import { deriveRate, type RateCounter } from '../lib/interfaceRates';
+import { formatBps, pointsFromHistory } from '../lib/series';
 import client from '../api/client';
 import { useI18n } from '../i18n';
 import type { SystemMetrics, WanLink, Alert, NetHost, TrafficHistoryResponse, HostTraffic } from '../types';
@@ -22,9 +23,14 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
-function formatRate(bytesPerSecond: number): string {
-  return `${formatBytes(bytesPerSecond)}/s`;
-}
+// Taxa: bits/s, formatada por `formatBps` (lib/series.ts). Não existe um
+// `formatRate` local aqui de propósito — a versão antiga formatava com
+// `formatBytes` e escrevia "MB/s", e o app hoje fala Mb/s em todas as telas
+// (a unidade do link: os "100 mega" da operadora são bits). Um formatador por
+// tela é exatamente como as unidades divergem.
+//
+// `formatBytes` continua abaixo, e continua certo, para VOLUME acumulado
+// (memória, disco, bytes trafegados) — que é outra grandeza.
 
 function formatRelativeTime(iso: string, lang: 'pt' | 'en'): string {
   const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
@@ -120,7 +126,10 @@ export default function Dashboard() {
             const { data } = await client.get<TrafficHistoryResponse>(
               `/api/system/traffic-history?iface=${encodeURIComponent(link.interface)}&range=30m`,
             );
-            const points: SparklinePoint[] = data.points.map((p) => ({ ts: p.timestamp, rx: p.rx_bps, tx: p.tx_bps }));
+            // Pelo conversor, nunca pelos campos crus: `rx_bps` guarda
+            // bytes/s apesar do nome, e a sparkline tem que falar a mesma
+            // unidade que o número grande logo acima dela.
+            const points: SparklinePoint[] = pointsFromHistory(data.points).map((p) => ({ ts: p.t, rx: p.rx, tx: p.tx }));
             return [link.interface, points] as const;
           } catch {
             return [link.interface, []] as const;
@@ -149,7 +158,8 @@ export default function Dashboard() {
   const onlineLinks = wanLinks.filter((l) => l.status === 'online').length;
   const criticalAlerts = alerts.filter((a) => a.severity === 'critical').length;
   const hostsOnline = hosts.filter((h) => h.online).length;
-  const trafficNowBps = wanLinks.reduce((sum, l) => sum + (rates[l.interface]?.rx ?? 0) + (rates[l.interface]?.tx ?? 0), 0);
+  // bits/s: `deriveRate` já converte os contadores de /proc (bytes).
+  const trafficNowBits = wanLinks.reduce((sum, l) => sum + (rates[l.interface]?.rx ?? 0) + (rates[l.interface]?.tx ?? 0), 0);
   const hasTrafficSample = wanLinks.some((l) => rates[l.interface]);
 
   return (
@@ -187,7 +197,7 @@ export default function Dashboard() {
             variant={wanLinks.length > 0 && onlineLinks === wanLinks.length ? 'ok' : wanLinks.length > 0 ? 'crit' : 'idle'}
           />
         )}
-        {sys && <Stat label="Tráfego agora" value={hasTrafficSample ? formatRate(trafficNowBps) : '—'} />}
+        {sys && <Stat label="Tráfego agora" value={hasTrafficSample ? formatBps(trafficNowBits) : '—'} />}
         {sys && <Stat label="Hosts ativos" value={hostsOnline} sub={`${hosts.length} conhecidos`} />}
         {sys && <Stat label="Uptime" value={sys.uptime_str || '—'} />}
       </div>
@@ -205,7 +215,7 @@ export default function Dashboard() {
               >
                 <div className="flex items-baseline justify-between mb-2">
                   <div className="text-2xl font-bold text-white font-mono">
-                    {rate ? formatRate(rate.rx + rate.tx) : '—'}
+                    {rate ? formatBps(rate.rx + rate.tx) : '—'}
                   </div>
                   <div className="text-gray-500 text-xs">
                     {link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'} · {link.packet_loss > 0 ? `${link.packet_loss.toFixed(1)}%` : '0%'} perda

@@ -17,14 +17,20 @@ import {
   AXIS_LABEL_MAX,
   BITS_PER_BYTE,
   LOG_DECADES,
+  TRAFFIC_WINDOWS,
   axisPadLeft,
+  bitsFromBytes,
   contiguousRuns,
   formatBps,
+  formatVolume,
   isEmptySeries,
   niceScale,
   pointsFromHistory,
   reduceToWidth,
   seriesMax,
+  seriesPeak,
+  totalBytes,
+  windowFor,
 } from './series.ts';
 import type { Point } from './series.ts';
 
@@ -326,6 +332,168 @@ grupo('conversão da API');
   assert(out[0].t === 1_700_000_000_000, `timestamp em ms, obtive ${out[0].t}`);
   assert(out[0].rx === 1_275_000 * BITS_PER_BYTE, `bytes/s viram bits/s, obtive ${out[0].rx}`);
   assert(formatBps(out[0].rx) === '10.2 Mb/s', `10,2 Mb/s é o número do mockup, obtive "${formatBps(out[0].rx)}"`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A outra porta de entrada de taxa: /api/system/status
+// ─────────────────────────────────────────────────────────────────────────────
+// `deriveRate()` tira bytes/s dos contadores de /proc/net/dev. O app inteiro
+// fala Mb/s (a unidade do link: os "100 mega" da operadora são bits), então
+// essa taxa também passa por uma conversão única.
+//
+// Estas asserções existem porque a mudança de unidade multiplica por 8 um
+// número que já estava em produção: um ponto que troque só o rótulo passa a
+// mentir por 8×, e mentir por 8× é plausível o bastante para não saltar aos
+// olhos de ninguém.
+grupo('bytes/s do status viram bits/s');
+{
+  assert(bitsFromBytes(1) === 8, `1 B/s são 8 b/s, obtive ${bitsFromBytes(1)}`);
+  assert(bitsFromBytes(0) === 0, 'zero medido continua zero');
+  assert(
+    bitsFromBytes(1_275_000) === 10_200_000,
+    `1,275 MB/s são 10,2 Mb/s, obtive ${bitsFromBytes(1_275_000)}`,
+  );
+  // Rótulo e valor juntos: o mesmo contador que a tela antiga mostrava como
+  // "1.2 MB/s" tem que aparecer agora como "10.2 Mb/s" — não como "1.2 Mb/s"
+  // (só o rótulo trocado) nem como "10.2 MB/s" (só o valor trocado).
+  assert(
+    formatBps(bitsFromBytes(1_275_000)) === '10.2 Mb/s',
+    `obtive "${formatBps(bitsFromBytes(1_275_000))}"`,
+  );
+  // Um link de 100 Mb/s saturado entrega ~12,5 MB/s nos contadores; a tela
+  // tem que dizer 100 Mb/s, que é o número do plano contratado.
+  assert(
+    formatBps(bitsFromBytes(12_500_000)) === '100 Mb/s',
+    `o plano de 100 mega tem que ler 100 Mb/s, obtive "${formatBps(bitsFromBytes(12_500_000))}"`,
+  );
+  assert(
+    pointsFromHistory([{ timestamp: 0, rx_bps: 12_500_000, tx_bps: 0 }])[0].rx === bitsFromBytes(12_500_000),
+    'histórico e status têm que chegar na mesma unidade para o mesmo byte/s',
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pico e total da faixa: ausência é `—`, zero medido é zero
+// ─────────────────────────────────────────────────────────────────────────────
+grupo('pico e total da faixa');
+{
+  assert(seriesPeak([]) === null, 'série vazia não tem pico');
+  assert(
+    seriesPeak([{ t: 0, rx: null, tx: null }]) === null,
+    'série só de ausências não tem pico — `—`, não `0`',
+  );
+  assert(
+    seriesPeak([{ t: 0, rx: 0, tx: 0 }]) === 0,
+    'zero medido é pico 0, e continua sendo uma medição',
+  );
+  assert(
+    seriesPeak([
+      { t: 0, rx: 1_000, tx: null },
+      { t: 1, rx: null, tx: 84_000_000 },
+    ]) === 84_000_000,
+    'o pico olha rx e tx',
+  );
+  assert(formatBps(seriesPeak([{ t: 0, rx: null, tx: null }])) === '—', 'e o texto do pico ausente é —');
+
+  assert(totalBytes([], 1) === null, 'sem amostra não há total');
+  assert(
+    totalBytes([{ t: 0, rx: null, tx: null }], 60) === null,
+    'só ausências não somam zero — somam nada',
+  );
+  // 1 MB/s durante 60 s de rx: 60 MB. Em bits/s isso é 8 Mb/s; a integral tem
+  // que voltar para bytes, senão o "total" fica 8× maior que o real.
+  assert(
+    totalBytes([{ t: 0, rx: 8_000_000, tx: 0 }], 60) === 60_000_000,
+    `60 s a 8 Mb/s são 60 MB, obtive ${totalBytes([{ t: 0, rx: 8_000_000, tx: 0 }], 60)}`,
+  );
+  assert(
+    totalBytes([{ t: 0, rx: 8_000_000, tx: 8_000_000 }], 60) === 120_000_000,
+    'rx e tx entram os dois no total',
+  );
+  assert(
+    totalBytes(
+      [
+        { t: 0, rx: 8_000_000, tx: 0 },
+        { t: 1, rx: null, tx: null },
+      ],
+      60,
+    ) === 60_000_000,
+    'o buraco não contribui com nada para o total',
+  );
+  assert(totalBytes([{ t: 0, rx: 8_000_000, tx: 0 }], 0) === null, 'sem passo não há integral');
+}
+
+grupo('formato de volume');
+{
+  assert(formatVolume(null) === '—', `volume ausente é —, obtive "${formatVolume(null)}"`);
+  assert(formatVolume(0) === '0 B', `volume zero medido é 0 B, obtive "${formatVolume(0)}"`);
+  assert(formatVolume(512) === '512 B', `obtive "${formatVolume(512)}"`);
+  assert(formatVolume(1024) === '1.0 KB', `obtive "${formatVolume(1024)}"`);
+  assert(formatVolume(1024 ** 3 * 4.2) === '4.2 GB', `obtive "${formatVolume(1024 ** 3 * 4.2)}"`);
+  assert(formatVolume(NaN) === '—', 'NaN é ausência de volume');
+  // Volume não é taxa, e o rótulo tem que deixar isso óbvio: GB (byte) para
+  // "quanto passou", Mb/s (bit) para "quão rápido". Trocar um pelo outro é o
+  // erro de 8× com outra fantasia.
+  assert(!formatVolume(1024 ** 3).includes('/s'), 'volume não leva /s');
+  assert(formatBps(1024 ** 3).includes('/s'), 'taxa leva /s');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A resolução se escolhe pela janela pedida
+// ─────────────────────────────────────────────────────────────────────────────
+// Pedir um ano em passo de 1 s são ~31 milhões de linhas lidas do SQLite para
+// desenhar algumas centenas de colunas. Esta tabela espelha
+// `internal/tsdb.rangeToStepDuration`; se alguém acrescentar uma janela nova
+// apontando para a resolução errada, é aqui que aparece.
+grupo('resolução por janela');
+{
+  const passoDoBackend: Record<string, number> = {
+    '5m': 1,
+    '30m': 1,
+    '12h': 60,
+    '30d': 900,
+    '1y': 3600,
+    '5y': 3600,
+  };
+
+  assert(TRAFFIC_WINDOWS.length === 4, `as quatro resoluções do tsdb, obtive ${TRAFFIC_WINDOWS.length}`);
+
+  const passos = TRAFFIC_WINDOWS.map((w) => w.step);
+  assert(
+    JSON.stringify(passos) === JSON.stringify([1, 60, 900, 3600]),
+    `uma janela por resolução do tsdb, obtive ${JSON.stringify(passos)}`,
+  );
+
+  for (const w of TRAFFIC_WINDOWS) {
+    assert(
+      passoDoBackend[w.range] === w.step,
+      `a janela "${w.label}" pede range=${w.range}, que o backend serve em passo ${passoDoBackend[w.range]}s, não ${w.step}s`,
+    );
+    // Nenhuma janela pode pedir mais pontos do que uma tela consegue usar: o
+    // gráfico reduz para umas poucas centenas de colunas, então acima de uns
+    // milhares de pontos só se paga banco, rede e memória à toa.
+    const pontos = w.spanSeconds / w.step;
+    assert(
+      pontos <= 12_000,
+      `a janela "${w.label}" pediria ${Math.round(pontos)} pontos — resolução fina demais para a largura pedida`,
+    );
+    assert(pontos >= 100, `a janela "${w.label}" pediria só ${Math.round(pontos)} pontos — grossa demais`);
+    assert(w.spanSeconds > 0 && w.step > 0, `a janela "${w.label}" precisa de largura e passo`);
+  }
+
+  for (let i = 1; i < TRAFFIC_WINDOWS.length; i++) {
+    assert(
+      TRAFFIC_WINDOWS[i].spanSeconds > TRAFFIC_WINDOWS[i - 1].spanSeconds,
+      'janela mais larga vem depois',
+    );
+    assert(
+      TRAFFIC_WINDOWS[i].step > TRAFFIC_WINDOWS[i - 1].step,
+      'janela mais larga tem que vir com passo mais grosso, nunca com o mesmo ou mais fino',
+    );
+  }
+
+  assert(windowFor('12h').step === 60, 'windowFor acha a janela pelo range');
+  assert(windowFor('nao-existe').step === 1, 'range desconhecido cai na mais fina, que é a de menor custo por ponto');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

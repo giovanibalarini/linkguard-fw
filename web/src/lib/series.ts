@@ -42,6 +42,24 @@ export function pointsFromHistory(samples: HistorySample[]): Point[] {
 }
 
 /**
+ * Converte uma taxa em **bytes por segundo** para **bits por segundo**.
+ *
+ * A outra porta de entrada de taxa no app é `/api/system/status`, de onde
+ * `deriveRate()` (`lib/interfaceRates.ts`) tira bytes/s a partir dos
+ * contadores de `/proc/net/dev`. Ela passa por aqui pelo mesmo motivo que o
+ * histórico passa por `pointsFromHistory`: **a conversão mora num lugar só.**
+ * Os três erros já cometidos com esta API (`iface` × `interface`,
+ * `rx_bps` × `rx`, e bytes vendidos como bits) nasceram todos de mapear campo
+ * na mão dentro de uma tela.
+ *
+ * A unidade do app é Mb/s porque Mb/s é a unidade de link: os "100 mega" da
+ * operadora são bits, e é com o plano contratado que o operador compara.
+ */
+export function bitsFromBytes(bytesPerSecond: number): number {
+  return bytesPerSecond * BITS_PER_BYTE;
+}
+
+/**
  * Reduz a série para caber em `buckets` colunas de tela.
  *
  * **Cada bucket guarda o MÁXIMO do intervalo, nunca a média.** Média esconde
@@ -93,6 +111,38 @@ export function seriesMax(points: Point[]): number {
 /** true se a série não tem nenhuma amostra medida. */
 export function isEmptySeries(points: Point[]): boolean {
   return !points.some((p) => p.rx !== null || p.tx !== null);
+}
+
+/**
+ * Pico da janela em bits/s, ou `null` quando não há **nenhuma** amostra.
+ *
+ * `seriesMax` devolve `0` para uma série sem amostra, o que serve ao desenho
+ * mas não serve ao texto: `0` na faixa faria um link fora do ar parecer um
+ * link ocioso. Aqui a distinção é explícita — `null` vira `—`, e um zero
+ * medido continua sendo `0`.
+ */
+export function seriesPeak(points: Point[]): number | null {
+  if (isEmptySeries(points)) return null;
+  return seriesMax(points);
+}
+
+/**
+ * Volume acumulado na janela, em **bytes**, integrando a série (bits/s) pelo
+ * passo do tsdb. `null` quando não há nenhuma amostra.
+ *
+ * Volume fica em bytes de propósito, mesmo com as *taxas* todas em bits: quem
+ * lê "quanto passou" pensa em GB (é a unidade da franquia e a do disco), e
+ * quem lê "quão rápido" pensa em Mb/s (é a unidade do link). São grandezas
+ * diferentes, e o rótulo diz qual é qual em cada lugar.
+ */
+export function totalBytes(points: Point[], stepSeconds: number): number | null {
+  if (isEmptySeries(points) || !(stepSeconds > 0)) return null;
+  let bits = 0;
+  for (const p of points) {
+    if (p.rx !== null) bits += p.rx * stepSeconds;
+    if (p.tx !== null) bits += p.tx * stepSeconds;
+  }
+  return bits / BITS_PER_BYTE;
 }
 
 /**
@@ -246,6 +296,61 @@ export function formatBps(v: number | null): string {
   // o operador perde justamente a precisão do número que foi olhar.
   const decimals = n < 100 ? 1 : 0;
   return `${n.toFixed(decimals)} ${RATE_UNITS[i]}`;
+}
+
+const VOLUME_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+
+/**
+ * Formata um volume acumulado em bytes (base 1024, como o resto do app).
+ * Ausência de medição é `—`, e nunca `0`.
+ */
+export function formatVolume(bytes: number | null): string {
+  if (bytes === null || !isFinite(bytes)) return '—';
+  if (bytes <= 0) return '0 B';
+  let i = Math.floor(Math.log(bytes) / Math.log(1024));
+  if (i < 0) i = 0;
+  if (i > VOLUME_UNITS.length - 1) i = VOLUME_UNITS.length - 1;
+  const n = bytes / Math.pow(1024, i);
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${VOLUME_UNITS[i]}`;
+}
+
+/**
+ * Uma janela de consulta da tela de tráfego, casada com a resolução que o
+ * tsdb realmente mantém para ela.
+ *
+ * **A resolução se escolhe pela janela pedida, não pela mais fina que existe.**
+ * Um ano em passo de 1 s seriam ~31 milhões de linhas lidas do SQLite e
+ * jogadas no navegador para desenhar algumas centenas de colunas — castigo
+ * para o banco e para a aba, sem um pixel a mais de informação.
+ *
+ * `step` é o passo que `internal/tsdb.rangeToStepDuration` devolve para
+ * `range`; as asserções em `series.check.ts` guardam esse casamento, para que
+ * uma janela nova não entre apontando para a resolução errada.
+ */
+export interface TrafficWindow {
+  /** Valor do parâmetro `range` da API (e id do botão). */
+  range: string;
+  /** Rótulo em português. */
+  label: string;
+  /** Passo do tsdb, em segundos. */
+  step: number;
+  /** Como o passo aparece para o operador. */
+  stepLabel: string;
+  /** Largura da janela, em segundos. */
+  spanSeconds: number;
+}
+
+/** As quatro janelas — uma por resolução mantida pelo tsdb. */
+export const TRAFFIC_WINDOWS: TrafficWindow[] = [
+  { range: '30m', label: '30 min', step: 1, stepLabel: '1 s', spanSeconds: 30 * 60 },
+  { range: '12h', label: '12 h', step: 60, stepLabel: '1 min', spanSeconds: 12 * 3600 },
+  { range: '30d', label: '30 dias', step: 900, stepLabel: '15 min', spanSeconds: 30 * 24 * 3600 },
+  { range: '1y', label: '1 ano', step: 3600, stepLabel: '1 h', spanSeconds: 365 * 24 * 3600 },
+];
+
+/** A janela de um `range`, ou a primeira (a mais fina) se o id não existir. */
+export function windowFor(range: string): TrafficWindow {
+  return TRAFFIC_WINDOWS.find((w) => w.range === range) ?? TRAFFIC_WINDOWS[0];
 }
 
 /** Rótulo de horário para o eixo do tempo, na granularidade da janela. */

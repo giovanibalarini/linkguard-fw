@@ -16,6 +16,7 @@ const pt: Dict = {
   'app.tagline': 'Firewall Manager',
   // nav
   'nav.dashboard': 'Painel',
+  'nav.traffic': 'Tráfego',
   'nav.links': 'Links WAN',
   'nav.firewall': 'Firewall',
   'nav.hosts': 'Hosts',
@@ -59,6 +60,7 @@ const pt: Dict = {
 const en: Dict = {
   'app.tagline': 'Firewall Manager',
   'nav.dashboard': 'Dashboard',
+  'nav.traffic': 'Traffic',
   'nav.links': 'WAN Links',
   'nav.firewall': 'Firewall',
   'nav.hosts': 'Hosts',

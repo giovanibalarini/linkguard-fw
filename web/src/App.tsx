@@ -21,6 +21,7 @@ import Dhcp from './pages/Dhcp';
 import Dns from './pages/Dns';
 import Ntp from './pages/Ntp';
 import Changelog from './pages/Changelog';
+import Traffic from './pages/Traffic';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -46,6 +47,7 @@ function AppRoutes() {
           <Route path="alerts" element={<Alerts />} />
           <Route path="logs" element={<Logs />} />
           <Route path="monitoring" element={<Monitoring />} />
+          <Route path="traffic" element={<Traffic />} />
           <Route path="interfaces" element={<Interfaces />} />
           <Route path="interfaces/:name/edit" element={<InterfaceEdit />} />
           <Route path="interfaces/:name/review" element={<InterfaceReview />} />

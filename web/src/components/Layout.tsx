@@ -8,6 +8,7 @@ import {
   LayoutDashboard, Network, Route, Shield, Bell, FileText,
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
   Menu, X, AlertTriangle, Cable, Server, Globe, Sparkles, SlidersHorizontal, Clock,
+  AreaChart,
 } from 'lucide-react';
 
 interface NavItem {
@@ -36,6 +37,7 @@ const navGroups: NavGroup[] = [
     id: 'operacao', label: 'group.operacao',
     items: [
       { to: '/', label: 'nav.dashboard', icon: LayoutDashboard, end: true, perm: ['dashboard.read'] },
+      { to: '/traffic', label: 'nav.traffic', icon: AreaChart, perm: ['monitoring.read'] },
       { to: '/alerts', label: 'nav.alerts', icon: Bell, perm: ['monitoring.read'] },
       { to: '/monitoring', label: 'nav.monitoring', icon: Activity, perm: ['monitoring.read'], advanced: true },
       { to: '/logs', label: 'nav.logs', icon: FileText, perm: ['logs.read'], advanced: true },
