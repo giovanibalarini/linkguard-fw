@@ -50,6 +50,8 @@ const (
 	TypeFirewallSystemGroupsMissing = "firewall_system_groups_missing"
 	TypeFirewallSystemGroupsOK      = "firewall_system_groups_ok"
 
+	TypeFirewallChangeReverted = "firewall_change_reverted"
+
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
 	SeverityCritical = "critical"
@@ -637,6 +639,28 @@ func (s *Service) FirewallSystemGroupsOK() {
 	s.AutoResolve(TypeFirewallSystemGroupsMissing, "")
 	_ = s.createRecovery(TypeFirewallSystemGroupsOK, "Bloqueios de volta na lista de grupos",
 		"Os grupos do sistema voltaram a aparecer na lista e a chain forward foi reconstruída com os bloqueios.", "")
+}
+
+// FirewallChangeReverted registra que uma mudança de firewall aplicada e NÃO
+// confirmada foi desfeita sozinha (Fase C2, spec §5): ou o prazo de 90
+// segundos terminou sem ninguém confirmar, ou o LinkGuard reiniciou com a
+// janela ainda aberta.
+//
+// É como o operador descobre, quando voltar, que a alteração dele não está
+// mais valendo — e por quê. Sem isto a máquina desfaz sozinha em silêncio, e
+// ele reencontra um firewall diferente do que deixou sem nada que explique a
+// diferença: a pior forma de um firewall se comportar.
+//
+// Deliberadamente FORA de stateAlertTypes, pela mesma razão de TypeSlowBoot:
+// não é uma condição em curso que alguma recuperação fecha — uma reversão que
+// aconteceu não pode desacontecer. O operador resolve o alerta quando tiver
+// lido, como faz com o de boot lento.
+//
+// Warning, não critical: a máquina está num estado bom e conhecido (o
+// anterior). O que ele precisa é ficar sabendo, não ser acordado.
+func (s *Service) FirewallChangeReverted(detail string) error {
+	return s.Create(TypeFirewallChangeReverted, SeverityWarning,
+		"Mudança de firewall revertida por falta de confirmação", detail, "")
 }
 
 func (s *Service) BaseDepsOK(detail string) error {

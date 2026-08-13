@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
@@ -42,6 +43,12 @@ type Alerter interface {
 	// FirewallSystemGroupsOK fecha esse alerta quando a lista volta ao normal.
 	// Só anuncia recuperação se havia mesmo algo aberto.
 	FirewallSystemGroupsOK()
+	// FirewallChangeReverted registra que uma mudança de firewall aplicada e
+	// NÃO confirmada foi desfeita sozinha (janela expirada ou boot dentro da
+	// janela). É como o operador descobre, quando voltar, que a alteração
+	// dele não está mais valendo e por quê — sem isto a máquina "desfaz
+	// sozinha" em silêncio, que é a pior forma de um firewall se comportar.
+	FirewallChangeReverted(detail string) error
 }
 
 // Service combines the DB (source of truth for the admin's rules) and the
@@ -50,11 +57,27 @@ type Service struct {
 	db      *storage.DB
 	nft     *nftables.Service
 	alerter Alerter
+	// now é a fonte de tempo do confirmar-ou-reverte (Fase C2), injetável
+	// para os testes de expiração não precisarem dormir 90 segundos — teste
+	// que dorme é teste que ninguém roda, e a expiração ficaria sem
+	// cobertura justamente por ser lenta de exercitar.
+	//
+	// Um campo só, e não time.Now() espalhado: o instante de expiração
+	// gravado no banco e a comparação que decide reverter TÊM que sair do
+	// mesmo relógio, senão a janela dura um tempo diferente do que o painel
+	// mostra.
+	now func() time.Time
+	// mu serializa o confirmar-ou-reverte (abrir, confirmar, reverter). O
+	// timer em memória (WatchPending) roda numa goroutine própria e o
+	// operador aperta os botões por HTTP: sem isto, o "reverter agora" dele e
+	// a expiração podem restaurar o mesmo snapshot duas vezes, ou uma
+	// mutação nova abrir janela no meio de uma reversão.
+	mu sync.Mutex
 }
 
 // NewService creates a firewallrules Service.
 func NewService(db *storage.DB, nft *nftables.Service) *Service {
-	return &Service{db: db, nft: nft}
+	return &Service{db: db, nft: nft, now: time.Now}
 }
 
 // SetAlerter liga o serviço de alertas depois da construção (o alerts.Service

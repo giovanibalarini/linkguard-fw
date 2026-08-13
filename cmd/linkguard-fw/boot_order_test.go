@@ -274,3 +274,137 @@ func TestNtpInputStateFromNeverTurnsAReadErrorIntoServingOff(t *testing.T) {
 		t.Errorf("configuração válida mal lida: %v/%v/%v", networks, serving, err)
 	}
 }
+
+// ─── Confirmar-ou-reverte: a verificação de boot (Fase C2) ────────────────
+
+// TestPendingChangeIsRevertedBeforeAnyReconcileOnBoot guarda a ordem de que
+// depende a única proteção que existe contra o pior caso desta fase.
+//
+// Uma regra de escopo input mal escrita tira o SSH e o painel do próprio
+// operador, numa máquina remota. A rede de proteção é a janela de 90 s; a
+// rede EMBAIXO dela é esta verificação de boot, para quando a máquina cai
+// dentro da janela — que é o caso comum quando a mudança foi a causa da
+// queda.
+//
+// A posição é a proteção, não organização: reverter DEPOIS de já ter
+// reconciliado é aplicar mais uma vez, na máquina que acabou de voltar,
+// exatamente a regra que pode tê-la derrubado. Por isso
+// frSvc.RevertPendingOnBoot tem que vir antes de TUDO que aplica firewall no
+// boot — as reconciliações do nftSvc e as do frSvc, incluindo o
+// nftSvc.Restore que repõe os elementos salvos depois de um bootstrap.
+//
+// Guarda de deriva sobre a árvore sintática, como os demais deste arquivo:
+// nenhum teste de pacote enxerga a sequência de main.go.
+func TestPendingChangeIsRevertedBeforeAnyReconcileOnBoot(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("não foi possível localizar o arquivo de teste")
+	}
+	srcPath := filepath.Join(filepath.Dir(thisFile), "main.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parsear main.go: %v", err)
+	}
+
+	// Só o que APLICA firewall entra na lista. frSvc.WatchPending não entra:
+	// é a goroutine do timer, e ela não aplica nada por si.
+	applies := map[string]bool{
+		"frSvc.EnsureSystemGroups":           true,
+		"frSvc.ImportOnce":                   true,
+		"frSvc.MigrateRulesIntoDefaultGroup": true,
+		"frSvc.Reconcile":                    true,
+		"nftSvc.Restore":                     true,
+		"nftSvc.ReconcileMasquerade":         true,
+		"nftSvc.ReconcileStructuralChains":   true,
+		"nftSvc.ReconcileNTPInput":           true,
+		"nftSvc.ReconcileGroups":             true,
+	}
+
+	revert := -1
+	firstApply, firstApplyName := -1, ""
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, isCall := n.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel {
+			return true
+		}
+		recv, isIdent := sel.X.(*ast.Ident)
+		if !isIdent {
+			return true
+		}
+		name := recv.Name + "." + sel.Sel.Name
+		if recv.Name == "frSvc" && sel.Sel.Name == "RevertPendingOnBoot" && revert == -1 {
+			revert = int(call.Pos())
+		}
+		if applies[name] && (firstApply == -1 || int(call.Pos()) < firstApply) {
+			firstApply, firstApplyName = int(call.Pos()), name
+		}
+		return true
+	})
+
+	if revert == -1 {
+		t.Fatal("o boot não verifica mais a mudança de firewall pendente: um reboot dentro da janela de confirmação passaria a deixar valendo para sempre uma regra não confirmada que pode ter trancado o operador fora da máquina")
+	}
+	if firstApply == -1 {
+		t.Fatal("o boot não aplica mais firewall por nenhum caminho conhecido -- se a sequência mudou de forma, este guarda precisa mudar junto")
+	}
+	if revert > firstApply {
+		t.Errorf("frSvc.RevertPendingOnBoot tem que vir ANTES de %s: reverter depois de já ter aplicado é aplicar mais uma vez, na máquina que acabou de voltar, a regra que pode tê-la derrubado", firstApplyName)
+	}
+}
+
+// A verificação de boot roda UMA vez. provisionSystem é reexecutado quando
+// uma tentativa posterior de instalar a base finalmente dá certo, e isso
+// pode acontecer meia hora depois da subida, com o operador já no painel:
+// sem a trava, essa segunda passada reverteria uma janela de confirmação
+// recém-aberta como se a máquina tivesse reiniciado. "No boot" tem que
+// querer dizer no boot.
+func TestTheBootPendingCheckRunsOnlyOnce(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("não foi possível localizar o arquivo de teste")
+	}
+	srcPath := filepath.Join(filepath.Dir(thisFile), "main.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parsear main.go: %v", err)
+	}
+
+	guarded := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, isCall := n.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel || sel.Sel.Name != "Do" {
+			return true
+		}
+		// O corpo do sync.Once.Do tem que ser quem chama RevertPendingOnBoot.
+		ast.Inspect(call, func(inner ast.Node) bool {
+			innerCall, isInnerCall := inner.(*ast.CallExpr)
+			if !isInnerCall {
+				return true
+			}
+			if innerSel, isInnerSel := innerCall.Fun.(*ast.SelectorExpr); isInnerSel {
+				if recv, isIdent := innerSel.X.(*ast.Ident); isIdent &&
+					recv.Name == "frSvc" && innerSel.Sel.Name == "RevertPendingOnBoot" {
+					guarded = true
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	if !guarded {
+		t.Error("frSvc.RevertPendingOnBoot tem que estar dentro de um sync.Once.Do: provisionSystem roda de novo quando a base termina de instalar, e uma segunda passada reverteria uma janela de confirmação aberta minutos antes pelo operador")
+	}
+}

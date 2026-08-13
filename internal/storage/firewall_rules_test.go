@@ -1,7 +1,9 @@
 package storage_test
 
 import (
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -474,5 +476,192 @@ func TestMigrateRulesIntoGroupRollsBackWhenTheUpdateFails(t *testing.T) {
 	}
 	if flag != "" {
 		t.Fatalf("a trava (passo 3, nunca chega a rodar) não pode ficar gravada, obtive %q", flag)
+	}
+}
+
+// ─── pending_firewall_change (Fase C2: confirmar-ou-reverte) ───────────────
+
+// O ciclo de vida do pendente: grava, lê de volta com o expires_at intacto,
+// apaga. É o estado que faz um reboot dentro da janela reverter em vez de
+// deixar valendo para sempre uma regra que pode ter trancado o operador.
+func TestPendingFirewallChangeLifecycle(t *testing.T) {
+	db := newTestDB(t)
+
+	if p, err := db.GetPendingChange(); err != nil || p != nil {
+		t.Fatalf("banco novo tem que estar sem pendente, obtive %v/%v", p, err)
+	}
+
+	expires := time.Now().Add(90 * time.Second).Truncate(time.Second)
+	if err := db.SavePendingChange(storage.PendingChange{
+		ID:        "p1",
+		Snapshot:  `{"groups":[{"id":"g1"}],"rules":[]}`,
+		ExpiresAt: expires,
+		AppliedBy: "gov",
+		Summary:   "grupo Trava SSH aplicado",
+	}); err != nil {
+		t.Fatalf("SavePendingChange: %v", err)
+	}
+
+	got, err := db.GetPendingChange()
+	if err != nil {
+		t.Fatalf("GetPendingChange: %v", err)
+	}
+	if got == nil {
+		t.Fatal("o pendente gravado não voltou")
+	}
+	if !got.ExpiresAt.Equal(expires) {
+		t.Errorf("expires_at = %v, queria %v — é dele que sai a contagem regressiva do painel", got.ExpiresAt, expires)
+	}
+	if got.AppliedBy != "gov" || got.Summary != "grupo Trava SSH aplicado" || got.Snapshot == "" {
+		t.Errorf("pendente lido diferente do gravado: %+v", got)
+	}
+
+	if err := db.ClearPendingChange(); err != nil {
+		t.Fatalf("ClearPendingChange: %v", err)
+	}
+	if p, err := db.GetPendingChange(); err != nil || p != nil {
+		t.Errorf("depois de apagado não pode sobrar pendente, obtive %v/%v", p, err)
+	}
+}
+
+// Uma linha no máximo, garantida pelo PRÓPRIO BANCO (only_row UNIQUE com
+// CHECK = 1) e não só pela checagem em Go que vem antes.
+//
+// Com dois pendentes, "reverter ao estado anterior" fica sem resposta —
+// anterior a qual das duas mudanças? A trava no schema é o que faz essa
+// garantia sobreviver a um chamador futuro que esqueça de perguntar antes.
+func TestPendingFirewallChangeAllowsOnlyOneRow(t *testing.T) {
+	db := newTestDB(t)
+
+	first := storage.PendingChange{ID: "p1", Snapshot: "{}", ExpiresAt: time.Now(), Summary: "primeira"}
+	if err := db.SavePendingChange(first); err != nil {
+		t.Fatalf("gravar o primeiro pendente: %v", err)
+	}
+	if err := db.SavePendingChange(storage.PendingChange{
+		ID: "p2", Snapshot: "{}", ExpiresAt: time.Now(), Summary: "segunda",
+	}); err == nil {
+		t.Fatal("o banco aceitou um segundo pendente; empilhar janelas torna a reversão ambígua")
+	}
+
+	got, err := db.GetPendingChange()
+	if err != nil {
+		t.Fatalf("GetPendingChange: %v", err)
+	}
+	if got == nil || got.Summary != "primeira" {
+		t.Errorf("a janela em aberto tem que continuar sendo a primeira, obtive %+v", got)
+	}
+}
+
+// ReplaceFirewallGroupsAndRules é o lado banco da reversão: substitui tudo
+// pelo conteúdo do snapshot, numa transação. Restaurar tem que preservar
+// position e enabled exatamente como estavam — é um estado que já existiu,
+// não uma criação nova.
+func TestReplaceFirewallGroupsAndRulesRestoresExactly(t *testing.T) {
+	db := newTestDB(t)
+
+	// o estado "novo", que a reversão vai jogar fora
+	novo := storage.FirewallGroup{ID: "novo", Name: "Trava SSH", ChainName: "grp_novo",
+		Position: 0, Enabled: true, Fallthrough: "continue", Scope: "input"}
+	if err := db.CreateFirewallGroup(&novo); err != nil {
+		t.Fatalf("CreateFirewallGroup: %v", err)
+	}
+	if err := db.CreateFirewallRule(&storage.FirewallRule{
+		GroupID: "novo", Action: "drop", Proto: "tcp", Dport: "22"}); err != nil {
+		t.Fatalf("CreateFirewallRule: %v", err)
+	}
+
+	// o snapshot do estado anterior
+	antes := []storage.FirewallGroup{{ID: "antigo", Name: "Minhas regras", ChainName: "grp_antigo",
+		Position: 3, Enabled: false, Fallthrough: "accept", Kind: "admin", Scope: "forward"}}
+	antesRules := []storage.FirewallRule{{ID: "r1", Position: 7, GroupID: "antigo",
+		Enabled: false, Action: "accept", Proto: "tcp", Dport: "9997"}}
+
+	if err := db.ReplaceFirewallGroupsAndRules(antes, antesRules); err != nil {
+		t.Fatalf("ReplaceFirewallGroupsAndRules: %v", err)
+	}
+
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID != "antigo" {
+		t.Fatalf("os grupos não foram substituídos pelo snapshot: %+v", groups)
+	}
+	g := groups[0]
+	if g.Position != 3 || g.Enabled || g.Fallthrough != "accept" || g.Scope != "forward" {
+		t.Errorf("o grupo restaurado não é idêntico ao do snapshot: %+v", g)
+	}
+
+	rules, err := db.ListFirewallRules()
+	if err != nil {
+		t.Fatalf("ListFirewallRules: %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != "r1" {
+		t.Fatalf("as regras não foram substituídas pelo snapshot: %+v", rules)
+	}
+	if rules[0].Position != 7 || rules[0].Enabled {
+		t.Errorf("a regra restaurada não é idêntica à do snapshot (position/enabled): %+v", rules[0])
+	}
+}
+
+// Snapshot sem nenhum grupo é recusado em vez de obedecido: obedecê-lo
+// esvaziaria a chain forward por completo na reconciliação seguinte —
+// bloqueios administrativos incluídos, que desde a Fase C1 também são itens
+// da lista — e apagaria todas as chains grp_. Derrubar o firewall inteiro em
+// nome de uma reversão de segurança é o oposto do que ela existe para fazer.
+func TestReplaceFirewallGroupsAndRulesRefusesAnEmptyGroupList(t *testing.T) {
+	db := newTestDB(t)
+	g := storage.FirewallGroup{ID: "g1", Name: "Minhas regras", ChainName: "grp_g1",
+		Position: 0, Enabled: true, Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatalf("CreateFirewallGroup: %v", err)
+	}
+
+	if err := db.ReplaceFirewallGroupsAndRules(nil, nil); err == nil {
+		t.Fatal("restaurar um snapshot sem grupos tinha que falhar, não apagar o firewall")
+	}
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Errorf("os grupos foram apagados por um snapshot vazio: %+v", groups)
+	}
+}
+
+// A migração da tabela do pendente roda em banco JÁ EXISTENTE e é idempotente
+// — é o caminho de toda máquina que está subindo de versão, e o pendente
+// gravado tem que sobreviver ao reboot que a atualização provoca (é
+// exatamente o cenário que este mecanismo existe para cobrir).
+func TestPendingFirewallChangeMigrationIsIdempotentOnAnExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upgrade.db")
+
+	db, err := storage.Open(path)
+	if err != nil {
+		t.Fatalf("primeira abertura: %v", err)
+	}
+	if err := db.SavePendingChange(storage.PendingChange{
+		ID: "p1", Snapshot: `{"groups":[{"id":"g1"}]}`,
+		ExpiresAt: time.Now().Add(90 * time.Second), Summary: "grupo Trava SSH aplicado",
+	}); err != nil {
+		t.Fatalf("SavePendingChange: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// o processo volta (reboot, atualização): a migração roda de novo
+	db2, err := storage.Open(path)
+	if err != nil {
+		t.Fatalf("segunda abertura (a migração tem que ser idempotente): %v", err)
+	}
+	defer db2.Close()
+
+	got, err := db2.GetPendingChange()
+	if err != nil {
+		t.Fatalf("GetPendingChange depois do restart: %v", err)
+	}
+	if got == nil || got.Summary != "grupo Trava SSH aplicado" {
+		t.Errorf("o pendente não sobreviveu ao restart do processo: %+v", got)
 	}
 }

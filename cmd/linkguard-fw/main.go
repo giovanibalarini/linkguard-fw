@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -345,6 +346,15 @@ func run() int {
 		}
 	})
 
+	// pendingCheckedOnce prende a verificação de boot do confirmar-ou-reverte
+	// à PRIMEIRA passada de provisionSystem. provisionSystem é reexecutado
+	// quando uma tentativa posterior de instalar a base finalmente dá certo —
+	// e isso pode acontecer meia hora depois da subida, com o operador já no
+	// painel. Sem esta trava, essa segunda passada reverteria uma janela de
+	// confirmação que ele tivesse acabado de abrir, como se a máquina tivesse
+	// reiniciado. "No boot" tem que querer dizer no boot.
+	var pendingCheckedOnce sync.Once
+
 	// provisionSystem é tudo o que o LinkGuard faz no boot que MEXE na
 	// máquina: forwarding, policy routing, bootstrap/reconciliação do
 	// nftables, accounting do conntrack, NTP e resolv.conf.
@@ -355,6 +365,29 @@ func run() int {
 	// pode ser chamado de novo quando uma tentativa posterior de instalar a
 	// base finalmente der certo.
 	provisionSystem := func() {
+		// PRIMEIRA COISA, antes de qualquer reconciliação (Fase C2, spec
+		// §5.1): se ficou uma mudança de firewall aplicada e não confirmada,
+		// reverta — tenha ela expirado ou não.
+		//
+		// A ordem é a proteção, não uma preferência de organização. Reverter
+		// DEPOIS de já ter reconciliado significaria aplicar mais uma vez, na
+		// máquina que acabou de voltar, exatamente a regra que pode tê-la
+		// derrubado — e regra de escopo input derruba o acesso do OPERADOR
+		// (SSH, painel), numa máquina remota, sem conserto local.
+		//
+		// Reverter mesmo dentro do prazo é decisão registrada: o operador não
+		// estava lá para confirmar, e um reboot dentro da janela normalmente
+		// significa que a máquina caiu por causa da mudança. Ver
+		// RevertPendingOnBoot.
+		//
+		// Erro aqui não derruba o boot: fica no journal e a mudança continua
+		// pendente, com a faixa do painel pedindo confirmação ou reversão.
+		pendingCheckedOnce.Do(func() {
+			if err := frSvc.RevertPendingOnBoot(ctx); err != nil {
+				slog.Error("não foi possível reverter no boot a mudança de firewall não confirmada", "err", err)
+			}
+		})
+
 		// Enable IPv4 forwarding so the box can route between LAN and WAN; it
 		// defaults to 0 on a fresh system and a firewall/router needs it on.
 		routeSvc.EnsureForwarding()
@@ -590,6 +623,17 @@ func run() int {
 			}
 		}
 	}()
+
+	// O timer em memória do confirmar-ou-reverte: enquanto o processo vive,
+	// é ele que desfaz a mudança de firewall quando o prazo de 90 s termina
+	// sem confirmação. A rede embaixo dele é a verificação de boot acima —
+	// esta goroutine morre junto com o processo, e é justamente o processo
+	// morrer dentro da janela o caso que não pode deixar a regra valendo.
+	//
+	// Cinco segundos: a contagem que o operador vê sai de expires_at (do
+	// servidor), então isto é só a granularidade da reversão. Custa um SELECT
+	// numa tabela de no máximo uma linha.
+	go frSvc.WatchPending(ctx, 5*time.Second)
 
 	go monitor.Run(ctx)
 	go metricsCollector.Run(ctx, interval)

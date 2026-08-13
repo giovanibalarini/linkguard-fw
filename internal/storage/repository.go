@@ -1902,6 +1902,144 @@ func (db *DB) ReorderFirewallGroups(ids []string) error {
 	return tx.Commit()
 }
 
+// ─── Confirmar-ou-reverte: o pendente (Fase C2) ────────────────────────────
+
+// PendingChange é uma mudança de firewall APLICADA e ainda não confirmada
+// pelo operador — o coração do confirmar-ou-reverte (spec §5).
+//
+// Snapshot é o estado ANTERIOR dos grupos e das regras, serializado (ver
+// internal/firewallrules). Não é o ruleset inteiro do nft: reverter aqui é
+// escopado — restaura estas linhas no banco e reconcilia as chains próprias
+// (spec §5.2). O projeto nunca dá flush no que não é dele.
+//
+// ExpiresAt é o instante, do relógio do servidor, em que a reversão
+// automática acontece se ninguém confirmar. É a única fonte da verdade da
+// contagem regressiva: o painel a desenha a partir daqui, e recarregar a
+// página não reinicia nada.
+type PendingChange struct {
+	ID        string    `json:"id"`
+	Snapshot  string    `json:"snapshot"`
+	ExpiresAt time.Time `json:"expires_at"`
+	AppliedBy string    `json:"applied_by"`
+	Summary   string    `json:"summary"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SavePendingChange grava o pendente. Falha se já houver um (a coluna
+// only_row é UNIQUE com CHECK (only_row = 1)), e essa falha é o
+// comportamento desejado: abrir janela com uma já aberta é ERRO, não
+// empilhamento — com dois pendentes, "reverter ao estado anterior" não teria
+// resposta (spec §5.3). Quem chama tem que exigir a confirmação ou a
+// reversão da janela em aberto primeiro.
+func (db *DB) SavePendingChange(p PendingChange) error {
+	_, err := db.conn.Exec(`
+        INSERT INTO pending_firewall_change (id, only_row, snapshot, expires_at, applied_by, summary, created_at)
+        VALUES (?, 1, ?, ?, ?, ?, ?)`,
+		p.ID, p.Snapshot, p.ExpiresAt.Unix(), p.AppliedBy, p.Summary, time.Now())
+	return err
+}
+
+// GetPendingChange devolve o pendente, ou nil quando não há nenhum. Erro de
+// leitura viaja como erro: quem chama não pode confundir "não consegui ler"
+// com "não há janela aberta" — o segundo libera mutação e some com a faixa
+// do painel.
+func (db *DB) GetPendingChange() (*PendingChange, error) {
+	var p PendingChange
+	var expires int64
+	err := db.conn.QueryRow(`
+        SELECT id, snapshot, expires_at, applied_by, summary, created_at
+          FROM pending_firewall_change LIMIT 1`).
+		Scan(&p.ID, &p.Snapshot, &expires, &p.AppliedBy, &p.Summary, &p.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.ExpiresAt = time.Unix(expires, 0)
+	return &p, nil
+}
+
+// ClearPendingChange apaga o pendente — chamado quando o operador confirma
+// (a mudança fica) e depois de uma reversão (a mudança foi desfeita). Nos
+// dois casos a janela está resolvida.
+func (db *DB) ClearPendingChange() error {
+	_, err := db.conn.Exec(`DELETE FROM pending_firewall_change`)
+	return err
+}
+
+// ReplaceFirewallGroupsAndRules substitui, numa transação só, TODOS os grupos
+// e TODAS as regras pelo conteúdo do snapshot — é o lado banco da reversão
+// (spec §5.2).
+//
+// Uma transação, e não uma sequência de DELETE/INSERT soltos, pela mesma
+// razão de ImportFirewallRules e CreateSystemGroups: um erro no meio deixaria
+// o firewall do admin pela metade — parte dos grupos do estado novo, parte do
+// antigo — e a reconciliação que vem logo depois renderizaria exatamente essa
+// mistura no nft. É o estado que ninguém sabe consertar remotamente.
+//
+// Position e Enabled vão exatamente como estão nas linhas do snapshot: isto
+// restaura um estado que já existiu, não cria um novo (nada de renumerar como
+// CreateFirewallRule faz).
+//
+// Lista de grupos VAZIA é recusada: com ela, a reconciliação seguinte
+// esvaziaria a chain forward por completo — inclusive os bloqueios
+// administrativos, que desde a Fase C1 também são itens da lista — e apagaria
+// todas as chains grp_. Nenhum snapshot legítimo é assim (toda máquina tem os
+// dois grupos do sistema); um que seja é corrupção, e obedecer a ele
+// derrubaria o firewall inteiro em nome de uma reversão de segurança.
+func (db *DB) ReplaceFirewallGroupsAndRules(groups []FirewallGroup, rules []FirewallRule) error {
+	if len(groups) == 0 {
+		return fmt.Errorf("recusando restaurar um snapshot sem nenhum grupo: isso apagaria o firewall inteiro, inclusive os bloqueios administrativos")
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+
+	if _, err := tx.Exec(`DELETE FROM firewall_rules`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM firewall_groups`); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	gstmt, err := tx.Prepare(`
+        INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
+            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer gstmt.Close()
+	for _, g := range groups {
+		if _, err := gstmt.Exec(g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
+			g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope,
+			g.CreatedAt, now); err != nil {
+			return err
+		}
+	}
+
+	rstmt, err := tx.Prepare(`
+        INSERT INTO firewall_rules (id, position, group_id, enabled, action, iif, oif,
+            saddr, daddr, proto, dport, description, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer rstmt.Close()
+	for _, r := range rules {
+		if _, err := rstmt.Exec(r.ID, r.Position, r.GroupID, r.Enabled, r.Action,
+			r.Iif, r.Oif, r.Saddr, r.Daddr, r.Proto, r.Dport, r.Description,
+			r.CreatedAt, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func scanFirewallRule(s interface {
 	Scan(...interface{}) error
 }) (FirewallRule, error) {

@@ -101,6 +101,9 @@ func (db *DB) migrate() error {
 	if err := db.migrateAddFirewallGroupScope(); err != nil {
 		return fmt.Errorf("migrate add firewall_groups.scope: %w", err)
 	}
+	if err := db.migratePendingFirewallChange(); err != nil {
+		return fmt.Errorf("migrate create pending_firewall_change: %w", err)
+	}
 
 	return nil
 }
@@ -210,6 +213,51 @@ func (db *DB) migrateAddFirewallGroupScope() error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN scope TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna scope: %w", err)
+	}
+	return tx.Commit()
+}
+
+// migratePendingFirewallChange cria a tabela pending_firewall_change (Fase
+// C2) — a mudança de firewall aplicada e ainda não confirmada, com o snapshot
+// do estado anterior dos grupos e o instante em que ela vira reversão
+// automática.
+//
+// Ela mora no BANCO, não num timer em memória, e é essa escolha que a torna
+// uma rede de proteção de verdade: um reboot dentro da janela encontra a
+// linha aqui no próximo boot e reverte, em vez de deixar valendo para sempre
+// uma regra não confirmada que pode ter trancado o operador fora da máquina
+// (spec §5.1).
+//
+// Migração imperativa em transação, no molde de migrateAddFirewallGroupKind e
+// migrateAddFirewallGroupScope, e não uma linha a mais na lista de
+// `CREATE TABLE IF NOT EXISTS` acima: toda migração deste projeto roda em
+// transação desde o incidente de 2026-07-24, em que uma que não rodava travou
+// o boot de uma máquina de produção por mais de 50 minutos. Sai barata — um
+// SELECT em sqlite_master nos boots seguintes, e nada mais.
+//
+// A coluna only_row é o que garante o "uma linha no máximo": CHECK (only_row
+// = 1) UNIQUE faz o segundo INSERT falhar no próprio SQLite. Sem isso, abrir
+// uma janela com outra já aberta empilharia pendentes e "reverter ao estado
+// anterior" viraria uma pergunta sem resposta — anterior a qual das duas
+// mudanças? (spec §5.3).
+func (db *DB) migratePendingFirewallChange() error {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_firewall_change'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar a tabela pending_firewall_change: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+	if _, err := tx.Exec(createPendingFirewallChangeTable); err != nil {
+		return fmt.Errorf("criar a tabela pending_firewall_change: %w", err)
 	}
 	return tx.Commit()
 }
@@ -589,6 +637,26 @@ CREATE TABLE IF NOT EXISTS firewall_groups (
     scope        TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+// ─── Confirmar-ou-reverte (Fase C2) ───────────────────────────────────────
+//
+// Criada por migratePendingFirewallChange (em transação), NÃO pela lista de
+// migrações simples acima — ver o doc-comment daquela função.
+//
+// expires_at é unix segundos, e é do SERVIDOR: é a única fonte da verdade da
+// contagem regressiva do painel. A tela lê este instante e desenha o relógio
+// a partir dele; um contador local reiniciaria a cada F5 e mentiria sobre
+// quanto tempo o operador ainda tem para confirmar.
+const createPendingFirewallChangeTable = `
+CREATE TABLE IF NOT EXISTS pending_firewall_change (
+    id         TEXT PRIMARY KEY,
+    only_row   INTEGER NOT NULL DEFAULT 1 CHECK (only_row = 1) UNIQUE,
+    snapshot   TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    applied_by TEXT NOT NULL DEFAULT '',
+    summary    TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 
 const createFirewallRulesTable = `

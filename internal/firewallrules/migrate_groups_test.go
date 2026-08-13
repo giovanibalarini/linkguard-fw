@@ -494,6 +494,10 @@ func TestReconcileStaysHealthyAfterTheSystemGroupsAreCreated(t *testing.T) {
 type recordingAlerter struct {
 	missing []string
 	ok      int
+	// reverted guarda os alertas de reversão automática do confirmar-ou-
+	// reverte (Fase C2): o que o operador vai encontrar quando voltar e
+	// descobrir que a alteração dele não está mais valendo.
+	reverted []string
 }
 
 func (a *recordingAlerter) FirewallSystemGroupsMissing(detail string) error {
@@ -501,6 +505,10 @@ func (a *recordingAlerter) FirewallSystemGroupsMissing(detail string) error {
 	return nil
 }
 func (a *recordingAlerter) FirewallSystemGroupsOK() { a.ok++ }
+func (a *recordingAlerter) FirewallChangeReverted(detail string) error {
+	a.reverted = append(a.reverted, detail)
+	return nil
+}
 
 // O alerta de recuperação afirma, no texto que vai para o Telegram e para o
 // webhook, que "a chain forward foi reconstruída com os bloqueios". Só que a
