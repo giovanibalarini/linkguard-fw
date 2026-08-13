@@ -444,6 +444,15 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     }
   };
 
+  // O poll roda com deps [] (um intervalo só, montado uma vez), então ele
+  // fecharia sobre o refreshPending da PRIMEIRA renderização — e com ele sobre
+  // um `load` que ainda achava que não havia permissão para ler o inventário
+  // (/api/auth/me é assíncrono). O resultado seria a lista de hosts bloqueados
+  // perdendo nome e MAC toda vez que uma janela se fechasse. O ref aponta
+  // sempre para a versão atual.
+  const refreshRef = useRef(refreshPending);
+  refreshRef.current = refreshPending;
+
   useEffect(() => { load(); refreshPending(); }, []);
   // As permissões chegam depois da primeira renderização (/api/auth/me é
   // assíncrono). Sem este efeito, numa navegação direta para esta aba o
@@ -457,7 +466,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   // quando a janela se fecha por qualquer caminho.
   useEffect(() => {
     let alive = true;
-    const t = setInterval(() => { if (alive) refreshPending(); }, 3000);
+    const t = setInterval(() => { if (alive) refreshRef.current(); }, 3000);
     return () => { alive = false; clearInterval(t); };
   }, []);
 
