@@ -132,6 +132,60 @@ func TestDescribeRuleNTPDrop(t *testing.T) {
 	}
 }
 
+// A proteção base do topo da chain input tem que chegar ao painel em
+// português. Sem um caso para ela no describeRule ela cai no fallback e
+// aparece na Visão geral como expressão nft crua — a única linha da tela que
+// o admin não pediu, não pode mexer e ainda por cima não entende.
+//
+// O fixture é a saída REAL do nft (Debian 13, nftables v1.1.3), colhida num
+// namespace de rede isolado:
+//
+//	# comando dado:
+//	nft add rule inet linkguard input ct state related counter accept
+//	# `nft list chain inet linkguard input` devolveu:
+//	ct state related counter packets 0 bytes 0 accept
+//
+// A linha entra aqui INTEIRA, como o nft a imprime, e passa pelo mesmo parser
+// da produção (parseChainRuleLine tira o counter antes de classificar).
+func TestDescribeRuleCtStateRelatedIsInPortuguese(t *testing.T) {
+	rule := parseChainRuleLine(InputChain, "ct state related counter packets 0 bytes 0 accept")
+
+	if rule.Expression != "ct state related accept" {
+		t.Fatalf("expressão normalizada = %q", rule.Expression)
+	}
+	if rule.Description == rule.Expression {
+		t.Fatalf("a proteção base caiu no fallback e apareceria como expressão nft crua no painel: %q",
+			rule.Description)
+	}
+	want := "Aceita os erros ICMP de conexões já conhecidas (mantém o Path MTU Discovery funcionando)"
+	if rule.Description != want {
+		t.Errorf("descrição da proteção base:\n  obtive %q\n  queria %q", rule.Description, want)
+	}
+	if !rule.Managed {
+		t.Error("a proteção base é do LinkGuard, nunca do admin: não pode vir como regra editável")
+	}
+}
+
+// A forma sem counter é o que uma máquina que ainda não reconciliou tem viva —
+// ela também precisa ser descrita.
+func TestDescribeRuleCtStateRelatedWithoutCounter(t *testing.T) {
+	got := describeRule(InputChain, "ct state related accept")
+	if strings.HasPrefix(got, "ct state") {
+		t.Errorf("descrição caiu no fallback cru: %q", got)
+	}
+}
+
+// O caso novo é da chain input e SÓ dela. Uma regra do admin que use
+// `ct state established,related` continua sendo descrita pelo parser das
+// regras do admin, na chain dele — descrevê-la com o texto da proteção base
+// seria dizer, para uma regra que o admin escreveu, algo que ela não faz.
+func TestCtStateDescriptionDoesNotLeakIntoAdminRules(t *testing.T) {
+	got := describeRule(GroupChainPrefix+"aaa", "ct state established,related accept")
+	if strings.Contains(got, "Path MTU Discovery") {
+		t.Errorf("a descrição da proteção base vazou para uma regra do admin: %q", got)
+	}
+}
+
 func TestDescribeRuleMasquerade(t *testing.T) {
 	got := describeRule(masqueradeChain, `oifname { "enp2s0", "enp5s0" } masquerade`)
 	want := "Mascara saída pelas WANs enp2s0, enp5s0"

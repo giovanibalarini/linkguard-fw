@@ -146,6 +146,14 @@ func describeRule(chain, expr string) string {
 		}
 
 	case InputChain: // input
+		// A primeira linha da input, incondicional. Sem este caso ela cai no
+		// fallback e aparece na Visão geral como expressão nft crua — a única
+		// linha da tela que o admin não pediu, não pode mexer, e ainda por
+		// cima não entende. O nome nftables do estado (`ct state related`)
+		// não se traduz; a explicação do que ele faz, sim.
+		if strings.HasPrefix(expr, "ct state related") {
+			return "Aceita os erros ICMP de conexões já conhecidas (mantém o Path MTU Discovery funcionando)"
+		}
 		if strings.Contains(expr, "udp dport 123") {
 			switch {
 			case strings.HasSuffix(expr, "accept"):

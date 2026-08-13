@@ -1660,6 +1660,38 @@ func inputAdds(executed []string) []string {
 	return out
 }
 
+// ctStateRelatedLine é a proteção base do topo da chain input, incondicional
+// (ver inputChainRules): os erros ICMP de conexões já rastreadas passam, ou o
+// PMTUD quebra em silêncio no primeiro grupo que bloquear ICMP.
+const ctStateRelatedLine = "ct state related counter accept"
+
+// afterBaseProtection tira a linha de proteção base do topo, para os testes
+// que falam só do que o NTP e os grupos ACRESCENTAM à chain.
+//
+// Ela confere que a linha está lá antes de removê-la, de propósito: assim
+// cada um destes testes vira também um guarda da proteção base. Sem essa
+// conferência, apagar a linha faria todos eles voltarem a passar em silêncio
+// — que é exatamente o modo de falha que ela existe para impedir.
+func afterBaseProtection(t *testing.T, lines []string, prefix string) []string {
+	t.Helper()
+	if len(lines) == 0 || lines[0] != prefix+ctStateRelatedLine {
+		t.Fatalf("a chain input tem que começar com %q, obtive %v", prefix+ctStateRelatedLine, lines)
+	}
+	return lines[1:]
+}
+
+// inputLinesAfterBase é inputLines sem a proteção base.
+func inputLinesAfterBase(t *testing.T, groups []StoredGroup, ntpNetworks []string, ntpServing bool) []string {
+	t.Helper()
+	return afterBaseProtection(t, inputLines(groups, ntpNetworks, ntpServing), "")
+}
+
+// inputAddsAfterBase é inputAdds sem a proteção base.
+func inputAddsAfterBase(t *testing.T, executed []string) []string {
+	t.Helper()
+	return afterBaseProtection(t, inputAdds(executed), "nft add rule inet linkguard input ")
+}
+
 // A chain input tinha UM dono: ReconcileNTPInput dava flush nela e escrevia
 // só as regras de NTP. Com grupos de escopo input escrevendo no mesmo lugar,
 // os dois se apagavam mutuamente. Um renderizador só, como já foi feito para
@@ -1671,7 +1703,7 @@ func TestInputChainRendersNTPAndGroupJumpsTogether(t *testing.T) {
 		{ID: "b", Kind: GroupKindAdmin, Scope: ScopeForward, ChainName: "grp_bbb",
 			Enabled: true, Position: 1},
 	}
-	lines := inputLines(groups, []string{"192.168.3.0/24"}, true)
+	lines := inputLinesAfterBase(t, groups, []string{"192.168.3.0/24"}, true)
 	want := []string{
 		"udp dport 123 ip saddr { 192.168.3.0/24 } counter accept",
 		"udp dport 123 counter drop",
@@ -1724,7 +1756,7 @@ func TestEmptyScopeCountsAsForward(t *testing.T) {
 	if lines := forwardLines(groups); len(lines) != 1 || !strings.Contains(lines[0], "jump grp_velho") {
 		t.Errorf("grupo com escopo vazio tinha que entrar na forward, obtive %v", lines)
 	}
-	if lines := inputLines(groups, nil, false); len(lines) != 0 {
+	if lines := inputLinesAfterBase(t, groups, nil, false); len(lines) != 0 {
 		t.Errorf("grupo com escopo vazio não pode entrar na input, obtive %v", lines)
 	}
 }
@@ -1743,7 +1775,7 @@ func TestSystemGroupsStayInForwardEvenWithAnInputScopeRow(t *testing.T) {
 	if len(fwd) != 2 || !strings.Contains(fwd[0], "@blocked_hosts") {
 		t.Fatalf("o bloqueio do sistema tem que continuar na forward, obtive %v", fwd)
 	}
-	if lines := inputLines(groups, nil, false); len(lines) != 0 {
+	if lines := inputLinesAfterBase(t, groups, nil, false); len(lines) != 0 {
 		t.Errorf("grupo do sistema não pode emitir linha na chain input, obtive %v", lines)
 	}
 }
@@ -1769,6 +1801,142 @@ func TestInputChainPolicyIsAlwaysAccept(t *testing.T) {
 	}
 }
 
+// ─── Proteção base da chain input: a armadilha de PMTUD ─────────────────────
+
+// A linha `ct state related accept` é a PRIMEIRA da chain input — antes das
+// regras de NTP e antes de qualquer jump de grupo.
+//
+// Por que a posição importa: o nft avalia de cima para baixo, e um grupo de
+// escopo input que bloqueie ICMP destinado ao firewall descartaria o ICMP
+// tipo 3 código 4 ("fragmentation needed") antes que qualquer coisa abaixo o
+// visse. O resultado é o sintoma clássico e enlouquecedor do PMTUD quebrado:
+// o SSH conecta, autentica, e trava no primeiro pacote grande, sem nada na
+// tela explicando — do ponto de vista do painel a regra do admin está
+// aplicada e correta.
+func TestInputChainStartsWithCtStateRelated(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii",
+			Enabled: true, Position: 0},
+	}
+	lines := inputLines(groups, []string{"192.168.3.0/24"}, true)
+	if len(lines) == 0 {
+		t.Fatal("a chain input saiu vazia")
+	}
+	if lines[0] != ctStateRelatedLine {
+		t.Fatalf("a primeira linha da input tinha que ser %q, obtive %q (chain inteira: %v)",
+			ctStateRelatedLine, lines[0], lines)
+	}
+	// Presença não basta: ela tem que estar ACIMA de tudo. Só com a
+	// verificação de índice acima este teste ainda passaria se a linha
+	// aparecesse duplicada mais embaixo, então confirmamos que o que vem
+	// depois é mesmo o NTP e o jump, nessa ordem.
+	rest := lines[1:]
+	want := []string{
+		"udp dport 123 ip saddr { 192.168.3.0/24 } counter accept",
+		"udp dport 123 counter drop",
+		"counter jump grp_iii",
+	}
+	if len(rest) != len(want) {
+		t.Fatalf("depois da proteção base esperava %v, obtive %v", want, rest)
+	}
+	for i := range want {
+		if rest[i] != want[i] {
+			t.Errorf("linha %d depois da proteção base:\n  obtive %q\n  queria %q", i+1, rest[i], want[i])
+		}
+	}
+}
+
+// Ela é incondicional: sem toggle, sem depender de NTP ligado e sem depender
+// de existir grupo nenhum. Um firewall que só passa a proteger o PMTUD depois
+// que o admin cria o grupo errado é um firewall que guarda a armadilha armada
+// esperando — e o admin que a dispara é justamente quem não sabe que ela
+// existe.
+func TestCtStateRelatedIsUnconditional(t *testing.T) {
+	lines := inputLines(nil, nil, false)
+	if len(lines) != 1 || lines[0] != ctStateRelatedLine {
+		t.Fatalf("sem NTP e sem grupo nenhum a input tinha que ter só %q, obtive %v",
+			ctStateRelatedLine, lines)
+	}
+}
+
+// `related` E SÓ `related` — NUNCA `established`. Não é descuido, é decisão.
+//
+// A Fase C2 tem uma janela de confirmação de 90 segundos: o operador aplica
+// uma regra que pode trancá-lo para fora e testa se ainda tem acesso antes de
+// confirmar. Com `established accept` na input, a sessão SSH dele sobreviveria
+// ao próprio bloqueio — ele testaria, veria tudo funcionando, confirmaria, e
+// descobriria o bloqueio na próxima reconexão, já sem rede nenhuma embaixo.
+// O teste de acesso passaria a mentir, que é pior do que não existir.
+func TestInputChainNeverAcceptsEstablished(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii", Enabled: true},
+	}
+	for _, line := range inputLines(groups, []string{"192.168.3.0/24"}, true) {
+		if strings.Contains(line, "established") {
+			t.Errorf("a chain input não pode aceitar `established`: a janela de confirmação de 90s "+
+				"passaria a mentir para o operador. Linha: %q", line)
+		}
+	}
+}
+
+// A proteção do NTP que já está em produção continua íntegra com a linha nova
+// acima dela: as duas regras de udp/123, na ordem certa (accept das redes
+// autorizadas ANTES do drop geral — invertido, o drop sombrearia o accept).
+//
+// Medido, não presumido: `udp dport 123` compila para `meta l4proto == 17` +
+// comparação de payload, então um ICMP de erro (l4proto 1) nunca casou com
+// elas; e para um pacote udp/123 de verdade entrar em `related` seria preciso
+// uma expectation de helper do conntrack, que ninguém registra na porta 123 e
+// que o LinkGuard nunca pede (`ct helper set` não existe neste código).
+// Verificação com tráfego real em namespace isolado, kernel 6.12: 5 pacotes
+// udp/123 de origem não autorizada, com a linha nova no topo → contador do
+// `related` em 0, contador do drop do NTP em 5.
+func TestNTPProtectionStaysIntactBelowTheBaseProtection(t *testing.T) {
+	lines := inputLines(nil, []string{"192.168.3.0/24", "10.20.0.0/24"}, true)
+	rest := afterBaseProtection(t, lines, "")
+	want := []string{
+		"udp dport 123 ip saddr { 192.168.3.0/24, 10.20.0.0/24 } counter accept",
+		"udp dport 123 counter drop",
+	}
+	if len(rest) != len(want) {
+		t.Fatalf("esperava as 2 linhas de NTP, obtive %v", rest)
+	}
+	for i := range want {
+		if rest[i] != want[i] {
+			t.Errorf("linha de NTP %d:\n  obtive %q\n  queria %q", i, rest[i], want[i])
+		}
+	}
+}
+
+// A proteção base também chega ao pré-voo: CheckGroups valida a chain input
+// pelo MESMO renderizador, e um script validado sem a linha seria um script
+// diferente do que vai ser aplicado — a divergência exata que o pré-voo
+// existe para eliminar.
+func TestPreflightValidatesTheInputChainWithTheBaseProtection(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetInputChainSources(
+		func() ([]StoredGroup, error) { return nil, nil },
+		func() ([]string, bool, error) { return nil, false, nil },
+	)
+	groups := []StoredGroup{
+		{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii",
+			Enabled: true, Position: 0},
+	}
+	if err := s.CheckGroups(context.Background(), groups); err != nil {
+		t.Fatalf("CheckGroups: %v", err)
+	}
+	inp := scriptFor(t, exec.checkScripts, InputChain)
+	if !strings.Contains(inp, ctStateRelatedLine) {
+		t.Errorf("o pré-voo validou uma chain input sem a proteção base:\n%s", inp)
+	}
+	idxBase := strings.Index(inp, ctStateRelatedLine)
+	idxJump := strings.Index(inp, "jump grp_iii")
+	if idxJump >= 0 && idxBase > idxJump {
+		t.Errorf("o pré-voo validou a proteção base DEPOIS do jump do grupo — script validado ≠ script aplicado:\n%s", inp)
+	}
+}
+
 // Direção 1 do problema central: salvar um grupo (qualquer um) reconstrói a
 // chain input, e ela não pode sair sem a proteção do NTP. Antes do
 // renderizador único, ReconcileGroups escrevendo na input apagaria as regras
@@ -1788,7 +1956,7 @@ func TestSavingAGroupDoesNotWipeTheNTPProtection(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReconcileGroups: %v", err)
 	}
-	adds := inputAdds(exec.executed)
+	adds := inputAddsAfterBase(t, exec.executed)
 	want := []string{
 		"nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } counter accept",
 		"nft add rule inet linkguard input udp dport 123 counter drop",
@@ -1825,7 +1993,7 @@ func TestReconcilingNTPDoesNotWipeTheInputGroupJumps(t *testing.T) {
 	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, true); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
-	adds := inputAdds(exec.executed)
+	adds := inputAddsAfterBase(t, exec.executed)
 	want := []string{
 		"nft add rule inet linkguard input udp dport 123 ip saddr { 192.168.3.0/24 } counter accept",
 		"nft add rule inet linkguard input udp dport 123 counter drop",
@@ -1858,7 +2026,7 @@ func TestTurningNTPOffKeepsTheInputGroupJumps(t *testing.T) {
 	if err := s.ReconcileNTPInput(context.Background(), []string{"192.168.3.0/24"}, false); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
-	adds := inputAdds(exec.executed)
+	adds := inputAddsAfterBase(t, exec.executed)
 	if len(adds) != 1 || adds[0] != "nft add rule inet linkguard input counter jump grp_iii" {
 		t.Fatalf("o jump do grupo de input tinha que sobreviver ao NTP desligado, obtive %v", adds)
 	}

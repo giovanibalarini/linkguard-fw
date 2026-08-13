@@ -442,21 +442,70 @@ func (s *Service) CheckChainEnsuring(ctx context.Context, chain string, tokenSet
 //
 // A ordem não é arbitrária, e o nft avalia de cima para baixo:
 //
-//  1. as duas linhas de NTP (quando servir NTP está ligado e sobrou pelo
+//  1. `ct state related accept`, SEMPRE, incondicional (ver o bloco logo
+//     abaixo).
+//  2. as duas linhas de NTP (quando servir NTP está ligado e sobrou pelo
 //     menos uma rede válida): o accept das redes autorizadas ANTES do drop
 //     geral de udp/123 — invertido, o drop sombrearia o accept e ninguém
 //     sincronizaria hora nenhuma. Defesa em profundidade junto do `allow` do
 //     próprio chrony; as duas casam só udp/123, e nada mais destinado ao
 //     firewall (SSH, painel, DNS, DHCP, Samba) é tocado por elas.
-//  2. um `jump` por grupo de escopo input ativado, na ordem de posição — a
+//  3. um `jump` por grupo de escopo input ativado, na ordem de posição — a
 //     mesma que o admin vê na tela. A condição de entrada vai na própria
 //     linha do jump: se não casa, o grupo inteiro é pulado sem o kernel olhar
 //     as regras de dentro.
 //
-// As linhas de NTP vêm primeiro por serem proteção do serviço de hora contra
-// a internet, e não uma regra que o admin ordenou na lista dele. Quando a UI
-// da Fase C2 puser os grupos de input na tela, a posição relativa deles
-// continua sendo escolha do admin — entre eles.
+// As linhas de NTP vêm antes dos grupos por serem proteção do serviço de hora
+// contra a internet, e não uma regra que o admin ordenou na lista dele.
+// Quando a UI da Fase C2 puser os grupos de input na tela, a posição relativa
+// deles continua sendo escolha do admin — entre eles.
+//
+// Por que `ct state related` no topo, e por que ele é a PRIMEIRA linha
+// (armadilha de PMTUD):
+//
+// Um grupo de escopo input que bloqueie ICMP destinado ao firewall — coisa
+// que todo manual de firewall da internet ainda manda fazer — quebra Path MTU
+// Discovery em silêncio. O caminho até um destino tem um enlace com MTU menor
+// (PPPoE, túnel, VPN); o roteador do meio devolve um ICMP tipo 3 código 4
+// ("fragmentation needed"); o firewall descarta esse ICMP; e a origem nunca
+// descobre que precisa mandar pacote menor. O sintoma é o clássico
+// enlouquecedor: o SSH conecta, autentica, e trava no primeiro pacote grande.
+// Nada aparece na tela, porque do ponto de vista do painel a regra do admin
+// está aplicada e correta — ela está.
+//
+// `related` é exatamente a classe do conntrack para isso: um ICMP de erro
+// cujo cabeçalho interno referencia um fluxo que o conntrack já conhece entra
+// como RELATED. Medido contra o kernel 6.12 numa topologia PMTUD real
+// (cliente 1500 → roteador → enlace 1280): com esta linha, o frag-needed é
+// aceito e o cliente aprende MTU 1280; sem ela, 8 frag-needed são descartados
+// pelo grupo e o PMTU nunca é aprendido.
+//
+// É `related` E SÓ `related` — NUNCA `established`, e isso é decisão tomada,
+// não descuido. A Fase C2 tem uma janela de confirmação de 90 segundos em que
+// o operador aplica uma regra que pode trancá-lo para fora e precisa testar
+// se ainda tem acesso antes de confirmar. Com `established accept`, a sessão
+// SSH dele sobreviveria ao próprio bloqueio: ele testaria, veria tudo
+// funcionando, confirmaria — e descobriria o bloqueio na próxima reconexão,
+// sem rede nenhuma embaixo. O teste passaria a mentir. `related` não tem esse
+// efeito: ele não carrega nenhuma sessão já aberta, só os erros ICMP
+// associados a conexões que o conntrack já conhece.
+//
+// Ela vem ANTES das linhas de NTP, e isso não abre buraco na proteção do NTP
+// que já está em produção — medido, não presumido:
+//
+//   - `udp dport 123` compila para `meta l4proto == 17` + comparação de
+//     payload (conferido com `nft --debug=netlink`). Um ICMP de erro tem
+//     l4proto 1, então nunca casou com as duas linhas de NTP: elas não
+//     perdem para esta linha nada que já pegassem.
+//   - para um pacote udp/123 de verdade cair em `related` seria preciso uma
+//     expectation do conntrack para aquela tupla, e só um helper cria
+//     expectation. Nenhum helper do kernel registra porta 123, o LinkGuard
+//     nunca emite `ct helper set`, e desde o kernel 6.0 o sysctl
+//     nf_conntrack_helper não existe mais — o auto-assign de helper foi
+//     removido, então helper só entra em jogo se alguém pedir explicitamente.
+//   - medido em namespace isolado: 5 pacotes udp/123 de origem NÃO
+//     autorizada com esta linha no topo → contador do `related` em 0,
+//     contador do drop de NTP em 5. A proteção segue intacta.
 //
 // Toda linha carrega `counter`: mesma razão de ReconcileStructuralChains e de
 // forwardChainRules — é o número que o painel mostra, e uma definição
@@ -465,7 +514,10 @@ func (s *Service) CheckChainEnsuring(ctx context.Context, chain string, tokenSet
 // Grupo do sistema nunca entra aqui: o conteúdo dele é um named set de
 // bloqueio de tráfego atravessando, e o lugar dele é a forward.
 func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool) [][]string {
-	var rules [][]string
+	// Incondicional: sem toggle, sem depender de grupo nenhum. Um firewall
+	// que só quebra PMTUD depois que o admin cria o grupo errado é um
+	// firewall que guarda a armadilha armada esperando.
+	rules := [][]string{{"ct", "state", "related", "counter", "accept"}}
 
 	networks := sanitizeNetworks(ntpNetworks)
 	if ntpServing {

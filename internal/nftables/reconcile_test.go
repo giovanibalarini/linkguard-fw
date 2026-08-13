@@ -354,7 +354,11 @@ func TestReconcileNTPInputRulesMatchOnlyPort123(t *testing.T) {
 		if !strings.HasPrefix(c, "nft add rule") {
 			continue
 		}
-		if !strings.Contains(c, "udp dport 123") {
+		// A proteção base do topo da chain não é do bloco de NTP e não fala de
+		// porta nenhuma; a garantia sobre ela é de
+		// TestInputChainStartsWithCtStateRelated. As portas proibidas abaixo
+		// continuam valendo para ela também.
+		if !strings.Contains(c, ctStateRelatedLine) && !strings.Contains(c, "udp dport 123") {
 			t.Errorf("rule does not match udp dport 123: %q", c)
 		}
 		for _, forbidden := range []string{"dport 22", "dport 9997", "dport 53", "dport 67"} {
@@ -379,10 +383,11 @@ func TestReconcileNTPInputNotServingLeavesChainEmpty(t *testing.T) {
 	if !ranCommand(exec.executed, wantFlush) {
 		t.Errorf("expected the chain to be flushed; ran: %v", exec.executed)
 	}
-	for _, c := range exec.executed {
-		if strings.HasPrefix(c, "nft add rule") {
-			t.Errorf("expected no rules when serving=false; ran: %v", exec.executed)
-		}
+	// "Vazia" aqui sempre quis dizer "sem as regras de NTP", não "sem regra
+	// nenhuma": a proteção base do topo (ct state related) é incondicional e
+	// não depende deste toggle. inputAddsAfterBase confere que ela está lá.
+	if adds := inputAddsAfterBase(t, exec.executed); len(adds) != 0 {
+		t.Errorf("expected no NTP rules when serving=false; ran: %v", exec.executed)
 	}
 }
 
@@ -397,10 +402,8 @@ func TestReconcileNTPInputEmptyNetworksLeavesChainEmpty(t *testing.T) {
 	if err := s.ReconcileNTPInput(context.Background(), nil, true); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
-	for _, c := range exec.executed {
-		if strings.HasPrefix(c, "nft add rule") {
-			t.Errorf("expected no rules with an empty allowed-networks list; ran: %v", exec.executed)
-		}
+	if adds := inputAddsAfterBase(t, exec.executed); len(adds) != 0 {
+		t.Errorf("expected no NTP rules with an empty allowed-networks list; ran: %v", exec.executed)
 	}
 }
 
@@ -453,10 +456,8 @@ func TestReconcileNTPInputRejectsOpenWildcard(t *testing.T) {
 	if err := s.ReconcileNTPInput(context.Background(), []string{"0.0.0.0/0", "::/0"}, true); err != nil {
 		t.Fatalf("ReconcileNTPInput: %v", err)
 	}
-	for _, c := range exec.executed {
-		if strings.HasPrefix(c, "nft add rule") {
-			t.Errorf("expected no accept/drop rules for an open wildcard; ran: %v", exec.executed)
-		}
+	if adds := inputAddsAfterBase(t, exec.executed); len(adds) != 0 {
+		t.Errorf("expected no accept/drop rules for an open wildcard; ran: %v", exec.executed)
 	}
 }
 
