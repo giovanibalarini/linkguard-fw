@@ -1,10 +1,13 @@
 package storage_test
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -766,5 +769,142 @@ func TestPendingFirewallChangeMigrationIsIdempotentOnAnExistingDatabase(t *testi
 	}
 	if got == nil || got.Summary != "grupo Trava SSH aplicado" {
 		t.Errorf("o pendente não sobreviveu ao restart do processo: %+v", got)
+	}
+}
+
+// N-1: a marca de "a reversão desta mudança já começou" tem que sobreviver ao
+// RESTART, e é por isso que ela é uma coluna e não um campo do serviço.
+//
+// Sem ela no banco, um processo novo sobre o mesmo banco voltava a aceitar
+// "confirmar" uma mudança cujo estado anterior já tinha sido restaurado aqui:
+// respondia sucesso ao operador, apagava o pendente, e deixava a regra que
+// cortou o acesso dele viva no firewall, sem ninguém para retomar a reversão.
+func TestPendingChangeRevertingMarkSurvivesTheProcess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reverting.db")
+
+	db, err := storage.Open(path)
+	if err != nil {
+		t.Fatalf("primeira abertura: %v", err)
+	}
+	if err := db.SavePendingChange(storage.PendingChange{
+		ID: "p1", Snapshot: `{"groups":[{"id":"g1"}]}`,
+		ExpiresAt: time.Now().Add(90 * time.Second), Summary: "grupo Trava SSH aplicado",
+	}); err != nil {
+		t.Fatalf("SavePendingChange: %v", err)
+	}
+	got, err := db.GetPendingChange()
+	if err != nil {
+		t.Fatalf("GetPendingChange: %v", err)
+	}
+	if got.Reverting() {
+		t.Error("um pendente recém-gravado não pode nascer 'em reversão': é isso que trava a confirmação do operador")
+	}
+
+	comecou := time.Now().Truncate(time.Second)
+	if err := db.MarkPendingReverting("p1", comecou); err != nil {
+		t.Fatalf("MarkPendingReverting: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// o LinkGuard reinicia no meio da reversão travada
+	db2, err := storage.Open(path)
+	if err != nil {
+		t.Fatalf("segunda abertura: %v", err)
+	}
+	defer db2.Close()
+	got, err = db2.GetPendingChange()
+	if err != nil {
+		t.Fatalf("GetPendingChange depois do restart: %v", err)
+	}
+	if got == nil {
+		t.Fatal("o pendente não sobreviveu ao restart")
+	}
+	if !got.Reverting() {
+		t.Fatal("a marca de reversão em andamento não sobreviveu ao restart: o processo novo voltaria a ACEITAR a confirmação de uma mudança que já saiu do banco, e a regra que trancou o operador ficaria viva no nft sem ninguém retomando a reversão")
+	}
+	if !got.RevertingAt.Equal(comecou) {
+		t.Errorf("reverting_at = %v, queria %v", got.RevertingAt, comecou)
+	}
+
+	// pendente que não existe mais é erro, não silêncio: quem chama acabou de
+	// restaurar o banco e precisa saber que a marca não ficou.
+	if err := db2.MarkPendingReverting("nao-existe", comecou); err == nil {
+		t.Error("marcar um pendente inexistente tinha que falhar")
+	}
+}
+
+// A coluna reverting_at chega por ALTER TABLE nos bancos que já tinham a
+// tabela — o caminho de TODA máquina que está subindo de versão, inclusive a
+// de produção. Em transação, como toda migração deste projeto (incidente de
+// 2026-07-24), e sem tocar na linha que já estava lá.
+func TestRevertingAtMigrationRunsOnAPreExistingTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pre-c2.db")
+
+	// Um banco no formato ANTERIOR: a tabela do pendente sem a coluna nova,
+	// com uma janela já aberta (é o estado de uma máquina que atualiza no meio
+	// de uma janela de confirmação).
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("abrir o banco cru: %v", err)
+	}
+	if _, err := raw.Exec(`
+CREATE TABLE pending_firewall_change (
+    id         TEXT PRIMARY KEY,
+    only_row   INTEGER NOT NULL DEFAULT 1 CHECK (only_row = 1) UNIQUE,
+    snapshot   TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    applied_by TEXT NOT NULL DEFAULT '',
+    summary    TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`); err != nil {
+		t.Fatalf("criar a tabela no formato antigo: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO pending_firewall_change (id, only_row, snapshot, expires_at, applied_by, summary)
+		 VALUES ('velho', 1, '{"groups":[{"id":"g1"}]}', ?, 'gov', 'grupo Trava SSH aplicado')`,
+		time.Now().Add(90*time.Second).Unix()); err != nil {
+		t.Fatalf("gravar o pendente antigo: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("fechar o banco cru: %v", err)
+	}
+
+	db, err := storage.Open(path)
+	if err != nil {
+		t.Fatalf("abrir depois da atualização (a migração tem que rodar sozinha): %v", err)
+	}
+	defer db.Close()
+
+	got, err := db.GetPendingChange()
+	if err != nil {
+		t.Fatalf("GetPendingChange: %v", err)
+	}
+	if got == nil || got.Summary != "grupo Trava SSH aplicado" {
+		t.Fatalf("a janela aberta antes da atualização tem que sobreviver a ela: %+v", got)
+	}
+	if got.Reverting() {
+		t.Error("uma janela aberta por uma versão anterior é, por definição, uma janela cuja reversão ainda não começou")
+	}
+	if err := db.MarkPendingReverting("velho", time.Now()); err != nil {
+		t.Errorf("a coluna nova tem que estar utilizável depois da migração: %v", err)
+	}
+
+	// segunda subida: idempotente
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	db2, err := storage.Open(path)
+	if err != nil {
+		t.Fatalf("segunda abertura (a migração tem que ser idempotente): %v", err)
+	}
+	defer db2.Close()
+	got, err = db2.GetPendingChange()
+	if err != nil {
+		t.Fatalf("GetPendingChange na segunda abertura: %v", err)
+	}
+	if got == nil || !got.Reverting() {
+		t.Errorf("a marca gravada tinha que continuar lá depois da segunda migração: %+v", got)
 	}
 }

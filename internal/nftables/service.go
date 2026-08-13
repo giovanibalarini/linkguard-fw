@@ -35,11 +35,36 @@ type Service struct {
 	// este pacote não conhece por si (ver SetInputChainSources).
 	groupsSource   func() ([]StoredGroup, error)
 	ntpInputSource func() (networks []string, serving bool, err error)
+
+	// confPath é o arquivo que Persist grava — o ruleset de BOOT da máquina
+	// (ver ConfPath e SetConfPath). Injetável no Service, e não só na variável
+	// de pacote, porque Persist é a única escrita deste pacote que NÃO passa
+	// pelo Executor: um executor falso intercepta tudo, menos ela. Rodar a
+	// suíte como root na própria appliance chegava a sobrescrever o
+	// /etc/nftables.conf de verdade com o dump do executor falso — isto é, o
+	// firewall da máquina VAZIO no próximo boot. Nos testes ele aponta para
+	// t.TempDir(); em produção, para /etc/nftables.conf.
+	confPath string
 }
 
 // NewService creates an nftables Service.
 func NewService(exec firewall.Executor) *Service {
-	return &Service{exec: exec}
+	return &Service{exec: exec, confPath: ConfPath}
+}
+
+// SetConfPath aponta o Persist para outro arquivo. Existe para os testes
+// escreverem em t.TempDir() (ver o campo confPath); em produção o valor vem de
+// NewService e é /etc/nftables.conf.
+func (s *Service) SetConfPath(path string) { s.confPath = path }
+
+// persistPath é o arquivo que Persist grava. O fallback para a variável de
+// pacote cobre os Service montados por literal (`&Service{exec: …}`, comum nos
+// testes deste pacote), que nunca passaram por NewService.
+func (s *Service) persistPath() string {
+	if s.confPath != "" {
+		return s.confPath
+	}
+	return ConfPath
 }
 
 // SetInputChainSources liga o Service às duas coisas que dividem a chain
@@ -176,11 +201,23 @@ func (s *Service) UnblockHost(ctx context.Context, ip string) (string, error) {
 
 // ─── Managed view & editing (sets / map elements) ────────────────────────────
 
-// ConfPath is the persisted ruleset loaded by nftables.service at boot. A var
-// (not const) so tests can point it at a temp file instead of the real
-// system path — Persist() has no other way to reach it, being the only
-// filesystem write in this package that doesn't go through the Executor.
-var ConfPath = "/etc/nftables.conf"
+// ConfPath is the persisted ruleset loaded by nftables.service at boot — the
+// DEFAULT for a Service built by NewService, and the fallback for one built by
+// literal.
+//
+// Ainda é var (não const) porque os testes deste pacote montam Service por
+// literal; o caminho de verdade a partir de agora é o campo confPath do
+// Service (ver SetConfPath). Persist é a única escrita em disco deste pacote
+// que não passa pelo Executor — ou seja, a única que um executor falso NÃO
+// intercepta —, e o arquivo que ela grava é o firewall com que a máquina
+// volta em todo boot.
+var ConfPath = defaultConfPath
+
+// defaultConfPath é o caminho de PRODUÇÃO — o arquivo que o nftables.service
+// do systemd carrega no boot, antes de o LinkGuard subir. Constante, para que
+// um teste possa afirmar que ele não mudou mesmo com ConfPath redirecionado
+// para um temporário durante a suíte.
+const defaultConfPath = "/etc/nftables.conf"
 
 // DefaultWanMark steers a host to the secondary WAN (sumicity).
 const DefaultWanMark = "0x12c"
@@ -326,7 +363,7 @@ func (s *Service) Persist(ctx context.Context) error {
 		"#!/usr/sbin/nft -f\n\ntable %s %s\ndelete table %s %s\n\n%s\n",
 		Family, Table, Family, Table, tbl,
 	)
-	return os.WriteFile(ConfPath, []byte(body), 0o644)
+	return os.WriteFile(s.persistPath(), []byte(body), 0o644)
 }
 
 // ─── Port forwarding (DNAT) ──────────────────────────────────────────────────

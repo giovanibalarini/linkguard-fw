@@ -104,6 +104,9 @@ func (db *DB) migrate() error {
 	if err := db.migratePendingFirewallChange(); err != nil {
 		return fmt.Errorf("migrate create pending_firewall_change: %w", err)
 	}
+	if err := db.migrateAddPendingChangeRevertingAt(); err != nil {
+		return fmt.Errorf("migrate add pending_firewall_change.reverting_at: %w", err)
+	}
 
 	return nil
 }
@@ -258,6 +261,47 @@ func (db *DB) migratePendingFirewallChange() error {
 	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
 	if _, err := tx.Exec(createPendingFirewallChangeTable); err != nil {
 		return fmt.Errorf("criar a tabela pending_firewall_change: %w", err)
+	}
+	return tx.Commit()
+}
+
+// migrateAddPendingChangeRevertingAt adiciona pending_firewall_change.reverting_at
+// nos bancos que já tinham a tabela (N-1 da segunda revisão da Fase C2).
+//
+// A coluna marca "a reversão desta mudança JÁ COMEÇOU: o estado anterior já
+// voltou ao banco e o que faltou foi o firewall vivo". Ela precisa estar no
+// BANCO, e não só num campo do Service, pelo mesmo motivo de o pendente inteiro
+// morar aqui: um restart no meio de uma reversão travada perdia a marca em
+// memória, e o processo novo voltava a ACEITAR a confirmação daquela mudança —
+// o pendente era apagado, a alteração do operador já não existia mais no banco,
+// ninguém retomava a reversão no nft, e ele era informado de que a mudança
+// "passa a valer definitivamente" enquanto a regra que trancou o acesso dele
+// seguia viva. É exatamente o modo de falha crítico que a Fase C2 existe para
+// fechar, alcançável de novo por um simples restart.
+//
+// Zero (o default) quer dizer "nenhuma reversão começou". Linhas antigas ficam
+// zeradas de propósito: uma janela aberta por uma versão anterior é, por
+// definição, uma janela cuja reversão ainda não começou.
+//
+// Em transação como toda migração deste projeto (incidente de 2026-07-24).
+func (db *DB) migrateAddPendingChangeRevertingAt() error {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pending_firewall_change') WHERE name = 'reverting_at'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar coluna reverting_at: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+	if _, err := tx.Exec(`ALTER TABLE pending_firewall_change ADD COLUMN reverting_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("adicionar coluna reverting_at: %w", err)
 	}
 	return tx.Commit()
 }
@@ -650,13 +694,14 @@ CREATE TABLE IF NOT EXISTS firewall_groups (
 // quanto tempo o operador ainda tem para confirmar.
 const createPendingFirewallChangeTable = `
 CREATE TABLE IF NOT EXISTS pending_firewall_change (
-    id         TEXT PRIMARY KEY,
-    only_row   INTEGER NOT NULL DEFAULT 1 CHECK (only_row = 1) UNIQUE,
-    snapshot   TEXT NOT NULL,
-    expires_at INTEGER NOT NULL,
-    applied_by TEXT NOT NULL DEFAULT '',
-    summary    TEXT NOT NULL DEFAULT '',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id           TEXT PRIMARY KEY,
+    only_row     INTEGER NOT NULL DEFAULT 1 CHECK (only_row = 1) UNIQUE,
+    snapshot     TEXT NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    applied_by   TEXT NOT NULL DEFAULT '',
+    summary      TEXT NOT NULL DEFAULT '',
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reverting_at INTEGER NOT NULL DEFAULT 0
 );`
 
 const createFirewallRulesTable = `

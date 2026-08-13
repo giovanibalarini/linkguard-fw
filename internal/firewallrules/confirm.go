@@ -24,6 +24,7 @@ package firewallrules
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -44,11 +45,30 @@ import (
 const ConfirmWindow = 90 * time.Second
 
 // maxRevertBackoff é o teto do intervalo entre duas tentativas de concluir
-// uma reversão que não terminou (ver WatchPending). Cinco minutos: longe o
-// bastante para não encher o journal de uma máquina cujo nft está fora do ar
-// por horas, perto o bastante para a auto-cura acontecer sozinha assim que
-// ele voltar, sem ninguém precisar reiniciar nada.
-const maxRevertBackoff = 5 * time.Minute
+// uma reversão que não terminou (ver WatchPending).
+//
+// Sessenta segundos, e o número foi escolhido pelo que ele custa no PIOR caso:
+// o dano de espaçar tentativas não é o tempo em que o nft está fora do ar (aí
+// não há nada a fazer), é a CAUDA — o tempo que o operador continua trancado
+// DEPOIS de a máquina já ter voltado a aceitar a reversão. Num componente cuja
+// promessa inteira é "90 segundos", o teto antigo de 5 minutos era 3,3× a
+// promessa. Com 60 s a cauda cabe dentro dela.
+//
+// E o motivo original do backoff (não escrever ~17 mil linhas de ERROR por dia
+// no journal) não depende mais dele: quem resolve isso agora é a cadência de
+// LOG, separada da cadência de TENTAR — ver revertLogInterval.
+const maxRevertBackoff = 60 * time.Second
+
+// revertLogInterval é o espaçamento MÍNIMO entre duas linhas de ERROR sobre a
+// mesma reversão que não conclui.
+//
+// Tentar é barato (um SELECT e alguns comandos de nft) e cada tentativa pode
+// ser a que devolve o acesso ao operador; escrever é que enche o journal de um
+// firewall de produção — que é exatamente onde alguém vai procurar a causa na
+// próxima emergência. Então as duas cadências são separadas: a primeira falha
+// de uma sequência sai sempre (é a que diz que algo começou a dar errado), e
+// depois no máximo uma por minuto.
+const revertLogInterval = time.Minute
 
 // stateSnapshot é o que vai serializado no campo Snapshot do pendente: o
 // estado dos GRUPOS E REGRAS, não o ruleset inteiro do nft.
@@ -273,13 +293,21 @@ func (s *Service) ConfirmPending(_ context.Context) error {
 		}
 		return fmt.Errorf("não há mudança aguardando confirmação")
 	}
-	if s.revertingID == p.ID {
+	if p.Reverting() {
 		// A reversão desta mudança já começou e não terminou (o estado
 		// anterior já foi restaurado no BANCO; o que faltou foi o nft).
 		// Confirmar aqui seria dizer "fica valendo" sobre uma mudança que já
 		// saiu do banco — o pendente ficaria apagado com o banco no estado
 		// antigo e o nft possivelmente no novo, exatamente o descasamento que
 		// ninguém conserta remotamente.
+		//
+		// A marca vem do BANCO (reverting_at), não de um campo deste processo
+		// (N-1): com ela em memória, bastava o LinkGuard reiniciar no meio de
+		// uma reversão travada para este `if` sumir — e aí o operador confirmava
+		// um fantasma. Ele recebia "a mudança passa a valer definitivamente"
+		// sobre uma alteração que já não existia mais no banco, o pendente era
+		// apagado, e a regra que tirou o SSH dele continuava viva no nft, sem
+		// watchdog e sem ninguém tentando de novo.
 		return fmt.Errorf("a reversão desta mudança já começou (o estado anterior já foi restaurado no banco) e não pode mais ser confirmada; o LinkGuard vai concluí-la assim que o nft aceitar")
 	}
 	if err := s.db.ClearPendingChange(); err != nil {
@@ -335,7 +363,7 @@ func (s *Service) CheckPendingExpired(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
-	if s.revertingID == p.ID {
+	if p.Reverting() {
 		return s.revert(ctx, p, "a reversão anterior não pôde ser concluída no firewall vivo", true)
 	}
 	if !s.windowExpired(p) {
@@ -344,26 +372,44 @@ func (s *Service) CheckPendingExpired(ctx context.Context) error {
 	return s.revert(ctx, p, "o prazo de confirmação terminou sem ninguém confirmar", true)
 }
 
-// windowExpired decide se o prazo acabou, e olha DOIS relógios.
+// windowExpired decide se o prazo acabou. A regra depende de existir, ou não,
+// um deadline MONOTÔNICO para esta janela.
 //
-// O expires_at do banco é relógio de parede — é ele que o painel desenha e é
-// ele que sobrevive a um restart, então continua sendo a verdade publicada. Mas
-// esta máquina é o servidor NTP da rede: um passo do chrony para trás maior que
-// a janela deixaria o expires_at no futuro e a reversão nunca dispararia. O
-// deadline monotônico da janela aberta neste processo não se move quando o
-// relógio da máquina se move, então basta um dos dois vencer.
+//   - Janela aberta NESTE processo: quem manda é o deadline monotônico. Ele é
+//     o único dos dois relógios que mede tempo DECORRIDO — e "90 segundos para
+//     confirmar" é uma promessa sobre tempo decorrido, não sobre o que está
+//     escrito no relógio da parede.
+//   - Janela que veio de antes (restart): só o expires_at do banco, porque não
+//     existe leitura monotônica comparável — time.Unix() não carrega uma. Esse
+//     caso é o de RevertPendingOnBoot, que reverte tenha expirado ou não.
 //
-// O monotônico só vale para o pendente que ESTE processo abriu (por isso o
-// ID): depois de um restart não há leitura monotônica comparável — time.Unix()
-// não carrega uma — e quem responde por esse caso é RevertPendingOnBoot, que
-// reverte tenha expirado ou não.
+// Os dois relógios existem porque cada um cobre uma falha do outro, e as duas
+// já foram medidas nesta máquina, que É o servidor NTP da rede (chrony do
+// Debian, `makestep` ligado):
+//
+//   - salto para TRÁS maior que a janela (RTC ruim depois de troca de disco,
+//     `timedatectl set-time`, primeiro sync depois de subir): o expires_at
+//     gravado vai para o futuro e, só com relógio de parede, a reversão nunca
+//     dispararia — o operador ficaria trancado fora sem poder confirmar (não
+//     tem acesso) nem esperar (o prazo fugiu). O monotônico vence na hora
+//     certa e devolve o acesso;
+//   - salto para a FRENTE (o `makestep` do primeiro sync é bidirecional): o
+//     expires_at é ultrapassado antes de os 90 segundos terem PASSADO de
+//     verdade, e a janela era encerrada cedo — 2 segundos de tempo real
+//     bastavam. A direção é segura (o acesso volta), mas o operador perde o
+//     prazo sem aviso e a contagem do painel mente. Com o monotônico mandando,
+//     o expires_at ultrapassado sozinho não encerra nada.
+//
+// O expires_at continua sendo a verdade PUBLICADA (é o que o painel desenha e
+// o que sobrevive ao restart); ele só não decide sozinho enquanto houver um
+// prazo monotônico desta mesma janela para decidir melhor.
 //
 // Chamada com s.mu já travado.
 func (s *Service) windowExpired(p *storage.PendingChange) bool {
-	if !s.now().Before(p.ExpiresAt) {
-		return true
+	if s.monoDeadlineID == p.ID {
+		return !s.monoNow().Before(s.monoDeadline)
 	}
-	return s.monoDeadlineID == p.ID && !s.monoNow().Before(s.monoDeadline)
+	return !s.now().Before(p.ExpiresAt)
 }
 
 // RevertPendingOnBoot é a verificação que roda no boot, ANTES de qualquer
@@ -456,20 +502,36 @@ func (s *Service) RevertPendingOnBoot(ctx context.Context) error {
 func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason string, alert bool) error {
 	var snap stateSnapshot
 	if err := json.Unmarshal([]byte(p.Snapshot), &snap); err != nil {
-		return fmt.Errorf("snapshot da mudança pendente ilegível, nada foi revertido: %w", err)
+		return revertFailed(fmt.Errorf("snapshot da mudança pendente ilegível, nada foi revertido: %w", err))
 	}
 	if err := validateSnapshotGroups(snap.Groups); err != nil {
-		return fmt.Errorf("a mudança pendente NÃO foi revertida: %w", err)
+		return revertFailed(fmt.Errorf("a mudança pendente NÃO foi revertida: %w", err))
 	}
 
 	// Retomada: se a reversão deste pendente já tinha começado, nada aqui é
 	// anunciado de novo (o alerta já saiu na primeira tentativa) — o que se
 	// repete é só o trabalho.
-	resuming := s.revertingID == p.ID
-	s.revertingID = p.ID
+	resuming := p.Reverting()
 
 	if err := s.db.ReplaceFirewallGroupsAndRules(snap.Groups, snap.Rules); err != nil {
-		return fmt.Errorf("restaurar o estado anterior dos grupos e regras: %w", err)
+		return revertFailed(fmt.Errorf("restaurar o estado anterior dos grupos e regras: %w", err))
+	}
+
+	// A marca de "reversão em andamento" vem DEPOIS do commit acima, nunca
+	// antes (N-2). Ela afirma que o estado anterior JÁ está no banco, e marcar
+	// antes a tornava mentira exatamente no caso em que a transação falha: dali
+	// em diante, confirmar responderia "o estado anterior já foi restaurado no
+	// banco" sobre um banco intocado, e a verificação de expiração passaria a
+	// reverter antes do prazo — tirando do operador justamente o tempo que este
+	// mecanismo existe para dar a ele.
+	if !resuming {
+		if err := s.db.MarkPendingReverting(p.ID, s.now()); err != nil {
+			// O pendente FICA e segue confirmável: sem a marca gravada, nada
+			// no sistema sabe que a reversão começou, e é mais honesto tentar
+			// tudo de novo na próxima passada (ReplaceFirewallGroupsAndRules é
+			// idempotente) do que seguir com uma marca que não existe.
+			return revertFailed(fmt.Errorf("estado anterior restaurado no banco, mas não foi possível marcar a reversão em andamento (a próxima passada tenta de novo): %w", err))
+		}
 	}
 
 	if !resuming {
@@ -489,16 +551,15 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 	if err := s.Reconcile(ctx); err != nil {
 		// O pendente FICA. Ver o doc-comment acima: apagá-lo aqui deixaria a
 		// regra perigosa viva no nft sem ninguém para tentar de novo.
-		return fmt.Errorf("estado anterior restaurado no banco, mas a reconciliação falhou (o pendente FICA, para a próxima passada tentar de novo): %w", err)
+		return revertFailed(fmt.Errorf("estado anterior restaurado no banco, mas a reconciliação falhou (o pendente FICA, para a próxima passada tentar de novo): %w", err))
 	}
 	if err := s.db.ClearPendingChange(); err != nil {
 		// O firewall vivo já está no estado anterior — o pendente sobrando
 		// trava as mutações, o que é chato, mas a próxima passada refaz tudo
 		// e apaga. Erro, não silêncio.
-		return fmt.Errorf("estado anterior restaurado e reconciliado, mas não foi possível apagar a mudança pendente (a próxima passada tenta de novo): %w", err)
+		return revertFailed(fmt.Errorf("estado anterior restaurado e reconciliado, mas não foi possível apagar a mudança pendente (a próxima passada tenta de novo): %w", err))
 	}
 
-	s.revertingID = ""
 	s.clearWindowMemory(p.ID)
 	s.lastRevert = &revertRecord{summary: p.Summary, reason: reason, at: s.now()}
 	slog.Warn("reversão concluída: os grupos e as regras anteriores estão de volta no banco e no firewall vivo",
@@ -541,16 +602,44 @@ func (s *Service) recentRevert() *revertRecord {
 	return s.lastRevert
 }
 
+// revertAttemptError marca o erro que veio de uma TENTATIVA DE REVERSÃO, para
+// separá-lo dos outros erros que CheckPendingExpired pode devolver (N-3).
+//
+// A distinção não é cosmética: é o backoff que depende dela. Um SELECT que
+// falhou não é uma reversão que falhou — não há reversão nenhuma em andamento
+// —, e tratar os dois igual espaçava as tentativas por causa de um erro que
+// não tem nada a ver com o nft. O efeito era uma janela FUTURA vencer com o
+// laço já no teto do backoff, isto é, ninguém olhando para ela na hora em que
+// os 90 segundos acabam.
+type revertAttemptError struct{ err error }
+
+func (e *revertAttemptError) Error() string { return e.err.Error() }
+func (e *revertAttemptError) Unwrap() error { return e.err }
+
+// revertFailed embrulha o erro de uma tentativa de reversão. Todo caminho de
+// saída com erro de Service.revert passa por aqui.
+func revertFailed(err error) error { return &revertAttemptError{err: err} }
+
+// isRevertAttempt diz se o erro veio de uma tentativa de reversão.
+func isRevertAttempt(err error) bool {
+	var e *revertAttemptError
+	return errors.As(err, &e)
+}
+
 // nextRevertBackoff é o espaçamento da PRÓXIMA tentativa depois de uma
 // reversão que não pôde ser concluída: começa no próprio intervalo do timer,
 // dobra a cada falha e para em maxRevertBackoff. `current` é o backoff da
 // falha anterior (zero quando a passada anterior deu certo).
 //
 // Desistir nunca é opção — do outro lado de uma reversão pendente pode estar o
-// operador trancado fora da máquina —, mas tentar de 5 em 5 segundos para
-// sempre enche o journal de um firewall de produção com ~17 mil linhas de
-// ERROR por dia, e é justamente nesse journal que alguém vai procurar a causa
-// na próxima emergência.
+// operador trancado fora da máquina. O espaçamento existe só para não repetir
+// uma reconciliação inteira de 5 em 5 segundos durante horas numa máquina cujo
+// nft está fora do ar; o teto é curto (60 s) porque o que ele custa é a cauda:
+// o tempo que o operador segue trancado DEPOIS de o nft já ter voltado.
+//
+// O barulho no journal NÃO é problema deste espaçamento (era, e essa era a
+// justificativa do teto antigo de 5 minutos): quem cuida disso é a cadência de
+// log de WatchPending, separada da cadência de tentar.
 func nextRevertBackoff(current, interval time.Duration) time.Duration {
 	if current <= 0 {
 		if interval <= 0 {
@@ -568,6 +657,49 @@ func nextRevertBackoff(current, interval time.Duration) time.Duration {
 	return next
 }
 
+// nextRevertPace é a cadência de TENTAR depois de uma passada do WatchPending:
+// devolve o espaçamento até a próxima tentativa, ou zero para "tente na
+// próxima batida do timer, como sempre".
+//
+// A regra inteira do N-3 está aqui: SÓ o erro de uma tentativa de reversão
+// espaça. Um GetPendingChange que falhou não é uma reversão que falhou — não há
+// reversão nenhuma em andamento para esperar —, e recuar por causa dele
+// deixava o laço no teto do backoff quando uma janela FUTURA vencesse: os 90
+// segundos do próximo operador terminariam com ninguém olhando.
+func nextRevertPace(err error, current, interval time.Duration) time.Duration {
+	if err == nil || !isRevertAttempt(err) {
+		return 0
+	}
+	return nextRevertBackoff(current, interval)
+}
+
+// logGate espaça linhas de journal sem espaçar o trabalho que as produz.
+//
+// A primeira falha de uma sequência sempre sai (é ela que diz que algo começou
+// a dar errado); depois, no máximo uma a cada `every`. É o que substitui o
+// backoff longo como remédio para o barulho: um nft fora do ar rendia ~17 mil
+// linhas de ERROR por dia no journal de um firewall de produção — que é onde
+// alguém vai procurar a causa na próxima emergência —, e antes o preço de
+// calar isso era esperar até 5 minutos entre duas tentativas de devolver o
+// acesso ao operador.
+type logGate struct {
+	every time.Duration
+	last  time.Time
+}
+
+// allow diz se ESTA linha pode sair, e já registra o instante quando pode.
+func (g *logGate) allow(now time.Time) bool {
+	if g.last.IsZero() || !now.Before(g.last.Add(g.every)) {
+		g.last = now
+		return true
+	}
+	return false
+}
+
+// reset devolve o portão ao estado inicial: a próxima falha volta a ser "a
+// primeira de uma sequência" e sai na hora.
+func (g *logGate) reset() { g.last = time.Time{} }
+
 // WatchPending é o timer em memória do caso comum (processo vivo): a cada
 // `interval`, se há janela aberta e o prazo terminou, reverte. É também quem
 // RETOMA uma reversão que ficou pela metade — o pendente que sobra depois de
@@ -582,17 +714,31 @@ func nextRevertBackoff(current, interval time.Duration) time.Duration {
 // contagem que o operador vê sai de expires_at, gravado pelo servidor.
 //
 // O laço nunca desiste (uma reversão pendente é o operador possivelmente
-// trancado fora), mas as tentativas se espaçam: sem isso, um nft fora do ar
-// produzia uma tentativa completa e uma linha de ERROR a cada 5 segundos —
-// ~17 mil linhas por dia no journal de um firewall de produção, que é onde
-// alguém vai procurar a causa na próxima emergência. O backoff dobra até
-// maxRevertBackoff e zera assim que uma passada dá certo.
+// trancado fora). Duas cadências, separadas de propósito:
+//
+//   - TENTAR: a cada `interval`, e depois de uma reversão que falhou com um
+//     espaçamento que dobra até maxRevertBackoff (60 s) e zera assim que uma
+//     passada dá certo. Uma tentativa custa um SELECT e alguns comandos de
+//     nft, e cada uma pode ser a que devolve o acesso ao operador — daí o teto
+//     curto: o que ele custa é a cauda depois de a máquina já ter voltado;
+//   - LOGAR: a primeira falha de uma sequência sempre, e depois no máximo uma
+//     por revertLogInterval. Sem isso, um nft fora do ar escrevia ~17 mil
+//     linhas de ERROR por dia no journal de um firewall de produção — que é
+//     onde alguém vai procurar a causa na próxima emergência. Era ESTE o
+//     problema que o backoff longo tentava resolver, e resolver aqui não custa
+//     tentativa nenhuma.
+//
+// Só o erro de uma tentativa de REVERSÃO espaça as tentativas (N-3). Um erro
+// de leitura do pendente é anotado com a mesma economia de log, mas não recua:
+// não há reversão em andamento para esperar, e recuar por causa dele deixaria
+// uma janela futura vencer com o laço no teto do backoff.
 func (s *Service) WatchPending(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 
 	backoff := time.Duration(0)
 	var nextAttempt time.Time
+	gate := &logGate{every: revertLogInterval}
 	for {
 		select {
 		case <-ctx.Done():
@@ -601,14 +747,23 @@ func (s *Service) WatchPending(ctx context.Context, interval time.Duration) {
 			if now := s.monoNow(); !nextAttempt.IsZero() && now.Before(nextAttempt) {
 				continue
 			}
-			if err := s.CheckPendingExpired(ctx); err != nil {
-				backoff = nextRevertBackoff(backoff, interval)
-				nextAttempt = s.monoNow().Add(backoff)
-				slog.Error("não foi possível concluir a reversão da mudança de firewall; o pendente continua no banco e o LinkGuard vai tentar de novo",
-					"err", err, "proxima_tentativa_em", backoff)
+			err := s.CheckPendingExpired(ctx)
+			if err == nil {
+				backoff, nextAttempt = 0, time.Time{}
+				gate.reset()
 				continue
 			}
-			backoff, nextAttempt = 0, time.Time{}
+			backoff = nextRevertPace(err, backoff, interval)
+			retryIn := interval
+			if backoff > 0 {
+				nextAttempt, retryIn = s.monoNow().Add(backoff), backoff
+			} else {
+				nextAttempt = time.Time{}
+			}
+			if gate.allow(s.monoNow()) {
+				slog.Error("não foi possível resolver a mudança de firewall pendente; ela continua no banco e o LinkGuard vai tentar de novo",
+					"err", err, "proxima_tentativa_em", retryIn)
+			}
 		}
 	}
 }

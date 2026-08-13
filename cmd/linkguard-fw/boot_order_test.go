@@ -393,25 +393,32 @@ func provisionSystemBody(t *testing.T, file *ast.File) *ast.FuncLit {
 	return body
 }
 
-// A verificação de boot roda UMA vez POR PROCESSO. provisionSystem é
-// reexecutado quando uma tentativa posterior de instalar a base finalmente dá
-// certo, e isso pode acontecer meia hora depois da subida, com o operador já
-// no painel: sem a trava, essa segunda passada reverteria uma janela de
-// confirmação recém-aberta como se a máquina tivesse reiniciado. "No boot"
-// tem que querer dizer no boot.
+// A verificação de boot roda uma vez por processo — e a trava que garante isso
+// só pode ser marcada quando ela CONCLUI.
 //
-// I-5 — por que o guarda olha a DECLARAÇÃO do sync.Once e não só a chamada.
-// A versão anterior procurava qualquer CallExpr com selector `.Do` que
-// contivesse RevertPendingOnBoot no corpo, e isso não guardava nada: mover o
-// `var pendingCheckedOnce sync.Once` para DENTRO do FuncLit de
-// provisionSystem — que o recria a cada chamada, ou seja, proteção zero e
-// exatamente o bug que este teste existe para pegar — deixava o teste VERDE.
-// Passaria também com qualquer outro método chamado `Do`. Então agora são
-// três coisas, e nenhuma delas sozinha basta: a chamada é `X.Do(func(){…})`
-// com RevertPendingOnBoot dentro; `X` é declarado FORA do corpo de
-// provisionSystem (senão não sobrevive entre as passadas); e o tipo de `X` é
-// sync.Once (senão `Do` não quer dizer nada).
-func TestTheBootPendingCheckRunsOnlyOnce(t *testing.T) {
+// São duas propriedades opostas, e o guarda cobra as duas porque cada uma
+// sozinha reabre um buraco diferente:
+//
+//   - sem trava nenhuma: provisionSystem é reexecutado quando uma tentativa
+//     posterior de instalar a base finalmente dá certo, o que pode ser meia
+//     hora depois da subida, com o operador já no painel. A segunda passada
+//     reverteria uma janela de confirmação recém-aberta como se a máquina
+//     tivesse reiniciado. "No boot" tem que querer dizer no boot;
+//   - com uma trava que queima cedo demais (era um sync.Once, N-4): a PRIMEIRA
+//     passada roda mesmo com o bootstrap falhado (`if done || attempt == 0`),
+//     isto é, possivelmente numa máquina onde o `nft` ainda nem existe e a
+//     reversão de boot não tem como se completar. O Once queimava ali e a
+//     passada que finalmente dava certo não repetia a verificação.
+//
+// Então: a chamada mora dentro de um `if !<trava>` em provisionSystem; a trava
+// é declarada FORA do corpo de provisionSystem (declarada dentro, é recriada a
+// cada passada e não guarda nada); e ela só é marcada no ramo em que
+// RevertPendingOnBoot devolveu erro nil.
+//
+// Guarda de deriva sobre a árvore sintática — I-5 continua valendo: a versão
+// antiga deste teste procurava só a chamada e passava verde com a trava movida
+// para dentro do FuncLit.
+func TestTheBootPendingCheckRunsOnlyOnceAndOnlyWhenItCompletes(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("não foi possível localizar o arquivo de teste")
@@ -425,74 +432,116 @@ func TestTheBootPendingCheckRunsOnlyOnce(t *testing.T) {
 	}
 	body := provisionSystemBody(t, file)
 
-	// 1. a chamada: `<recv>.Do(func(){ … frSvc.RevertPendingOnBoot … })`,
-	//    dentro de provisionSystem.
+	// 1. o `if !<trava> { … RevertPendingOnBoot … }` dentro de provisionSystem.
 	guardName := ""
+	var guardStmt *ast.IfStmt
 	ast.Inspect(body, func(n ast.Node) bool {
-		call, isCall := n.(*ast.CallExpr)
-		if !isCall {
+		ifStmt, isIf := n.(*ast.IfStmt)
+		if !isIf || guardStmt != nil {
 			return true
 		}
-		sel, isSel := call.Fun.(*ast.SelectorExpr)
-		if !isSel || sel.Sel.Name != "Do" {
+		unary, isUnary := ifStmt.Cond.(*ast.UnaryExpr)
+		if !isUnary || unary.Op != token.NOT {
 			return true
 		}
-		recv, isIdent := sel.X.(*ast.Ident)
+		ident, isIdent := unary.X.(*ast.Ident)
 		if !isIdent {
 			return true
 		}
-		ast.Inspect(call, func(inner ast.Node) bool {
-			innerCall, isInnerCall := inner.(*ast.CallExpr)
-			if !isInnerCall {
+		if !callsRevertPendingOnBoot(ifStmt.Body) {
+			return true
+		}
+		guardName, guardStmt = ident.Name, ifStmt
+		return true
+	})
+	if guardStmt == nil {
+		t.Fatal("frSvc.RevertPendingOnBoot tem que estar dentro de um `if !<trava> { … }` em provisionSystem: provisionSystem roda de novo quando a base termina de instalar, e uma segunda passada reverteria uma janela de confirmação aberta minutos antes pelo operador")
+	}
+
+	// 2. a trava é declarada FORA do corpo de provisionSystem — senão é
+	//    recriada a cada passada e não guarda coisa nenhuma.
+	declaredOutside := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		assign, isAssign := n.(*ast.AssignStmt)
+		if !isAssign || assign.Tok != token.DEFINE {
+			return true
+		}
+		for _, lhs := range assign.Lhs {
+			ident, isIdent := lhs.(*ast.Ident)
+			if !isIdent || ident.Name != guardName {
+				continue
+			}
+			if int(assign.Pos()) < int(body.Pos()) || int(assign.Pos()) > int(body.End()) {
+				declaredOutside = true
+			}
+		}
+		return true
+	})
+	if !declaredOutside {
+		t.Errorf("a trava %q tem que ser declarada FORA do corpo de provisionSystem: declarada dentro, ela é recriada a cada passada e a segunda execução (quando a base termina de instalar) volta a reverter a janela de confirmação que o operador acabou de abrir", guardName)
+	}
+
+	// 3. a trava só é marcada no ramo de SUCESSO. O que se procura é
+	//    `if err := frSvc.RevertPendingOnBoot(ctx); err != nil { … } else {
+	//    <trava> = true }`: a atribuição tem que estar no Else, e não solta no
+	//    corpo do if externo (aí ela marcaria mesmo com a reversão falhando).
+	markedOnSuccess, markedAnywhere := false, false
+	ast.Inspect(guardStmt.Body, func(n ast.Node) bool {
+		assign, isAssign := n.(*ast.AssignStmt)
+		if !isAssign || assign.Tok != token.ASSIGN || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+			return true
+		}
+		ident, isIdent := assign.Lhs[0].(*ast.Ident)
+		if !isIdent || ident.Name != guardName {
+			return true
+		}
+		lit, isLit := assign.Rhs[0].(*ast.Ident)
+		if !isLit || lit.Name != "true" {
+			return true
+		}
+		markedAnywhere = true
+		// Dentro de qual `else` de um if cujo Init chama RevertPendingOnBoot?
+		ast.Inspect(guardStmt.Body, func(m ast.Node) bool {
+			inner, isIf := m.(*ast.IfStmt)
+			if !isIf || inner.Else == nil || inner.Init == nil {
 				return true
 			}
-			if innerSel, isInnerSel := innerCall.Fun.(*ast.SelectorExpr); isInnerSel {
-				if r, isID := innerSel.X.(*ast.Ident); isID &&
-					r.Name == "frSvc" && innerSel.Sel.Name == "RevertPendingOnBoot" && guardName == "" {
-					guardName = recv.Name
-				}
+			if !callsRevertPendingOnBoot(inner.Init) {
+				return true
+			}
+			if int(inner.Else.Pos()) <= int(assign.Pos()) && int(assign.End()) <= int(inner.Else.End()) {
+				markedOnSuccess = true
 			}
 			return true
 		})
 		return true
 	})
-	if guardName == "" {
-		t.Fatal("frSvc.RevertPendingOnBoot tem que estar dentro de um sync.Once.Do em provisionSystem: provisionSystem roda de novo quando a base termina de instalar, e uma segunda passada reverteria uma janela de confirmação aberta minutos antes pelo operador")
-	}
 
-	// 2 e 3. a declaração de guardName: fora do corpo de provisionSystem e do
-	//        tipo sync.Once. Um `var` recriado a cada passada não guarda nada,
-	//        e um `.Do` que não seja de um sync.Once não é uma trava.
-	declaredOutside, isOnce := false, false
-	ast.Inspect(file, func(n ast.Node) bool {
-		spec, isSpec := n.(*ast.ValueSpec)
-		if !isSpec {
+	if !markedAnywhere {
+		t.Fatalf("nada marca a trava %q dentro do `if`: sem marcar, a verificação de boot roda de novo em CADA passada de provisionSystem e reverteria a janela de confirmação que o operador acabou de abrir", guardName)
+	}
+	if !markedOnSuccess {
+		t.Errorf("a trava %q só pode ser marcada no ramo em que frSvc.RevertPendingOnBoot devolveu nil (N-4): a primeira passada de provisionSystem roda mesmo com o bootstrap falhado — possivelmente sem o `nft` na máquina —, e marcar ali gasta a única chance de \"no boot\" numa passada que não conseguiu concluir a verificação", guardName)
+	}
+}
+
+// callsRevertPendingOnBoot diz se `frSvc.RevertPendingOnBoot(…)` aparece em
+// algum lugar da subárvore.
+func callsRevertPendingOnBoot(n ast.Node) bool {
+	found := false
+	ast.Inspect(n, func(node ast.Node) bool {
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
 			return true
 		}
-		named := false
-		for _, name := range spec.Names {
-			if name.Name == guardName {
-				named = true
-			}
-		}
-		if !named {
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel || sel.Sel.Name != "RevertPendingOnBoot" {
 			return true
 		}
-		if int(spec.Pos()) < int(body.Pos()) || int(spec.Pos()) > int(body.End()) {
-			declaredOutside = true
-		}
-		if sel, isSel := spec.Type.(*ast.SelectorExpr); isSel {
-			if pkg, isIdent := sel.X.(*ast.Ident); isIdent && pkg.Name == "sync" && sel.Sel.Name == "Once" {
-				isOnce = true
-			}
+		if recv, isIdent := sel.X.(*ast.Ident); isIdent && recv.Name == "frSvc" {
+			found = true
 		}
 		return true
 	})
-
-	if !declaredOutside {
-		t.Errorf("a trava %q tem que ser declarada FORA do corpo de provisionSystem: declarada dentro, ela é recriada a cada passada e a segunda execução (quando a base termina de instalar) volta a reverter a janela de confirmação que o operador acabou de abrir", guardName)
-	}
-	if !isOnce {
-		t.Errorf("a trava %q tem que ser um sync.Once: `.Do` de qualquer outro tipo não garante execução única, e é a execução única que faz \"no boot\" querer dizer no boot", guardName)
-	}
+	return found
 }

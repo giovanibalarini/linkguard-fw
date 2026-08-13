@@ -51,6 +51,13 @@ func newTestServiceWithExec(t *testing.T, db *storage.DB) (*Service, *migrateExe
 	t.Helper()
 	exec := &migrateExec{}
 	nft := nftables.NewService(exec)
+	// O nft grava o ruleset de boot em disco ao fim de cada reconciliação, e
+	// essa é a única escrita que o executor falso NÃO intercepta: sem esta
+	// linha, cada teste daqui que reconcilia tenta sobrescrever o
+	// /etc/nftables.conf DA MÁQUINA com o dump do executor falso (`table inet
+	// linkguard {}`). Numa estação de trabalho isso só falha por permissão; na
+	// própria appliance, rodando como root, é o firewall vazio no próximo boot.
+	nft.SetConfPath(filepath.Join(t.TempDir(), "nftables.conf"))
 	// m3 da revisão da Fase C2: sem uma fonte de NTP ligada, ntpInputState
 	// agora devolve erro (fechou o fail-open de fonte não ligada) em vez do
 	// antigo "desligado" silencioso — o que faria todo teste que reconcilia

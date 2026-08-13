@@ -77,6 +77,12 @@ func newTestService(t *testing.T, db *storage.DB, nft *nftables.Service) *firewa
 		func() ([]nftables.StoredGroup, error) { return nil, nil },
 		func() ([]string, bool, error) { return nil, false, nil },
 	)
+	// Reconciliar termina em Persist, que grava o ruleset de BOOT em disco —
+	// a única escrita que o executor falso não intercepta. Sem esta linha, a
+	// suíte tenta sobrescrever o /etc/nftables.conf da máquina com o dump do
+	// executor falso; como root na própria appliance, isso é o firewall vazio
+	// no próximo boot.
+	nft.SetConfPath(filepath.Join(t.TempDir(), "nftables.conf"))
 	svc := firewallrules.NewService(db, nft)
 	if err := svc.EnsureSystemGroups(context.Background()); err != nil {
 		t.Fatalf("criar os grupos do sistema: %v", err)

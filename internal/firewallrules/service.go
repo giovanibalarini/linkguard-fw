@@ -91,13 +91,15 @@ type Service struct {
 	// pendente que este processo mesmo abriu.
 	monoDeadline   time.Time
 	monoDeadlineID string
-	// revertingID é o pendente cuja reversão JÁ COMEÇOU (o estado anterior já
-	// voltou ao banco) e ainda não terminou no firewall vivo. Enquanto ele
-	// estiver marcado, confirmar é recusado — confirmar uma mudança que já
-	// saiu do banco deixaria banco e nft em estados diferentes, sem nada para
-	// reconciliá-los — e a próxima passada do WatchPending retoma a reversão
-	// mesmo antes do prazo.
-	revertingID string
+	// (A marca de "reversão já começou" NÃO mora aqui: é a coluna
+	// reverting_at de pending_firewall_change. Ela já foi um campo deste
+	// struct, e memória de processo não servia — um restart no meio de uma
+	// reversão travada apagava a marca, e o processo novo voltava a ACEITAR a
+	// confirmação daquela mudança: o operador recebia "passa a valer
+	// definitivamente" sobre uma alteração que já não existia no banco,
+	// enquanto a regra que trancou o SSH dele seguia viva no nft, sem ninguém
+	// retomando a reversão. Ver storage.PendingChange.RevertingAt.)
+	//
 	// lastRevert é a memória curta da última reversão concluída, só para
 	// responder a verdade ao operador que apertou "Confirmar" um segundo
 	// depois de o prazo vencer (m-7).

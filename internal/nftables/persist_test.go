@@ -139,3 +139,48 @@ func TestPersistIsNoopInDryRun(t *testing.T) {
 		t.Errorf("expected no executor calls in dry-run, got: %v", exec.calls)
 	}
 }
+
+// N-5. O caminho do arquivo é do SERVIÇO, não da variável de pacote — e o
+// motivo é que Persist é a única escrita em disco deste pacote que NÃO passa
+// pelo Executor.
+//
+// Um executor falso intercepta todo comando de nft, mas não intercepta um
+// os.WriteFile: a suíte inteira escrevia, de verdade, no caminho de sistema.
+// Numa estação de trabalho isso só falha por permissão; rodada como root na
+// própria appliance — mesmo binário, mesma máquina, e diagnosticar em produção
+// é coisa que se faz como root —, sobrescrevia o /etc/nftables.conf com o dump
+// do executor falso (`table inet linkguard {}`), isto é, o firewall VAZIO no
+// próximo boot. Este projeto já perdeu um boot de produção por configuração
+// corrompida (2026-07-24).
+func TestPersistWritesTheServiceConfPath(t *testing.T) {
+	exec := &recordExec{tableOut: "table inet linkguard {\n}\n"}
+	s := NewService(exec)
+
+	meu := filepath.Join(t.TempDir(), "nftables.conf")
+	s.SetConfPath(meu)
+
+	if err := s.Persist(context.Background()); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	if _, err := os.Stat(meu); err != nil {
+		t.Fatalf("Persist tinha que gravar no caminho injetado no Service: %v", err)
+	}
+	if _, err := os.Stat(ConfPath); !os.IsNotExist(err) {
+		t.Errorf("com um caminho injetado, Persist não pode escrever no caminho padrão do pacote (stat: %v) -- é assim que a suíte sobrescrevia o /etc/nftables.conf da máquina", err)
+	}
+}
+
+// E o default continua sendo o caminho de sistema: um Service de PRODUÇÃO
+// (NewService, sem injeção) tem que gravar o ruleset de boot onde o
+// nftables.service vai procurá-lo. Injetável não pode virar "não persiste mais".
+func TestNewServiceDefaultsToTheSystemConfPath(t *testing.T) {
+	// ConfPath aqui é o temporário do TestMain; o que importa é que o Service
+	// nasce apontando para ele, e não para vazio.
+	if got := NewService(&recordExec{}).persistPath(); got != ConfPath {
+		t.Errorf("um Service novo tem que nascer apontando para o ConfPath do pacote (%q), obtive %q", ConfPath, got)
+	}
+	// E o valor de produção é o arquivo que o systemd carrega no boot.
+	if defaultConfPath != "/etc/nftables.conf" {
+		t.Errorf("o caminho de produção do ruleset de boot mudou para %q -- o nftables.service carrega /etc/nftables.conf", defaultConfPath)
+	}
+}

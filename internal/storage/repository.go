@@ -1916,14 +1916,27 @@ func (db *DB) ReorderFirewallGroups(ids []string) error {
 // automática acontece se ninguém confirmar. É a única fonte da verdade da
 // contagem regressiva: o painel a desenha a partir daqui, e recarregar a
 // página não reinicia nada.
+// RevertingAt é o instante em que a reversão desta mudança COMEÇOU —
+// zero enquanto ela não começou. Ele mora no banco, e não num campo do
+// serviço, porque é a única forma de a marca sobreviver a um restart: com ela
+// só em memória, um processo novo sobre o mesmo banco voltava a aceitar
+// "confirmar" uma mudança cujo estado anterior já tinha sido restaurado aqui,
+// respondia sucesso ao operador e apagava o pendente — deixando a regra que
+// trancou o acesso dele viva no firewall, sem ninguém para retomar a reversão.
 type PendingChange struct {
-	ID        string    `json:"id"`
-	Snapshot  string    `json:"snapshot"`
-	ExpiresAt time.Time `json:"expires_at"`
-	AppliedBy string    `json:"applied_by"`
-	Summary   string    `json:"summary"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          string    `json:"id"`
+	Snapshot    string    `json:"snapshot"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	AppliedBy   string    `json:"applied_by"`
+	Summary     string    `json:"summary"`
+	CreatedAt   time.Time `json:"created_at"`
+	RevertingAt time.Time `json:"reverting_at,omitempty"`
 }
+
+// Reverting diz se a reversão desta mudança já começou (o estado anterior já
+// voltou ao banco; o que faltou foi o firewall vivo). Enquanto for verdade,
+// confirmar é recusado e a próxima passada do watchdog RETOMA a reversão.
+func (p PendingChange) Reverting() bool { return !p.RevertingAt.IsZero() }
 
 // SavePendingChange grava o pendente. Falha se já houver um (a coluna
 // only_row é UNIQUE com CHECK (only_row = 1)), e essa falha é o
@@ -1942,10 +1955,40 @@ func (db *DB) SavePendingChange(p PendingChange) error {
 		created = time.Now()
 	}
 	_, err := db.conn.Exec(`
-        INSERT INTO pending_firewall_change (id, only_row, snapshot, expires_at, applied_by, summary, created_at)
-        VALUES (?, 1, ?, ?, ?, ?, ?)`,
+        INSERT INTO pending_firewall_change (id, only_row, snapshot, expires_at, applied_by, summary, created_at, reverting_at)
+        VALUES (?, 1, ?, ?, ?, ?, ?, 0)`,
 		p.ID, p.Snapshot, p.ExpiresAt.Unix(), p.AppliedBy, p.Summary, created)
 	return err
+}
+
+// MarkPendingReverting grava que a reversão desta mudança já começou — isto é,
+// que o estado anterior JÁ voltou aos grupos e regras do banco e que o que
+// falta é só o firewall vivo.
+//
+// Chamada DEPOIS de a transação de restauração ter commitado, nunca antes: a
+// marca é uma afirmação sobre o banco ("o estado anterior já está aqui"), e
+// gravá-la antes a tornaria mentira exatamente no caso em que a restauração
+// falha — com dois efeitos, os dois ruins: confirmar passaria a responder "o
+// estado anterior já foi restaurado" sobre um banco intocado, e a verificação
+// de expiração passaria a reverter antes do prazo, tirando do operador o tempo
+// que ele ainda tinha.
+//
+// Pendente que sumiu no meio do caminho é erro, e não silêncio: quem chama
+// acabou de restaurar o banco e precisa saber que a marca não ficou.
+func (db *DB) MarkPendingReverting(id string, at time.Time) error {
+	res, err := db.conn.Exec(
+		`UPDATE pending_firewall_change SET reverting_at = ? WHERE id = ?`, at.Unix(), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("marcar a reversão em andamento: a mudança pendente %s não está mais no banco", id)
+	}
+	return nil
 }
 
 // GetPendingChange devolve o pendente, ou nil quando não há nenhum. Erro de
@@ -1954,11 +1997,11 @@ func (db *DB) SavePendingChange(p PendingChange) error {
 // do painel.
 func (db *DB) GetPendingChange() (*PendingChange, error) {
 	var p PendingChange
-	var expires int64
+	var expires, reverting int64
 	err := db.conn.QueryRow(`
-        SELECT id, snapshot, expires_at, applied_by, summary, created_at
+        SELECT id, snapshot, expires_at, applied_by, summary, created_at, reverting_at
           FROM pending_firewall_change LIMIT 1`).
-		Scan(&p.ID, &p.Snapshot, &expires, &p.AppliedBy, &p.Summary, &p.CreatedAt)
+		Scan(&p.ID, &p.Snapshot, &expires, &p.AppliedBy, &p.Summary, &p.CreatedAt, &reverting)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1966,6 +2009,9 @@ func (db *DB) GetPendingChange() (*PendingChange, error) {
 		return nil, err
 	}
 	p.ExpiresAt = time.Unix(expires, 0)
+	if reverting != 0 {
+		p.RevertingAt = time.Unix(reverting, 0)
+	}
 	return &p, nil
 }
 

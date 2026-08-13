@@ -2,6 +2,7 @@ package firewallrules
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -62,6 +63,34 @@ func pending(t *testing.T, svc *Service) *storage.PendingChange {
 	}
 	return p
 }
+
+// fakeClock é o par de relógios do serviço — o de PAREDE (de onde sai o
+// expires_at que o painel desenha) e o MONOTÔNICO (que mede tempo decorrido).
+//
+// Os dois juntos, e num tipo só, porque a diferença entre eles é o que estes
+// testes medem. `advance` é o tempo PASSANDO: mexe nos dois, como acontece
+// numa máquina em que ninguém mexeu no relógio. `jumpWall` é o chrony dando um
+// passo (`makestep`): mexe só no relógio de parede, para frente ou para trás.
+// Um teste que simulasse a expiração empurrando só o relógio de parede estaria
+// testando um salto de NTP, não a passagem do tempo.
+type fakeClock struct {
+	wall time.Time
+	mono time.Time
+}
+
+func newFakeClock(t time.Time) *fakeClock { return &fakeClock{wall: t, mono: t} }
+
+func (c *fakeClock) wire(s *Service) {
+	s.now = func() time.Time { return c.wall }
+	s.monoNow = func() time.Time { return c.mono }
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.wall = c.wall.Add(d)
+	c.mono = c.mono.Add(d)
+}
+
+func (c *fakeClock) jumpWall(d time.Duration) { c.wall = c.wall.Add(d) }
 
 // mutatingCommands devolve os comandos de MUTAÇÃO que o nft recebeu, já
 // formatados para o texto do erro. Leitura (ExecuteRead) não entra: o
@@ -257,8 +286,8 @@ func TestExpiredWindowRevertsOnCheck(t *testing.T) {
 	svc, exec := newBootedService(t, db)
 	ctx := context.Background()
 
-	base := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
-	svc.now = func() time.Time { return base }
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc)
 
 	antes := groupNames(t, db)
 	before, err := svc.SnapshotState()
@@ -271,7 +300,7 @@ func TestExpiredWindowRevertsOnCheck(t *testing.T) {
 	}
 
 	// dentro da janela: a verificação não pode reverter nada
-	svc.now = func() time.Time { return base.Add(ConfirmWindow - time.Second) }
+	clock.advance(ConfirmWindow - time.Second)
 	if err := svc.CheckPendingExpired(ctx); err != nil {
 		t.Fatalf("verificação dentro da janela: %v", err)
 	}
@@ -284,7 +313,7 @@ func TestExpiredWindowRevertsOnCheck(t *testing.T) {
 	exec.executed = nil
 
 	// um segundo depois do prazo: reverte sozinha
-	svc.now = func() time.Time { return base.Add(ConfirmWindow + time.Second) }
+	clock.advance(2 * time.Second)
 	if err := svc.CheckPendingExpired(ctx); err != nil {
 		t.Fatalf("verificação depois do prazo: %v", err)
 	}
@@ -311,10 +340,8 @@ func TestTheWindowExpiresEvenWhenTheClockJumpsBackwards(t *testing.T) {
 	svc, _ := newBootedService(t, db)
 	ctx := context.Background()
 
-	wall := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
-	mono := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
-	svc.now = func() time.Time { return wall }
-	svc.monoNow = func() time.Time { return mono }
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc)
 
 	antes := groupNames(t, db)
 	before, err := svc.SnapshotState()
@@ -326,11 +353,11 @@ func TestTheWindowExpiresEvenWhenTheClockJumpsBackwards(t *testing.T) {
 		t.Fatalf("abrir janela: %v", err)
 	}
 
-	// o chrony dá um passo de 10 minutos PARA TRÁS enquanto a janela corre; o
-	// expires_at gravado (wall + 90 s) passa a estar 11min30 no futuro
-	wall = wall.Add(-10 * time.Minute)
-	// e o tempo real segue andando: 91 segundos desde que a janela abriu
-	mono = mono.Add(ConfirmWindow + time.Second)
+	// o tempo real anda 91 segundos desde que a janela abriu
+	clock.advance(ConfirmWindow + time.Second)
+	// e o chrony dá um passo de 10 minutos PARA TRÁS: o expires_at gravado
+	// (aberta + 90 s) passa a estar 10 minutos no futuro
+	clock.jumpWall(-10 * time.Minute)
 
 	if err := svc.CheckPendingExpired(ctx); err != nil {
 		t.Fatalf("verificação depois do salto de relógio: %v", err)
@@ -340,6 +367,64 @@ func TestTheWindowExpiresEvenWhenTheClockJumpsBackwards(t *testing.T) {
 	}
 	if got := groupNames(t, db); strings.Join(got, "|") != strings.Join(antes, "|") {
 		t.Errorf("a janela expirou e os grupos não voltaram:\n  obtive %v\n  queria %v", got, antes)
+	}
+}
+
+// N-6, a outra direção do mesmo `makestep`. Um passo do relógio PARA A FRENTE
+// (o primeiro sync do chrony numa máquina que acabou de subir é bidirecional,
+// e esta máquina É o servidor NTP da rede) ultrapassa o expires_at gravado
+// antes de os 90 segundos terem PASSADO de verdade.
+//
+// A direção é segura — o acesso volta —, mas o operador perde o prazo sem
+// aviso: ele está lendo "faltam 1:12" na tela, aperta Confirmar, e recebe "a
+// mudança foi revertida automaticamente porque o prazo terminou". A contagem
+// do painel mentiu, e o trabalho dele foi desfeito por um relógio, não pelo
+// tempo. Enquanto houver prazo monotônico desta janela, é ele quem decide.
+func TestTheWindowDoesNotEndEarlyWhenTheClockJumpsForward(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newBootedService(t, db)
+	ctx := context.Background()
+
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc)
+
+	before, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000010", "Trava SSH")
+	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+		t.Fatalf("abrir janela: %v", err)
+	}
+	exec.executed = nil
+
+	// 2 segundos de tempo real, e o chrony dá um passo de 10 minutos PARA A
+	// FRENTE: o expires_at gravado fica no passado sem que a janela tenha
+	// corrido.
+	clock.advance(2 * time.Second)
+	clock.jumpWall(10 * time.Minute)
+
+	if err := svc.CheckPendingExpired(ctx); err != nil {
+		t.Fatalf("verificação depois do salto de relógio: %v", err)
+	}
+	if p := pending(t, svc); p == nil {
+		t.Fatal("a janela foi encerrada por um salto do relógio para a frente: passaram 2 segundos de tempo real, e o operador tinha 90 -- ele perde a alteração sem aviso, com a contagem do painel ainda mostrando tempo de sobra")
+	}
+	if !contains(groupNames(t, db), "Trava SSH") {
+		t.Error("os grupos foram revertidos antes de a janela ter corrido de verdade")
+	}
+	if cmds := mutatingCommands(exec); len(cmds) != 0 {
+		t.Errorf("nada podia ter sido aplicado no nft: %v", cmds)
+	}
+
+	// E o prazo continua valendo: quando os 90 segundos passam DE VERDADE, a
+	// reversão acontece.
+	clock.advance(ConfirmWindow)
+	if err := svc.CheckPendingExpired(ctx); err != nil {
+		t.Fatalf("verificação depois do prazo real: %v", err)
+	}
+	if p := pending(t, svc); p != nil {
+		t.Errorf("passados os 90 segundos reais, a janela tinha que ter sido revertida; ainda há: %+v", p)
 	}
 }
 
@@ -353,8 +438,8 @@ func TestBootRevertsAnUnconfirmedChangeEvenBeforeItExpires(t *testing.T) {
 	svc, exec := newBootedService(t, db)
 	ctx := context.Background()
 
-	base := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
-	svc.now = func() time.Time { return base }
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc)
 
 	antes := groupNames(t, db)
 	before, err := svc.SnapshotState()
@@ -370,7 +455,7 @@ func TestBootRevertsAnUnconfirmedChangeEvenBeforeItExpires(t *testing.T) {
 	// a máquina reiniciou 10 segundos depois: a janela ainda estaria correndo
 	alerter := &recordingAlerter{}
 	svc.SetAlerter(alerter)
-	svc.now = func() time.Time { return base.Add(10 * time.Second) }
+	clock.advance(10 * time.Second)
 	if err := svc.RevertPendingOnBoot(ctx); err != nil {
 		t.Fatalf("verificação de boot: %v", err)
 	}
@@ -570,8 +655,8 @@ func TestARevertThatCannotReachNftKeepsThePendingAndHealsItself(t *testing.T) {
 	svc.SetAlerter(alerter)
 	ctx := context.Background()
 
-	base := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
-	svc.now = func() time.Time { return base }
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc)
 
 	antes := groupNames(t, db)
 	before, err := svc.SnapshotState()
@@ -596,7 +681,7 @@ func TestARevertThatCannotReachNftKeepsThePendingAndHealsItself(t *testing.T) {
 		}
 		return nil
 	}
-	svc.now = func() time.Time { return base.Add(ConfirmWindow + time.Second) }
+	clock.advance(ConfirmWindow + time.Second)
 	err = svc.CheckPendingExpired(ctx)
 	if err == nil {
 		t.Fatal("com o nft recusando, a reversão tinha que reportar erro")
@@ -653,8 +738,8 @@ func TestConfirmAfterTheWindowExpiredSaysItWasReverted(t *testing.T) {
 	svc, _ := newBootedService(t, db)
 	ctx := context.Background()
 
-	base := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
-	svc.now = func() time.Time { return base }
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc)
 
 	before, err := svc.SnapshotState()
 	if err != nil {
@@ -665,7 +750,7 @@ func TestConfirmAfterTheWindowExpiredSaysItWasReverted(t *testing.T) {
 		t.Fatalf("abrir janela: %v", err)
 	}
 
-	svc.now = func() time.Time { return base.Add(ConfirmWindow + time.Second) }
+	clock.advance(ConfirmWindow + time.Second)
 	if err := svc.CheckPendingExpired(ctx); err != nil {
 		t.Fatalf("expirar a janela: %v", err)
 	}
@@ -679,13 +764,272 @@ func TestConfirmAfterTheWindowExpiredSaysItWasReverted(t *testing.T) {
 	}
 }
 
+// ─── Segunda revisão da Fase C2 ───────────────────────────────────────────
+
+// N-1. O furo que sobrou da primeira revisão, reproduzido como o revisor o
+// descreveu: reversão travada (banco já revertido, regra perigosa ainda viva
+// no nft) + LinkGuard reiniciado = um Service novo sobre o mesmo banco.
+//
+// Com a marca de "reversão em andamento" em memória de processo, esse Service
+// novo ACEITAVA a confirmação e respondia sucesso. O pendente era apagado, a
+// alteração do operador já não existia no banco, ninguém retomava a reversão do
+// nft — e ele ia embora informado de que a mudança "passa a valer
+// definitivamente". O cenário concreto: uma regra corta o SSH mas não o painel,
+// ele confirma pelo painel, e o SSH segue bloqueado para sempre, sem watchdog e
+// sem nada tentando de novo. É o modo de falha crítico da fase, alcançável por
+// um simples restart.
+func TestAStuckRevertCannotBeConfirmedAfterARestart(t *testing.T) {
+	db := newTestDB(t)
+	svc, exec := newBootedService(t, db)
+	ctx := context.Background()
+
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc)
+
+	antes := groupNames(t, db)
+	before, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	g := inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000011", "Trava SSH")
+	if err := svc.OpenConfirmWindow(ctx, before, "admin", "grupo Trava SSH aplicado"); err != nil {
+		t.Fatalf("abrir janela: %v", err)
+	}
+
+	// a reversão trava no nft: o banco volta ao estado anterior, o firewall
+	// vivo não
+	exec.failOn = func(args []string) error {
+		if len(args) > 0 && args[0] == "flush" {
+			return errors.New("Device or resource busy")
+		}
+		return nil
+	}
+	clock.advance(ConfirmWindow + time.Second)
+	if err := svc.CheckPendingExpired(ctx); err == nil {
+		t.Fatal("com o nft recusando, a reversão tinha que reportar erro")
+	}
+	p := pending(t, svc)
+	if p == nil {
+		t.Fatal("o pendente tem que ficar: é ele que faz a reversão ser retomada")
+	}
+	if !p.Reverting() {
+		t.Fatal("a reversão em andamento tem que estar marcada NO BANCO (reverting_at): é o que sobrevive ao restart")
+	}
+
+	// ── o LinkGuard reinicia: Service NOVO sobre o MESMO banco
+	svc2, exec2 := newTestServiceWithExec(t, db)
+	if err := svc2.ConfirmPending(ctx); err == nil {
+		t.Fatal("FURO: um processo novo aceitou confirmar uma reversão já começada -- o pendente some, a alteração do operador já não existe no banco, ninguém retoma a reversão no nft, e ele é informado de que a mudança 'passa a valer definitivamente' com o acesso dele ainda cortado")
+	} else if !strings.Contains(err.Error(), "reversão desta mudança já começou") {
+		t.Errorf("a recusa tem que dizer POR QUE não dá mais para confirmar, obtive %q", err.Error())
+	}
+
+	// e o processo novo RETOMA a reversão assim que o nft aceita
+	if err := svc2.CheckPendingExpired(ctx); err != nil {
+		t.Fatalf("o processo novo tinha que concluir a reversão travada: %v", err)
+	}
+	if p := pending(t, svc2); p != nil {
+		t.Errorf("concluída a reversão, o pendente tem que sumir; ainda há: %+v", p)
+	}
+	if got := groupNames(t, db); strings.Join(got, "|") != strings.Join(antes, "|") {
+		t.Errorf("o estado anterior não voltou:\n  obtive %v\n  queria %v", got, antes)
+	}
+	if !rebuiltChain(exec2, nftables.InputChain) {
+		t.Errorf("o processo novo tinha que reconstruir a chain input; comandos: %v", mutatingCommands(exec2))
+	}
+	for _, args := range exec2.executed {
+		if !isAddRuleTo(args, nftables.InputChain) {
+			continue
+		}
+		for _, tok := range args {
+			if tok == g.ChainName {
+				t.Errorf("a chain input reconstruída ainda pula para o grupo revertido (%s): %v", g.ChainName, strings.Join(args, " "))
+			}
+		}
+	}
+}
+
+// N-2. A marca de "reversão em andamento" é uma AFIRMAÇÃO sobre o banco — "o
+// estado anterior já está aqui" —, e por isso só pode ser gravada depois de a
+// transação de restauração ter commitado.
+//
+// Marcada antes, ela vira mentira exatamente no caso em que a transação falha,
+// com dois efeitos: confirmar passa a responder "o estado anterior já foi
+// restaurado no banco" sobre um banco intocado, e a verificação de expiração
+// passa a reverter antes do prazo — tirando do operador o tempo que ele ainda
+// tinha para confirmar.
+func TestTheRevertMarkIsOnlyWrittenAfterTheDatabaseRestoreCommits(t *testing.T) {
+	db := newTestDB(t)
+	svc, _ := newBootedService(t, db)
+	ctx := context.Background()
+
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc)
+
+	// Um snapshot que PASSA na validação (tem os dois grupos do sistema) e que
+	// o banco recusa no meio da transação: o mesmo grupo duas vezes viola a
+	// PRIMARY KEY no segundo INSERT, e a restauração inteira volta atrás.
+	raw, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	var snap stateSnapshot
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
+		t.Fatalf("desserializar o snapshot: %v", err)
+	}
+	snap.Groups = append(snap.Groups, snap.Groups[0])
+	quebrado, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("serializar o snapshot: %v", err)
+	}
+	if err := db.SavePendingChange(storage.PendingChange{
+		ID:        "restauracao-que-falha",
+		Snapshot:  string(quebrado),
+		ExpiresAt: clock.wall.Add(ConfirmWindow),
+		AppliedBy: "admin",
+		Summary:   "grupo Trava SSH aplicado",
+		CreatedAt: clock.wall,
+	}); err != nil {
+		t.Fatalf("SavePendingChange: %v", err)
+	}
+
+	if err := svc.RevertPending(ctx); err == nil {
+		t.Fatal("com a restauração falhando no banco, a reversão tinha que reportar erro")
+	}
+	p := pending(t, svc)
+	if p == nil {
+		t.Fatal("o pendente tem que ficar quando a reversão falha")
+	}
+	if p.Reverting() {
+		t.Error("a reversão NÃO começou: a transação que restauraria o estado anterior falhou e voltou atrás -- marcar aqui faz o LinkGuard afirmar ao operador que o estado anterior já voltou ao banco, quando nada voltou")
+	}
+
+	// Consequência 1: dentro do prazo, a verificação continua deixando a
+	// janela em paz. Com a marca gravada cedo demais, ela passaria a "retomar"
+	// uma reversão que nunca começou, antes da hora.
+	clock.advance(ConfirmWindow - time.Second)
+	if err := svc.CheckPendingExpired(ctx); err != nil {
+		t.Errorf("a janela ainda não expirou e nada tinha a retomar, mas a verificação agiu: %v", err)
+	}
+	if pending(t, svc) == nil {
+		t.Fatal("a janela foi encerrada antes do prazo")
+	}
+
+	// Consequência 2: o operador ainda pode confirmar — é o que ele tem, e
+	// nada foi restaurado no banco para impedi-lo.
+	if err := svc.ConfirmPending(ctx); err != nil {
+		t.Errorf("confirmar tinha que continuar possível: nada foi restaurado no banco. Obtive %q", err)
+	}
+}
+
+// N-3. O que faz o watchdog RECUAR tem que ser uma reversão que falhou, e não
+// qualquer erro.
+//
+// O laço tratava todo erro de CheckPendingExpired como falha de reversão,
+// inclusive o SELECT do pendente falhando — e aí uma janela FUTURA vencia com o
+// laço já no teto do backoff: os 90 segundos do próximo operador terminavam com
+// ninguém olhando.
+func TestOnlyAFailedRevertSlowsTheWatchdogDown(t *testing.T) {
+	interval := 5 * time.Second
+
+	// (a) erro de LEITURA do pendente: não há reversão nenhuma em andamento,
+	// então a próxima batida do timer tenta de novo, no intervalo normal.
+	db := newTestDB(t)
+	svc, _ := newBootedService(t, db)
+	before, err := svc.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	inputGroup(t, db, "aaaaaaaa-0000-4000-8000-000000000012", "Trava SSH")
+	if err := svc.OpenConfirmWindow(context.Background(), before, "admin", "grupo Trava SSH aplicado"); err != nil {
+		t.Fatalf("abrir janela: %v", err)
+	}
+	db.Close() // o banco sai debaixo do laço: GetPendingChange passa a falhar
+	readErr := svc.CheckPendingExpired(context.Background())
+	if readErr == nil {
+		t.Fatal("com o banco fechado, a verificação tinha que reportar erro")
+	}
+	if isRevertAttempt(readErr) {
+		t.Errorf("um SELECT que falhou não é uma reversão que falhou: %v", readErr)
+	}
+	if got := nextRevertPace(readErr, 0, interval); got != 0 {
+		t.Errorf("erro de leitura não pode espaçar as tentativas (obtive %v): uma janela futura venceria com o laço no teto do backoff, e os 90 segundos do próximo operador terminariam com ninguém olhando", got)
+	}
+
+	// (b) reversão que falhou de verdade: aí sim espaça, para não repetir uma
+	// reconciliação inteira de 5 em 5 segundos com o nft fora do ar.
+	db2 := newTestDB(t)
+	svc2, exec2 := newBootedService(t, db2)
+	clock := newFakeClock(time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC))
+	clock.wire(svc2)
+	before2, err := svc2.SnapshotState()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	inputGroup(t, db2, "aaaaaaaa-0000-4000-8000-000000000013", "Trava SSH")
+	if err := svc2.OpenConfirmWindow(context.Background(), before2, "admin", "grupo Trava SSH aplicado"); err != nil {
+		t.Fatalf("abrir janela: %v", err)
+	}
+	exec2.failOn = func(args []string) error {
+		if len(args) > 0 && args[0] == "flush" {
+			return errors.New("Device or resource busy")
+		}
+		return nil
+	}
+	clock.advance(ConfirmWindow + time.Second)
+	revertErr := svc2.CheckPendingExpired(context.Background())
+	if revertErr == nil {
+		t.Fatal("com o nft recusando, a reversão tinha que reportar erro")
+	}
+	if !isRevertAttempt(revertErr) {
+		t.Errorf("a falha de uma tentativa de reversão tem que ser reconhecida como tal: %v", revertErr)
+	}
+	if got := nextRevertPace(revertErr, 0, interval); got != interval {
+		t.Errorf("a reversão que falhou tem que espaçar a próxima tentativa em %v, obtive %v", interval, got)
+	}
+}
+
+// A cadência de LOGAR é separada da de TENTAR. Tentar é barato e cada tentativa
+// pode ser a que devolve o acesso ao operador; escrever é que enche o journal
+// de um firewall de produção — que é onde alguém vai procurar a causa na
+// próxima emergência.
+func TestTheJournalGetsTheFirstFailureAndThenOnePerMinute(t *testing.T) {
+	gate := &logGate{every: revertLogInterval}
+	base := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
+
+	if !gate.allow(base) {
+		t.Error("a primeira falha de uma sequência tem que sair sempre: é ela que diz que algo começou a dar errado")
+	}
+	// 5 em 5 segundos durante um minuto: nada mais sai
+	for i := 1; i < 12; i++ {
+		if gate.allow(base.Add(time.Duration(i) * 5 * time.Second)) {
+			t.Fatalf("a falha repetida %d saiu no journal: com um nft fora do ar por um dia isso são ~17 mil linhas de ERROR", i)
+		}
+	}
+	if !gate.allow(base.Add(revertLogInterval)) {
+		t.Error("passado um minuto, a falha que continua acontecendo tem que voltar a aparecer")
+	}
+	// resolvido: a próxima sequência volta a ser anunciada na hora
+	gate.reset()
+	if !gate.allow(base.Add(revertLogInterval + time.Second)) {
+		t.Error("depois de uma passada boa, a próxima falha é a primeira de uma nova sequência e tem que sair na hora")
+	}
+}
+
 // O backoff da retomada. O laço nunca desiste (do outro lado pode estar o
-// operador trancado fora), mas tentar de 5 em 5 segundos para sempre são ~17
-// mil linhas de ERROR por dia no journal de um firewall de produção — que é
-// onde alguém vai procurar a causa na próxima emergência.
+// operador trancado fora), e o teto é curto de propósito: o que ele custa é a
+// CAUDA — o tempo que o operador continua trancado DEPOIS de a máquina já ter
+// voltado a aceitar a reversão. Num componente cuja promessa inteira é "90
+// segundos", o teto antigo de 5 minutos era 3,3× a promessa. O barulho no
+// journal, que era a justificativa daquele teto, agora é cuidado pela cadência
+// de log (ver o teste acima).
 func TestRevertBackoffGrowsAndIsCapped(t *testing.T) {
 	interval := 5 * time.Second
 
+	if maxRevertBackoff > ConfirmWindow {
+		t.Errorf("o teto do backoff (%v) não pode passar da própria janela de confirmação (%v): a cauda de uma reversão travada ficaria maior que a promessa que este mecanismo faz ao operador",
+			maxRevertBackoff, ConfirmWindow)
+	}
 	if got := nextRevertBackoff(0, interval); got != interval {
 		t.Errorf("a primeira nova tentativa tem que ser no próprio intervalo do timer, obtive %v", got)
 	}

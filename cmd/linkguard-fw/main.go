@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -346,14 +345,33 @@ func run() int {
 		}
 	})
 
-	// pendingCheckedOnce prende a verificação de boot do confirmar-ou-reverte
-	// à PRIMEIRA passada de provisionSystem. provisionSystem é reexecutado
-	// quando uma tentativa posterior de instalar a base finalmente dá certo —
-	// e isso pode acontecer meia hora depois da subida, com o operador já no
-	// painel. Sem esta trava, essa segunda passada reverteria uma janela de
-	// confirmação que ele tivesse acabado de abrir, como se a máquina tivesse
-	// reiniciado. "No boot" tem que querer dizer no boot.
-	var pendingCheckedOnce sync.Once
+	// bootPendingChecked prende a verificação de boot do confirmar-ou-reverte
+	// à primeira passada de provisionSystem que a tenha CONCLUÍDO.
+	// provisionSystem é reexecutado quando uma tentativa posterior de instalar
+	// a base finalmente dá certo — e isso pode acontecer meia hora depois da
+	// subida, com o operador já no painel. Sem a trava, essa segunda passada
+	// reverteria uma janela de confirmação que ele tivesse acabado de abrir,
+	// como se a máquina tivesse reiniciado. "No boot" tem que querer dizer no
+	// boot.
+	//
+	// N-4 — por que uma trava explícita e não um sync.Once. A primeira passada
+	// roda mesmo quando o bootstrap FALHOU (`if done || attempt == 0`), e numa
+	// máquina onde o `nft` ainda nem existe é justamente a passada em que a
+	// reversão de boot não tem como se completar. Um sync.Once queimava ali, e
+	// a passada que finalmente dava certo não repetia a verificação. Marcando
+	// só quando ela conclui, a passada seguinte retoma o trabalho.
+	//
+	// O que isso custa, dito por inteiro: se a verificação falhou porque a
+	// LEITURA do pendente falhou (e não havia pendente nenhum), uma passada
+	// posterior pode reverter uma janela aberta no intervalo. É o caso raro de
+	// um caso raro, e ele falha na direção segura — o operador mantém o acesso
+	// e reaplica a alteração; o inverso (deixar de reverter) é ele trancado
+	// fora de uma máquina remota. Quando a falha foi da reversão em si, repetir
+	// é exatamente o certo: o pendente continua no banco e é o mesmo.
+	//
+	// Escrita e lida por uma goroutine só (a do laço de bootstrap, mais
+	// abaixo), que é de onde provisionSystem é chamado.
+	bootPendingChecked := false
 
 	// provisionSystem é tudo o que o LinkGuard faz no boot que MEXE na
 	// máquina: forwarding, policy routing, bootstrap/reconciliação do
@@ -394,12 +412,16 @@ func run() int {
 		// confirmação ou reversão) e o WatchPending retoma a reversão. É o
 		// que salva a máquina cuja tabela `inet linkguard` precisou ser
 		// recriada — aqui, algumas linhas antes do EnsureTable, a
-		// reconciliação da reversão falha de forma determinística.
-		pendingCheckedOnce.Do(func() {
+		// reconciliação da reversão falha de forma determinística. E a trava
+		// só é marcada quando a verificação CONCLUI (N-4): uma passada que não
+		// conseguiu terminar não gasta a única chance de "no boot".
+		if !bootPendingChecked {
 			if err := frSvc.RevertPendingOnBoot(ctx); err != nil {
 				slog.Error("não foi possível reverter no boot a mudança de firewall não confirmada", "err", err)
+			} else {
+				bootPendingChecked = true
 			}
-		})
+		}
 
 		// Enable IPv4 forwarding so the box can route between LAN and WAN; it
 		// defaults to 0 on a fresh system and a firewall/router needs it on.

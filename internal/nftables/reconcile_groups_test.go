@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -2124,6 +2125,9 @@ func TestReconcileGroupsDoesNotPersistWhenAStructuralChainCouldNotBeRebuilt(t *t
 	}
 	s := &Service{exec: exec}
 	wireNoInputExtras(s)
+	// Este teste exercita o caminho do Persist até o fim, e Persist grava em
+	// disco fora do executor falso: o arquivo é deste teste, não o da máquina.
+	s.SetConfPath(filepath.Join(t.TempDir(), "nftables.conf"))
 	groups := []StoredGroup{
 		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
 			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, Fallthrough: FallthroughContinue},
@@ -2151,6 +2155,10 @@ func TestReconcileGroupsStillPersistsWhenOnlyAGroupFailed(t *testing.T) {
 		exec := &fakeReconcileExec{}
 		s := &Service{exec: exec}
 		wireNoInputExtras(s)
+		// Persist é a única escrita que o executor falso não intercepta, e
+		// este teste vai até ela de propósito: o arquivo tem que ser o do
+		// teste, nunca o /etc/nftables.conf da máquina.
+		s.SetConfPath(filepath.Join(t.TempDir(), "nftables.conf"))
 		_ = s.ReconcileGroups(context.Background(), groups)
 		for _, r := range exec.reads {
 			if strings.HasPrefix(r, "nft list table") {
