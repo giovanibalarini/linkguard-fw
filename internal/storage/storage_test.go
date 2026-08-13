@@ -1123,3 +1123,107 @@ func TestMigrateAddsScopeToADatabaseCreatedBeforeTheColumn(t *testing.T) {
 		db.Close()
 	}
 }
+
+// ─── Estado da conexão do grupo (any × new) ──────────────────────────────
+
+func TestFirewallGroupConnStateRoundTrips(t *testing.T) {
+	db := newTestDB(t)
+	g := storage.FirewallGroup{ID: "n1", Name: "Só conexões novas", ChainName: "grp_nnn",
+		Kind: "admin", ConnState: "new", Position: 0, Enabled: true, Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatalf("criar: %v", err)
+	}
+	got, _ := db.ListFirewallGroups()
+	if len(got) != 1 || got[0].ConnState != "new" {
+		t.Fatalf("conn_state não persistiu: %+v", got)
+	}
+}
+
+// A edição tem que gravar a escolha: um handler que leia o campo do corpo e
+// não o veja chegar ao banco produz o pior bug de painel — o admin muda na
+// tela, a resposta é 200, e o firewall continua exatamente como estava.
+func TestUpdateFirewallGroupSavesConnState(t *testing.T) {
+	db := newTestDB(t)
+	g := storage.FirewallGroup{ID: "n1", Name: "Visitantes", ChainName: "grp_nnn",
+		Kind: "admin", Position: 0, Enabled: true, Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatalf("criar: %v", err)
+	}
+	g.ConnState = "new"
+	if err := db.UpdateFirewallGroup(&g); err != nil {
+		t.Fatalf("atualizar: %v", err)
+	}
+	got, _ := db.ListFirewallGroups()
+	if len(got) != 1 || got[0].ConnState != "new" {
+		t.Fatalf("a edição não gravou conn_state: %+v", got)
+	}
+}
+
+// Linha criada sem escolha explícita sai vazia — e vazio conta como
+// nftables.ConnStateAny, que é o que todo grupo existente é.
+func TestFirewallGroupWithoutConnStateStaysEmpty(t *testing.T) {
+	db := newTestDB(t)
+	g := storage.FirewallGroup{ID: "a", Name: "Antigo", ChainName: "grp_aaa", Fallthrough: "continue"}
+	if err := db.CreateFirewallGroup(&g); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.ListFirewallGroups()
+	if got[0].ConnState != "" {
+		t.Errorf("linha sem escolha explícita tem que sair vazia, obtive %q", got[0].ConnState)
+	}
+}
+
+// Mesmo molde de TestMigrateAddsScopeToADatabaseCreatedBeforeTheColumn: o
+// caminho do ALTER TABLE só roda em banco criado antes da coluna existir, e
+// todo outro teste abre um banco novo onde o CREATE TABLE já a inclui — sem
+// este teste, apagar a chamada de migrate() deixaria a suíte inteira verde.
+//
+// O grupo antigo tem que sobreviver com conn_state VAZIO: ele vale para TODA
+// conexão, e promovê-lo a "só conexões novas" por acidente deixaria de
+// bloquear (ou de liberar) o tráfego já estabelecido de alguém que nunca
+// pediu essa mudança.
+func TestMigrateAddsConnStateToADatabaseCreatedBeforeTheColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old-connstate.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("abrir banco cru: %v", err)
+	}
+	if _, err := raw.Exec(`
+        CREATE TABLE firewall_groups (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, chain_name TEXT NOT NULL UNIQUE,
+            position INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+            cond_saddr TEXT NOT NULL DEFAULT '', cond_daddr TEXT NOT NULL DEFAULT '',
+            cond_iif TEXT NOT NULL DEFAULT '', fallthrough TEXT NOT NULL DEFAULT 'continue',
+            kind TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO firewall_groups (id, name, chain_name, position, enabled)
+        VALUES ('velho', 'Grupo antigo do admin', 'grp_velho01', 0, 1);`); err != nil {
+		t.Fatalf("montar schema antigo: %v", err)
+	}
+	raw.Close()
+
+	for pass := 1; pass <= 2; pass++ {
+		db, err := storage.Open(path)
+		if err != nil {
+			t.Fatalf("passada %d: storage.Open: %v", pass, err)
+		}
+		groups, err := db.ListFirewallGroups()
+		if err != nil {
+			t.Fatalf("passada %d: listar: %v", pass, err)
+		}
+		if len(groups) != 1 {
+			t.Fatalf("passada %d: esperava 1 grupo preservado, obtive %d", pass, len(groups))
+		}
+		if groups[0].ID != "velho" || groups[0].Name != "Grupo antigo do admin" {
+			t.Errorf("passada %d: a linha antiga não sobreviveu: %+v", pass, groups[0])
+		}
+		if groups[0].ConnState != "" {
+			t.Errorf("passada %d: linha antiga tem que ficar com conn_state vazio (= toda conexão), obtive %q",
+				pass, groups[0].ConnState)
+		}
+		db.Close()
+	}
+}

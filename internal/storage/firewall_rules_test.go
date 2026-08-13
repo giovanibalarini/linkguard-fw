@@ -908,3 +908,27 @@ CREATE TABLE pending_firewall_change (
 		t.Errorf("a marca gravada tinha que continuar lá depois da segunda migração: %+v", got)
 	}
 }
+
+// A reversão restaura um estado que já existiu — inclusive a escolha de
+// "só conexões novas". Um INSERT de restauração que esquecesse a coluna
+// devolveria todo grupo restrito a conexões novas para "toda conexão", que é
+// mudar o firewall do admin em silêncio no momento em que ele mais confia no
+// sistema: desfazendo uma mudança que o trancou para fora.
+func TestReplaceFirewallGroupsAndRulesRestoresConnState(t *testing.T) {
+	db := newTestDB(t)
+	snapshot := append(systemGroupsFixture(), storage.FirewallGroup{
+		ID: "g1", Name: "Visitantes", ChainName: "grp_g1", Position: 2, Enabled: true,
+		Fallthrough: "continue", Kind: "admin", Scope: "forward", ConnState: "new"})
+	if err := db.ReplaceFirewallGroupsAndRules(snapshot, nil); err != nil {
+		t.Fatalf("ReplaceFirewallGroupsAndRules: %v", err)
+	}
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatalf("ListFirewallGroups: %v", err)
+	}
+	for _, g := range groups {
+		if g.ID == "g1" && g.ConnState != "new" {
+			t.Fatalf("a restauração perdeu conn_state: %+v", g)
+		}
+	}
+}

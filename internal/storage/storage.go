@@ -101,6 +101,9 @@ func (db *DB) migrate() error {
 	if err := db.migrateAddFirewallGroupScope(); err != nil {
 		return fmt.Errorf("migrate add firewall_groups.scope: %w", err)
 	}
+	if err := db.migrateAddFirewallGroupConnState(); err != nil {
+		return fmt.Errorf("migrate add firewall_groups.conn_state: %w", err)
+	}
 	if err := db.migratePendingFirewallChange(); err != nil {
 		return fmt.Errorf("migrate create pending_firewall_change: %w", err)
 	}
@@ -216,6 +219,43 @@ func (db *DB) migrateAddFirewallGroupScope() error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN scope TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna scope: %w", err)
+	}
+	return tx.Commit()
+}
+
+// migrateAddFirewallGroupConnState adiciona firewall_groups.conn_state em
+// bancos que já existem: "vale para toda conexão" × "vale só para conexões
+// novas".
+//
+// Fica VAZIA nas linhas antigas de propósito, e esta é a decisão que protege
+// toda máquina já instalada: vazio conta como nftables.ConnStateAny, e a linha
+// de jump do grupo sai byte a byte como sempre saiu. Preencher as antigas com
+// "new" faria um upgrade afrouxar, sozinho, todo bloqueio que hoje já derruba
+// conexão estabelecida — o admin nunca pediu isso, e ele só descobriria pelo
+// tráfego que voltou a passar.
+//
+// Em transação como toda migração deste projeto (incidente de 2026-07-24, em
+// que uma migração sem transação travou o boot de uma máquina de produção por
+// mais de 50 minutos). Sai barata: um SELECT em pragma_table_info nos boots
+// seguintes, e nada mais.
+func (db *DB) migrateAddFirewallGroupConnState() error {
+	var count int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('firewall_groups') WHERE name = 'conn_state'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar coluna conn_state: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN conn_state TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("adicionar coluna conn_state: %w", err)
 	}
 	return tx.Commit()
 }
@@ -679,6 +719,7 @@ CREATE TABLE IF NOT EXISTS firewall_groups (
     fallthrough  TEXT NOT NULL DEFAULT 'continue',
     kind         TEXT NOT NULL DEFAULT '',
     scope        TEXT NOT NULL DEFAULT '',
+    conn_state   TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`

@@ -2353,3 +2353,89 @@ func TestReconcileGroupsStillPersistsWhenOnlyAGroupFailed(t *testing.T) {
 		t.Error("uma falha de GRUPO não pode impedir a persistência: a forward e a input foram reconstruídas corretamente sem ele, e não persistir congelaria o /etc/nftables.conf enquanto o admin acha que salvou")
 	}
 }
+
+// ─── Estado da conexão: a escolha chega às duas chains ───────────────────
+
+// A chain forward é a de tráfego atravessando o firewall — a LAN saindo, uma
+// VLAN falando com outra —, e é onde o "não abra conexão nova comigo" mais
+// aparece. Aqui o teste é da linha inteira, como o renderizador a emite, e não
+// só do helper: um `ct state new` que existisse em groupJumpTokens e se
+// perdesse no caminho até a forward não bloquearia nada.
+func TestForwardChainCarriesCtStateOnlyForTheNewOnlyGroup(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "a", Name: "Só conexões novas", ChainName: "grp_aaa", Kind: GroupKindAdmin,
+			Enabled: true, Position: 0, CondSaddr: "192.168.50.0/24", ConnState: ConnStateNew},
+		{ID: "b", Name: "Toda conexão", ChainName: "grp_bbb", Kind: GroupKindAdmin,
+			Enabled: true, Position: 1, CondSaddr: "192.168.60.0/24", ConnState: ConnStateAny},
+		{ID: "c", Name: "Linha antiga", ChainName: "grp_ccc", Kind: GroupKindAdmin,
+			Enabled: true, Position: 2, CondSaddr: "192.168.70.0/24"},
+	}
+	want := []string{
+		"ip saddr 192.168.50.0/24 ct state new counter jump grp_aaa",
+		"ip saddr 192.168.60.0/24 counter jump grp_bbb",
+		"ip saddr 192.168.70.0/24 counter jump grp_ccc",
+	}
+	got := forwardLines(groups)
+	if len(got) != len(want) {
+		t.Fatalf("esperava %d linhas, obtive %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("linha %d:\n  obtive %q\n  queria %q", i, got[i], want[i])
+		}
+	}
+}
+
+// E na input, que é o tráfego destinado ao próprio firewall (SSH, painel,
+// DNS, Samba) — o outro renderizador, que tem sua própria cópia do laço de
+// grupos e poderia divergir. inputLinesAfterBase confere a proteção base do
+// topo (ct state related counter accept) antes de tirá-la da comparação.
+func TestInputChainCarriesCtStateOnTheNewOnlyGroupJump(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "a", Name: "Só conexões novas", ChainName: "grp_aaa", Kind: GroupKindAdmin,
+			Scope: ScopeInput, Enabled: true, Position: 0, CondSaddr: "192.168.50.0/24",
+			ConnState: ConnStateNew},
+		{ID: "b", Name: "Toda conexão", ChainName: "grp_bbb", Kind: GroupKindAdmin,
+			Scope: ScopeInput, Enabled: true, Position: 1},
+	}
+	lines := inputLinesAfterBase(t, groups, nil, false)
+	want := []string{
+		"ip saddr 192.168.50.0/24 ct state new counter jump grp_aaa",
+		"counter jump grp_bbb",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("esperava %d linhas, obtive %d: %v", len(want), len(lines), lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("linha %d:\n  obtive %q\n  queria %q", i, lines[i], want[i])
+		}
+	}
+}
+
+// O grupo do sistema fica de fora da feature mesmo quando a coluna vem
+// preenchida (edição à mão, corrupção): as linhas de bloqueio saem da forward
+// exatamente como sempre saíram. Bloquear host é onde se QUER a marreta.
+func TestForwardChainKeepsSystemBlockLinesUntouchedByConnState(t *testing.T) {
+	groups := []StoredGroup{
+		{ID: "h", Name: "Hosts bloqueados", ChainName: SystemChainBlockedHosts,
+			Kind: GroupKindBlockedHosts, Enabled: true, Position: 0, ConnState: ConnStateNew},
+		{ID: "l", Name: "Destinos bloqueados", ChainName: SystemChainBlocklist,
+			Kind: GroupKindBlocklist, Enabled: true, Position: 1, ConnState: ConnStateNew},
+	}
+	want := []string{
+		"ip saddr @" + BlockedSet + " counter drop",
+		"ip daddr @" + BlockedSet + " counter drop",
+		"ip daddr @blocklist counter drop",
+		"ip saddr @blocklist counter drop",
+	}
+	got := forwardLines(groups)
+	if len(got) != len(want) {
+		t.Fatalf("esperava %d linhas, obtive %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("linha %d:\n  obtive %q\n  queria %q", i, got[i], want[i])
+		}
+	}
+}

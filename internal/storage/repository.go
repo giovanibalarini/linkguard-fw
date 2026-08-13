@@ -1661,7 +1661,15 @@ type FirewallGroup struct {
 	// nftables.ScopeInput (tráfego DESTINADO ao próprio firewall — SSH,
 	// painel, DNS, Samba). Vazio conta como forward: é o valor de toda linha
 	// criada antes desta coluna existir.
-	Scope     string    `json:"scope"`
+	Scope string `json:"scope"`
+	// ConnState diz para QUAIS CONEXÕES o grupo vale: "" ou
+	// nftables.ConnStateAny (toda conexão, estabelecida ou não — o
+	// comportamento de sempre) e nftables.ConnStateNew (só conexões novas: a
+	// linha do jump ganha `ct state new` e o que já está em curso segue até
+	// terminar). Vazio conta como "any": é o valor de toda linha criada antes
+	// desta coluna existir, e toda máquina em produção hoje bloqueia de
+	// imediato.
+	ConnState string    `json:"conn_state"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -1669,7 +1677,7 @@ type FirewallGroup struct {
 func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
 	rows, err := db.conn.Query(`
         SELECT id, name, chain_name, position, enabled, cond_saddr, cond_daddr,
-               cond_iif, fallthrough, kind, scope, created_at, updated_at
+               cond_iif, fallthrough, kind, scope, conn_state, created_at, updated_at
           FROM firewall_groups ORDER BY position ASC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -1680,7 +1688,7 @@ func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
 		var g FirewallGroup
 		if err := rows.Scan(&g.ID, &g.Name, &g.ChainName, &g.Position, &g.Enabled,
 			&g.CondSaddr, &g.CondDaddr, &g.CondIif, &g.Fallthrough, &g.Kind, &g.Scope,
-			&g.CreatedAt, &g.UpdatedAt); err != nil {
+			&g.ConnState, &g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, g)
@@ -1693,10 +1701,12 @@ func (db *DB) CreateFirewallGroup(g *FirewallGroup) error {
 	g.CreatedAt, g.UpdatedAt = now, now
 	_, err := db.conn.Exec(`
         INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
-            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, conn_state,
+            created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
-		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope, g.CreatedAt, g.UpdatedAt)
+		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope, g.ConnState,
+		g.CreatedAt, g.UpdatedAt)
 	return err
 }
 
@@ -1714,6 +1724,13 @@ func (db *DB) CreateFirewallGroup(g *FirewallGroup) error {
 // até o próximo F5, e o banco (e portanto o firewall) continua exatamente como
 // estava. Mudei na tela e não aconteceu nada.
 //
+// conn_state ("vale para toda conexão" × "só conexões novas") entrou nesta
+// lista pela mesma porta e com a mesma disciplina: o campo só passou a ser
+// gravado aqui junto com a entrega que o expõe. Vale para ele o mesmo aviso —
+// e a mesma responsabilidade de quem chama, logo abaixo, de resolver "campo
+// ausente no corpo" mantendo o valor já gravado, para que um cliente que não
+// conheça o campo não devolva a "toda conexão" um grupo que o admin restringiu.
+//
 // Quem chama é responsável por não rebaixar o escopo sem querer: g.Scope é
 // gravado como veio. O handler resolve "campo ausente no corpo" mantendo o
 // valor já gravado, porque um cliente que não conhece o campo transformaria um
@@ -1722,9 +1739,11 @@ func (db *DB) UpdateFirewallGroup(g *FirewallGroup) error {
 	g.UpdatedAt = time.Now()
 	res, err := db.conn.Exec(`
         UPDATE firewall_groups
-           SET name=?, cond_saddr=?, cond_daddr=?, cond_iif=?, fallthrough=?, scope=?, updated_at=?
+           SET name=?, cond_saddr=?, cond_daddr=?, cond_iif=?, fallthrough=?, scope=?,
+               conn_state=?, updated_at=?
          WHERE id=?`,
-		g.Name, g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Scope, g.UpdatedAt, g.ID)
+		g.Name, g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Scope, g.ConnState,
+		g.UpdatedAt, g.ID)
 	if err != nil {
 		return err
 	}
@@ -2116,15 +2135,16 @@ func (db *DB) ReplaceFirewallGroupsAndRules(groups []FirewallGroup, rules []Fire
 	// enabled irem literais.
 	gstmt, err := tx.Prepare(`
         INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
-            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, conn_state,
+            created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
 	defer gstmt.Close()
 	for _, g := range groups {
 		if _, err := gstmt.Exec(g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
-			g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope,
+			g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope, g.ConnState,
 			g.CreatedAt, g.UpdatedAt); err != nil {
 			return err
 		}

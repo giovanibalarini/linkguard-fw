@@ -1,6 +1,9 @@
 package nftables
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Fixture com a forma REAL do nft: interface aspeada e /32 comido. Fixture
 // gerado por buildRuleTokens esconderia exatamente a classe de bug que
@@ -271,5 +274,80 @@ func TestMergeGroupsSystemGroupIsReadFromTheForwardEvenWithAnInputScopeRow(t *te
 	}}
 	if v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, forward)[0]; !v.Applied {
 		t.Error("o bloqueio do sistema está vivo na forward e consta como não aplicado")
+	}
+}
+
+// ─── O que o nft devolve para um grupo de "só conexões novas" ────────────
+
+// liveForwardWithCtStateNewJump é saída REAL do `nft list chain inet
+// linkguard forward` (nftables v1.1.3), capturada num namespace de rede
+// isolado depois de aplicar o script que este pacote gera — não a
+// renderização dos nossos próprios tokens.
+//
+// Ela existe porque em 2026-08-11 um bug crítico passou por cinco testes
+// verdes justamente por usar a saída de buildRuleTokens como se fosse a do
+// nft. As duas coisas que só a saída real prova, e que o painel depende:
+//
+//   - o nft reimprime `ct state new` no MESMO lugar em que o emitimos (entre
+//     a condição de entrada e o counter), e não o reordena nem o reescreve;
+//   - o counter que ele expande (`counter packets N bytes N`) continua vindo
+//     DEPOIS do `ct state new`, que é o que faz o parser deste pacote
+//     encontrar o contador do grupo onde sempre o encontrou.
+const liveForwardWithCtStateNewJump = `table inet linkguard {
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		ip saddr @blocked_hosts counter packets 0 bytes 0 drop
+		ip daddr @blocked_hosts counter packets 0 bytes 0 drop
+		ip saddr 192.168.50.0/24 ct state new counter packets 7 bytes 420 jump grp_aaa
+		ip saddr 192.168.60.0/24 counter packets 3 bytes 180 jump grp_bbb
+		iifname "enp0s3" counter packets 0 bytes 0 jump grp_ccc
+	}
+}
+`
+
+// O grupo restrito a conexões novas tem que aparecer APLICADO no painel, com
+// o contador da linha do jump. `ct state new` no meio da expressão não pode
+// esconder o jump de quem o procura — se escondesse, o painel diria
+// "configurado, não aplicado" com a regra viva o tempo todo, que é exatamente
+// a mentira de tela que este modelo existe para eliminar.
+func TestMergeGroupsFindsTheJumpOfANewOnlyGroupInRealNftOutput(t *testing.T) {
+	var forward ChainInfo
+	for _, c := range parseTableRuleset(liveForwardWithCtStateNewJump) {
+		if c.Name == ForwardChain {
+			forward = c
+		}
+	}
+	g := StoredGroup{ID: "a", Name: "Só conexões novas", ChainName: "grp_aaa",
+		Kind: GroupKindAdmin, Enabled: true, CondSaddr: "192.168.50.0/24",
+		ConnState: ConnStateNew, Fallthrough: FallthroughContinue}
+	v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, forward)[0]
+	if !v.Applied {
+		t.Fatalf("o jump com ct state new está vivo na forward e o grupo consta como não aplicado: %+v", forward.Rules)
+	}
+	if !v.HasCounter || v.Packets != 7 || v.Bytes != 420 {
+		t.Errorf("o contador tem que vir da linha do jump (7/420), obtive %+v", v)
+	}
+}
+
+// E a forma exata em que a linha chega ao painel depois de o parser consumir
+// a cláusula counter: `ct state new` continua entre a condição e o `jump`. É
+// esta string que o classificador do painel vai ler para dizer "só conexões
+// novas" — fixar aqui a forma REAL evita que ele seja escrito contra uma
+// fixture inventada.
+func TestParsedExpressionKeepsCtStateNewBetweenConditionAndJump(t *testing.T) {
+	r := parseChainRuleLine(ForwardChain,
+		"\t\tip saddr 192.168.50.0/24 ct state new counter packets 7 bytes 420 jump grp_aaa # handle 22")
+	want := "ip saddr 192.168.50.0/24 ct state new jump grp_aaa"
+	if r.Expression != want {
+		t.Errorf("\n  obtive %q\n  queria %q", r.Expression, want)
+	}
+	if !r.HasCounter || r.Packets != 7 || r.Bytes != 420 || r.Handle != 22 {
+		t.Errorf("counter/handle não sobreviveram ao ct state new: %+v", r)
+	}
+	// E a linha do grupo que vale para toda conexão continua sem nada disso.
+	plain := parseChainRuleLine(ForwardChain,
+		"\t\tip saddr 192.168.60.0/24 counter packets 3 bytes 180 jump grp_bbb")
+	if strings.Contains(plain.Expression, "ct state") {
+		t.Errorf("a linha de \"toda conexão\" não pode conter ct state: %q", plain.Expression)
 	}
 }

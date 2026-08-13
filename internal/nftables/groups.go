@@ -51,6 +51,43 @@ const (
 	ScopeInput   = "input"
 )
 
+// ConnState diz PARA QUAIS CONEXÕES o grupo vale, e é a diferença entre a
+// marreta e o bisturi:
+//
+//   - ConnStateAny: toda conexão que casar com a condição de entrada, já
+//     estabelecida ou não. É o comportamento de sempre — bloquear derruba na
+//     hora a transferência que já estava correndo.
+//   - ConnStateNew: só as conexões NOVAS. A linha do jump ganha `ct state
+//     new`, e quem já está conversando continua conversando até terminar.
+//     É o "não quero que este host abra conexão nova comigo, mas não vou
+//     derrubar o download que ele já começou".
+//
+// Vazio conta como ConnStateAny: é o valor de toda linha gravada antes desta
+// coluna existir, e toda máquina em produção hoje bloqueia de imediato. Fazer
+// vazio valer como "só conexões novas" afrouxaria, num upgrade e sem ninguém
+// pedir, todo bloqueio que já está valendo.
+const (
+	ConnStateAny = "any"
+	ConnStateNew = "new"
+)
+
+// GroupConnState normaliza o valor gravado: vazio (e qualquer coisa que este
+// código não conheça) vira ConnStateAny. Existe pelo mesmo motivo de
+// GroupScope — para que nenhum renderizador repita a regra do vazio e os dois
+// não possam divergir sobre o que uma linha antiga significa.
+//
+// Um valor desconhecido cair em ConnStateAny é o lado seguro: mantém a linha
+// como ela sempre foi. ValidateGroup é quem RECUSA o valor estranho, na
+// entrada; aqui, na renderização, o que não pode acontecer é uma linha
+// corrompida virar restrição de estado por acidente e passar a deixar entrar
+// tráfego estabelecido que o admin pretendia barrar.
+func GroupConnState(g StoredGroup) string {
+	if g.ConnState == ConnStateNew {
+		return ConnStateNew
+	}
+	return ConnStateAny
+}
+
 // GroupScope normaliza o escopo gravado: vazio vira ScopeForward. Existe para
 // que nenhum renderizador precise repetir a regra do vazio — os dois
 // (forwardChainRules e inputChainRules) leem daqui, e não podem divergir
@@ -190,6 +227,7 @@ type StoredGroup struct {
 	Fallthrough string       `json:"fallthrough"`
 	Kind        string       `json:"kind"`
 	Scope       string       `json:"scope"`
+	ConnState   string       `json:"conn_state"`
 	Rules       []StoredRule `json:"-"`
 }
 
@@ -253,6 +291,16 @@ func ValidateGroup(g StoredGroup) error {
 	default:
 		return fmt.Errorf("escopo inválido (use forward ou input)")
 	}
+	// Mesmo raciocínio do escopo: um valor que este código não entende é
+	// recusado na entrada, não normalizado em silêncio. Um "established"
+	// gravado à mão e tratado como "any" faria a tela dizer uma coisa e o
+	// firewall fazer outra. Vazio continua valendo — é toda linha anterior a
+	// esta coluna — e GroupConnState o resolve como ConnStateAny.
+	switch g.ConnState {
+	case "", ConnStateAny, ConnStateNew:
+	default:
+		return fmt.Errorf("valor inválido para \"vale para\" (use any ou new)")
+	}
 	return nil
 }
 
@@ -288,6 +336,23 @@ func groupJumpTokens(g StoredGroup) ([]string, error) {
 			return nil, fmt.Errorf("destino inválido")
 		}
 		t = append(t, "ip", "daddr", g.CondDaddr)
+	}
+	// `ct state new` entra DEPOIS de toda condição de entrada e ANTES do
+	// counter, e a posição não é estética:
+	//
+	//   - depois da condição, porque é ela que decide se o grupo é sequer
+	//     considerado (a mesma ordem que buildRuleTokens emite e que o nft
+	//     reimprime; ver TestGroupJumpFieldOrderMatchesRuleTokens);
+	//   - antes do counter, porque o número que o painel mostra ao lado do
+	//     grupo tem que ser o do tráfego que EFETIVAMENTE saltou para dentro
+	//     dele. Com o counter antes, ele contaria também o estabelecido que a
+	//     linha deixou passar adiante, e o painel mentiria sobre quanto
+	//     tráfego o grupo pegou.
+	//
+	// Só ConnStateNew acrescenta token: em ConnStateAny (e no vazio de toda
+	// linha que já existe) a linha sai byte a byte como sempre saiu.
+	if GroupConnState(g) == ConnStateNew {
+		t = append(t, "ct", "state", "new")
 	}
 	return append(t, "counter", "jump", g.ChainName), nil
 }

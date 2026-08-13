@@ -246,3 +246,146 @@ func TestGroupScopeTreatsEmptyAsForward(t *testing.T) {
 		t.Errorf("escopo desconhecido tinha que cair em %q, obtive %q", ScopeForward, got)
 	}
 }
+
+// ─── Estado da conexão: o grupo que vale só para conexões novas ──────────
+
+// A linha de jump ganha `ct state new` DEPOIS da condição de entrada e ANTES
+// do counter. A posição não é estética: a condição de entrada é o que decide
+// se o grupo é sequer considerado, e o counter tem que contar o que
+// efetivamente saltou para dentro da chain do grupo.
+func TestNewOnlyGroupCarriesCtStateOnTheJump(t *testing.T) {
+	g := StoredGroup{
+		ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true,
+		CondSaddr: "192.168.50.0/24", ConnState: ConnStateNew,
+	}
+	toks, err := groupJumpTokens(g)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	got := strings.Join(toks, " ")
+	want := "ip saddr 192.168.50.0/24 ct state new counter jump grp_aaa"
+	if got != want {
+		t.Errorf("\n  obtive %q\n  queria %q", got, want)
+	}
+}
+
+// A garantia que protege toda máquina que já existe: sem a escolha, a linha é
+// exatamente a de antes. Se este teste quebrar, um upgrade muda o firewall de
+// alguém sem que ninguém tenha pedido.
+func TestDefaultGroupEmitsTheExactLineItAlwaysDid(t *testing.T) {
+	for _, cs := range []string{"", ConnStateAny} {
+		g := StoredGroup{
+			ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true,
+			CondSaddr: "192.168.50.0/24", ConnState: cs,
+		}
+		toks, err := groupJumpTokens(g)
+		if err != nil {
+			t.Fatalf("conn_state=%q: erro inesperado: %v", cs, err)
+		}
+		got := strings.Join(toks, " ")
+		want := "ip saddr 192.168.50.0/24 counter jump grp_aaa"
+		if got != want {
+			t.Errorf("conn_state=%q:\n  obtive %q\n  queria %q", cs, got, want)
+		}
+		if strings.Contains(got, "ct state") {
+			t.Errorf("conn_state=%q: vazou ct state para o padrão: %q", cs, got)
+		}
+	}
+}
+
+// Um grupo sem condição de entrada nenhuma continua sendo um jump
+// incondicional — só que restrito a conexões novas. Sem este caso, uma
+// implementação que pendurasse o `ct state` na última condição escrita (em vez
+// de emiti-lo sempre) passaria no teste de cima e sumiria com a restrição aqui,
+// que é justo o grupo mais abrangente que existe.
+func TestNewOnlyGroupWithoutConditionStillCarriesCtState(t *testing.T) {
+	g := StoredGroup{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa",
+		Enabled: true, ConnState: ConnStateNew}
+	toks, err := groupJumpTokens(g)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	got := strings.Join(toks, " ")
+	want := "ct state new counter jump grp_aaa"
+	if got != want {
+		t.Errorf("\n  obtive %q\n  queria %q", got, want)
+	}
+}
+
+// Com as três condições escritas, `ct state new` continua entre a última
+// delas e o counter — a ordem que o nft reimprime, e a que o classificador do
+// painel vai ler.
+func TestNewOnlyGroupKeepsCtStateAfterEveryCondition(t *testing.T) {
+	g := StoredGroup{ID: "a", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true,
+		CondIif: "enp0s3", CondSaddr: "192.168.50.0/24", CondDaddr: "10.0.0.0/8",
+		ConnState: ConnStateNew}
+	toks, err := groupJumpTokens(g)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	got := strings.Join(toks, " ")
+	want := "iifname enp0s3 ip saddr 192.168.50.0/24 ip daddr 10.0.0.0/8 ct state new counter jump grp_aaa"
+	if got != want {
+		t.Errorf("\n  obtive %q\n  queria %q", got, want)
+	}
+}
+
+// Grupo do sistema (blocked_hosts, blocklist) é lista fechada e renderizado
+// por um mapa próprio: bloqueio de host é justamente onde se quer a marreta —
+// derrubar na hora inclusive o que já estava estabelecido.
+func TestSystemGroupNeverGetsCtState(t *testing.T) {
+	for _, kind := range []string{GroupKindBlockedHosts, GroupKindBlocklist} {
+		g := StoredGroup{ID: "s", Kind: kind, Enabled: true, ConnState: ConnStateNew}
+		for _, toks := range systemGroupForwardRules[g.Kind]() {
+			if strings.Contains(strings.Join(toks, " "), "ct state") {
+				t.Errorf("kind=%s: grupo do sistema não pode receber ct state", kind)
+			}
+		}
+		// E o mesmo pela porta por onde a forward viva é PROCURADA, para que
+		// as duas nunca divirjam sobre a forma da linha do sistema.
+		for _, expr := range systemGroupExpressions(kind) {
+			if strings.Contains(expr, "ct state") {
+				t.Errorf("kind=%s: expressão procurada na forward viva não pode ter ct state: %q", kind, expr)
+			}
+		}
+	}
+}
+
+// Valor desconhecido é recusado, e não normalizado em silêncio — mesmo
+// raciocínio do escopo: um "established" gravado à mão e tratado como "any"
+// aplicaria o grupo a um tráfego diferente do que está escrito na linha.
+func TestValidateGroupRejectsUnknownConnState(t *testing.T) {
+	for _, cs := range []string{"established", "New", "novo", "new,related"} {
+		g := StoredGroup{Name: "g", Fallthrough: FallthroughContinue, ConnState: cs}
+		if err := ValidateGroup(g); err == nil {
+			t.Errorf("esperava recusa para conn_state %q", cs)
+		}
+	}
+}
+
+func TestValidateGroupAcceptsTheThreeValidConnStates(t *testing.T) {
+	for _, cs := range []string{"", ConnStateAny, ConnStateNew} {
+		g := StoredGroup{Name: "g", Fallthrough: FallthroughContinue, ConnState: cs}
+		if err := ValidateGroup(g); err != nil {
+			t.Errorf("conn_state %q tinha que ser aceito: %v", cs, err)
+		}
+	}
+}
+
+// Vazio é o valor de toda linha gravada antes desta coluna existir, e todo
+// grupo que já existe vale para toda conexão.
+func TestGroupConnStateTreatsEmptyAsAny(t *testing.T) {
+	if got := GroupConnState(StoredGroup{}); got != ConnStateAny {
+		t.Errorf("conn_state vazio tinha que valer como %q, obtive %q", ConnStateAny, got)
+	}
+	if got := GroupConnState(StoredGroup{ConnState: ConnStateNew}); got != ConnStateNew {
+		t.Errorf("conn_state new não sobreviveu: %q", got)
+	}
+	// Qualquer coisa fora dos dois conhecidos cai em "any" — ValidateGroup é
+	// quem recusa o valor; aqui o que não pode acontecer é uma linha estranha
+	// virar restrição de estado por acidente, restringindo um grupo que o
+	// admin escreveu para valer sempre.
+	if got := GroupConnState(StoredGroup{ConnState: "established"}); got != ConnStateAny {
+		t.Errorf("conn_state desconhecido tinha que cair em %q, obtive %q", ConnStateAny, got)
+	}
+}
