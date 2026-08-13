@@ -139,6 +139,43 @@ func missingSystemKinds(groups []StoredGroup) []string {
 // aplicado, para o apply ser reportado como não-ok (nunca um "ok"
 // sintético).
 func (s *Service) ReconcileGroups(ctx context.Context, groups []StoredGroup) error {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	return s.reconcileGroups(ctx, groups)
+}
+
+// ReconcileGroupsFrom é ReconcileGroups com a LEITURA DO ESTADO junto: `load`
+// roda dentro do mesmo lock de reconciliação que a reconstrução.
+//
+// É o que fecha o I-3 da revisão final, e a diferença entre as duas é a corrida
+// inteira. `rebuildChain` é `flush chain` + N × `add rule`, o que não é atômico
+// no kernel, e quem chama ReconcileGroups lê o banco antes de chamar. Duas
+// passadas concorrentes — uma reversão automática pelo watchdog e um toggle de
+// NTP, ou uma mutação de outro admin — podiam então intercalar assim: a passada
+// B lê os grupos; a reversão restaura o banco e reescreve as chains; a passada B
+// escreve o que leu ANTES da restauração e devolve ao kernel o `jump` que a
+// reversão tirou. E o pior não é o jump: o watchdog viu o Reconcile dele devolver
+// nil, apagou o pendente, e o firewall fica com a regra perigosa VIVA, sem
+// janela, sem watchdog, sem trava e com o painel dizendo que reverteu.
+//
+// Com a leitura aqui dentro, a passada que perde a corrida lê o banco JÁ
+// restaurado e reescreve o mesmo estado — que é o resultado certo.
+//
+// `load` devolver erro aborta sem tocar em nada, e é obrigação dela (ver o
+// CONTRATO DO CHAMADOR acima): lista vazia continua querendo dizer "o admin não
+// tem grupo nenhum".
+func (s *Service) ReconcileGroupsFrom(ctx context.Context, load func() ([]StoredGroup, error)) error {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	groups, err := load()
+	if err != nil {
+		return err
+	}
+	return s.reconcileGroups(ctx, groups)
+}
+
+// reconcileGroups é o corpo dos dois. Chamada com reconcileMu já travado.
+func (s *Service) reconcileGroups(ctx context.Context, groups []StoredGroup) error {
 	if s.exec.IsDryRun() {
 		return nil
 	}

@@ -555,10 +555,18 @@ func (s *Service) reconcileInputChain(ctx context.Context, groups []StoredGroup,
 // vazia: um SELECT que falhou não é "o admin não tem grupo nenhum" — obedecer
 // a essa lista vazia apagaria da chain input todos os jumps do admin por causa
 // de um erro de leitura. É o mesmo contrato do doc-comment de ReconcileGroups.
+//
+// I-3 da revisão final: a leitura dos grupos e a reescrita da chain acontecem
+// sob o LOCK DE RECONCILIAÇÃO (reconcileMu). Sem ele, um toggle de NTP — que é
+// mutação deliberadamente NÃO travada pela janela de confirmação — podia ler os
+// grupos antes de uma reversão restaurar o banco e escrevê-los depois, devolvendo
+// ao kernel o jump que a reversão acabou de tirar.
 func (s *Service) ReconcileNTPInput(ctx context.Context, allowedNetworks []string, serving bool) error {
 	if s.exec.IsDryRun() {
 		return nil
 	}
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
 
 	groups, err := s.inputChainGroups()
 	if err != nil {

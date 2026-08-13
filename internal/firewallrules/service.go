@@ -388,33 +388,55 @@ type ApplyStatus struct {
 // chain left ReconcileStructuralChains, this is the ONLY thing that
 // reconciles forward — a boot that doesn't reach here leaves the forward
 // chain with no owner at all.
+// I-3 da revisão final — a LEITURA do banco e a reconstrução acontecem sob o
+// mesmo lock (nftables.ReconcileGroupsFrom). Antes, esta função lia os grupos e
+// só então chamava ReconcileGroups, e nada serializava as duas metades: uma
+// reversão automática que restaurasse o banco no meio desse intervalo era
+// desfeita por esta passada, que escrevia no kernel o estado que tinha lido
+// ANTES da restauração. Ver o doc-comment de ReconcileGroupsFrom para a
+// intercalação inteira.
 func (s *Service) Reconcile(ctx context.Context) error {
-	groups, err := s.StoredGroups()
-	if err != nil {
-		// Abortar antes de qualquer comando do nft: ReconcileGroups com lista
-		// vazia apaga TODAS as chains de grupo e reduz a forward aos
-		// bloqueios. Um erro de leitura não pode ser confundido com "o admin
-		// não tem grupo nenhum".
-		s.recordApplyStatus(err)
-		return err
-	}
-
-	// A defesa: depois da migração, a chain forward só pode ser reconstruída
-	// se os dois grupos do sistema estiverem na lista — senão ela sairia sem
-	// os bloqueios administrativos, e isso não pareceria erro. Vem ANTES de
-	// ReconcileGroups de propósito: nenhum comando do nft é emitido, então a
-	// forward viva continua sendo a última que foi aplicada com sucesso, com
-	// os bloqueios dentro. Ver ensureSystemGroupsPresent.
-	if err := s.ensureSystemGroupsPresent(groups); err != nil {
-		s.recordApplyStatus(err)
-		if s.alerter != nil {
-			_ = s.alerter.FirewallSystemGroupsMissing(err.Error())
+	// Os dois erros da leitura viajam para fora do closure porque cada um tem um
+	// tratamento próprio aqui embaixo (apply status; apply status + alerta
+	// crítico + log), e lá dentro só cabe abortar. O closure roda síncrono,
+	// dentro da chamada abaixo — não há concorrência entre escrever e ler estas
+	// duas variáveis.
+	var loadErr, missingErr error
+	applyErr := s.nft.ReconcileGroupsFrom(ctx, func() ([]nftables.StoredGroup, error) {
+		groups, err := s.StoredGroups()
+		if err != nil {
+			// Abortar antes de qualquer comando do nft: ReconcileGroups com lista
+			// vazia apaga TODAS as chains de grupo e reduz a forward aos
+			// bloqueios. Um erro de leitura não pode ser confundido com "o admin
+			// não tem grupo nenhum".
+			loadErr = err
+			return nil, err
 		}
-		slog.Error("reconciliação abortada antes de tocar no nft: os grupos do sistema não estão na lista", "err", err)
-		return err
-	}
 
-	applyErr := s.nft.ReconcileGroups(ctx, groups)
+		// A defesa: depois da migração, a chain forward só pode ser reconstruída
+		// se os dois grupos do sistema estiverem na lista — senão ela sairia sem
+		// os bloqueios administrativos, e isso não pareceria erro. Vem ANTES da
+		// reconstrução de propósito: nenhum comando do nft é emitido, então a
+		// forward viva continua sendo a última que foi aplicada com sucesso, com
+		// os bloqueios dentro. Ver ensureSystemGroupsPresent.
+		if err := s.ensureSystemGroupsPresent(groups); err != nil {
+			missingErr = err
+			return nil, err
+		}
+		return groups, nil
+	})
+	if loadErr != nil {
+		s.recordApplyStatus(loadErr)
+		return loadErr
+	}
+	if missingErr != nil {
+		s.recordApplyStatus(missingErr)
+		if s.alerter != nil {
+			_ = s.alerter.FirewallSystemGroupsMissing(missingErr.Error())
+		}
+		slog.Error("reconciliação abortada antes de tocar no nft: os grupos do sistema não estão na lista", "err", missingErr)
+		return missingErr
+	}
 	s.recordApplyStatus(applyErr)
 
 	// I-8: an enabled rule that doesn't render is recorded as a not-ok
