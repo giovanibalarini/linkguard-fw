@@ -1048,7 +1048,8 @@ Esperado: `gofmt -l` sem saída; `PASS` em todos os testes; build e vet limpos.
 Confirmar que o parser concorda com a máquina de verdade (o mesmo comando que o código roda):
 
 ```bash
-ssh gov@192.168.3.3 "su -c 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; env LC_ALL=C apt-get --just-print dist-upgrade | grep \"^Inst\"'"
+# Na máquina alvo, como root:
+env LC_ALL=C apt-get --just-print dist-upgrade | grep "^Inst"
 ```
 
 Esperado hoje: duas linhas `Inst` referentes ao kernel, ambas com origem
