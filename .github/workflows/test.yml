@@ -1,0 +1,60 @@
+name: Test
+
+# `pull_request` (never `pull_request_target`) checks out the PR's own head
+# commit and runs with a token scoped to *this* repo's default permissions —
+# never the base branch's secrets. That's what makes it safe to run on a
+# fork's untrusted code: `permissions: contents: read` below means even a
+# malicious PR can't use this workflow's token to push, open a release, or
+# touch anything.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+      - name: go test
+        run: go test ./...
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+
+      - name: typecheck + build
+        working-directory: web
+        run: npm run build
