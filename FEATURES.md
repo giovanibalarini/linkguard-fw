@@ -160,18 +160,32 @@ Hoje a auth é single-user (`admin/admin` + JWT). Evoluir para:
 ## Fases
 
 ### Fase 0 — Saneamento do que já existe
-Importar e corrigir o setup atual antes de adicionar features.
-- [ ] Importar `firewall.sh` para o modelo declarativo do LinkGuard.
-- [ ] Eliminar regras/`ip rule` duplicadas (causadas pelo append-only).
-- [ ] Unificar persistência (hoje há `netfilter-persistent` **e** `rc.local` —
-      escolher uma fonte de verdade: o LinkGuard).
-- [ ] Escopar o `MASQUERADE` por interface WAN (hoje é global, sem `-o`).
-- [ ] Remover linha morta `ip rule add 192.168.18.1 from sumicity`.
+> **Atualizado (14/08).** O caminho real não foi "importar e corrigir" o
+> `firewall.sh` — foi substituí-lo por um modelo nativo em nftables
+> (`table inet linkguard`), reconciliado do zero a cada boot. Os problemas
+> que esta fase queria resolver estão resolvidos por essa via; nenhum deles
+> sobrevive porque o script antigo não roda mais.
+- [x] Importar `firewall.sh` para o modelo declarativo do LinkGuard — via
+      reescrita completa, não importação do script.
+- [x] Eliminar regras/`ip rule` duplicadas (causadas pelo append-only) — o
+      modelo novo reconstrói cada chain do zero a cada reconciliação, nunca
+      acrescenta.
+- [x] Unificar persistência (hoje há `netfilter-persistent` **e** `rc.local` —
+      escolher uma fonte de verdade: o LinkGuard) — `netfilter-persistent` e
+      `rc.local` não são mais usados; o banco é a única fonte de verdade.
+- [x] Escopar o `MASQUERADE` por interface WAN (hoje é global, sem `-o`) —
+      `oifname { "wan1", "wan2" } masquerade`, nunca global.
+- [x] Remover linha morta `ip rule add 192.168.18.1 from sumicity` — o script
+      que a continha não existe mais.
 
 ### Fase 1 — Firewall básico em 1 clique
 Para máquinas que querem virar firewall "do zero".
-- [ ] Habilitar `ip_forward` + NAT (MASQUERADE) escopado por WAN.
-- [ ] Política FORWARD sã por padrão.
+- [x] Habilitar `ip_forward` + NAT (MASQUERADE) escopado por WAN.
+- [x] Política FORWARD sã por padrão — decisão diferente da esperada
+      originalmente: a política é sempre `accept` (nunca restritiva), e o
+      bloqueio é só por regra explícita. É deliberado — numa máquina só
+      acessível remotamente, uma política restritiva tranca o operador para
+      fora no instante em que é aplicada. Ver `docs/TRAJETORIA.md`.
 - [x] **Grupos de regras via chains nativas** (nft chains) — ativar/desativar um
       grupo inteiro removendo/inserindo o jump, sem mexer regra a regra. Tela
       própria ("Grupos de regras"), com Direcionamento por WAN / Destinos
@@ -186,32 +200,41 @@ Para máquinas que querem virar firewall "do zero".
 > bloqueado depois da atualização.
 
 ### Fase 2 — Host-cêntrico (a fundação que destrava o resto)
-- [ ] Inventário de hosts da LAN trafegando dados (ip neigh + conntrack).
-- [ ] Consumo de rede por host (conntrack acct → rollup RRD por host).
-- [ ] **Bloquear host em 1 clique** (named set nft; add/remove atômico).
+- [x] Inventário de hosts da LAN trafegando dados (ip neigh + conntrack).
+- [x] Consumo de rede por host (conntrack acct → rollup RRD por host).
+- [x] **Bloquear host em 1 clique** (named set nft; add/remove atômico).
 
 ### Fase 3 — Grupos de host → WAN
 Produtiza as linhas `mangle MARK` que hoje são editadas na mão.
-- [ ] Criar grupos de host e atribuir a uma WAN (fwmark → tabela de rota).
-- [ ] Implementar como `map` nft saddr→mark (uma regra, N hosts).
+- [x] Criar grupos de host e atribuir a uma WAN (fwmark → tabela de rota).
+- [x] Implementar como `map` nft saddr→mark (uma regra, N hosts) —
+      `meta mark set ip saddr map @host_wan`, exatamente uma regra.
 - [ ] **Identificar por MAC/reserva**, não por IP solto (ver Fase 5) — hoje o
-      pin por IP dentro do range DHCP dinâmico é frágil.
+      pin por IP dentro do range DHCP dinâmico é frágil. **Ainda não feito**:
+      o mapa de direcionamento (`host_wan`) é indexado por IP puro; o vínculo
+      com a reserva DHCP por MAC não existe. Verificado em 14/08, é o maior
+      item real ainda em aberto deste documento.
 
 ### Fase 4 — Rebalanceamento agendado (requisito do cliente)
 Mover hosts pesados para o link de maior capacidade — **sem** automação em
 tempo real (que quebraria conexões ativas).
-- [ ] Política configurável pelo admin (limiares, qual WAN é "a maior").
-- [ ] Execução **agendada** (ex.: madrugada ou 2x/dia), janela de poucas conexões.
+- [x] Política configurável pelo admin (agendamentos por dia/horário, com o
+      peso de cada link) — mais simples do que "limiares + qual WAN é a
+      maior": o admin define o peso de cada agendamento diretamente, sem
+      heurística automática de capacidade.
+- [x] Execução **agendada** (ex.: madrugada ou 2x/dia), janela de poucas conexões.
 - [ ] **Preview / dry-run** antes de aplicar; aplicar = repinagem determinística.
+      **Não feito**: o agendamento aplica direto, sem etapa de préviamento.
 - [ ] Modo "sugerir e aprovar com 1 clique" como alternativa ao automático.
+      **Não feito.**
 
 ### Fase 5 — Absorver DHCP e DNS (serviços que já são operados na mão)
 O servidor já roda `isc-dhcp-server` + `bind9`. Trazer pro painel.
-- [ ] **DHCP**: migrar `isc-dhcp` (EOL) → avaliar **Kea** (tem API REST de
-      controle, ideal para painel) vs. dnsmasq. Reservas estáticas por MAC
-      consertam o pin de WAN por host.
-- [ ] **DNS**: log de queries por host (visibilidade) + filtro opcional por
-      blocklist. **DNS não é enforcement** — o bloqueio real continua no firewall.
+- [x] **DHCP**: migrar `isc-dhcp` (EOL) → **Kea**, com reservas estáticas por
+      MAC.
+- [x] **DNS**: log de queries por host (visibilidade) + filtro opcional por
+      blocklist (via `local-zone` do unbound). **DNS não é enforcement** — o
+      bloqueio real continua no firewall.
 
 ---
 
