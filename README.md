@@ -1,6 +1,36 @@
 # LinkGuard FW
 
-A Linux firewall management tool for Debian servers with multiple WAN links. Supports load balancing, failover, iptables management, routing, and real-time monitoring — all through a modern web interface.
+**Turns a bare Debian box into a managed firewall appliance — and then owns it.**
+
+LinkGuard FW manages the whole edge of a small network from one web panel:
+native **nftables** firewalling, multi-WAN load balancing and failover, policy
+routing, DHCP (Kea), recursive DNS (unbound), NTP (chrony), interface naming,
+LAN host inventory and per-host bandwidth. You install LinkGuard on a machine
+with nothing on it; it installs and configures the rest itself.
+
+It is written for the person who currently keeps a firewall alive by hand — a
+pile of `iptables` lines in `rc.local`, an `/etc/network/interfaces` nobody
+dares touch, and a DHCP config that only one person understands.
+
+![Real-time interface traffic](docs/images/traffic.png)
+
+## Status
+
+Honest version: **it runs one production firewall**, a two-WAN edge box for a
+small company, and has since July 2026. It is not a widely deployed product and
+has no user base to speak of. What it does have is an unusually paranoid
+delivery process — see [Safety architecture](#safety-architecture) and
+[the project history](docs/TRAJETORIA.md).
+
+- ~31.5k lines of Go, ~35.2k lines of Go **tests** (there is more test code
+  than production code), plus a React/TypeScript panel.
+- Every release is validated on a throwaway VM, from a bare install, before it
+  touches the production machine.
+- MIT licensed. Panel is bilingual (Portuguese / English).
+
+**Do not** adopt it as a drop-in replacement for a firewall you depend on
+without reading the next section first. It is an appliance: it takes the
+machine over.
 
 ## ⚠️ Read before installing: LinkGuard takes over the machine
 
@@ -53,58 +83,157 @@ Backend without a screen is not a delivery. A screen without real effect is
 worse than nothing: it creates false confidence, which is precisely what this
 tool exists to eliminate. See `FEATURES.md` for the full statement.
 
+## Safety architecture
+
+A firewall panel can lock its own operator out of a remote machine, at night,
+with no physical access. Most of the design decisions below exist because of
+that single sentence.
+
+**The database is the truth; nftables is the rendered result.** LinkGuard owns
+`table inet linkguard` and rebuilds it from the database on every boot. It
+never flushes the whole ruleset and never touches another program's table — so
+Docker, libvirt or your own hand-written tables survive everything LinkGuard
+does, including a snapshot rollback.
+
+**Every mutation is dry-run first.** The exact script that would be applied is
+fed to `nft -c -f` *before* anything is written to the database. A rule the
+kernel would reject never reaches persistent state.
+
+**Confirm-or-revert on anything that can lock you out.** Rules scoped to
+traffic *destined for the firewall itself* (SSH, the panel, DNS) open a
+90-second window: you apply, you test that you still have access, and you
+confirm. If you do not confirm — because you just cut your own SSH — LinkGuard
+reverts by itself. The pending state lives in the database, so a reboot or a
+power cut inside the window reverts too, instead of making an unconfirmed
+lockout permanent.
+
+![Confirm-or-revert window](docs/images/confirm-window.png)
+
+**The `input` chain is always `policy accept`.** Blocking is done with explicit
+rules, never with a restrictive default policy — a `policy drop` would lock the
+operator out at the instant it was applied. A snapshot that tries to restore a
+restrictive input policy is refused.
+
+**"Configured" is never shown as "working".** The panel compares what the
+database says against what the kernel actually has, and labels the difference.
+Where a value cannot be measured it shows `—`, never a synthetic zero: a dead
+link must not look like an idle one.
+
+**Watchers must be able to be wrong out loud.** A false critical alert is worse
+than no alert — it teaches the operator to ignore the screen. Several fixes in
+this project's history are about removing alerts that were technically true and
+practically noise.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Dashboard](docs/images/dashboard.png) | ![Widget catalog](docs/images/widget-catalog.png) |
+| Dashboard on a fresh install — the guided setup disappears on its own once the six steps are done | Each admin builds their own dashboard; the catalog only offers what their RBAC role can see |
+
 ## Features
 
-- **Dashboard** — Live view of system health, WAN status, latency, packet loss and bandwidth
-- **WAN Link Management** — Register and monitor multiple internet links (eth0, eth1, ppp0, etc.)
-- **Automatic Failover** — Detects link failures and restores routing automatically; configurable thresholds and cooldown
-- **Route Management** — View and manage routing tables, `ip rule` entries, and gateway configuration
-- **Firewall Rules** — List and inspect iptables rules across filter, NAT, mangle tables
-- **NAT / Mangle** — View PREROUTING, POSTROUTING, FORWARD, MARK and related rules
-- **Prometheus Metrics** — Exposes `/metrics` for integration with Prometheus and Grafana
-- **Alerts** — Visual alerts in the web UI and log file for link events, high resource usage, and errors
-- **Audit Logging** — Full audit trail of configuration changes
-- **Dry-run Mode** — Preview all commands before applying to the live system
-- **Backup & Rollback** — Automatic iptables backup before any change; one-click rollback
-- **JWT Authentication** — Secure web UI with session tokens; change default password on first login
+### Firewall
+
+- **Native nftables** — LinkGuard owns `table inet linkguard`; it does not
+  shell out to `iptables` for its own rules
+- **Rule groups** — chains presented as ordered groups with an entry condition
+  ("only traffic from this network reaches these rules"), drag-to-reorder, and
+  a per-group on/off that removes it from the firewall without deleting it
+- **Two scopes** — rules for traffic *crossing* the firewall (`forward`) or
+  *destined for it* (`input`); the second is what the confirm-or-revert window
+  protects
+- **Connection-aware blocking** — a group can apply to *new connections only*
+  (`ct state new`), so you stop a host from opening anything new without
+  killing the transfer it already has in flight
+- **Host and destination blocking**, port forwarding, and per-WAN steering
+- **Snapshots and rollback** — scoped to LinkGuard's own table; other programs'
+  tables are never touched
+
+### Network
+
+- **Multi-WAN** — load balancing and automatic failover, with configurable
+  thresholds, cooldown, and active eviction of flows pinned to a degraded link
+- **Policy routing** — per-host WAN steering
+- **Interfaces** — physical, VLAN and bridge management; names pinned to MAC
+  addresses, because PCI-based names are not stable across a disk swap
+- **DHCP (Kea)** and **recursive DNS (unbound)** — fully owned config, applied
+  by graceful reload, with a DNS query log
+- **NTP (chrony)** — client and LAN server, with a hardened `input` chain
+
+### Visibility
+
+- **Traffic** — 1-second sampling per interface into a built-in time series
+  database, at 1s/60s/900s/3600s resolutions; mirrored chart where each pixel
+  keeps the **peak** of its interval, not the average, because bursts are what
+  kill links
+- **LAN host inventory** and per-host bandwidth (top talkers)
+- **Customizable dashboard** — 12-column grid, drag and resize, layout saved
+  per user, catalog filtered by RBAC permission
+- **Watchers** — system health, disk SMART, slow boot, journal corruption, NTP
+  drift, and boot-config drift
+- **Prometheus metrics** at `/metrics`, plus alerts and a full audit trail
+
+### Operation
+
+- **Multi-admin RBAC** — nominal users with per-resource permissions
+- **Dry-run mode** — every command previewable before it touches the system
+- **Encrypted scheduled backups**
+- **Self-update** from GitHub releases
 
 ## Architecture
 
+The Go binary embeds the built frontend, so a deployment is a single file plus
+a SQLite database.
+
 ```
 linkguard-fw/
-├── cmd/linkguard-fw/        # Main entry point
+├── cmd/linkguard-fw/      # Entry point: boot sequence, reconciliation order
 ├── internal/
-│   ├── api/                 # HTTP server & REST handlers
-│   │   └── handlers/        # Per-resource handlers
-│   ├── auth/                # JWT authentication & middleware
-│   ├── alerts/              # Alert generation and retrieval
-│   ├── config/              # Configuration loading and defaults
-│   ├── failover/            # Failover state machine
-│   ├── firewall/            # Executor interface (real + dry-run)
-│   ├── iptables/            # iptables-L parser and service
-│   ├── links/               # WAN link CRUD and validation
-│   ├── metrics/             # Prometheus metrics registry
-│   ├── monitoring/          # Background metrics collector
-│   ├── routes/              # ip route / ip rule service
-│   ├── storage/             # SQLite persistence (models + repository)
-│   └── system/              # CPU, memory, disk, network metrics
-├── web/                     # React + Vite frontend
-│   └── src/
-│       ├── api/             # Axios client
-│       ├── components/      # Shared UI components
-│       ├── context/         # Auth context
-│       └── pages/           # Dashboard, Links, Routes, Firewall, etc.
-├── deploy/                  # Deployment files
-│   ├── linkguard-fw.service # systemd unit file
-│   └── install.sh           # Installation script
-├── embed.go                 # Go embed directive for web/dist
-└── Makefile                 # Build, test and install targets
+│   │                      ── firewall ─────────────────────────────────
+│   ├── nftables/           # Owns `table inet linkguard`: render, reconcile,
+│   │                       #   dry-run check, persist, live-state comparison
+│   ├── firewallrules/      # Rules and groups; the confirm-or-revert window
+│   ├── iptables/           # Legacy parser, read-only (pre-nftables era)
+│   │                      ── network ──────────────────────────────────
+│   ├── links/              # WAN link CRUD and health
+│   ├── balancer/           # Multi-WAN balancing, degraded-link eviction
+│   ├── failover/           # Failover state machine
+│   ├── routes/             # ip route / ip rule
+│   ├── netif/              # Interfaces: physical, VLAN, bridge, naming
+│   ├── netsvc/ keaunbound/ # DHCP + DNS behind a provider abstraction
+│   ├── timesync/           # chrony: client and LAN server
+│   ├── hosts/ hosttraffic/ # LAN inventory and per-host bandwidth
+│   ├── dnslog/             # DNS query log
+│   │                      ── platform ─────────────────────────────────
+│   ├── bootstrapdeps/      # Installs the base packages on first boot
+│   ├── sysprep/            # System paths and packaging invariants
+│   ├── storage/            # SQLite: models, repository, migrations
+│   ├── tsdb/               # Time series: 1s sampling, rollups, pruning
+│   ├── monitoring/         # Watchers and health checks
+│   ├── alerts/ notify/     # Alerts and delivery
+│   ├── auth/               # JWT, RBAC, permissions
+│   ├── secrets/ backupcrypt/ # Secret vault, encrypted backups
+│   ├── firewall/           # Executor interface (real + dry-run)
+│   ├── api/handlers/       # REST handlers, one per resource
+│   └── ai/                 # Optional BYOK advisory layer
+├── web/src/
+│   ├── pages/              # Dashboard, Traffic, Firewall, Links, DHCP, ...
+│   ├── components/widgets/ # Dashboard widgets
+│   └── lib/                # Grid geometry, time series maths (no deps)
+├── deploy/                 # systemd unit, postinst, install.sh
+└── docs/                   # Specs, plans and project history
 ```
+
+**No frontend dependencies beyond React and Vite.** The dashboard grid
+(collision resolution, upward compaction) and the traffic charts are written by
+hand. On a security appliance, a layout library is supply-chain surface bought
+for convenience.
 
 ## Requirements
 
 - **OS**: Debian 13 (Trixie) or compatible — a bare install is enough, see below
-- **Go**: 1.21+ (to build from source)
+- **Go**: 1.25+ (to build from source — see `go.mod`)
 - **Node.js**: 18+ (for frontend build)
 - **Permissions**: Root (it manages nftables, routing and system services)
 
@@ -364,7 +493,10 @@ it will show as a permanently-down target for a service that no longer runs.
 - All firewall commands are validated before execution; inputs are never concatenated into shell strings
 - Every configuration change is logged in the audit log
 - Dry-run mode previews commands without applying them
-- Automatic iptables backup before any `apply` operation with one-click rollback
+- Automatic snapshot of the ruleset before any `apply`, with one-click rollback.
+  The restore is **scoped to `table inet linkguard`** — other programs' tables
+  (Docker, libvirt, your own) are never flushed, and a snapshot carrying a
+  restrictive `input` policy is refused rather than applied
 
 ### Firewall evaluation order changed: blocks now win
 
