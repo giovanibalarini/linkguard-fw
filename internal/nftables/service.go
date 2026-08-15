@@ -1231,3 +1231,31 @@ func parseElements(out string) []string {
 	}
 	return res
 }
+
+// RenderRule devolve a linha nft exata que esta regra vira no kernel —
+// incluindo o `counter`, ao contrário de expressionTokens, que o remove porque
+// existe para COMPARAR com uma regra viva (a saída do nft traz "counter packets
+// N bytes M", que é estado de instância, não parte do que a regra significa).
+//
+// Existe para que a pré-visualização da tela seja a linha, e não uma paráfrase
+// dela. Antes, o frontend remontava esses tokens em TypeScript, à mão, e nada
+// verificava que as duas versões continuavam iguais — num painel onde uma regra
+// errada corta o SSH do operador, a tela podia afirmar uma coisa e o kernel
+// receber outra, sem teste, sem log e sem apply falhando.
+func RenderRule(f RuleFields) (string, error) {
+	tokens, err := buildRuleTokens(f)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(tokens, " "), nil
+}
+
+// RenderGroupJump devolve a linha de jump que o grupo põe na chain hospedeira:
+// a condição de entrada, o estado de conexão quando houver, e o salto.
+func RenderGroupJump(g StoredGroup) (string, error) {
+	tokens, err := groupJumpTokens(g)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(tokens, " "), nil
+}

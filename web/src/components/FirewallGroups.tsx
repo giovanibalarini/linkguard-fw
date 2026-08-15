@@ -6,6 +6,7 @@ import {
   ArrowRightLeft, Server, Timer, HelpCircle, RotateCcw, Zap, DoorOpen,
 } from 'lucide-react';
 import client from '../api/client';
+import { useNftPreview } from '../lib/useNftPreview';
 import Modal from './ui/Modal';
 import IconButton from './ui/IconButton';
 import { useAuth } from '../context/AuthContext';
@@ -232,44 +233,32 @@ function describe(r: RuleLike): string {
   return parts.length ? parts.join(' · ') : 'qualquer tráfego';
 }
 
-// previewNft renders exactly the tokens the backend will build for this
-// rule, so the form shows the line that will land in the chain — same
-// vocabulary as the "quando a regra casa" column.
-function previewNft(m: typeof emptyRuleModal): string {
-  const t: string[] = [];
-  if (m.iif) t.push('iifname', m.iif);
-  if (m.oif) t.push('oifname', m.oif);
-  if (m.saddr) t.push('ip saddr', m.saddr);
-  if (m.daddr) t.push('ip daddr', m.daddr);
-  if (m.proto === 'tcp' || m.proto === 'udp') {
-    if (m.dport) t.push(m.proto, 'dport', m.dport);
-    else t.push('ip protocol', m.proto);
-  } else if (m.proto === 'icmp') t.push('ip protocol', 'icmp');
-  t.push('counter', m.action);
-  return t.join(' ');
+// A pré-visualização da linha nft NÃO é montada aqui.
+//
+// Ela vem de POST /api/nftables/{rules,groups}/preview, renderizada pelo mesmo
+// código que monta a linha que vai para o kernel. Enquanto existia uma cópia em
+// TypeScript, os dois lados carregavam um comentário dizendo que a ordem dos
+// campos não era estética — e nada verificava que continuavam iguais. Ver
+// useNftPreview e internal/nftables.RenderRule.
+
+// groupPreviewBody manda ao backend só o que decide a linha de jump.
+function groupPreviewBody(g: {
+  chain_name?: string; cond_iif: string; cond_saddr: string; cond_daddr: string;
+  kind?: string; scope?: GroupScope; conn_state?: GroupConnState; fallthrough?: string;
+}) {
+  return {
+    chain_name: g.chain_name ?? '', cond_iif: g.cond_iif,
+    cond_saddr: g.cond_saddr, cond_daddr: g.cond_daddr,
+    kind: g.kind ?? '', scope: g.scope ?? '', conn_state: g.conn_state ?? '',
+    fallthrough: g.fallthrough ?? '',
+  };
 }
 
-// jumpLine is the line the group puts in the forward chain — the entry
-// condition followed by `counter jump <chain>`. Field order matches the
-// backend's groupJumpTokens so the preview is the real line, not a
-// paraphrase of it.
-//
-// `ct state new` entra DEPOIS da condição de entrada e ANTES do counter, que é
-// exatamente onde groupJumpTokens o põe: a condição decide se o grupo é sequer
-// considerado, e o counter tem que contar o que efetivamente saltou. A ordem
-// aqui não é estética — é a mesma linha, ou a pré-visualização vira paráfrase.
-function jumpLine(g: {
-  cond_iif: string; cond_saddr: string; cond_daddr: string; chain_name: string;
-  conn_state?: GroupConnState; kind?: string;
-}): string {
-  const t: string[] = [];
-  if (g.cond_iif) t.push('iifname', g.cond_iif);
-  if (g.cond_saddr) t.push('ip saddr', g.cond_saddr);
-  if (g.cond_daddr) t.push('ip daddr', g.cond_daddr);
-  const expr = CONN_STATES[groupConnState(g)].expr;
-  if (expr) t.push(expr);
-  t.push('counter', 'jump', g.chain_name || 'grp_…');
-  return t.join(' ');
+function NftPreview({ endpoint, body, className }: { endpoint: string; body: unknown; className?: string }) {
+  const { rendered, erro } = useNftPreview(endpoint, body);
+  if (erro) return <p className={`font-mono text-[11px] text-amber-400/90 break-all ${className ?? ''}`}>{erro}</p>;
+  if (!rendered) return <p className={`font-mono text-[11px] text-gray-700 break-all ${className ?? ''}`}>renderizando…</p>;
+  return <p className={`font-mono text-[11px] text-gray-500 break-all ${className ?? ''}`}>{rendered}</p>;
 }
 
 function describeCondition(g: { cond_iif: string; cond_saddr: string; cond_daddr: string; scope?: GroupScope; kind?: string }): string {
@@ -1520,7 +1509,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               </div>
               {/* A linha de verdade, com o `ct state new` no meio quando ele
                   existe: a tela não esconde o que vai para o firewall. */}
-              <p className="mt-1.5 text-[11px] font-mono text-gray-600 break-all">{jumpLine(selected)}</p>
+              <NftPreview endpoint="/api/nftables/groups/preview" body={groupPreviewBody(selected)} className="mt-1.5 text-gray-600" />
               {groupConnState(selected) === 'new' && (
                 <p className="mt-1.5 text-[11px] text-sky-300/90">
                   Só decide sobre conexões novas: {CONN_STATES.new.hint}.
@@ -1875,7 +1864,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
             <p className="text-xs text-gray-400 mb-1">
               Linha que este grupo põe na chain <span className="font-mono">{SCOPES[groupModal.scope].chain}</span>:
             </p>
-            <p className="font-mono text-[11px] text-gray-500 break-all">{jumpLine(groupModal)}</p>
+            <NftPreview endpoint="/api/nftables/groups/preview" body={groupPreviewBody(groupModal)} />
           </div>
         </div>
         <div className="px-6 py-4 border-t border-gray-800 flex gap-3">
@@ -1973,7 +1962,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               <span className={`font-mono ${ACTIONS[ruleModal.action].color}`}>{ACTIONS[ruleModal.action].label}</span>{' '}
               {describe(ruleModal)}
             </p>
-            <p className="font-mono text-[11px] text-gray-500 break-all">{previewNft(ruleModal)}</p>
+            <NftPreview endpoint="/api/nftables/rules/preview" body={ruleModal} />
           </div>
         </div>
         <div className="px-6 py-4 border-t border-gray-800 flex gap-3">
