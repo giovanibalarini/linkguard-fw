@@ -181,7 +181,7 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		Scope:       b.Scope,
 		ConnState:   b.ConnState,
 	}
-	if err := nftables.ValidateGroup(toStoredGroup(*row)); err != nil {
+	if err := nftables.ValidateGroup(firewallrules.ToStoredGroup(*row)); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -197,7 +197,7 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row.Position = nextGroupPosition(current)
-	candidate := toStoredGroup(*row)
+	candidate := firewallrules.ToStoredGroup(*row)
 	// O candidato é o conjunto COMPLETO que existiria depois desta criação —
 	// é assim que o dry run valida também a forward, reconstruída a partir de
 	// todos os grupos de uma vez.
@@ -279,7 +279,7 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if b.ConnState != "" {
 		row.ConnState = b.ConnState
 	}
-	if err := nftables.ValidateGroup(toStoredGroup(row)); err != nil {
+	if err := nftables.ValidateGroup(firewallrules.ToStoredGroup(row)); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -555,17 +555,4 @@ func nextGroupPosition(current []nftables.StoredGroup) int {
 		}
 	}
 	return next
-}
-
-// toStoredGroup converte uma linha do banco na visão de internal/nftables
-// para validá-la ou renderizá-la. Sem as regras de dentro: quem valida um
-// grupo aqui está mexendo no grupo, não no conteúdo dele (a montagem
-// completa, com as regras, é firewallrules.StoredGroups).
-func toStoredGroup(g storage.FirewallGroup) nftables.StoredGroup {
-	return nftables.StoredGroup{
-		ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
-		Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
-		CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
-		ConnState: g.ConnState,
-	}
 }

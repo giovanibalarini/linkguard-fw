@@ -340,20 +340,22 @@ func (s *Service) StoredGroupsWithRules(rules []storage.FirewallRule) ([]nftable
 
 	out := make([]nftables.StoredGroup, 0, len(groups))
 	for _, g := range groups {
-		out = append(out, nftables.StoredGroup{
-			ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
-			Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
-			CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
-			// ConnState decide se a linha do jump leva `ct state new`. Esta
-			// conversão é o caminho pelo qual a escolha do operador chega ao
-			// renderizador (e ao pré-voo `nft -c` que o precede): deixá-la de
-			// fora seria gravar a restrição no banco, mostrá-la na tela e nunca
-			// aplicá-la — o firewall fazendo o contrário do que o painel afirma.
-			ConnState: g.ConnState,
-			Rules:     byGroup[g.ID],
-		})
+		stored := ToStoredGroup(g)
+		stored.Rules = byGroup[g.ID]
+		out = append(out, stored)
 	}
 	return out, nil
+}
+
+// ToStoredGroup converte o grupo persistido na visão de renderização do
+// nftables. As regras são associadas separadamente por StoredGroupsWithRules.
+func ToStoredGroup(g storage.FirewallGroup) nftables.StoredGroup {
+	return nftables.StoredGroup{
+		ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
+		Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
+		CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
+		ConnState: g.ConnState,
+	}
 }
 
 // ApplyStatusKey persists the outcome of the most recent user_rules
