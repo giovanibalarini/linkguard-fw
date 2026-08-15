@@ -85,5 +85,10 @@ que estão detalhadas no README:
 1. **O LinkGuard assume a máquina.** Ele instala e configura serviços do
    sistema e impõe a própria configuração a cada boot. A premissa é que
    instalar o LinkGuard é entregar a máquina a ele.
-2. **A instalação semeia um usuário administrador padrão.** Troque a senha
-   antes de conectar a máquina a uma rede não confiável.
+2. **A instalação cria um usuário administrador com senha aleatória.** Ela
+   aparece no log da primeira execução e fica em
+   `/etc/linkguard-fw/initial-admin-password` (modo 0600). Entre no painel,
+   troque a senha em Configurações → Segurança e apague o arquivo.
+
+   Instalações anteriores à v1.0.83 nasciam com `admin`/`admin`. Se a sua é uma
+   delas e a senha nunca foi trocada, troque agora.

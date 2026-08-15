@@ -539,11 +539,21 @@ func (db *DB) EnsureDefaultRoles(seeds []RoleSeed, adminRoleID string) error {
 
 	// Ensure the seeded admin user can administer: if default-admin has no
 	// roles yet, grant it the admin role.
+	//
+	// A existência do usuário é conferida antes, e não presumida: desde que a
+	// conta inicial passou a ser criada com senha aleatória (SeedInitialAdmin),
+	// ela não nasce mais junto com o schema, e um INSERT cego aqui viola a
+	// foreign key e derruba o boot. Numa appliance de firewall, ordem de seed
+	// não pode ser o que decide se a máquina sobe.
+	var userExists int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM users WHERE id = 'default-admin'`).Scan(&userExists); err != nil {
+		return err
+	}
 	var hasRoles int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM user_roles WHERE user_id = 'default-admin'`).Scan(&hasRoles); err != nil {
 		return err
 	}
-	if hasRoles == 0 && adminRoleID != "" {
+	if userExists > 0 && hasRoles == 0 && adminRoleID != "" {
 		if _, err := tx.Exec(`
 			INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES ('default-admin', ?)`,
 			adminRoleID); err != nil {

@@ -35,13 +35,44 @@ func TestEnsureDefaultRolesIsIdempotent(t *testing.T) {
 		t.Fatalf("expected 3 roles, got %d", len(roles))
 	}
 
-	// default-admin must have been granted the admin role.
+	// Sem a conta default-admin no banco, nada é atribuído — e, o que importa
+	// mais, o seed NÃO derruba o boot tentando. A conta deixou de nascer com o
+	// schema quando a senha inicial passou a ser aleatória, então este caminho
+	// é o de um banco em que a ordem de seed mudou.
+	ids, err := db.GetUserRoleIDs("default-admin")
+	if err != nil {
+		t.Fatalf("GetUserRoleIDs: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("papel atribuído a um usuário inexistente: %v", ids)
+	}
+}
+
+// O caminho normal: a conta existe (SeedInitialAdmin rodou antes, como no main),
+// e o seed de papéis lhe dá o papel de administrador.
+func TestEnsureDefaultRolesGrantsAdminToTheSeededAccount(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.SeedInitialAdmin("$2a$10$hashqualquerhashqualquerhashqualquerhashqualquerxx"); err != nil {
+		t.Fatalf("SeedInitialAdmin: %v", err)
+	}
+	seedRoles(t, db)
+
 	ids, err := db.GetUserRoleIDs("default-admin")
 	if err != nil {
 		t.Fatalf("GetUserRoleIDs: %v", err)
 	}
 	if len(ids) != 1 || ids[0] != "role-admin" {
 		t.Fatalf("expected default-admin to hold role-admin, got %v", ids)
+	}
+
+	// Idempotente: rodar de novo não duplica nem tira.
+	seedRoles(t, db)
+	ids, err = db.GetUserRoleIDs("default-admin")
+	if err != nil {
+		t.Fatalf("GetUserRoleIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "role-admin" {
+		t.Fatalf("segunda passada mudou os papéis: %v", ids)
 	}
 }
 

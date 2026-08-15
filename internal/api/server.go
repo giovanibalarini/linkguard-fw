@@ -178,6 +178,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.Post("/api/auth/2fa/setup", authH.TwoFASetup)
 		r.Post("/api/auth/2fa/activate", authH.TwoFAActivate)
 		r.Post("/api/auth/2fa/disable", authH.TwoFADisable)
+		// Trocar a PRÓPRIA senha só exige estar autenticado. Antes o único
+		// caminho era PUT /api/users/{id}, gateado por users.manage — então uma
+		// conta sem administração de usuários não tinha como sair da senha que
+		// alguém definiu para ela, incluindo a semeada na instalação.
+		r.Post("/api/auth/change-password", authH.ChangePassword)
 
 		// Layout do painel (Fase B): os widgets que ESTE admin escolheu e onde
 		// ele os pôs. É preferência pessoal, então o dono é sempre o usuário

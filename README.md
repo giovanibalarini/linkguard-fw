@@ -341,7 +341,8 @@ make build
 
 # 3. Open the web UI
 # http://127.0.0.1:9997
-# Login: admin / admin   <-- change immediately!
+# User: admin. The password is generated on first run — read it from the log,
+# or from /etc/linkguard-fw/initial-admin-password (mode 0600).
 ```
 
 ### Install as systemd service

@@ -1,9 +1,12 @@
 package auth
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -132,4 +135,83 @@ func TestDisableRequiresAValidCodeAndThenAllowsReenrollment(t *testing.T) {
 
 	// Trocar de aparelho é: desativar (com código) e cadastrar de novo.
 	enroll(t, svc, userID)
+}
+
+// ─── Troca da própria senha ──────────────────────────────────────────────────
+//
+// Este caminho não existia. A única forma de trocar senha era PUT /api/users/{id},
+// gateado por users.manage — então quem não administra usuários não tinha como
+// sair da senha que alguém definiu para ele, incluindo a da instalação.
+
+func seedUser(t *testing.T, svc *Service, username, password string) *storage.User {
+	t.Helper()
+	hash, err := HashPassword(password)
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	u := &storage.User{Username: username}
+	if err := svc.db.CreateUser(u, hash, nil); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return u
+}
+
+func TestChangeOwnPasswordRequiresTheCurrentOne(t *testing.T) {
+	svc := newTwoFATestService(t)
+	u := seedUser(t, svc, "operador", "SenhaAtual123")
+
+	err := svc.ChangeOwnPassword(u.ID, "chuteErrado999", "SenhaNova456")
+	if !errors.Is(err, ErrWrongCurrentPassword) {
+		t.Fatalf("esperava ErrWrongCurrentPassword, veio: %v", err)
+	}
+
+	// E a senha não pode ter mudado: senão quem pegasse uma sessão aberta
+	// assumia a conta sem nunca ter sabido a senha.
+	after, err := svc.db.GetUserByID(u.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(after.Password), []byte("SenhaNova456")) == nil {
+		t.Fatal("a senha foi trocada mesmo com a senha atual errada")
+	}
+}
+
+func TestChangeOwnPasswordSucceedsAndInvalidatesOldTokens(t *testing.T) {
+	svc := newTwoFATestService(t)
+	u := seedUser(t, svc, "operador", "SenhaAtual123")
+
+	before, err := svc.db.GetUserByID(u.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+
+	if err := svc.ChangeOwnPassword(u.ID, "SenhaAtual123", "SenhaNova456"); err != nil {
+		t.Fatalf("ChangeOwnPassword: %v", err)
+	}
+
+	after, err := svc.db.GetUserByID(u.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(after.Password), []byte("SenhaNova456")) != nil {
+		t.Fatal("a senha nova não vale")
+	}
+	if bcrypt.CompareHashAndPassword([]byte(after.Password), []byte("SenhaAtual123")) == nil {
+		t.Fatal("a senha antiga continua valendo")
+	}
+	if after.PasswordVersion <= before.PasswordVersion {
+		t.Fatal("password_version não subiu — os tokens emitidos antes continuariam válidos")
+	}
+}
+
+func TestChangeOwnPasswordRejectsShortAndUnchangedPasswords(t *testing.T) {
+	svc := newTwoFATestService(t)
+	u := seedUser(t, svc, "operador", "SenhaAtual123")
+
+	if err := svc.ChangeOwnPassword(u.ID, "SenhaAtual123", "curta"); err == nil {
+		t.Error("aceitou senha abaixo do mínimo")
+	}
+	if err := svc.ChangeOwnPassword(u.ID, "SenhaAtual123", "SenhaAtual123"); err == nil {
+		t.Error("aceitou trocar a senha por ela mesma")
+	}
 }

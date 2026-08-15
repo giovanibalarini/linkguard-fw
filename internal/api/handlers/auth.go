@@ -138,6 +138,41 @@ func (h *AuthHandler) twoFAMutate(w http.ResponseWriter, r *http.Request, activa
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": activate})
 }
 
+// ChangePassword troca a senha do próprio usuário autenticado.
+//
+// A rota está fora de qualquer gate de permissão de propósito — só exige estar
+// autenticado. Trocar a própria senha não é administrar usuários, e amarrá-la a
+// users.manage foi justamente o que deixava a maioria das contas sem nenhum
+// caminho para sair da senha que o administrador definiu.
+func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	claims := auth.ClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	err := h.svc.ChangeOwnPassword(claims.UserID, body.CurrentPassword, body.NewPassword)
+	if errors.Is(err, auth.ErrWrongCurrentPassword) {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auditAction(h.db, r, "password.change", "user:"+claims.Username, "auto")
+	// O token atual acabou de ser invalidado pelo bump de password_version — a
+	// tela precisa mandar o usuário para o login de novo.
+	writeJSON(w, http.StatusOK, map[string]bool{"changed": true, "reauth_required": true})
+}
+
 // Me returns the authenticated user together with their effective permissions,
 // so the frontend can show/hide features. Requires only authentication.
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {

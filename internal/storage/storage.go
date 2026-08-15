@@ -77,7 +77,6 @@ func (db *DB) migrate() error {
 		createAIReportsTable,
 		createFirewallGroupsTable,
 		createFirewallRulesTable,
-		insertDefaultAdmin,
 	}
 
 	for _, m := range migrations {
@@ -633,15 +632,30 @@ CREATE TABLE IF NOT EXISTS dns_blocklist (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 
-// Default admin password is "admin" (bcrypt hash). User must change it.
-const insertDefaultAdmin = `
-INSERT OR IGNORE INTO users (id, username, password, role)
-VALUES (
-    'default-admin',
-    'admin',
-    '$2a$12$qtlsjeM5KxHZEI4kAqnCje6Jyb24mW7SZ/uaPaFPzMJXFQJyGGIJq',
-    'admin'
-);`
+// SeedInitialAdmin cria a conta administrativa inicial se — e somente se — o
+// banco ainda não tem usuário nenhum. Devolve created=false quando já existe
+// alguém, e nesse caso não toca em nada.
+//
+// A senha vem de fora, gerada por quem chama, e não é mais constante. Até a
+// v1.0.82 esta era uma linha de INSERT com o hash bcrypt fixo de "admin": toda
+// instalação nascia com admin/admin, sem troca obrigatória, num painel que
+// escuta a LAN inteira. Quem chama é responsável por mostrar a senha gerada ao
+// operador — ela não é recuperável depois, só redefinível.
+func (db *DB) SeedInitialAdmin(hashedPassword string) (created bool, err error) {
+	var n int
+	if err := db.conn.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
+		return false, fmt.Errorf("contar usuários: %w", err)
+	}
+	if n > 0 {
+		return false, nil
+	}
+	if _, err := db.conn.Exec(
+		`INSERT INTO users (id, username, password, role) VALUES ('default-admin', 'admin', ?, 'admin')`,
+		hashedPassword); err != nil {
+		return false, fmt.Errorf("criar o administrador inicial: %w", err)
+	}
+	return true, nil
+}
 
 const createLinksTable = `
 CREATE TABLE IF NOT EXISTS links (

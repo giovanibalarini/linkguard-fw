@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -208,6 +210,15 @@ func run() int {
 		return 1
 	}
 	defer db.Close()
+
+	// O administrador inicial vem ANTES dos papéis: é o EnsureDefaultRoles que
+	// amarra o papel de admin à conta, e a conta precisa existir para a
+	// foreign key aceitar. (O EnsureDefaultRoles também confere a existência,
+	// então a ordem é uma garantia a mais, não a única.)
+	if err := seedInitialAdmin(db); err != nil {
+		slog.Error("failed to seed initial admin", "err", err)
+		return 1
+	}
 
 	if err := seedDefaultRoles(db); err != nil {
 		slog.Error("failed to seed default roles", "err", err)
@@ -780,4 +791,69 @@ func seedDefaultRoles(db *storage.DB) error {
 		})
 	}
 	return db.EnsureDefaultRoles(seeds, adminRoleID)
+}
+
+// initialAdminPasswordFile é onde a senha gerada na primeira instalação fica
+// legível para quem instalou — e só para o root. O journal também a registra,
+// mas ele rotaciona; o arquivo é o que ainda está lá no dia seguinte.
+const initialAdminPasswordFile = "/etc/linkguard-fw/initial-admin-password"
+
+// seedInitialAdmin cria o administrador da primeira instalação com uma senha
+// ALEATÓRIA, e a entrega ao operador pelo log e por um arquivo 0600.
+//
+// Até a v1.0.82 toda instalação nascia com admin/admin — hash constante numa
+// linha de INSERT — sem troca obrigatória, num painel que escuta a LAN inteira.
+// Bastava alguém na rede interna conhecer o produto.
+//
+// Não faz nada quando já existe usuário, então instalação que já roda não é
+// afetada: para essas, o caminho é POST /api/auth/change-password, que também
+// passou a existir agora.
+func seedInitialAdmin(db *storage.DB) error {
+	pw, err := generateInitialPassword()
+	if err != nil {
+		return fmt.Errorf("gerar a senha inicial: %w", err)
+	}
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		return fmt.Errorf("cifrar a senha inicial: %w", err)
+	}
+	created, err := db.SeedInitialAdmin(hash)
+	if err != nil {
+		return err
+	}
+	if !created {
+		return nil
+	}
+
+	// 0600: a senha em claro só interessa a quem tem root, que já poderia
+	// redefini-la de qualquer jeito.
+	if err := os.WriteFile(initialAdminPasswordFile, []byte(pw+"\n"), 0600); err != nil {
+		// Não é fatal — a senha ainda vai para o log, e sem ela a instalação
+		// fica inacessível, o que seria pior do que um arquivo faltando.
+		slog.Warn("não consegui gravar a senha inicial em arquivo",
+			"path", initialAdminPasswordFile, "err", err)
+	}
+	slog.Warn("PRIMEIRA EXECUÇÃO: administrador criado",
+		"usuario", "admin",
+		"senha", pw,
+		"arquivo", initialAdminPasswordFile,
+		"acao", "entre no painel, troque a senha e apague o arquivo")
+	return nil
+}
+
+// generateInitialPassword devolve 24 caracteres de um alfabeto sem os pares que
+// se confundem à mão (0/O, 1/l/I) — a senha é lida de um terminal e digitada de
+// novo pelo menos uma vez.
+func generateInitialPassword() (string, error) {
+	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	const length = 24
+	out := make([]byte, length)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			return "", err
+		}
+		out[i] = alphabet[n.Int64()]
+	}
+	return string(out), nil
 }
