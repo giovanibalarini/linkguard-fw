@@ -322,9 +322,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermRoutesWrite)).Post("/api/stresstest/stop", stressH.Stop)
 
 		// Alerts
-		alertsH := handlers.NewAlertsHandler(s.alertSvc)
+		alertsH := handlers.NewAlertsHandler(s.alertSvc, s.db)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/alerts", alertsH.List)
-		r.With(require(auth.PermMonitoringRead)).Put("/api/alerts/{id}/resolve", alertsH.Resolve)
+		r.With(require(auth.PermMonitoringWrite)).Put("/api/alerts/{id}/resolve", alertsH.Resolve)
 
 		// Monitoring (Vigia health snapshot + config)
 		monH := handlers.NewMonitoringHandler(s.mon, s.db)

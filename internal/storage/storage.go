@@ -113,8 +113,76 @@ func (db *DB) migrate() error {
 	if err := db.migrateDashboardLayout(); err != nil {
 		return fmt.Errorf("migrate create dashboard_layout: %w", err)
 	}
+	if err := db.migrateGrantMonitoringWrite(); err != nil {
+		return fmt.Errorf("migrate grant monitoring.write: %w", err)
+	}
 
 	return nil
+}
+
+// migrateGrantMonitoringWrite dá monitoring.write aos papéis operacionais que já
+// existem, e só a eles.
+//
+// Resolver um alerta era gateado por monitoring.read — uma permissão de LEITURA
+// protegendo uma escrita. Na prática o papel Visualizador conseguia limpar do
+// painel os alertas de WAN caída, disco com setor realocado e divergência do
+// firewall. A permissão nova separa as duas coisas, mas papéis embutidos são
+// semeados uma vez só e não são re-semeados, então sem esta migração um
+// Operador legítimo perderia, no upgrade, algo que fazia ontem.
+//
+// O critério é preservar exatamente quem já podia e devia: papel que tem
+// monitoring.read E pelo menos uma permissão de escrita/ação. Quem só tem
+// leitura fica de fora — que é o ponto da correção, não um efeito colateral.
+// Roda uma vez só, e a sonda é um marcador próprio em settings — não a presença
+// da permissão nos papéis. A diferença tem consequência: com a sonda pela
+// presença, um admin que revogasse monitoring.write do único papel que a tinha
+// veria a migração devolvê-la no boot seguinte. Migração que desfaz decisão do
+// operador é pior do que migração que falta. (O runner com tabela de versão da
+// issue #19 generaliza isto; até lá, o marcador é explícito aqui.)
+func (db *DB) migrateGrantMonitoringWrite() error {
+	const marker = "migration_monitoring_write_granted"
+	var already int
+	err := db.conn.QueryRow(`SELECT COUNT(*) FROM settings WHERE key = ?`, marker).Scan(&already)
+	if err != nil {
+		return fmt.Errorf("checar o marcador da migração monitoring.write: %w", err)
+	}
+	if already > 0 {
+		return nil
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+
+	// A lista de permissões "de escrita" é literal e fechada de propósito: um
+	// LIKE '%write%' pegaria qualquer chave futura por acidente, e este é o
+	// tipo de decisão que não deve depender do nome que alguém escolher depois.
+	if _, err := tx.Exec(`
+		INSERT INTO role_permissions (role_id, permission)
+		SELECT DISTINCT r.role_id, 'monitoring.write'
+		FROM role_permissions r
+		WHERE r.permission = 'monitoring.read'
+		  AND EXISTS (
+			SELECT 1 FROM role_permissions w
+			WHERE w.role_id = r.role_id
+			  AND w.permission IN (
+				'links.write','routes.write','firewall.write','hosts.block',
+				'hosts.assign','system.write','dhcp.write','dns.write',
+				'interfaces.write','ntp.write','users.manage','roles.manage'
+			  )
+		  )`); err != nil {
+		return fmt.Errorf("conceder monitoring.write aos papéis operacionais: %w", err)
+	}
+	// O marcador entra na MESMA transação da concessão: ou os dois valem, ou
+	// nenhum. Gravá-lo depois abriria a janela em que a migração conta como
+	// feita sem ter concedido nada.
+	if _, err := tx.Exec(
+		`INSERT INTO settings (key, value) VALUES (?, '1')`, marker); err != nil {
+		return fmt.Errorf("gravar o marcador da migração monitoring.write: %w", err)
+	}
+	return tx.Commit()
 }
 
 // migrateDashboardLayout cria a tabela dashboard_layout — o painel que cada

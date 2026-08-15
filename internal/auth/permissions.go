@@ -25,6 +25,7 @@ const (
 	PermNTPRead        Permission = "ntp.read"
 
 	// Write / action access per feature area.
+	PermMonitoringWrite Permission = "monitoring.write" // resolver alerta
 	PermLinksWrite      Permission = "links.write"
 	PermRoutesWrite     Permission = "routes.write"
 	PermFirewallWrite   Permission = "firewall.write"
@@ -54,6 +55,7 @@ type CatalogEntry struct {
 var Catalog = []CatalogEntry{
 	{PermDashboardRead, "Dashboard", "Ver dashboard", "Visualizar a visão geral e o status dos links"},
 	{PermMonitoringRead, "Monitoramento", "Ver monitoramento", "Métricas em tempo real e histórico de tráfego"},
+	{PermMonitoringWrite, "Monitoramento", "Resolver alertas", "Marcar um alerta como resolvido, tirando-o do painel"},
 	{PermLogsRead, "Auditoria", "Ver logs", "Consultar o log de auditoria"},
 
 	{PermLinksRead, "Links WAN", "Ver links", "Listar links e seu status"},
@@ -144,7 +146,7 @@ var DefaultRoles = []DefaultRole{
 		Name:        "Operador",
 		Description: "Operação do dia a dia: links, rotas, firewall e hosts (sem administração)",
 		Permissions: []Permission{
-			PermDashboardRead, PermMonitoringRead, PermLogsRead,
+			PermDashboardRead, PermMonitoringRead, PermMonitoringWrite, PermLogsRead,
 			PermLinksRead, PermLinksWrite,
 			PermRoutesRead, PermRoutesWrite,
 			PermFirewallRead, PermFirewallWrite,
