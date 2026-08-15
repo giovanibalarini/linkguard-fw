@@ -266,6 +266,10 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db, s.frSvc)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/overview", nftH.Overview)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/ruleset", nftH.Ruleset)
+		// Pré-visualização: renderiza a linha nft pelo MESMO código que monta a
+		// que vai para o kernel. Leitura pura — não toca banco nem nftables.
+		r.With(require(auth.PermFirewallRead)).Post("/api/nftables/rules/preview", nftH.PreviewRule)
+		r.With(require(auth.PermFirewallRead)).Post("/api/nftables/groups/preview", nftH.PreviewGroup)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/managed", nftH.Managed)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/backups", nftH.ListBackups)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/backup", nftH.Backup)
