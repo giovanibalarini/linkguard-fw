@@ -87,6 +87,13 @@ func (h *AuthHandler) TwoFASetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secret, otpauth, err := h.svc.BeginTwoFASetup(claims.UserID, claims.Username)
+	if errors.Is(err, auth.ErrTwoFAAlreadyEnabled) {
+		// Não é erro de servidor: é a recusa que impede um setup de derrubar o
+		// segundo fator já ativo. Trocar de aparelho passa pelo disable, que
+		// exige código.
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
