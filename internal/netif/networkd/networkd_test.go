@@ -258,4 +258,5 @@ func (e *fakeApplyExec) ExecuteRead(_ context.Context, cmd string, args ...strin
 	}
 	return "", fmt.Errorf("comando de leitura inesperado no teste: %s", cmd)
 }
-func (e *fakeApplyExec) IsDryRun() bool { return e.dryRun }
+func (e *fakeApplyExec) IsDryRun() bool                              { return e.dryRun }
+func (_ *fakeApplyExec) WriteFile(string, []byte, os.FileMode) error { return nil }

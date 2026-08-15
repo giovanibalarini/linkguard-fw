@@ -15,6 +15,7 @@ package firewallrules
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -55,7 +56,8 @@ func (e *holdExec) ExecuteRead(_ context.Context, _ string, _ ...string) (string
 	return "table inet linkguard {\n}\n", nil
 }
 
-func (e *holdExec) IsDryRun() bool { return false }
+func (e *holdExec) IsDryRun() bool                              { return false }
+func (_ *holdExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func (e *holdExec) lines() []string {
 	e.mu.Lock()

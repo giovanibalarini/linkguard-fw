@@ -2,6 +2,7 @@ package iptables_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -27,7 +28,8 @@ func (m *mockExecutor) ExecuteRead(_ context.Context, _ string, _ ...string) (st
 	return m.readOutput, nil
 }
 
-func (m *mockExecutor) IsDryRun() bool { return true }
+func (m *mockExecutor) IsDryRun() bool                              { return true }
+func (_ *mockExecutor) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 const sampleFilterOutput = `Chain INPUT (policy ACCEPT)
 num   pkts bytes target     prot opt in     out     source               destination

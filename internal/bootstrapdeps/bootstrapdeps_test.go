@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -117,7 +118,8 @@ func (e *fakeExec) Execute(_ context.Context, cmd string, args ...string) (strin
 	return "", nil
 }
 
-func (e *fakeExec) IsDryRun() bool { return e.dryRun }
+func (e *fakeExec) IsDryRun() bool                              { return e.dryRun }
+func (_ *fakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func (e *fakeExec) ran(substr string) bool {
 	for _, c := range e.executed {
@@ -587,7 +589,8 @@ func (e *lockingFakeExec) Execute(_ context.Context, cmd string, args ...string)
 	return "", nil
 }
 
-func (e *lockingFakeExec) IsDryRun() bool { return false }
+func (e *lockingFakeExec) IsDryRun() bool                              { return false }
+func (_ *lockingFakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // Found on the test VM, not in theory: saving the DHCP config arms the
 // debounced auto-apply, the admin also presses "Aplicar agora", and both

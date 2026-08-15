@@ -2,6 +2,7 @@ package hosts_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -20,7 +21,8 @@ func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 	}
 	return "", nil
 }
-func (f *fakeExec) IsDryRun() bool { return false }
+func (f *fakeExec) IsDryRun() bool                              { return false }
+func (_ *fakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 type fakeNetProvider struct{}
 

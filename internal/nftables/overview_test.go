@@ -2,6 +2,7 @@ package nftables
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -319,7 +320,8 @@ func (e *fakeReadExec) ExecuteRead(_ context.Context, cmd string, args ...string
 	e.gotCmd = strings.Join(append([]string{cmd}, args...), " ")
 	return e.out, nil
 }
-func (e *fakeReadExec) IsDryRun() bool { return false }
+func (e *fakeReadExec) IsDryRun() bool                              { return false }
+func (_ *fakeReadExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // ─── Correções da revisão da Fase C2 ─────────────────────────────────────
 

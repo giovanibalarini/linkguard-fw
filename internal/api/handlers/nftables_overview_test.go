@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,7 +29,8 @@ func (f *fakeOverviewExec) ExecuteRead(_ context.Context, cmd string, args ...st
 	}
 	return "", nil
 }
-func (f *fakeOverviewExec) IsDryRun() bool { return false }
+func (f *fakeOverviewExec) IsDryRun() bool                              { return false }
+func (_ *fakeOverviewExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // As duas linhas de NTP carregam `counter packets N bytes M` antes do verbo
 // (M-2 da revisão da Fase C2): é a forma que o nft imprime desde que a chain
@@ -225,7 +227,8 @@ func (failingExec) Execute(context.Context, string, ...string) (string, error) {
 func (failingExec) ExecuteRead(context.Context, string, ...string) (string, error) {
 	return "", context.DeadlineExceeded
 }
-func (failingExec) IsDryRun() bool { return false }
+func (failingExec) IsDryRun() bool                              { return false }
+func (failingExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // M-1 da revisão da Fase C2: o jump de um grupo de escopo input mora na chain
 // input, e a Visão geral tem que lê-lo do mesmo jeito que lê o da forward —

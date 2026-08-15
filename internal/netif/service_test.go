@@ -84,7 +84,8 @@ func containsArg(args []string, want string) bool {
 	return false
 }
 
-func (e *fakeExec) IsDryRun() bool { return false }
+func (e *fakeExec) IsDryRun() bool                              { return false }
+func (_ *fakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // failingReloadExec is like fakeExec but makes every "networkctl reload"
 // call fail — used to exercise the sweep's failed-auto-rollback branch

@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -16,7 +17,8 @@ func (e *updatesExec) Execute(_ context.Context, _ string, _ ...string) (string,
 func (e *updatesExec) ExecuteRead(_ context.Context, _ string, _ ...string) (string, error) {
 	return e.out, nil
 }
-func (e *updatesExec) IsDryRun() bool { return false }
+func (e *updatesExec) IsDryRun() bool                              { return false }
+func (_ *updatesExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 const securitySample = "Inst linux-image-amd64 [6.12.94-1] (6.12.101-1 Debian-Security:13/stable-security [amd64])\n"
 const plainSample = "Inst curl [8.14.1-1] (8.14.2-1 Debian:13/stable [amd64])\n"

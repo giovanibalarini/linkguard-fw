@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,7 +42,8 @@ func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (st
 	return "", nil
 }
 
-func (e *recExec) IsDryRun() bool { return false }
+func (e *recExec) IsDryRun() bool                              { return false }
+func (_ *recExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func (e *recExec) conntrackCalls() []string {
 	var out []string

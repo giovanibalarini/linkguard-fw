@@ -339,7 +339,7 @@ func (s *Service) EnsureResolvConf(ctx context.Context) {
 	}
 
 	const body = "# managed by linkguard\nnameserver 127.0.0.1\n"
-	if err := os.WriteFile(s.resolvConf, []byte(body), 0o644); err != nil {
+	if err := s.exec.WriteFile(s.resolvConf, []byte(body), 0o644); err != nil {
 		slog.Warn("não foi possível apontar o resolv.conf para o resolver local", "path", s.resolvConf, "err", err)
 	} else {
 		slog.Info("resolv.conf apontando para o resolver local (unbound)", "path", s.resolvConf)
@@ -355,7 +355,7 @@ func (s *Service) EnsureResolvConf(ctx context.Context) {
 	if updated == string(current) {
 		return // already in place, exactly as we want it — this runs on every boot
 	}
-	if err := os.WriteFile(s.dhclientConf, []byte(updated), 0o644); err != nil {
+	if err := s.exec.WriteFile(s.dhclientConf, []byte(updated), 0o644); err != nil {
 		slog.Warn("não foi possível fixar o DNS local na config do dhclient", "path", s.dhclientConf, "err", err)
 	}
 }
@@ -509,11 +509,12 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 	restartUnbound := slices.Contains(installed, unboundPackage) ||
 		unboundNeedsRestart(readFileOrEmpty(s.unboundApplied), unboundContent)
 
-	if !s.exec.IsDryRun() {
-		for _, f := range files {
-			if err := os.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
-				return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("write %s: %w", f.Path, err)
-			}
+	// Sem `if !IsDryRun()` à volta: quem decide agora é o executor. Era
+	// justamente essa guarda repetida — e esquecida em dois lugares — que fazia
+	// o dry-run vazar.
+	for _, f := range files {
+		if err := s.exec.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
+			return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("write %s: %w", f.Path, err)
 		}
 	}
 
@@ -543,8 +544,8 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 	// Só agora — com os dois daemons recarregados sem erro — esta config
 	// pode ser chamada de "ativada". É este arquivo, e não o do /etc, que a
 	// próxima decisão de restart compara.
-	if !s.exec.IsDryRun() {
-		if err := os.WriteFile(s.unboundApplied, []byte(unboundContent), 0o600); err != nil {
+	{
+		if err := s.exec.WriteFile(s.unboundApplied, []byte(unboundContent), 0o600); err != nil {
 			// Não é motivo para falhar o apply (que deu certo); o custo de
 			// perder o marcador é um restart a mais no próximo apply, que é
 			// o lado seguro da dúvida.
@@ -1004,15 +1005,13 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) (string, []string,
 // it through the existing GenerateConfigs(..., ntpServer) parameter, not
 // this method inventing its own.
 func (s *Service) Apply(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string) (string, error) {
-	if !s.exec.IsDryRun() {
-		files, err := s.GenerateConfigs(c, res, blocked, "")
-		if err != nil {
-			return "", err
-		}
-		for _, f := range files {
-			if err := os.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
-				return "", fmt.Errorf("write %s: %w", f.Path, err)
-			}
+	files, err := s.GenerateConfigs(c, res, blocked, "")
+	if err != nil {
+		return "", err
+	}
+	for _, f := range files {
+		if err := s.exec.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
+			return "", fmt.Errorf("write %s: %w", f.Path, err)
 		}
 	}
 	return s.exec.Execute(ctx, "systemctl", "restart", "kea-dhcp4-server", "unbound")

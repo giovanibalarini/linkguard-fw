@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -59,7 +60,8 @@ func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string
 func (e *recExec) ExecuteRead(_ context.Context, _ string, _ ...string) (string, error) {
 	return "", nil
 }
-func (e *recExec) IsDryRun() bool { return false }
+func (e *recExec) IsDryRun() bool                              { return false }
+func (_ *recExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // TestCheckSendsTokenForPrivateRepo verifies the updater authenticates so a
 // PRIVATE repo's releases/latest doesn't 404.

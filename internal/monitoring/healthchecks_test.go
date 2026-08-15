@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
@@ -132,7 +133,8 @@ func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 	}
 	return "", nil
 }
-func (f *fakeExec) IsDryRun() bool { return false }
+func (f *fakeExec) IsDryRun() bool                              { return false }
+func (_ *fakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 type assertErr struct{}
 

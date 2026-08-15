@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -20,6 +21,18 @@ type Executor interface {
 	ExecuteRead(ctx context.Context, cmd string, args ...string) (string, error)
 	// IsDryRun returns true when the executor does not actually apply changes.
 	IsDryRun() bool
+	// WriteFile grava um arquivo de configuração do sistema, respeitando o
+	// dry-run pelo TIPO em vez de por disciplina de quem chama.
+	//
+	// Existe porque o dry-run vazava: cada os.WriteFile espalhado pelo código
+	// precisava lembrar de um `if !exec.IsDryRun()` à sua volta, e duas escritas
+	// do EnsureResolvConf não lembravam — em --dry-run elas trocavam o
+	// /etc/resolv.conf e o dhclient.conf de uma máquina de verdade. É o mesmo
+	// buraco que o nftables.Persist documenta ter causado quando a suíte,
+	// rodando como root, sobrescreveu o /etc/nftables.conf real.
+	//
+	// Um os.WriteFile novo esquecido volta a vazar; um exec.WriteFile novo não.
+	WriteFile(path string, data []byte, perm os.FileMode) error
 }
 
 // RealExecutor runs commands against the actual system.
@@ -74,9 +87,18 @@ func (e *RealExecutor) run(ctx context.Context, cmd string, args ...string) (str
 // IsDryRun returns false — this executor really applies changes.
 func (e *RealExecutor) IsDryRun() bool { return false }
 
+// WriteFile grava de verdade.
+func (e *RealExecutor) WriteFile(path string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(path, data, perm)
+}
+
 // DryRunExecutor logs the commands it would run but never executes them.
 type DryRunExecutor struct {
 	Commands []string
+	// Writes registra os arquivos que teriam sido gravados, no formato
+	// "caminho (perm, N bytes)". É o que permite a um teste afirmar que NADA
+	// foi escrito, em vez de torcer para que não tenha sido.
+	Writes []string
 }
 
 // NewDryRunExecutor returns an Executor that only logs commands.
@@ -89,6 +111,12 @@ func (e *DryRunExecutor) Execute(_ context.Context, cmd string, args ...string) 
 	full := strings.Join(append([]string{cmd}, args...), " ")
 	e.Commands = append(e.Commands, full)
 	return fmt.Sprintf("[dry-run] would execute: %s", full), nil
+}
+
+// WriteFile só registra: em dry-run nenhum arquivo é tocado.
+func (e *DryRunExecutor) WriteFile(path string, data []byte, perm os.FileMode) error {
+	e.Writes = append(e.Writes, fmt.Sprintf("%s (%#o, %d bytes)", path, perm, len(data)))
+	return nil
 }
 
 // ExecuteRead always runs the command even in dry-run mode (safe read-only operations).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,7 +42,8 @@ func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 	return "table inet linkguard {\n}\n", nil // Persist's `nft list table` read
 }
 
-func (f *fakeExec) IsDryRun() bool { return f.dryRun }
+func (f *fakeExec) IsDryRun() bool                              { return f.dryRun }
+func (_ *fakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func newTestDB(t *testing.T) *storage.DB {
 	t.Helper()

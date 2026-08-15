@@ -3,6 +3,7 @@ package stresstest
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -118,7 +119,8 @@ func (f *spyExecutor) Execute(ctx context.Context, name string, args ...string) 
 func (f *spyExecutor) ExecuteRead(ctx context.Context, name string, args ...string) (string, error) {
 	return "", nil
 }
-func (f *spyExecutor) IsDryRun() bool { return true }
+func (f *spyExecutor) IsDryRun() bool                              { return true }
+func (_ *spyExecutor) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func TestArmWatchdogSkipsMalformedInterface(t *testing.T) {
 	spy := &spyExecutor{}
