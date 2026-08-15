@@ -274,6 +274,14 @@ func (s *Service) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Grava o que estava em memória antes de sair. Sem isto, todo
+			// reinício do serviço — e o auto-update reinicia — abria um buraco
+			// nas séries de tráfego, latência e perda: exatamente as séries que
+			// o vigia usa depois para dizer se um link estava ruim. Perda
+			// pequena, recorrente, e do tipo que faz o operador desconfiar do
+			// gráfico sem saber por quê.
+			s.Flush()
+			slog.Info("tsdb service stopped")
 			return
 		case <-ticker.C:
 			now := time.Now().Unix()
@@ -281,6 +289,13 @@ func (s *Service) Run(ctx context.Context) {
 			s.tick(now)
 		}
 	}
+}
+
+// Flush fecha e grava TODOS os baldes pendentes, inclusive o da janela corrente.
+// É o que o desligamento chama; o tick normal não faz isso, porque um balde em
+// curso ainda tem samples para receber.
+func (s *Service) Flush() {
+	s.drain(time.Now().Unix(), true)
 }
 
 // tick is the tsdb package's single writer path: it is only ever called from
@@ -296,7 +311,18 @@ func (s *Service) Run(ctx context.Context) {
 // pure in-memory arithmetic — the actual s.db writes happen in a second pass
 // after s.mu is released, so a slow disk write never makes a concurrent
 // Gauge()/State() call block on the mutex for I/O-scale time.
-func (s *Service) tick(now int64) {
+func (s *Service) tick(now int64) { s.drain(now, false) }
+
+// drain é o corpo do tick, com um parâmetro a mais: closeAll.
+//
+// Com closeAll=false (o tick de 1s) só fecha balde cuja janela já virou — é o
+// comportamento normal, e um balde em curso continua acumulando.
+//
+// Com closeAll=true (o flush de desligamento) fecha TODOS os baldes pendentes,
+// inclusive o da janela corrente. A distinção não é detalhe: um `tick` no
+// caminho de desligamento drenaria só o s.closed e deixaria o balde em curso
+// para trás — que é justamente o dado que se perdia a cada reinício do serviço.
+func (s *Service) drain(now int64, closeAll bool) {
 	var toWrite []storage.MetricSample
 
 	s.mu.Lock()
@@ -319,7 +345,7 @@ func (s *Service) tick(now int64) {
 	for _, step := range steps {
 		m := s.pending[step]
 		for key, b := range m {
-			if now-(now%int64(step)) != b.start {
+			if closeAll || now-(now%int64(step)) != b.start {
 				s.closeBucket(&toWrite, step, key.series, key.label, b)
 				delete(m, key)
 			}
