@@ -211,7 +211,7 @@ func newOnlyInputSignatures(groups []storage.FirewallGroup, rules []storage.Fire
 		if !g.Enabled || !groupReachesInput(g) {
 			continue
 		}
-		if nftables.GroupConnState(toStoredGroup(g)) != nftables.ConnStateNew {
+		if nftables.GroupConnState(firewallrules.ToStoredGroup(g)) != nftables.ConnStateNew {
 			continue
 		}
 		var b strings.Builder
@@ -616,7 +616,7 @@ func actingUser(r *http.Request) string {
 // direto aqui abriria janela para grupo do sistema com scope sujo e faria a
 // resposta divergir do que o renderizador realmente faz.
 func groupReachesInput(g storage.FirewallGroup) bool {
-	return nftables.GroupHostChain(toStoredGroup(g)) == nftables.InputChain
+	return nftables.GroupHostChain(firewallrules.ToStoredGroup(g)) == nftables.InputChain
 }
 
 // anyGroupReachesInput resolve os ids contra o banco e diz se ALGUM deles é um
