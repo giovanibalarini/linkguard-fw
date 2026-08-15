@@ -53,7 +53,8 @@ func (r *recordExec) ExecuteRead(_ context.Context, cmd string, args ...string) 
 	return "", nil
 }
 
-func (r *recordExec) IsDryRun() bool { return r.dryRun }
+func (r *recordExec) IsDryRun() bool                              { return r.dryRun }
+func (_ *recordExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func TestEnsureTableNoOpWhenTableAlreadyExists(t *testing.T) {
 	exec := &recordExec{}

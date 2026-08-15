@@ -260,21 +260,65 @@ func TestGetAlertsEmpty(t *testing.T) {
 
 // ─── Default Admin ───────────────────────────────────────────────────────────
 
-func TestDefaultAdminExists(t *testing.T) {
+// O schema NÃO cria mais o administrador. Até a v1.0.82 a migração trazia um
+// INSERT com o hash bcrypt fixo de "admin", e toda instalação nascia com
+// admin/admin. Agora a conta é criada por SeedInitialAdmin, com uma senha que
+// quem chama gera — e o teste guarda essa fronteira: um banco recém-migrado tem
+// ZERO usuários.
+func TestMigrationDoesNotSeedAnyUser(t *testing.T) {
 	db := newTestDB(t)
 
 	user, err := db.GetUserByUsername("admin")
 	if err != nil {
 		t.Fatalf("GetUserByUsername: %v", err)
 	}
-	if user == nil {
-		t.Fatal("expected default admin user to exist")
+	if user != nil {
+		t.Fatal("a migração criou um usuário — se o hash voltar a ser constante, toda instalação nasce com a mesma senha")
 	}
-	if user.Username != "admin" {
-		t.Errorf("expected username=admin, got %s", user.Username)
+}
+
+func TestSeedInitialAdminCreatesTheAccountOnceWithTheGivenHash(t *testing.T) {
+	db := newTestDB(t)
+
+	const hash = "$2a$10$hashgeradopelochamadorhashgeradopelochamadorxxxxxx"
+	created, err := db.SeedInitialAdmin(hash)
+	if err != nil {
+		t.Fatalf("SeedInitialAdmin: %v", err)
+	}
+	if !created {
+		t.Fatal("a primeira chamada deveria criar a conta")
+	}
+
+	user, err := db.GetUserByUsername("admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if user == nil {
+		t.Fatal("a conta administrativa não foi criada")
+	}
+	if user.Password != hash {
+		t.Errorf("a senha gravada não é a que o chamador passou: %q", user.Password)
 	}
 	if user.Role != "admin" {
 		t.Errorf("expected role=admin, got %s", user.Role)
+	}
+
+	// Segunda chamada: não recria, e sobretudo NÃO sobrescreve a senha que o
+	// operador já trocou. Um seed que reescrevesse a cada boot devolveria a
+	// máquina para a senha de fábrica sem ninguém pedir.
+	created, err = db.SeedInitialAdmin("$2a$10$outrohashqualquerqueprecisaserignoradoxxxxxxxxxxxxx")
+	if err != nil {
+		t.Fatalf("segunda SeedInitialAdmin: %v", err)
+	}
+	if created {
+		t.Fatal("a segunda chamada disse que criou a conta de novo")
+	}
+	user, err = db.GetUserByUsername("admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if user.Password != hash {
+		t.Fatal("o seed sobrescreveu a senha existente — um reboot devolveria a máquina para a senha de fábrica")
 	}
 }
 

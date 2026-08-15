@@ -2,6 +2,7 @@ package sysupdates
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -23,7 +24,8 @@ func (e *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 	e.lastCmd = strings.Join(append([]string{cmd}, args...), " ")
 	return e.out, e.err
 }
-func (e *fakeExec) IsDryRun() bool { return false }
+func (e *fakeExec) IsDryRun() bool                              { return false }
+func (_ *fakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // realProductionSample is the verbatim output captured from the production
 // firewall on 2026-08-10, which had a pending kernel SECURITY update. Using

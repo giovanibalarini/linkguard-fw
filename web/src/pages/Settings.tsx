@@ -6,6 +6,7 @@ import Modal from '../components/ui/Modal';
 import NotificationSettings from '../components/NotificationSettings';
 import MonitoringSettings from '../components/MonitoringSettings';
 import TwoFactorSettings from '../components/TwoFactorSettings';
+import ChangePassword from '../components/ChangePassword';
 import HttpsInfo from '../components/HttpsInfo';
 import BackupRestore from '../components/BackupRestore';
 import UpdateChecker from '../components/UpdateChecker';
@@ -231,6 +232,7 @@ export default function Settings() {
 
           {activeSection === 'security' && (
             <div className="space-y-6">
+              <ChangePassword />
               <TwoFactorSettings />
               <HttpsInfo />
             </div>

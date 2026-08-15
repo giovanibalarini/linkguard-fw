@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,7 +42,8 @@ func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 	return "table inet linkguard {\n}\n", nil // Persist's `nft list table` read
 }
 
-func (f *fakeExec) IsDryRun() bool { return f.dryRun }
+func (f *fakeExec) IsDryRun() bool                              { return f.dryRun }
+func (_ *fakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func newTestDB(t *testing.T) *storage.DB {
 	t.Helper()
@@ -809,8 +811,8 @@ func TestCheckPendingGroupsAcceptsAWellFormedCandidate(t *testing.T) {
 // que decide em QUAL chain o grupo é alcançado — perder o campo aqui compila,
 // passa em todo o resto da suíte, e o efeito é um grupo que o admin escreveu
 // para o tráfego destinado ao firewall (SSH, painel) ser aplicado ao tráfego
-// que atravessa. É a mesma razão pela qual Kind já é guardado na outra
-// conversão (handlers.toStoredGroup).
+// que atravessa. Pela mesma razão, Kind e todos os campos compartilhados são
+// protegidos pelo mapper canônico firewallrules.ToStoredGroup.
 func TestStoredGroupsCarriesTheScope(t *testing.T) {
 	db := newTestDB(t)
 	nft := nftables.NewService(&fakeExec{})

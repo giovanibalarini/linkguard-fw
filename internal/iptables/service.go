@@ -118,34 +118,11 @@ func (s *Service) CreateRule(ctx context.Context, table, chain, ruleSpec string,
 	return s.exec.Execute(ctx, "iptables", args...)
 }
 
-// DeleteRule deletes a rule by table/chain/line number.
-func (s *Service) DeleteRule(ctx context.Context, table, chain string, line int) (string, error) {
-	if table == "" || chain == "" || line <= 0 {
-		return "", fmt.Errorf("table, chain and valid line are required")
-	}
-	return s.exec.Execute(ctx, "iptables", "-t", table, "-D", chain, fmt.Sprintf("%d", line))
-}
-
-// ReplaceRule replaces a rule by table/chain/line number.
-// ruleSpec should contain only rule arguments (e.g. "-s 10.0.0.0/24 -j ACCEPT").
-func (s *Service) ReplaceRule(ctx context.Context, table, chain string, line int, ruleSpec string) (string, error) {
-	if line <= 0 {
-		return "", fmt.Errorf("valid line is required")
-	}
-	if err := validateTableChain(table, chain); err != nil {
-		return "", err
-	}
-	if err := validateRuleSpec(ruleSpec); err != nil {
-		return "", err
-	}
-	parts := strings.Fields(strings.TrimSpace(ruleSpec))
-	if len(parts) == 0 {
-		return "", fmt.Errorf("rule_spec is required")
-	}
-	args := []string{"-t", table, "-R", chain, fmt.Sprintf("%d", line)}
-	args = append(args, parts...)
-	return s.exec.Execute(ctx, "iptables", args...)
-}
+// DeleteRule e ReplaceRule foram removidos. O DeleteRule era o único caminho de
+// escrita restante que não passava por validateTableChain: aceitava qualquer
+// table/chain e apagava regra viva de outro programa (as chains do Docker, por
+// exemplo). Nenhum dos dois tinha chamador — o único uso vivo do pacote é o
+// CreateRule do assistente de balanceamento WAN, restrito a mangle/PREROUTING.
 
 var (
 	allowedModules = map[string]bool{"conntrack": true, "statistic": true}

@@ -340,20 +340,43 @@ func (s *Service) StoredGroupsWithRules(rules []storage.FirewallRule) ([]nftable
 
 	out := make([]nftables.StoredGroup, 0, len(groups))
 	for _, g := range groups {
-		out = append(out, nftables.StoredGroup{
-			ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
-			Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
-			CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
-			// ConnState decide se a linha do jump leva `ct state new`. Esta
-			// conversão é o caminho pelo qual a escolha do operador chega ao
-			// renderizador (e ao pré-voo `nft -c` que o precede): deixá-la de
-			// fora seria gravar a restrição no banco, mostrá-la na tela e nunca
-			// aplicá-la — o firewall fazendo o contrário do que o painel afirma.
-			ConnState: g.ConnState,
-			Rules:     byGroup[g.ID],
-		})
+		stored := ToStoredGroup(g)
+		stored.Rules = byGroup[g.ID]
+		out = append(out, stored)
 	}
 	return out, nil
+}
+
+// ToStoredGroup converte o grupo persistido na visão de renderização do
+// nftables. As regras são associadas separadamente por StoredGroupsWithRules.
+//
+// Esta é a ÚNICA conversão do projeto, e o motivo de ela ser única é caro. Cada
+// campo aqui decide comportamento no kernel, e perder um compila, passa em todo
+// o resto da suíte, e só morde depois:
+//
+//   - ConnState decide se a linha do jump leva `ct state new`. Este é o caminho
+//     pelo qual a escolha do operador chega ao renderizador (e ao pré-voo
+//     `nft -c` que o precede): deixá-lo de fora seria gravar a restrição no
+//     banco, mostrá-la na tela e nunca aplicá-la — o firewall fazendo o
+//     contrário do que o painel afirma, com apply_status ok.
+//   - Scope decide em QUAL chain o grupo é alcançado. Perdê-lo faz o pré-voo
+//     validar um grupo de escopo input como se fosse da forward: valida uma
+//     coisa e aplica outra.
+//   - Kind marca grupo do sistema. As proteções de renomear e apagar pousam
+//     em cima dele; vazio, um grupo do sistema passa a parecer do admin e ganha
+//     (ou perde) proteções que não deveria.
+//
+// Enquanto existiam duas cópias desta função, um campo novo tinha 50% de chance
+// de entrar só numa delas — foi o que aconteceu com ConnState. TestToStoredGroup
+// ModelsAndMappingStayInSync guarda a fronteira por reflexão: acrescentar campo
+// em storage.FirewallGroup e esquecer de mapeá-lo deixa o teste vermelho.
+func ToStoredGroup(g storage.FirewallGroup) nftables.StoredGroup {
+	return nftables.StoredGroup{
+		ID: g.ID, Name: g.Name, ChainName: g.ChainName, Position: g.Position,
+		Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
+		CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
+		ConnState: g.ConnState,
+	}
 }
 
 // ApplyStatusKey persists the outcome of the most recent user_rules

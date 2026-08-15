@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -208,6 +211,15 @@ func run() int {
 		return 1
 	}
 	defer db.Close()
+
+	// O administrador inicial vem ANTES dos papéis: é o EnsureDefaultRoles que
+	// amarra o papel de admin à conta, e a conta precisa existir para a
+	// foreign key aceitar. (O EnsureDefaultRoles também confere a existência,
+	// então a ordem é uma garantia a mais, não a única.)
+	if err := seedInitialAdmin(db); err != nil {
+		slog.Error("failed to seed initial admin", "err", err)
+		return 1
+	}
 
 	if err := seedDefaultRoles(db); err != nil {
 		slog.Error("failed to seed default roles", "err", err)
@@ -704,11 +716,29 @@ func run() int {
 	// numa tabela de no máximo uma linha.
 	go frSvc.WatchPending(ctx, 5*time.Second)
 
+	// As goroutines que ESCREVEM no banco são esperadas no desligamento; as de
+	// leitura pura, não.
+	//
+	// A distinção é o ponto: `httpServer.Shutdown` espera as requisições HTTP e
+	// o processo sai, abandonando as goroutines onde estiverem. Para quem só lê
+	// (monitor de link, leitura do journal) isso é inofensivo. Para quem tem
+	// estado em memória para gravar, não é — o tsdb perdia o balde da janela
+	// corrente a cada reinício, e o auto-update reinicia.
+	var writers sync.WaitGroup
+	spawnWriter := func(name string, fn func()) {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			fn()
+			slog.Debug("goroutine de escrita encerrada", "nome", name)
+		}()
+	}
+
 	go monitor.Run(ctx)
-	go metricsCollector.Run(ctx, interval)
-	go rrdSvc.Run(ctx)
+	spawnWriter("metrics", func() { metricsCollector.Run(ctx, interval) })
+	spawnWriter("tsdb", func() { rrdSvc.Run(ctx) })
 	go balancerSvc.Run(ctx)
-	go backupSched.Run(ctx)
+	spawnWriter("backup", func() { backupSched.Run(ctx) })
 	go journalSched.Run(ctx)
 	go updatesSched.Run(ctx)
 	go netifSvc.RunExpirySweep(ctx, 10*time.Second)
@@ -749,12 +779,34 @@ func run() int {
 		}
 		serve = func() error { return httpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey) }
 	}
-	if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("server failed", "err", err)
+	serveErr := serve()
+
+	// Só depois que o HTTP parou: dar às goroutines de escrita a chance de
+	// gravar o que têm em memória. O teto é curto de propósito — o systemd
+	// manda SIGKILL depois do TimeoutStopSec, e é melhor perder o resíduo de
+	// uma delas do que atrasar o desligamento inteiro do serviço.
+	if !waitTimeout(&writers, 3*time.Second) {
+		slog.Warn("desligando com goroutine de escrita ainda em andamento; algum dado em memória pode não ter sido gravado")
+	}
+
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		slog.Error("server failed", "err", serveErr)
 		return 1
 	}
 	slog.Info("linkguard-fw stopped")
 	return 0
+}
+
+// waitTimeout espera o WaitGroup, devolvendo false se o prazo estourar antes.
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // seedDefaultRoles seeds the built-in RBAC roles (defined in the auth catalog)
@@ -780,4 +832,69 @@ func seedDefaultRoles(db *storage.DB) error {
 		})
 	}
 	return db.EnsureDefaultRoles(seeds, adminRoleID)
+}
+
+// initialAdminPasswordFile é onde a senha gerada na primeira instalação fica
+// legível para quem instalou — e só para o root. O journal também a registra,
+// mas ele rotaciona; o arquivo é o que ainda está lá no dia seguinte.
+const initialAdminPasswordFile = "/etc/linkguard-fw/initial-admin-password"
+
+// seedInitialAdmin cria o administrador da primeira instalação com uma senha
+// ALEATÓRIA, e a entrega ao operador pelo log e por um arquivo 0600.
+//
+// Até a v1.0.82 toda instalação nascia com admin/admin — hash constante numa
+// linha de INSERT — sem troca obrigatória, num painel que escuta a LAN inteira.
+// Bastava alguém na rede interna conhecer o produto.
+//
+// Não faz nada quando já existe usuário, então instalação que já roda não é
+// afetada: para essas, o caminho é POST /api/auth/change-password, que também
+// passou a existir agora.
+func seedInitialAdmin(db *storage.DB) error {
+	pw, err := generateInitialPassword()
+	if err != nil {
+		return fmt.Errorf("gerar a senha inicial: %w", err)
+	}
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		return fmt.Errorf("cifrar a senha inicial: %w", err)
+	}
+	created, err := db.SeedInitialAdmin(hash)
+	if err != nil {
+		return err
+	}
+	if !created {
+		return nil
+	}
+
+	// 0600: a senha em claro só interessa a quem tem root, que já poderia
+	// redefini-la de qualquer jeito.
+	if err := os.WriteFile(initialAdminPasswordFile, []byte(pw+"\n"), 0600); err != nil {
+		// Não é fatal — a senha ainda vai para o log, e sem ela a instalação
+		// fica inacessível, o que seria pior do que um arquivo faltando.
+		slog.Warn("não consegui gravar a senha inicial em arquivo",
+			"path", initialAdminPasswordFile, "err", err)
+	}
+	slog.Warn("PRIMEIRA EXECUÇÃO: administrador criado",
+		"usuario", "admin",
+		"senha", pw,
+		"arquivo", initialAdminPasswordFile,
+		"acao", "entre no painel, troque a senha e apague o arquivo")
+	return nil
+}
+
+// generateInitialPassword devolve 24 caracteres de um alfabeto sem os pares que
+// se confundem à mão (0/O, 1/l/I) — a senha é lida de um terminal e digitada de
+// novo pelo menos uma vez.
+func generateInitialPassword() (string, error) {
+	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	const length = 24
+	out := make([]byte, length)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			return "", err
+		}
+		out[i] = alphabet[n.Int64()]
+	}
+	return string(out), nil
 }

@@ -33,7 +33,8 @@ func (e *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (s
 	key := strings.Join(append([]string{cmd}, args...), " ")
 	return e.responses[key], nil
 }
-func (e *fakeExec) IsDryRun() bool { return e.dryRun }
+func (e *fakeExec) IsDryRun() bool                              { return e.dryRun }
+func (_ *fakeExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func containsExecuted(executed []string, want string) bool {
 	for _, e := range executed {

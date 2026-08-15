@@ -2,6 +2,7 @@ package iptables_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -27,7 +28,8 @@ func (m *mockExecutor) ExecuteRead(_ context.Context, _ string, _ ...string) (st
 	return m.readOutput, nil
 }
 
-func (m *mockExecutor) IsDryRun() bool { return true }
+func (m *mockExecutor) IsDryRun() bool                              { return true }
+func (_ *mockExecutor) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 const sampleFilterOutput = `Chain INPUT (policy ACCEPT)
 num   pkts bytes target     prot opt in     out     source               destination
@@ -158,36 +160,6 @@ func TestDryRunExecuteNotRead(t *testing.T) {
 		t.Errorf("expected 1 dry-run command, got %d", len(exec.Commands))
 	}
 	_ = svc // just verify the service compiles and works
-}
-
-func TestDeleteRuleDryRun(t *testing.T) {
-	exec := firewall.NewDryRunExecutor()
-	svc := iptables.NewService(exec)
-
-	if _, err := svc.DeleteRule(context.Background(), "filter", "INPUT", 1); err != nil {
-		t.Fatalf("DeleteRule: %v", err)
-	}
-	if len(exec.Commands) != 1 {
-		t.Fatalf("expected 1 command, got %d", len(exec.Commands))
-	}
-	if exec.Commands[0] != "iptables -t filter -D INPUT 1" {
-		t.Fatalf("unexpected command: %s", exec.Commands[0])
-	}
-}
-
-func TestReplaceRuleDryRun(t *testing.T) {
-	exec := firewall.NewDryRunExecutor()
-	svc := iptables.NewService(exec)
-
-	if _, err := svc.ReplaceRule(context.Background(), "mangle", "PREROUTING", 2, "-s 10.0.0.0/24 -j ACCEPT"); err != nil {
-		t.Fatalf("ReplaceRule: %v", err)
-	}
-	if len(exec.Commands) != 1 {
-		t.Fatalf("expected 1 command, got %d", len(exec.Commands))
-	}
-	if exec.Commands[0] != "iptables -t mangle -R PREROUTING 2 -s 10.0.0.0/24 -j ACCEPT" {
-		t.Fatalf("unexpected command: %s", exec.Commands[0])
-	}
 }
 
 func TestCreateRuleRejectsUnknownTableChain(t *testing.T) {

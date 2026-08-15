@@ -2,6 +2,7 @@ package routes_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -19,7 +20,8 @@ func (m *mockExec) Execute(_ context.Context, _ string, _ ...string) (string, er
 func (m *mockExec) ExecuteRead(_ context.Context, _ string, _ ...string) (string, error) {
 	return m.output, nil
 }
-func (m *mockExec) IsDryRun() bool { return true }
+func (m *mockExec) IsDryRun() bool                              { return true }
+func (_ *mockExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 const sampleRoutes = `default via 10.1.0.1 dev eth0 proto dhcp
 10.1.0.0/24 dev eth0 proto kernel scope link

@@ -25,9 +25,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Node 22, não 20: as asserções de src/lib/*.check.ts rodam com
+      # `node --experimental-strip-types`, que só existe a partir do 22.6. No
+      # 20 o processo nem sobe — "bad option", exit 9. As duas jobs e o
+      # release.yml sobem juntos para não divergirem.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
@@ -51,8 +55,13 @@ jobs:
             exit 1
           fi
 
-      - name: go test
-        run: go test ./...
+      # -race, não `go test` cru: este produto sobe 11 goroutines de fundo
+      # (monitor de links, coletor de métricas, tsdb, balanceador, agendadores)
+      # que compartilham o mesmo *storage.DB. A suíte inteira já passava com o
+      # detector ligado quando isto foi acrescentado, então o custo é só tempo
+      # de CI — e o que ele pega não aparece de outro jeito.
+      - name: go test -race
+        run: go test -race ./...
 
   web:
     runs-on: ubuntu-latest
@@ -61,7 +70,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
@@ -72,3 +81,21 @@ jobs:
       - name: typecheck + build
         working-directory: web
         run: npm run build
+
+      # As asserções de src/lib/*.check.ts — 1.253 delas — não rodavam em lugar
+      # nenhum: nem no Makefile, nem aqui, nem no package.json. `tsc --noEmit`
+      # só garantia que compilavam.
+      #
+      # São programas comuns, sem runner e sem dependência nova (decisão da spec
+      # §4.3: num appliance de segurança, uma biblioteca de teste a mais é
+      # superfície de cadeia de suprimentos por conveniência). Saem com código 1
+      # quando alguma asserção falha — conferido por mutação: desligar o
+      # compactUp da grade deixa 4 de 46 vermelhas e o processo sai 1.
+      #
+      # O grid.check.ts em particular guarda a invariante que dá nome à entrega
+      # do painel: nunca dois widgets na mesma célula. A primeira versão da
+      # grade empilhava os dois ao arrastar, e é o tipo de regressão que volta
+      # sem ninguém notar.
+      - name: asserções do frontend
+        working-directory: web
+        run: npm run check

@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"context"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,7 +35,8 @@ func (f *fakeEmptyIfaceExec) ExecuteRead(_ context.Context, cmd string, args ...
 	}
 	return "", nil
 }
-func (f *fakeEmptyIfaceExec) IsDryRun() bool { return false }
+func (f *fakeEmptyIfaceExec) IsDryRun() bool                              { return false }
+func (_ *fakeEmptyIfaceExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func TestStableNamesReturnsEmptyListNotNull(t *testing.T) {
 	dir := t.TempDir()

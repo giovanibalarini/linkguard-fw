@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,7 +27,8 @@ func (e *fakeTimesyncExec) Execute(_ context.Context, _ string, _ ...string) (st
 func (e *fakeTimesyncExec) ExecuteRead(_ context.Context, _ string, _ ...string) (string, error) {
 	return "", nil
 }
-func (e *fakeTimesyncExec) IsDryRun() bool { return e.dryRun }
+func (e *fakeTimesyncExec) IsDryRun() bool                              { return e.dryRun }
+func (_ *fakeTimesyncExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func newTestNTPHandler(t *testing.T) *NTPHandler {
 	t.Helper()

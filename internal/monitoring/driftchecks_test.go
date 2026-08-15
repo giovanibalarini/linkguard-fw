@@ -28,7 +28,8 @@ func (e *driftExec) ExecuteRead(_ context.Context, cmd string, args ...string) (
 	}
 	return e.responses[strings.Join(append([]string{cmd}, args...), " ")], nil
 }
-func (e *driftExec) IsDryRun() bool { return false }
+func (e *driftExec) IsDryRun() bool                              { return false }
+func (_ *driftExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // TestCheckWANInterfacesFlagsMissingInterface is the regression test for the
 // 2026-08-10 incident: a WAN link kept pointing at enp4s0 after the NIC was

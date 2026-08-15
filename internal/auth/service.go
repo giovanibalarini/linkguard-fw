@@ -182,3 +182,48 @@ func HashPassword(plain string) (string, error) {
 	}
 	return string(hash), nil
 }
+
+// MinPasswordLength is the floor for any password the API accepts, wherever it
+// is set: criação de usuário, reset por administrador e troca pelo próprio dono.
+const MinPasswordLength = 8
+
+// ErrWrongCurrentPassword is returned when the current password given to
+// ChangeOwnPassword doesn't match.
+var ErrWrongCurrentPassword = errors.New("senha atual incorreta")
+
+// ChangeOwnPassword troca a senha do próprio usuário, exigindo a senha atual.
+//
+// Este caminho não existia: a única forma de trocar senha era PUT /api/users/{id},
+// gateado por users.manage. Quem não administra usuários — que é a maioria das
+// contas num produto multi-admin — não tinha como trocar a própria senha por
+// caminho nenhum, e a conta semeada na instalação ficava com a senha de fábrica
+// até um administrador agir.
+//
+// Exigir a senha atual é o que separa "o dono trocando a própria senha" de
+// "quem pegou uma sessão aberta trocando a senha do dono e assumindo a conta".
+func (s *Service) ChangeOwnPassword(userID, currentPassword, newPassword string) error {
+	if len(newPassword) < MinPasswordLength {
+		return fmt.Errorf("a senha nova precisa ter pelo menos %d caracteres", MinPasswordLength)
+	}
+	user, err := s.db.GetUserByID(userID)
+	if err != nil {
+		return fmt.Errorf("lookup user: %w", err)
+	}
+	if user == nil {
+		return errors.New("usuário não encontrado")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(currentPassword)); err != nil {
+		return ErrWrongCurrentPassword
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(newPassword)) == nil {
+		return errors.New("a senha nova precisa ser diferente da atual")
+	}
+	hash, err := HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	// UpdateUserPassword sobe password_version, o que invalida todo token
+	// emitido antes — inclusive os de outras sessões do próprio usuário. É o
+	// comportamento desejado numa troca de senha.
+	return s.db.UpdateUserPassword(userID, hash)
+}

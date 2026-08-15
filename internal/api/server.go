@@ -178,6 +178,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.Post("/api/auth/2fa/setup", authH.TwoFASetup)
 		r.Post("/api/auth/2fa/activate", authH.TwoFAActivate)
 		r.Post("/api/auth/2fa/disable", authH.TwoFADisable)
+		// Trocar a PRÓPRIA senha só exige estar autenticado. Antes o único
+		// caminho era PUT /api/users/{id}, gateado por users.manage — então uma
+		// conta sem administração de usuários não tinha como sair da senha que
+		// alguém definiu para ela, incluindo a semeada na instalação.
+		r.Post("/api/auth/change-password", authH.ChangePassword)
 
 		// Layout do painel (Fase B): os widgets que ESTE admin escolheu e onde
 		// ele os pôs. É preferência pessoal, então o dono é sempre o usuário
@@ -244,15 +249,27 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// terceiros de uma máquina de produção, sem trava e sem tela, para quem
 		// tivesse o token. Backup e rollback do firewall são
 		// POST /api/nftables/backup e POST /api/nftables/rollback.
+		//
+		// PUT e DELETE /api/firewall/rules FORAM REMOVIDAS pelo mesmo motivo
+		// (2026-08-15). O DELETE era o buraco que sobreviveu àquela limpeza: ao
+		// contrário do POST e do PUT, o iptables.Service.DeleteRule não chamava
+		// validateTableChain, então aceitava qualquer table/chain e apagava
+		// regra viva de terceiros — {"table":"filter","chain":"DOCKER-USER"}
+		// derruba o isolamento de containers; {"table":"nat",
+		// "chain":"POSTROUTING"} derruba o MASQUERADE do Docker. Nenhuma das
+		// duas tinha tela: o frontend só faz POST, no assistente de
+		// balanceamento WAN.
 		r.With(require(auth.PermFirewallRead)).Get("/api/firewall/backups", iptH.ListBackups)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/rules", iptH.CreateRule)
-		r.With(require(auth.PermFirewallWrite)).Put("/api/firewall/rules", iptH.UpdateRule)
-		r.With(require(auth.PermFirewallWrite)).Delete("/api/firewall/rules", iptH.DeleteRule)
 
 		// nftables (native firewall management — replaces iptables)
 		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db, s.frSvc)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/overview", nftH.Overview)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/ruleset", nftH.Ruleset)
+		// Pré-visualização: renderiza a linha nft pelo MESMO código que monta a
+		// que vai para o kernel. Leitura pura — não toca banco nem nftables.
+		r.With(require(auth.PermFirewallRead)).Post("/api/nftables/rules/preview", nftH.PreviewRule)
+		r.With(require(auth.PermFirewallRead)).Post("/api/nftables/groups/preview", nftH.PreviewGroup)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/managed", nftH.Managed)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/backups", nftH.ListBackups)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/backup", nftH.Backup)
@@ -322,9 +339,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermRoutesWrite)).Post("/api/stresstest/stop", stressH.Stop)
 
 		// Alerts
-		alertsH := handlers.NewAlertsHandler(s.alertSvc)
+		alertsH := handlers.NewAlertsHandler(s.alertSvc, s.db)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/alerts", alertsH.List)
-		r.With(require(auth.PermMonitoringRead)).Put("/api/alerts/{id}/resolve", alertsH.Resolve)
+		r.With(require(auth.PermMonitoringWrite)).Put("/api/alerts/{id}/resolve", alertsH.Resolve)
 
 		// Monitoring (Vigia health snapshot + config)
 		monH := handlers.NewMonitoringHandler(s.mon, s.db)

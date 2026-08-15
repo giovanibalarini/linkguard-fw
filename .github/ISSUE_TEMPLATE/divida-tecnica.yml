@@ -1,0 +1,59 @@
+name: Dívida técnica / arquitetura
+description: Algo que funciona, mas cuja forma cobra caro para mudar ou esconde defeito
+labels: ["dívida-técnica"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Dívida técnica só vale uma issue quando dá para dizer **o que ela custa
+        na prática**. "Poderia ser mais limpo" não é custo.
+
+  - type: textarea
+    id: onde
+    attributes:
+      label: Onde
+      description: Arquivo e linha. Mais de um lugar, se for duplicação.
+      placeholder: |
+        internal/api/handlers/groups.go:564
+        internal/firewallrules/service.go:342
+    validations:
+      required: true
+
+  - type: textarea
+    id: problema
+    attributes:
+      label: O problema
+      description: Uma ou duas frases concretas sobre a forma atual.
+    validations:
+      required: true
+
+  - type: textarea
+    id: custo
+    attributes:
+      label: O que isso custa
+      description: >-
+        A consequência prática neste produto, não a teoria. Que defeito isso
+        deixa passar, que mudança isso encarece, que garantia isso enfraquece.
+      placeholder: >-
+        Um campo novo de grupo tem 50% de chance de ser adicionado só numa das
+        cópias, e o sintoma é o firewall fazendo o contrário do que o painel
+        afirma, com apply_status ok.
+    validations:
+      required: true
+
+  - type: textarea
+    id: mudanca
+    attributes:
+      label: Mudança sugerida
+      description: Específica o bastante para virar uma tarefa.
+    validations:
+      required: true
+
+  - type: textarea
+    id: pronto
+    attributes:
+      label: Critério de pronto
+      description: Como se prova que acabou. De preferência algo executável.
+      placeholder: >-
+        A conversão existe em um lugar só; o teste que cobria a cópia foi
+        removido; `go test ./...` passa.

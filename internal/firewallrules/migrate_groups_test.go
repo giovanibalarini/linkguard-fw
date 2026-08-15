@@ -3,6 +3,7 @@ package firewallrules
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,7 +36,8 @@ func (e *migrateExec) ExecuteRead(_ context.Context, _ string, _ ...string) (str
 	return "table inet linkguard {\n}\n", nil
 }
 
-func (e *migrateExec) IsDryRun() bool { return e.dryRun }
+func (e *migrateExec) IsDryRun() bool                              { return e.dryRun }
+func (_ *migrateExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func newTestDB(t *testing.T) *storage.DB {
 	t.Helper()
