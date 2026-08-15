@@ -160,36 +160,6 @@ func TestDryRunExecuteNotRead(t *testing.T) {
 	_ = svc // just verify the service compiles and works
 }
 
-func TestDeleteRuleDryRun(t *testing.T) {
-	exec := firewall.NewDryRunExecutor()
-	svc := iptables.NewService(exec)
-
-	if _, err := svc.DeleteRule(context.Background(), "filter", "INPUT", 1); err != nil {
-		t.Fatalf("DeleteRule: %v", err)
-	}
-	if len(exec.Commands) != 1 {
-		t.Fatalf("expected 1 command, got %d", len(exec.Commands))
-	}
-	if exec.Commands[0] != "iptables -t filter -D INPUT 1" {
-		t.Fatalf("unexpected command: %s", exec.Commands[0])
-	}
-}
-
-func TestReplaceRuleDryRun(t *testing.T) {
-	exec := firewall.NewDryRunExecutor()
-	svc := iptables.NewService(exec)
-
-	if _, err := svc.ReplaceRule(context.Background(), "mangle", "PREROUTING", 2, "-s 10.0.0.0/24 -j ACCEPT"); err != nil {
-		t.Fatalf("ReplaceRule: %v", err)
-	}
-	if len(exec.Commands) != 1 {
-		t.Fatalf("expected 1 command, got %d", len(exec.Commands))
-	}
-	if exec.Commands[0] != "iptables -t mangle -R PREROUTING 2 -s 10.0.0.0/24 -j ACCEPT" {
-		t.Fatalf("unexpected command: %s", exec.Commands[0])
-	}
-}
-
 func TestCreateRuleRejectsUnknownTableChain(t *testing.T) {
 	m := &mockExecutor{}
 	s := iptables.NewService(m)

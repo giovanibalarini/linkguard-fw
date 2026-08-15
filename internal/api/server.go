@@ -244,10 +244,18 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// terceiros de uma máquina de produção, sem trava e sem tela, para quem
 		// tivesse o token. Backup e rollback do firewall são
 		// POST /api/nftables/backup e POST /api/nftables/rollback.
+		//
+		// PUT e DELETE /api/firewall/rules FORAM REMOVIDAS pelo mesmo motivo
+		// (2026-08-15). O DELETE era o buraco que sobreviveu àquela limpeza: ao
+		// contrário do POST e do PUT, o iptables.Service.DeleteRule não chamava
+		// validateTableChain, então aceitava qualquer table/chain e apagava
+		// regra viva de terceiros — {"table":"filter","chain":"DOCKER-USER"}
+		// derruba o isolamento de containers; {"table":"nat",
+		// "chain":"POSTROUTING"} derruba o MASQUERADE do Docker. Nenhuma das
+		// duas tinha tela: o frontend só faz POST, no assistente de
+		// balanceamento WAN.
 		r.With(require(auth.PermFirewallRead)).Get("/api/firewall/backups", iptH.ListBackups)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/firewall/rules", iptH.CreateRule)
-		r.With(require(auth.PermFirewallWrite)).Put("/api/firewall/rules", iptH.UpdateRule)
-		r.With(require(auth.PermFirewallWrite)).Delete("/api/firewall/rules", iptH.DeleteRule)
 
 		// nftables (native firewall management — replaces iptables)
 		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db, s.frSvc)
