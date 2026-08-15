@@ -1,0 +1,62 @@
+name: Defeito
+description: Alguma coisa não funciona como deveria
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Se for uma **falha de segurança**, feche esta página e use
+        [o canal privado](https://github.com/giovanibalarini/linkguard-fw/security/advisories/new).
+
+  - type: textarea
+    id: o-que-acontece
+    attributes:
+      label: O que acontece
+      description: O comportamento observado, não a sua teoria sobre a causa.
+      placeholder: >-
+        Ao salvar um grupo de regras com condição de entrada por interface, a
+        tela mostra "aplicada" mas o jump não aparece no nft.
+    validations:
+      required: true
+
+  - type: textarea
+    id: como-reproduzir
+    attributes:
+      label: Como reproduzir
+      description: >-
+        Os passos exatos. Se envolve uma regra ou configuração específica, os
+        valores dos campos importam.
+      placeholder: |
+        1. Firewall → Grupos → Novo grupo
+        2. Condição de entrada: iif = enp3s0
+        3. Salvar, confirmar na janela de 90s
+        4. `nft list table inet linkguard` na máquina
+    validations:
+      required: true
+
+  - type: textarea
+    id: esperado
+    attributes:
+      label: O que você esperava
+    validations:
+      required: true
+
+  - type: input
+    id: versao
+    attributes:
+      label: Versão
+      description: Rodapé do painel, ou `linkguard-fw --version`.
+      placeholder: v1.0.82-251
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidencia
+    attributes:
+      label: Evidência da máquina
+      description: >-
+        O que o sistema respondeu, não o que a tela mostrou. Saída de `nft list
+        ruleset`, `systemctl status linkguard-fw`, `journalctl -u linkguard-fw
+        -n 50`, ou o erro do console do navegador. Teste verde não é prova;
+        saída de comando é.
+      render: shell
