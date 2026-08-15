@@ -393,33 +393,43 @@ func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 		normalizedReservations = append(normalizedReservations, storage.DHCPReservation{MAC: mac, IP: ip, Hostname: rsv.Hostname})
 	}
 
-	var res restoreResult
+	// As chaves de estado local da máquina saem antes da escrita — são estado
+	// desta caixa, não configuração. Ver machineLocalSettingKeys para o que
+	// cada uma faria com este equipamento se fosse restaurada.
+	toRestore := make(map[string]string, len(data.Settings))
 	skippedLocal := 0
 	for k, v := range data.Settings {
 		if machineLocalSettingKeys[k] {
-			// Machine state, not configuration — see
-			// machineLocalSettingKeys for what each one would do to this
-			// box if it were restored.
 			skippedLocal++
 			continue
 		}
-		if err := h.db.SetSetting(k, v); err == nil {
-			res.Settings++
-		}
+		toRestore[k] = v
 	}
+
+	// Uma transação para as três coleções. Antes eram três laços com o erro
+	// engolido e HTTP 200 no fim: uma falha de banco no meio deixava metade da
+	// configuração restaurada e reportava sucesso, com um contador menor como
+	// única pista. A promessa de "nada foi restaurado", que a validação acima
+	// já fazia, agora vale também para a escrita.
+	counts, err := h.db.ApplyRestore(storage.RestorePayload{
+		Settings:     toRestore,
+		Reservations: normalizedReservations,
+		Blocklist:    normalizedBlocklist,
+	})
+	if err != nil {
+		slog.Error("restore de backup falhou; nada foi gravado", "err", err)
+		writeError(w, http.StatusInternalServerError,
+			"falha ao gravar a restauração — nada foi restaurado; o banco está como estava antes")
+		return
+	}
+
+	var res restoreResult
+	res.Settings = counts.Settings
+	res.Reservations = counts.Reservations
+	res.Blocklist = counts.Blocklist
 	if skippedLocal > 0 {
 		slog.Info("restore de backup: chaves de estado local da máquina ignoradas",
 			"ignoradas", skippedLocal, "restauradas", res.Settings)
-	}
-	for _, rsv := range normalizedReservations {
-		if err := h.db.UpsertDHCPReservation(rsv.MAC, rsv.IP, rsv.Hostname); err == nil {
-			res.Reservations++
-		}
-	}
-	for _, d := range normalizedBlocklist {
-		if err := h.db.AddDNSBlocklist(d); err == nil {
-			res.Blocklist++
-		}
 	}
 
 	// Secrets are never in the backup file (they live in a separate table
