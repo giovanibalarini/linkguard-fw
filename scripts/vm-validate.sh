@@ -304,9 +304,23 @@ battery_upgrade() {
   head_ "B. Upgrade sobre instalação existente"
   install_deb "$FROM_DEB" "anterior" || return
 
-  local tok; tok=$(login admin admin)
-  if [[ -n "$tok" ]]; then ok "versão anterior: admin/admin entra (era o comportamento de fábrica)"
-  else bad "não consegui entrar na versão anterior — o cenário de upgrade não foi montado"; return; fi
+  # A senha da versão anterior depende de QUAL versão ela é. Até a v1.0.93 toda
+  # instalação nascia com admin/admin; da v1.0.94 em diante a senha é gerada e
+  # fica em /etc/linkguard-fw/initial-admin-password. O script precisa servir
+  # aos dois casos, senão ele passa a só conseguir testar upgrades a partir de
+  # pacotes antigos — e é justamente o upgrade a partir do ATUAL que interessa
+  # daqui para a frente.
+  local basepw tok
+  basepw=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  if [[ -n "$basepw" ]]; then
+    tok=$(login admin "$basepw")
+    [[ -n "$tok" ]] && ok "versão anterior: entra com a senha gerada na instalação"
+  else
+    basepw="admin"
+    tok=$(login admin admin)
+    [[ -n "$tok" ]] && ok "versão anterior: admin/admin entra (comportamento de fábrica até a v1.0.93)"
+  fi
+  [[ -n "$tok" ]] || { bad "não consegui entrar na versão anterior — o cenário de upgrade não foi montado"; return; }
 
   # Papel operacional de antes do upgrade, com monitoring.read e uma escrita.
   local op_role
@@ -315,22 +329,57 @@ battery_upgrade() {
   view_role=$(body POST /api/roles "$tok" '{"name":"Visualizador VM","description":"leitura","permissions":["monitoring.read"]}' | jqf id)
   [[ -n "$op_role" && -n "$view_role" ]] && ok "papéis de antes do upgrade criados" || bad "não consegui criar os papéis"
 
+  # Estado da base, para as asserções pós-upgrade compararem contra ele em vez
+  # de contra uma suposição.
+  local pwfile_antes base_conhece_mw
+  pwfile_antes=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  if body GET /api/permissions "$tok" | grep -q 'monitoring.write'; then
+    base_conhece_mw="sim"
+    printf '       (a base já conhece monitoring.write — a migração já rodou nela)\n'
+  else
+    base_conhece_mw="nao"
+  fi
+
   head_ "B. Instalando a versão nova por cima"
   install_deb "$DEB" "novo" || return
 
-  tok=$(login admin admin)
+  tok=$(login admin "$basepw")
   if [[ -n "$tok" ]]; then ok "a senha do admin sobreviveu ao upgrade (o seed não sobrescreve)"
   else bad "a senha do admin mudou no upgrade — instalação existente ficaria inacessível"; return; fi
 
-  if vm "test -f /etc/linkguard-fw/initial-admin-password"; then
-    bad "o upgrade criou um arquivo de senha inicial numa instalação que já tinha conta"
-  else ok "nenhum arquivo de senha inicial criado no upgrade (a conta já existia)"; fi
+  # Existência sozinha não diz nada: da v1.0.94 em diante o pacote BASE já cria
+  # este arquivo na instalação limpa. O que o upgrade não pode fazer é gerar uma
+  # senha NOVA — isso significaria ter recriado ou sobrescrito a conta. Por isso
+  # a comparação é do conteúdo, capturado antes de subir a versão nova.
+  local pwfile_depois
+  pwfile_depois=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  if [[ "$pwfile_depois" == "$pwfile_antes" ]]; then
+    if [[ -z "$pwfile_antes" ]]; then ok "o upgrade não criou arquivo de senha inicial (a conta já existia)"
+    else ok "o arquivo de senha inicial ficou intacto no upgrade"; fi
+  else
+    bad "o upgrade mexeu na senha inicial gravada — sinal de conta recriada ou sobrescrita"
+  fi
 
+  # A asserção certa depende de QUAL base foi instalada, e presumir uma só foi o
+  # que fez esta verificação falhar por engano quando a base virou a v1.0.94:
+  #
+  #   - base ANTERIOR à permissão: o papel foi criado sem monitoring.write
+  #     porque ela não existia. A migração tem que concedê-la, senão um Operador
+  #     legítimo perde no upgrade algo que fazia ontem.
+  #   - base que JÁ tem a permissão: a migração já rodou e está marcada. Um papel
+  #     criado depois disso tem exatamente o que o admin escolheu, e o upgrade
+  #     NÃO pode acrescentar permissão nenhuma por conta própria.
   local perms
   perms=$(role_perms "$tok" "$op_role")
-  if grep -qx 'monitoring.write' <<<"$perms"; then
-    ok "a migração deu monitoring.write ao papel operacional (não perdeu capacidade)"
-  else bad "o papel operacional perdeu o resolver-alerta no upgrade"; fi
+  if [[ "$base_conhece_mw" == "sim" ]]; then
+    if grep -qx 'monitoring.write' <<<"$perms"; then
+      bad "o upgrade acrescentou monitoring.write a um papel que o admin criou sem ela"
+    else ok "o upgrade não mexeu nas permissões de um papel criado pelo admin"; fi
+  else
+    if grep -qx 'monitoring.write' <<<"$perms"; then
+      ok "a migração deu monitoring.write ao papel operacional (não perdeu capacidade)"
+    else bad "o papel operacional perdeu o resolver-alerta no upgrade"; fi
+  fi
 
   perms=$(role_perms "$tok" "$view_role")
   if grep -qx 'monitoring.write' <<<"$perms"; then
@@ -338,13 +387,14 @@ battery_upgrade() {
   else ok "o papel somente-leitura NÃO ganhou monitoring.write"; fi
 
   # A migração não pode reverter uma revogação do admin: roda de novo no reboot.
+  # Só faz sentido se o papel tem a permissão para revogar.
   local before after
   before=$(role_perms "$tok" "$op_role")
   if grep -qx 'monitoring.write' <<<"$before"; then
     body PUT "/api/roles/$op_role" "$tok" '{"name":"Operador VM","description":"operacional","permissions":["monitoring.read","firewall.write"]}' >/dev/null
     vm "systemctl restart linkguard-fw" >/dev/null 2>&1
     wait_api || { bad "o serviço não voltou depois do restart"; return; }
-    tok=$(login admin admin)
+    tok=$(login admin "$basepw")
     after=$(role_perms "$tok" "$op_role")
     if grep -qx 'monitoring.write' <<<"$after"; then
       bad "o reboot devolveu uma permissão que o admin tinha revogado"
