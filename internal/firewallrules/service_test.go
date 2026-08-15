@@ -809,8 +809,8 @@ func TestCheckPendingGroupsAcceptsAWellFormedCandidate(t *testing.T) {
 // que decide em QUAL chain o grupo é alcançado — perder o campo aqui compila,
 // passa em todo o resto da suíte, e o efeito é um grupo que o admin escreveu
 // para o tráfego destinado ao firewall (SSH, painel) ser aplicado ao tráfego
-// que atravessa. É a mesma razão pela qual Kind já é guardado na outra
-// conversão (handlers.toStoredGroup).
+// que atravessa. Pela mesma razão, Kind e todos os campos compartilhados são
+// protegidos pelo mapper canônico firewallrules.ToStoredGroup.
 func TestStoredGroupsCarriesTheScope(t *testing.T) {
 	db := newTestDB(t)
 	nft := nftables.NewService(&fakeExec{})
