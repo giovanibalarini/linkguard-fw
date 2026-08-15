@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -171,6 +172,32 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 			return
 		}
+		// Resetting an account's password IS acquiring that account's
+		// permissions: the actor picks the new secret and can then log in as the
+		// target. The roles.manage gate above deliberately does not cover this
+		// path — it only guards role assignment — so users.manage alone used to
+		// be enough for a helpdesk account to take over an admin account and,
+		// through it, root on the appliance.
+		//
+		// The rule is "you cannot reset someone who outranks you": refuse when
+		// the target holds any permission the actor does not. Resetting your own
+		// password is never escalation and stays unconditionally allowed, which
+		// is also what keeps a locked-out admin able to recover.
+		if claims := auth.ClaimsFromContext(r.Context()); claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		} else if claims.UserID != id {
+			extra, err := h.permissionsBeyond(id, claims.UserID)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			if len(extra) > 0 {
+				writeError(w, http.StatusForbidden,
+					"redefinir a senha de um usuário com mais permissões que as suas exige as permissões dele: "+strings.Join(extra, ", "))
+				return
+			}
+		}
 		hash, err := auth.HashPassword(*body.Password)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to hash password")
@@ -214,6 +241,28 @@ func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	auditAction(h.db, r, "user.delete", "user:"+user.Username, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// permissionsBeyond returns the permissions targetID holds that actorID does
+// not, sorted so the 403 message is stable. Empty means the target is at most
+// as privileged as the actor, and acting on it is not an escalation.
+func (h *UsersHandler) permissionsBeyond(targetID, actorID string) ([]string, error) {
+	targetPerms, err := h.db.GetUserPermissions(targetID)
+	if err != nil {
+		return nil, err
+	}
+	actorPerms, err := h.db.GetUserPermissions(actorID)
+	if err != nil {
+		return nil, err
+	}
+	var extra []string
+	for p := range targetPerms {
+		if !actorPerms[p] {
+			extra = append(extra, p)
+		}
+	}
+	sort.Strings(extra)
+	return extra, nil
 }
 
 // validateRoles ensures every referenced role exists.
