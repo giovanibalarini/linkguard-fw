@@ -63,7 +63,7 @@ func TestMigrationGrantsMonitoringWriteOnlyToOperationalRoles(t *testing.T) {
 		}
 	}
 
-	if err := db.migrateGrantMonitoringWrite(); err != nil {
+	if err := db.runOneMigrationForTest(upGrantMonitoringWrite); err != nil {
 		t.Fatalf("migrateGrantMonitoringWrite: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestMigrationIsIdempotentAndDoesNotReGrantAfterRevocation(t *testing.T) {
 	if err := db.CreateRole(operator); err != nil {
 		t.Fatalf("CreateRole: %v", err)
 	}
-	if err := db.migrateGrantMonitoringWrite(); err != nil {
+	if err := db.runOneMigrationForTest(upGrantMonitoringWrite); err != nil {
 		t.Fatalf("primeira passada: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestMigrationIsIdempotentAndDoesNotReGrantAfterRevocation(t *testing.T) {
 		operator.ID); err != nil {
 		t.Fatalf("revogar: %v", err)
 	}
-	if err := db.migrateGrantMonitoringWrite(); err != nil {
+	if err := db.runOneMigrationForTest(upGrantMonitoringWrite); err != nil {
 		t.Fatalf("segunda passada: %v", err)
 	}
 	if rolePerms(t, db, operator.ID)["monitoring.write"] {

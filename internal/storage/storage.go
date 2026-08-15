@@ -3,8 +3,10 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -85,38 +87,130 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	if err := db.migrateTrafficSamplesToMetricSamples(); err != nil {
-		return fmt.Errorf("migrate traffic_samples to metric_samples: %w", err)
+	return db.runMigrations(schemaMigrations)
+}
+
+// ─── Runner de migração ──────────────────────────────────────────────────────
+
+// migration é uma mudança de schema versionada. `up` recebe a transação já
+// aberta pelo runner: nenhuma migração abre a sua própria, e é essa inversão
+// que importa.
+//
+// Antes daqui, cada migração era responsável por duas coisas independentes —
+// decidir se já tinha rodado, e lembrar do Begin/Commit. As sondas divergiam
+// entre si (pragma_table_info numa, PRAGMA table_info com rows.Scan noutra,
+// sqlite_master numa terceira) e uma delas rodava o ALTER TABLE fora de
+// transação. A regra "toda migração em transação" nasceu do incidente de
+// 2026-07-24, em que uma migração travou no meio e o firewall da empresa ficou
+// mais de 50 minutos sem subir; deixá-la na disciplina de quem escreve a
+// próxima é confiar no que já falhou uma vez.
+type migration struct {
+	version int
+	name    string
+	up      func(*sql.Tx) error
+}
+
+// schemaMigrations é a lista ordenada e imutável. Versão nunca é reordenada nem
+// reaproveitada: bancos em produção já registraram esses números.
+//
+// As sondas de "já rodei?" continuam dentro de cada `up` de propósito. Elas são
+// redundantes com o schema_migrations num banco que passou por aqui, mas são o
+// que torna a primeira execução do runner segura em TODA instalação que já
+// existe — nelas a tabela nasce vazia, e sem sonda o runner tentaria aplicar de
+// novo dez migrações que já valem. Podem sair um release depois.
+var schemaMigrations = []migration{
+	{1, "traffic_samples para metric_samples", upTrafficSamplesToMetricSamples},
+	{2, "users.password_version", upAddPasswordVersion},
+	{3, "firewall_rules.group_id", upAddFirewallRuleGroupID},
+	{4, "firewall_groups.kind", upAddFirewallGroupKind},
+	{5, "firewall_groups.scope", upAddFirewallGroupScope},
+	{6, "firewall_groups.conn_state", upAddFirewallGroupConnState},
+	{7, "pending_firewall_change", upPendingFirewallChange},
+	{8, "pending_firewall_change.reverting_at", upAddPendingChangeRevertingAt},
+	{9, "dashboard_layout", upDashboardLayout},
+	{10, "monitoring.write nos papéis operacionais", upGrantMonitoringWrite},
+}
+
+const createSchemaMigrationsTable = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    applied_at INTEGER NOT NULL
+);`
+
+// runMigrations aplica o que ainda não foi aplicado, uma transação por
+// migração. A gravação do registro entra na MESMA transação da mudança: ou as
+// duas valem, ou nenhuma. Registrar depois abriria a janela em que a migração
+// conta como feita sem ter feito nada.
+func (db *DB) runMigrations(ms []migration) error {
+	if _, err := db.conn.Exec(createSchemaMigrationsTable); err != nil {
+		return fmt.Errorf("criar schema_migrations: %w", err)
 	}
-	if err := db.migrateAddPasswordVersion(); err != nil {
-		return fmt.Errorf("migrate add password_version: %w", err)
-	}
-	if err := db.migrateAddFirewallRuleGroupID(); err != nil {
-		return fmt.Errorf("migrate add firewall_rules.group_id: %w", err)
-	}
-	if err := db.migrateAddFirewallGroupKind(); err != nil {
-		return fmt.Errorf("migrate add firewall_groups.kind: %w", err)
-	}
-	if err := db.migrateAddFirewallGroupScope(); err != nil {
-		return fmt.Errorf("migrate add firewall_groups.scope: %w", err)
-	}
-	if err := db.migrateAddFirewallGroupConnState(); err != nil {
-		return fmt.Errorf("migrate add firewall_groups.conn_state: %w", err)
-	}
-	if err := db.migratePendingFirewallChange(); err != nil {
-		return fmt.Errorf("migrate create pending_firewall_change: %w", err)
-	}
-	if err := db.migrateAddPendingChangeRevertingAt(); err != nil {
-		return fmt.Errorf("migrate add pending_firewall_change.reverting_at: %w", err)
-	}
-	if err := db.migrateDashboardLayout(); err != nil {
-		return fmt.Errorf("migrate create dashboard_layout: %w", err)
-	}
-	if err := db.migrateGrantMonitoringWrite(); err != nil {
-		return fmt.Errorf("migrate grant monitoring.write: %w", err)
+	applied, err := db.appliedMigrations()
+	if err != nil {
+		return err
 	}
 
+	highestKnown := 0
+	for _, m := range ms {
+		if m.version > highestKnown {
+			highestKnown = m.version
+		}
+		if applied[m.version] {
+			continue
+		}
+		if err := db.applyMigration(m); err != nil {
+			return fmt.Errorf("migração %d (%s): %w", m.version, m.name, err)
+		}
+		slog.Info("migração de schema aplicada", "versao", m.version, "nome", m.name)
+	}
+
+	// Banco à frente do binário: aconteceu um downgrade, ou uma máquina leu um
+	// backup mais novo. Não é motivo para recusar o boot — um firewall que não
+	// sobe é pior do que um firewall com um schema mais novo do que ele conhece,
+	// e o SQLite tolera coluna a mais. Mas o operador precisa saber, porque é a
+	// explicação de qualquer estranheza que venha depois.
+	for v := range applied {
+		if v > highestKnown {
+			slog.Warn("o banco tem migração mais nova do que este binário conhece — provável downgrade de versão",
+				"versao_no_banco", v, "maior_versao_conhecida", highestKnown)
+		}
+	}
 	return nil
+}
+
+func (db *DB) appliedMigrations() (map[int]bool, error) {
+	rows, err := db.conn.Query(`SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("ler schema_migrations: %w", err)
+	}
+	defer rows.Close()
+	out := map[int]bool{}
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("ler schema_migrations: %w", err)
+		}
+		out[v] = true
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) applyMigration(m migration) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+	if err := m.up(tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
+		m.version, m.name, time.Now().Unix()); err != nil {
+		return fmt.Errorf("registrar a migração: %w", err)
+	}
+	return tx.Commit()
 }
 
 // migrateGrantMonitoringWrite dá monitoring.write aos papéis operacionais que já
@@ -138,22 +232,16 @@ func (db *DB) migrate() error {
 // veria a migração devolvê-la no boot seguinte. Migração que desfaz decisão do
 // operador é pior do que migração que falta. (O runner com tabela de versão da
 // issue #19 generaliza isto; até lá, o marcador é explícito aqui.)
-func (db *DB) migrateGrantMonitoringWrite() error {
+func upGrantMonitoringWrite(tx *sql.Tx) error {
 	const marker = "migration_monitoring_write_granted"
 	var already int
-	err := db.conn.QueryRow(`SELECT COUNT(*) FROM settings WHERE key = ?`, marker).Scan(&already)
+	err := tx.QueryRow(`SELECT COUNT(*) FROM settings WHERE key = ?`, marker).Scan(&already)
 	if err != nil {
 		return fmt.Errorf("checar o marcador da migração monitoring.write: %w", err)
 	}
 	if already > 0 {
 		return nil
 	}
-
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
 
 	// A lista de permissões "de escrita" é literal e fechada de propósito: um
 	// LIKE '%write%' pegaria qualquer chave futura por acidente, e este é o
@@ -181,7 +269,7 @@ func (db *DB) migrateGrantMonitoringWrite() error {
 		`INSERT INTO settings (key, value) VALUES (?, '1')`, marker); err != nil {
 		return fmt.Errorf("gravar o marcador da migração monitoring.write: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // migrateDashboardLayout cria a tabela dashboard_layout — o painel que cada
@@ -202,9 +290,9 @@ func (db *DB) migrateGrantMonitoringWrite() error {
 // que uma que não rodava travou o boot de uma máquina de produção por mais de
 // 50 minutos. Sai barata — um SELECT em sqlite_master nos boots seguintes, e
 // nada mais.
-func (db *DB) migrateDashboardLayout() error {
+func upDashboardLayout(tx *sql.Tx) error {
 	var count int
-	err := db.conn.QueryRow(
+	err := tx.QueryRow(
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashboard_layout'`,
 	).Scan(&count)
 	if err != nil {
@@ -213,23 +301,18 @@ func (db *DB) migrateDashboardLayout() error {
 	if count > 0 {
 		return nil
 	}
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
 	if _, err := tx.Exec(createDashboardLayoutTable); err != nil {
 		return fmt.Errorf("criar a tabela dashboard_layout: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // migrateAddPasswordVersion adds users.password_version if the column doesn't
 // exist yet (first ALTER TABLE ADD COLUMN in this project — every prior
 // migration was a fresh CREATE TABLE IF NOT EXISTS). Existing rows get
 // DEFAULT 1, matching a freshly created user's starting version.
-func (db *DB) migrateAddPasswordVersion() error {
-	rows, err := db.conn.Query(`PRAGMA table_info(users)`)
+func upAddPasswordVersion(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA table_info(users)`)
 	if err != nil {
 		return err
 	}
@@ -246,7 +329,7 @@ func (db *DB) migrateAddPasswordVersion() error {
 			return nil // already migrated
 		}
 	}
-	_, err = db.conn.Exec(`ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 1`)
+	_, err = tx.Exec(`ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 1`)
 	return err
 }
 
@@ -255,9 +338,9 @@ func (db *DB) migrateAddPasswordVersion() error {
 // firewallrules.MigrateRulesIntoDefaultGroup reconhece o que ainda precisa
 // ser adotado por um grupo. Em transação como toda migração deste projeto
 // (incidente de 2026-07-24).
-func (db *DB) migrateAddFirewallRuleGroupID() error {
+func upAddFirewallRuleGroupID(tx *sql.Tx) error {
 	var count int
-	err := db.conn.QueryRow(
+	err := tx.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('firewall_rules') WHERE name = 'group_id'`,
 	).Scan(&count)
 	if err != nil {
@@ -266,15 +349,10 @@ func (db *DB) migrateAddFirewallRuleGroupID() error {
 	if count > 0 {
 		return nil
 	}
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if _, err := tx.Exec(`ALTER TABLE firewall_rules ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna group_id: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // migrateAddFirewallGroupKind adiciona firewall_groups.kind em bancos que já
@@ -282,9 +360,9 @@ func (db *DB) migrateAddFirewallRuleGroupID() error {
 // trata kind vazio como grupo do admin, então toda linha criada antes desta
 // coluna existir continua se comportando exatamente como antes. Em
 // transação como toda migração deste projeto (incidente de 2026-07-24).
-func (db *DB) migrateAddFirewallGroupKind() error {
+func upAddFirewallGroupKind(tx *sql.Tx) error {
 	var count int
-	err := db.conn.QueryRow(
+	err := tx.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('firewall_groups') WHERE name = 'kind'`,
 	).Scan(&count)
 	if err != nil {
@@ -293,15 +371,10 @@ func (db *DB) migrateAddFirewallGroupKind() error {
 	if count > 0 {
 		return nil
 	}
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN kind TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna kind: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // migrateAddFirewallGroupScope adiciona firewall_groups.scope (Fase C2) em
@@ -311,9 +384,9 @@ func (db *DB) migrateAddFirewallGroupKind() error {
 // input moveria as regras dela da chain forward para a input — ou seja,
 // aplicá-las a um tráfego que o admin nunca pediu para filtrar. Em transação
 // como toda migração deste projeto (incidente de 2026-07-24).
-func (db *DB) migrateAddFirewallGroupScope() error {
+func upAddFirewallGroupScope(tx *sql.Tx) error {
 	var count int
-	err := db.conn.QueryRow(
+	err := tx.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('firewall_groups') WHERE name = 'scope'`,
 	).Scan(&count)
 	if err != nil {
@@ -322,15 +395,10 @@ func (db *DB) migrateAddFirewallGroupScope() error {
 	if count > 0 {
 		return nil
 	}
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN scope TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna scope: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // migrateAddFirewallGroupConnState adiciona firewall_groups.conn_state em
@@ -348,9 +416,9 @@ func (db *DB) migrateAddFirewallGroupScope() error {
 // que uma migração sem transação travou o boot de uma máquina de produção por
 // mais de 50 minutos). Sai barata: um SELECT em pragma_table_info nos boots
 // seguintes, e nada mais.
-func (db *DB) migrateAddFirewallGroupConnState() error {
+func upAddFirewallGroupConnState(tx *sql.Tx) error {
 	var count int
-	err := db.conn.QueryRow(
+	err := tx.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('firewall_groups') WHERE name = 'conn_state'`,
 	).Scan(&count)
 	if err != nil {
@@ -359,15 +427,10 @@ func (db *DB) migrateAddFirewallGroupConnState() error {
 	if count > 0 {
 		return nil
 	}
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
 	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN conn_state TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna conn_state: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // migratePendingFirewallChange cria a tabela pending_firewall_change (Fase
@@ -393,9 +456,9 @@ func (db *DB) migrateAddFirewallGroupConnState() error {
 // uma janela com outra já aberta empilharia pendentes e "reverter ao estado
 // anterior" viraria uma pergunta sem resposta — anterior a qual das duas
 // mudanças? (spec §5.3).
-func (db *DB) migratePendingFirewallChange() error {
+func upPendingFirewallChange(tx *sql.Tx) error {
 	var count int
-	err := db.conn.QueryRow(
+	err := tx.QueryRow(
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_firewall_change'`,
 	).Scan(&count)
 	if err != nil {
@@ -404,15 +467,10 @@ func (db *DB) migratePendingFirewallChange() error {
 	if count > 0 {
 		return nil
 	}
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
 	if _, err := tx.Exec(createPendingFirewallChangeTable); err != nil {
 		return fmt.Errorf("criar a tabela pending_firewall_change: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // migrateAddPendingChangeRevertingAt adiciona pending_firewall_change.reverting_at
@@ -434,9 +492,9 @@ func (db *DB) migratePendingFirewallChange() error {
 // definição, uma janela cuja reversão ainda não começou.
 //
 // Em transação como toda migração deste projeto (incidente de 2026-07-24).
-func (db *DB) migrateAddPendingChangeRevertingAt() error {
+func upAddPendingChangeRevertingAt(tx *sql.Tx) error {
 	var count int
-	err := db.conn.QueryRow(
+	err := tx.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('pending_firewall_change') WHERE name = 'reverting_at'`,
 	).Scan(&count)
 	if err != nil {
@@ -445,15 +503,10 @@ func (db *DB) migrateAddPendingChangeRevertingAt() error {
 	if count > 0 {
 		return nil
 	}
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
 	if _, err := tx.Exec(`ALTER TABLE pending_firewall_change ADD COLUMN reverting_at INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return fmt.Errorf("adicionar coluna reverting_at: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // migrateTrafficSamplesToMetricSamples copies every row from the legacy
@@ -468,9 +521,9 @@ func (db *DB) migrateAddPendingChangeRevertingAt() error {
 // populated table away) rather than "rename an empty shell" — which would
 // otherwise collide with traffic_samples_pre_tsdb_migration on every boot
 // after the real one.
-func (db *DB) migrateTrafficSamplesToMetricSamples() error {
+func upTrafficSamplesToMetricSamples(tx *sql.Tx) error {
 	var exists int
-	err := db.conn.QueryRow(`
+	err := tx.QueryRow(`
 		SELECT COUNT(*) FROM sqlite_master
 		WHERE type='table' AND name='traffic_samples'`).Scan(&exists)
 	if err != nil {
@@ -480,7 +533,7 @@ func (db *DB) migrateTrafficSamplesToMetricSamples() error {
 		return nil // already migrated on a prior boot, or fresh install
 	}
 
-	rows, err := db.conn.Query(`SELECT interface, step_seconds, ts_unix, rx_bps, tx_bps FROM traffic_samples`)
+	rows, err := tx.Query(`SELECT interface, step_seconds, ts_unix, rx_bps, tx_bps FROM traffic_samples`)
 	if err != nil {
 		return err
 	}
@@ -517,7 +570,7 @@ func (db *DB) migrateTrafficSamplesToMetricSamples() error {
 	}
 
 	// A production box can carry months of retained history here (one real
-	// deploy hit 105k+ legacy rows -> up to ~211k upserts). Each db.conn.Exec
+	// deploy hit 105k+ legacy rows -> up to ~211k upserts). Each tx.Exec
 	// call is its own implicit auto-commit transaction, and under WAL mode
 	// that means one fsync per row -- on real disks that turned a first-boot
 	// migration that should take seconds into something still not finished
@@ -525,11 +578,6 @@ func (db *DB) migrateTrafficSamplesToMetricSamples() error {
 	// rest of run(): the secrets vault, the HTTP server, the link monitor)
 	// for the whole time. Wrapping every upsert plus the rename in ONE
 	// transaction reduces this to a single commit/fsync at the end.
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO metric_samples (series, label, step_seconds, ts_unix, v_min, v_avg, v_max)
@@ -554,14 +602,23 @@ func (db *DB) migrateTrafficSamplesToMetricSamples() error {
 		return err
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 // MigrateTrafficSamplesToMetricSamplesForTest exposes the migration for tests
-// in the storage_test package (which cannot call the unexported method
-// directly). Test-only.
+// in the storage_test package (which cannot call the unexported function
+// directly). Test-only. Abre a transação por conta própria porque o runner não
+// está no caminho: o teste chama a migração isolada, de propósito.
 func (db *DB) MigrateTrafficSamplesToMetricSamplesForTest() error {
-	return db.migrateTrafficSamplesToMetricSamples()
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+	if err := upTrafficSamplesToMetricSamples(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
@@ -903,3 +960,18 @@ CREATE TABLE IF NOT EXISTS firewall_rules (
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
+
+// runOneMigrationForTest aplica uma única `up` numa transação, sem passar pelo
+// runner nem tocar em schema_migrations. Test-only: existe para os testes que
+// exercitam UMA migração isolada, e não a sequência do boot.
+func (db *DB) runOneMigrationForTest(up func(*sql.Tx) error) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois de um Commit bem-sucedido
+	if err := up(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
