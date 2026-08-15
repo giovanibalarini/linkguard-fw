@@ -71,7 +71,8 @@ func (e *fakeReconcileExec) ExecuteRead(_ context.Context, cmd string, args ...s
 	}
 	return "", e.readErr
 }
-func (e *fakeReconcileExec) IsDryRun() bool { return e.dryRun }
+func (e *fakeReconcileExec) IsDryRun() bool                              { return e.dryRun }
+func (_ *fakeReconcileExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func ranCommand(executed []string, want string) bool {
 	for _, c := range executed {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,7 +27,8 @@ func (e *reconcileSpyExec) Execute(_ context.Context, cmd string, args ...string
 func (e *reconcileSpyExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
 	return "", nil
 }
-func (e *reconcileSpyExec) IsDryRun() bool { return false }
+func (e *reconcileSpyExec) IsDryRun() bool                              { return false }
+func (_ *reconcileSpyExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func (e *reconcileSpyExec) sawMasqueradeFor(iface string) bool {
 	for _, c := range e.executed {

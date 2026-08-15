@@ -16,6 +16,7 @@ import (
 
 // recExec records write commands and lets tests control the kea config-test.
 type recExec struct {
+	wrote       []string
 	writes      []string
 	keaTestErr  error  // returned by `kea-dhcp4 -t` if set
 	keaTestPath string // records the file path validateKea passed to `-t`
@@ -114,6 +115,15 @@ func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (st
 	return "", nil
 }
 func (e *recExec) IsDryRun() bool { return false }
+
+// Este executor NÃO é dry-run, então ele grava de verdade — os testes abaixo
+// conferem o conteúdo dos arquivos gerados, em diretório temporário. É também
+// o que mantém a asserção honesta: se WriteFile fosse no-op aqui, os testes
+// passariam sem que nada tivesse sido escrito.
+func (e *recExec) WriteFile(path string, data []byte, perm os.FileMode) error {
+	e.wrote = append(e.wrote, path)
+	return os.WriteFile(path, data, perm)
+}
 
 func newTestSvc(t *testing.T, e *recExec) *Service {
 	t.Helper()

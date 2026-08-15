@@ -118,7 +118,8 @@ func (e *restoreExec) ExecuteRead(_ context.Context, cmd string, args ...string)
 	return "", nil
 }
 
-func (e *restoreExec) IsDryRun() bool { return false }
+func (e *restoreExec) IsDryRun() bool                              { return false }
+func (_ *restoreExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func TestRestoreNeverFlushesTheWholeRulesetNorForeignTables(t *testing.T) {
 	exec := &restoreExec{}

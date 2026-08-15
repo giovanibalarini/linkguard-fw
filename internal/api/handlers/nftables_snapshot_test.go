@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"context"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,7 +35,8 @@ func (f *fakeNftExec) ExecuteRead(_ context.Context, cmd string, args ...string)
 	}
 	return "", nil
 }
-func (f *fakeNftExec) IsDryRun() bool { return false }
+func (f *fakeNftExec) IsDryRun() bool                              { return false }
+func (_ *fakeNftExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func newNftTestHandler(t *testing.T, ruleset string) (*handlers.NftablesHandler, *storage.DB) {
 	t.Helper()

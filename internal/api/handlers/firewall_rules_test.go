@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,7 +33,8 @@ func (e *recordingRuleExec) ExecuteRead(_ context.Context, cmd string, args ...s
 		"\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t}\n" +
 		"\tchain " + testGroupChain + " {\n\t}\n}\n", nil
 }
-func (e *recordingRuleExec) IsDryRun() bool { return false }
+func (e *recordingRuleExec) IsDryRun() bool                              { return false }
+func (_ *recordingRuleExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func newFirewallRulesTestHandler(t *testing.T) (*handlers.NftablesHandler, *storage.DB, *recordingRuleExec) {
 	t.Helper()

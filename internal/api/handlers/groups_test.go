@@ -151,7 +151,8 @@ func (f *fakeNft) ExecuteRead(_ context.Context, cmd string, args ...string) (st
 	return "", nil
 }
 
-func (f *fakeNft) IsDryRun() bool { return false }
+func (f *fakeNft) IsDryRun() bool                              { return false }
+func (_ *fakeNft) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 // check roda o script de `nft -c -f` contra uma CÓPIA do estado: um dry run
 // não materializa nada, mas enxerga o que o script cria dentro dele mesmo

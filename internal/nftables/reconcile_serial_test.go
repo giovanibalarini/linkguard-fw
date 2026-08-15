@@ -17,6 +17,7 @@ package nftables
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -65,7 +66,8 @@ func (e *serialExec) ExecuteRead(ctx context.Context, cmd string, args ...string
 	return "", nil
 }
 
-func (e *serialExec) IsDryRun() bool { return false }
+func (e *serialExec) IsDryRun() bool                              { return false }
+func (_ *serialExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func (e *serialExec) lines() []string {
 	e.mu.Lock()
