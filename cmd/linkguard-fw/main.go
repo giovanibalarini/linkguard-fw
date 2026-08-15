@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -715,11 +716,29 @@ func run() int {
 	// numa tabela de no máximo uma linha.
 	go frSvc.WatchPending(ctx, 5*time.Second)
 
+	// As goroutines que ESCREVEM no banco são esperadas no desligamento; as de
+	// leitura pura, não.
+	//
+	// A distinção é o ponto: `httpServer.Shutdown` espera as requisições HTTP e
+	// o processo sai, abandonando as goroutines onde estiverem. Para quem só lê
+	// (monitor de link, leitura do journal) isso é inofensivo. Para quem tem
+	// estado em memória para gravar, não é — o tsdb perdia o balde da janela
+	// corrente a cada reinício, e o auto-update reinicia.
+	var writers sync.WaitGroup
+	spawnWriter := func(name string, fn func()) {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			fn()
+			slog.Debug("goroutine de escrita encerrada", "nome", name)
+		}()
+	}
+
 	go monitor.Run(ctx)
-	go metricsCollector.Run(ctx, interval)
-	go rrdSvc.Run(ctx)
+	spawnWriter("metrics", func() { metricsCollector.Run(ctx, interval) })
+	spawnWriter("tsdb", func() { rrdSvc.Run(ctx) })
 	go balancerSvc.Run(ctx)
-	go backupSched.Run(ctx)
+	spawnWriter("backup", func() { backupSched.Run(ctx) })
 	go journalSched.Run(ctx)
 	go updatesSched.Run(ctx)
 	go netifSvc.RunExpirySweep(ctx, 10*time.Second)
@@ -760,12 +779,34 @@ func run() int {
 		}
 		serve = func() error { return httpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey) }
 	}
-	if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("server failed", "err", err)
+	serveErr := serve()
+
+	// Só depois que o HTTP parou: dar às goroutines de escrita a chance de
+	// gravar o que têm em memória. O teto é curto de propósito — o systemd
+	// manda SIGKILL depois do TimeoutStopSec, e é melhor perder o resíduo de
+	// uma delas do que atrasar o desligamento inteiro do serviço.
+	if !waitTimeout(&writers, 3*time.Second) {
+		slog.Warn("desligando com goroutine de escrita ainda em andamento; algum dado em memória pode não ter sido gravado")
+	}
+
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		slog.Error("server failed", "err", serveErr)
 		return 1
 	}
 	slog.Info("linkguard-fw stopped")
 	return 0
+}
+
+// waitTimeout espera o WaitGroup, devolvendo false se o prazo estourar antes.
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // seedDefaultRoles seeds the built-in RBAC roles (defined in the auth catalog)
