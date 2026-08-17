@@ -102,7 +102,7 @@ export default function Alerts() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-4">
                   <p className="text-white font-medium">{alert.title}</p>
-                  <span className="text-gray-600 text-xs flex-shrink-0">
+                  <span className="text-gray-600 text-xs shrink-0">
                     {new Date(alert.created_at).toLocaleString()}
                   </span>
                 </div>
@@ -113,7 +113,7 @@ export default function Alerts() {
                   </p>
                 )}
               </div>
-              <div className="flex items-center gap-3 flex-shrink-0">
+              <div className="flex items-center gap-3 shrink-0">
                 <Link
                   to={`/monitoring?at=${encodeURIComponent(alert.created_at)}`}
                   className="text-gray-500 hover:text-blue-400 transition-colors"

@@ -509,7 +509,7 @@ export default function Links() {
         open={showWizard}
         onClose={() => setShowWizard(false)}
         size="lg"
-        className="rounded-2xl border border-blue-500/30 bg-gradient-to-b from-gray-900 to-gray-950 shadow-2xl"
+        className="rounded-2xl border border-blue-500/30 bg-linear-to-b from-gray-900 to-gray-950 shadow-2xl"
         title={
           <div>
             <span className="text-white font-semibold flex items-center gap-2">

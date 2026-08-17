@@ -60,7 +60,7 @@ export default function InterfaceReview() {
 
       {preview.warnings.map((w, i) => (
         <div key={i} className="flex items-start gap-3 px-4 py-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-sm">
-          <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+          <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
           <span>{w}</span>
         </div>
       ))}

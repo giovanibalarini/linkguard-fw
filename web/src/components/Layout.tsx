@@ -119,7 +119,7 @@ export default function Layout() {
             }`
           }
         >
-          <Icon className="w-4 h-4 flex-shrink-0" />
+          <Icon className="w-4 h-4 shrink-0" />
           {t(label)}
         </NavLink>
       </li>
@@ -216,7 +216,7 @@ export default function Layout() {
         {/* User / Logout */}
         <div className="px-3 py-4">
           <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-gray-800">
-            <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+            <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
               {user?.username?.[0]?.toUpperCase() ?? 'U'}
             </div>
             <div className="flex-1 min-w-0">
@@ -225,7 +225,7 @@ export default function Layout() {
             </div>
             <button
               onClick={handleLogout}
-              className="text-gray-500 hover:text-red-400 transition-colors flex-shrink-0"
+              className="text-gray-500 hover:text-red-400 transition-colors shrink-0"
               title={t('action.logout')}
               aria-label={t('action.logout')}
             >
@@ -238,7 +238,7 @@ export default function Layout() {
       {/* Main column */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Mobile top bar with hamburger */}
-        <header className="lg:hidden flex items-center gap-3 px-4 h-14 bg-gray-900 border-b border-gray-800 flex-shrink-0">
+        <header className="lg:hidden flex items-center gap-3 px-4 h-14 bg-gray-900 border-b border-gray-800 shrink-0">
           <button
             onClick={() => setSidebarOpen(true)}
             className="text-gray-300 hover:text-white"
@@ -247,20 +247,20 @@ export default function Layout() {
             <Menu className="w-6 h-6" />
           </button>
           <div className="flex items-center gap-2 min-w-0">
-            <ShieldCheck className="w-5 h-5 text-blue-500 flex-shrink-0" />
+            <ShieldCheck className="w-5 h-5 text-blue-500 shrink-0" />
             <span className="text-white font-semibold text-sm truncate">{currentLabel}</span>
           </div>
         </header>
 
         {/* Security nudge: still using the default admin account */}
         {user?.username === 'admin' && showSecWarn && (
-          <div className="flex items-start gap-3 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-sm flex-shrink-0">
-            <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <div className="flex items-start gap-3 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-sm shrink-0">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <p className="flex-1">
               Você está usando a conta padrão <span className="font-semibold">admin</span>. Crie usuários nominais e troque a senha em{' '}
               <NavLink to="/admin" className="underline font-medium hover:text-amber-200">Administração</NavLink>.
             </p>
-            <button onClick={() => setShowSecWarn(false)} className="text-amber-400 hover:text-amber-200 flex-shrink-0" aria-label="Dispensar aviso" title="Dispensar">
+            <button onClick={() => setShowSecWarn(false)} className="text-amber-400 hover:text-amber-200 shrink-0" aria-label="Dispensar aviso" title="Dispensar">
               <X className="w-4 h-4" />
             </button>
           </div>

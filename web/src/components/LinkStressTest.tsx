@@ -186,7 +186,7 @@ export default function LinkStressTest({ links, canRun }: Props) {
                 {samples.map((s, i) => (
                   <div key={i}
                     title={`${s.t} · ${s.phase}\nping ${s.ping ? 'ok' : 'FALHA'} · dns ${s.dns ? 'ok' : 'FALHA'}\n${s.route}`}
-                    className={`w-2.5 h-6 rounded-sm ${
+                    className={`w-2.5 h-6 rounded-xs ${
                       s.phase === 'baseline' ? 'bg-gray-600' :
                       !s.ping || !s.dns ? 'bg-red-500' :
                       s.phase === 'fault' ? 'bg-amber-500' : 'bg-green-500'
@@ -194,10 +194,10 @@ export default function LinkStressTest({ links, canRun }: Props) {
                 ))}
               </div>
               <div className="flex gap-3 mt-1.5 text-[11px] text-gray-500">
-                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-gray-600" /> baseline</span>
-                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-500" /> falha</span>
-                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-green-500" /> recuperação</span>
-                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-500" /> perda (ping/DNS)</span>
+                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-xs bg-gray-600" /> baseline</span>
+                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-xs bg-amber-500" /> falha</span>
+                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-xs bg-green-500" /> recuperação</span>
+                <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-xs bg-red-500" /> perda (ping/DNS)</span>
               </div>
             </div>
           )}

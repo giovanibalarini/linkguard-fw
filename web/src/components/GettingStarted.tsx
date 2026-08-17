@@ -120,7 +120,7 @@ export default function GettingStarted({ onDismiss }: { onDismiss?: () => void }
   };
 
   return (
-    <div className="card h-full overflow-y-auto border border-blue-500/30 bg-gradient-to-b from-blue-500/5 to-transparent">
+    <div className="card h-full overflow-y-auto border border-blue-500/30 bg-linear-to-b from-blue-500/5 to-transparent">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           {allDone ? <PartyPopper className="w-5 h-5 text-green-400" /> : <GraduationCap className="w-5 h-5 text-blue-400" />}

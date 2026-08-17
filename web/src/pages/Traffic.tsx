@@ -272,7 +272,7 @@ export default function Traffic() {
                       <div className="min-w-0 sm:flex-1 sm:basis-40">
                         <div className="flex items-center gap-2 min-w-0">
                           <span
-                            className={`h-2 w-2 rounded-full flex-shrink-0 ${isActive ? 'bg-blue-400' : 'bg-gray-700'}`}
+                            className={`h-2 w-2 rounded-full shrink-0 ${isActive ? 'bg-blue-400' : 'bg-gray-700'}`}
                             aria-hidden="true"
                           />
                           <span className="text-white text-sm font-medium truncate">{f.alias || f.name}</span>
@@ -291,7 +291,7 @@ export default function Traffic() {
                         </span>
                       </div>
 
-                      <div className="hidden sm:block flex-shrink-0">
+                      <div className="hidden sm:block shrink-0">
                         {f.loading ? (
                           <div className="w-[120px] h-[28px] flex items-center justify-center text-gray-600 text-[11px] animate-pulse">
                             ...
