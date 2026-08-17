@@ -11,7 +11,7 @@ Após morar com minha esposa e ambos trabalharem remoto dependi ainda mais de li
 Como resolver para que os links trabalhassem em failover ou em paralelo?
 Trabalhei muito tempo com linux e provedores de internet sem uso de appliance e tive a oportunidade de trabalhar e gerenciar firewalls com multiplas interfaces usando iptables com chains (FILTER,NAT,MANGLE), iproute2, isc-dhcp-server, bind9 como soluçoes. Sempre funcionaram muito bem porem dependiam de muitos scripts para funcionar e nao era garantia de funcionar 100%.
 
-Com o uso de IA me permitiu desenvolver em tempo record uma soluçao madura dentro de caso com meu super firewall Pentium com 4 CPUs, 4 GB de RAM e 250 de HD de disco (Magnetico) de 7200RPM. Era uma maquina usada de um escritorio e essa maquina existe a mais de pelo menos 8 anos. Adicionei 2 placas de rede e dei inicou ao desenvolvimento.
+Com o uso de IA me permitiu desenvolver em tempo record uma soluçao madura dentro de caso com meu super firewall: um Intel Core i3-3220 de 2012 (2 nucleos / 4 threads a 3.30 GHz), 4 GB de RAM e um HD magnetico de 250 GB a 7200 RPM. Era uma maquina usada de um escritorio e ja passa dos 13 anos de idade. Adicionei 2 placas de rede e dei inicou ao desenvolvimento.
 
 Logo nasce o linkguard, soluçao robusta para redundancia e balanceamento de link e monitoramento proativo.
 
@@ -24,9 +24,64 @@ After moving in with my wife, with both of us working remotely, I depended even 
 How to solve it so the links would work in failover or in parallel?
 I worked for a long time with Linux and Internet providers without using an appliance, and had the opportunity to work with and manage firewalls with multiple interfaces using iptables with chains (FILTER, NAT, MANGLE), iproute2, isc-dhcp-server, bind9 as solutions. They always worked very well, but depended on a lot of scripts to function, and there was no guarantee they would work 100%.
 
-Using AI allowed me to develop a mature solution in record time, as a real case on my super firewall: a Pentium with 4 CPUs, 4 GB of RAM and a 250 GB (magnetic) 7200RPM hard disk. It was a used office machine, and this machine has existed for at least 8 years. I added 2 network cards and started development.
+Using AI allowed me to develop a mature solution in record time, as a real case on my super firewall: a 2012 Intel Core i3-3220 (2 cores / 4 threads at 3.30 GHz), 4 GB of RAM and a 250 GB (magnetic) 7200 RPM hard disk. It was a used office machine, and it is already past 13 years old. I added 2 network cards and started development.
 
 Thus LinkGuard was born, a robust solution for link redundancy and balancing, with proactive monitoring.
+
+## Em produção hoje / Running in production today
+
+**🇧🇷** A mesma máquina segue de pé, rodando 24/7 como firewall de borda da
+casa. O disco magnético original deu lugar a um SSD, mas o resto do hardware é
+o de sempre — a ideia é justamente essa: hardware de 2012 dá conta.
+
+**🇺🇸** The same machine is still standing, running 24/7 as the home's edge
+firewall. The original magnetic disk gave way to an SSD, but the rest of the
+hardware is the same as always — that is exactly the point: 2012 hardware is
+enough.
+
+<table>
+<tr>
+<td valign="top">
+
+| | |
+|---|---|
+| CPU | Intel Core i3-3220 @ 3.30 GHz — 2 cores / 4 threads (Ivy Bridge, 2012) |
+| RAM | 4 GB |
+| Disco / Disk | SSD 512 GB (boot) + HD 250 GB 7200 RPM (o original / the original) |
+| Rede / Network | 2 links WAN + LAN, todas gigabit / all gigabit |
+| SO / OS | Debian 13 (Trixie), kernel 6.12 |
+| LinkGuard | 1.0.102 |
+
+**🇧🇷** Sem rack, sem nobreak, sem sala refrigerada: um desktop de escritório
+aposentado, de pé num canto, com duas placas de rede a mais. Os LEDs piscando
+são os dois links de Internet passando tráfego de verdade.
+
+**🇺🇸** No rack, no UPS, no cooled room: a retired office desktop standing in a
+corner with two extra network cards. The blinking LEDs are the two Internet
+links actually passing traffic.
+
+</td>
+<td width="360" valign="top">
+
+![O firewall em produção / The firewall in production](docs/images/firewall-em-producao.gif)
+
+</td>
+</tr>
+</table>
+
+## Telas / Screenshots
+
+**🇧🇷** Painel, tráfego e a janela de confirmação que evita você se trancar
+para fora. **🇺🇸** Dashboard, traffic, and the confirmation window that keeps
+you from locking yourself out.
+
+| Painel / Dashboard | Tráfego / Traffic |
+|---|---|
+| ![Dashboard](docs/images/dashboard.png) | ![Tráfego](docs/images/traffic.png) |
+
+| Confirmar ou reverter / Confirm or revert | Widgets do painel / Dashboard widgets |
+|---|---|
+| ![Janela de confirmação](docs/images/confirm-window.png) | ![Catálogo de widgets](docs/images/widget-catalog.png) |
 
 ## Futuro do Projeto
 
