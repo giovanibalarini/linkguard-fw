@@ -103,25 +103,35 @@ func TestUpsertDHCPReservationAcceptsEmptyHostname(t *testing.T) {
 	}
 }
 
-// A chave é o MAC, então dois MACs diferentes podem reivindicar o mesmo IP.
-// O banco não impede — quem chama é que precisa validar (aqui só fixamos o
-// contrato para que uma mudança de comportamento apareça).
-func TestUpsertDHCPReservationDoesNotPreventDuplicateIP(t *testing.T) {
+// Este teste nasceu na #41 fixando o contrato de então — "o banco não impede
+// IP repetido; quem chama é que precisa validar" — e a frase seguinte era "para
+// que uma mudança de comportamento apareça". Ela apareceu: virou a issue #59, e
+// a #59 foi corrigida. Agora o banco impede.
+//
+// A inversão fica AQUI, e não num arquivo novo, porque é este teste que a
+// próxima pessoa vai encontrar ao procurar o contrato do IP duplicado. Deixá-lo
+// afirmando o defeito, com a correção provada só noutro lugar, é como se cria
+// uma contradição que ninguém sabe qual lado está valendo.
+//
+// A rede completa da #59 (o MAC dono na mensagem, a reedição da própria
+// reserva, o boot com base suja e o índice que nasce depois) está em
+// dhcp_ip_unico_test.go.
+func TestUpsertDHCPReservationRejeitaIPDeOutroMAC(t *testing.T) {
 	db := newTestDB(t)
 
 	if err := db.UpsertDHCPReservation("aa:bb:cc:dd:ee:04", "192.168.3.60", "host-a"); err != nil {
 		t.Fatalf("UpsertDHCPReservation a: %v", err)
 	}
-	if err := db.UpsertDHCPReservation("aa:bb:cc:dd:ee:05", "192.168.3.60", "host-b"); err != nil {
-		t.Fatalf("UpsertDHCPReservation b: %v", err)
+	if err := db.UpsertDHCPReservation("aa:bb:cc:dd:ee:05", "192.168.3.60", "host-b"); err == nil {
+		t.Fatal("o mesmo IP foi aceito para um segundo MAC — dois aparelhos disputando o endereço na LAN")
 	}
 
 	list, err := db.ListDHCPReservations()
 	if err != nil {
 		t.Fatalf("ListDHCPReservations: %v", err)
 	}
-	if len(list) != 2 {
-		t.Fatalf("esperava 2 reservas (o storage não desduplica IP), veio %d", len(list))
+	if len(list) != 1 {
+		t.Fatalf("esperava só a primeira reserva, veio %d", len(list))
 	}
 }
 

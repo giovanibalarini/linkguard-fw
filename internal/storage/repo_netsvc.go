@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,15 +29,63 @@ func (db *DB) ListDHCPReservations() ([]DHCPReservation, error) {
 	return out, rows.Err()
 }
 
+// ErrDHCPIPTaken diz que o IP pedido já pertence à reserva de OUTRO MAC.
+//
+// Carrega o MAC dono porque sem ele o erro é inútil na tela: o admin descobre
+// que não pode usar aquele IP e não descobre qual reserva remover para poder.
+type ErrDHCPIPTaken struct {
+	IP       string
+	OwnerMAC string
+}
+
+func (e *ErrDHCPIPTaken) Error() string {
+	return fmt.Sprintf("o IP %s já está reservado para o MAC %s", e.IP, e.OwnerMAC)
+}
+
 // UpsertDHCPReservation creates or updates a reservation (keyed by MAC).
+//
+// Recusa o IP que já é de outro MAC (issue #59). A tabela só tinha PK em `mac`,
+// e o handler só validava que MAC e IP parseavam — dois equipamentos podiam
+// reivindicar o mesmo endereço, o kea aceitava a configuração gerada e
+// entregava o IP para os dois. O sintoma que chega ao admin não é "reserva
+// duplicada": é conflito de endereço intermitente, que só aparece com os dois
+// aparelhos ligados ao mesmo tempo, e é dos mais caros de diagnosticar numa
+// rede.
+//
+// A checagem e a escrita vão na MESMA transação, e não em duas chamadas: entre
+// um SELECT solto e o INSERT cabe a requisição de outro admin, que é justamente
+// a corrida que a duplicata precisa para nascer. O índice único da migração 12
+// é a rede de baixo; esta transação é o que dá a mensagem com o MAC dono, que o
+// índice não teria como dar.
 func (db *DB) UpsertDHCPReservation(mac, ip, hostname string) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op depois do Commit
+
+	// `mac != ?` é o que mantém a troca de IP da PRÓPRIA reserva funcionando:
+	// sem isso, reeditar um host para o mesmo IP que ele já tem seria recusado.
+	var owner string
+	err = tx.QueryRow(
+		`SELECT mac FROM dhcp_reservations WHERE ip = ? AND mac != ? LIMIT 1`,
+		ip, mac).Scan(&owner)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		return &ErrDHCPIPTaken{IP: ip, OwnerMAC: owner}
+	}
+
 	now := time.Now()
-	_, err := db.conn.Exec(`
+	if _, err := tx.Exec(`
 		INSERT INTO dhcp_reservations (mac, ip, hostname, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(mac) DO UPDATE SET ip = excluded.ip, hostname = excluded.hostname, updated_at = excluded.updated_at`,
-		mac, ip, hostname, now, now)
-	return err
+		mac, ip, hostname, now, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // DeleteDHCPReservation removes a reservation by MAC.

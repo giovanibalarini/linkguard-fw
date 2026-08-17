@@ -87,7 +87,78 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	return db.runMigrations(schemaMigrations)
+	if err := db.runMigrations(schemaMigrations); err != nil {
+		return err
+	}
+
+	return db.ensureUniqueDHCPReservationIP()
+}
+
+// ensureUniqueDHCPReservationIP cria o índice único de dhcp_reservations.ip
+// (issue #59) quando — e só quando — a base já está limpa.
+//
+// A tabela tinha PK só em `mac`, então dois MACs podiam reivindicar o mesmo
+// endereço. O kea aceitava a configuração gerada e entregava o IP aos dois; o
+// que chegava ao admin não era "reserva duplicada", era conflito de endereço
+// intermitente, visível só com os dois aparelhos ligados juntos.
+//
+// A defesa que vale para toda escrita do produto é a transação em
+// UpsertDHCPReservation. Este índice é a rede de baixo, para o que escrever no
+// banco por fora dela.
+//
+// POR QUE NÃO É UMA MIGRAÇÃO VERSIONADA. `CREATE UNIQUE INDEX` sobre uma tabela
+// que JÁ tem duplicata falha, e migração que falha no boot não é um erro de
+// índice: é o firewall não subir por causa de dado que já estava lá — a classe
+// do incidente de 2026-07-24. E o runner registra a migração como aplicada
+// assim que ela retorna sem erro, então uma migração que "pulasse" o índice
+// nunca mais seria tentada: o índice não existiria para sempre, em silêncio.
+//
+// Aqui roda a cada boot, o que torna a espera real. Com duplicata, ANOTA no log
+// qual é (o IP e os MACs) e segue sem criar. Quando o admin resolver o conflito
+// pela tela, o boot seguinte cria o índice sozinho, sem ninguém pedir.
+//
+// As duas saídas que não foram escolhidas, de propósito: falhar o boot tira do
+// admin justamente o painel com que ele resolveria o conflito; e apagar a
+// duplicata sozinho decide por ele qual das duas reservas morre — o que pode
+// ser o aparelho que dependia daquele endereço fixo.
+func (db *DB) ensureUniqueDHCPReservationIP() error {
+	rows, err := db.conn.Query(`
+		SELECT ip, COUNT(*) AS n, GROUP_CONCAT(mac, ', ')
+		  FROM dhcp_reservations
+		 GROUP BY ip
+		HAVING n > 1`)
+	if err != nil {
+		return fmt.Errorf("procurar reservas DHCP com IP repetido: %w", err)
+	}
+	duplicados := 0
+	for rows.Next() {
+		var ip, macs string
+		var n int
+		if err := rows.Scan(&ip, &n, &macs); err != nil {
+			rows.Close() //nolint:errcheck // já estamos devolvendo erro
+			return fmt.Errorf("ler as reservas DHCP repetidas: %w", err)
+		}
+		duplicados++
+		slog.Warn("reservas DHCP com o mesmo IP — dois aparelhos vão disputar o endereço",
+			"ip", ip, "macs", macs, "reservas", n)
+	}
+	rows.Close() //nolint:errcheck // leitura terminada
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("ler as reservas DHCP repetidas: %w", err)
+	}
+
+	if duplicados > 0 {
+		slog.Warn("remova a reserva sobrando em DHCP → Reservas; o serviço sobe normalmente e o índice é criado no próximo boot",
+			"ips_em_conflito", duplicados)
+		return nil
+	}
+
+	if _, err := db.conn.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_dhcp_reservations_ip ON dhcp_reservations(ip)`,
+	); err != nil {
+		return fmt.Errorf("criar o índice único de dhcp_reservations.ip: %w", err)
+	}
+	return nil
 }
 
 // ─── Runner de migração ──────────────────────────────────────────────────────
