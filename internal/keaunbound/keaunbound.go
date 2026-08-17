@@ -842,19 +842,19 @@ func ParseKeaLeases(content string) []netsvc.Lease {
 	return out
 }
 
-// reUnboundDomain mirrors internal/api/handlers's own reDNSDomain (same
-// charset, same rationale): single-label names ("lan", "localhost") and
-// underscore labels ("_dmarc.example.com") are legitimate, but anything
-// outside [a-z0-9._-] — quotes, spaces, ';', and critically a newline — must
-// be rejected, because the value is concatenated straight into a
-// local-zone/access-control/interface directive in unbound.conf. Duplicated
-// here rather than imported: this package (internal/keaunbound) is the
-// generic Provider implementation imported from cmd/, and
-// internal/api/handlers already imports internal/netsvc (this package's
-// interface) — importing the handlers package back from here would invert
-// that dependency for the sake of one shared regex. See GenerateUnboundConfig
-// for why this check has to live here too, independent of whatever the
-// handler already did.
+// reUnboundDomain mirrors internal/validate's own reDNSDomain (same charset,
+// same rationale): single-label names ("lan", "localhost") and underscore
+// labels ("_dmarc.example.com") are legitimate, but anything outside
+// [a-z0-9._-] — quotes, spaces, ';', and critically a newline — must be
+// rejected, because the value is concatenated straight into a
+// local-zone/access-control/interface directive in unbound.conf.
+//
+// Duplicated here on purpose: este é o ponto de renderização, e a checagem tem
+// de valer independentemente do que qualquer chamador já tenha validado antes
+// (ver GenerateUnboundConfig). Até 2026-08-17 a outra cópia morava em
+// internal/api/handlers e a duplicação era ainda obrigatória por ciclo de
+// importação; hoje internal/validate é folha e poderia ser importado — a cópia
+// fica por defesa em profundidade, não por impedimento.
 var reUnboundDomain = regexp.MustCompile(`^[a-z0-9_]([a-z0-9._-]*[a-z0-9_])?$`)
 
 func validRenderDomain(d string) bool {
@@ -870,13 +870,14 @@ func validRenderDomain(d string) bool {
 //
 // Every value this function interpolates by string concatenation is
 // re-validated here, not just trusted from the caller: internal/api/handlers
-// validates at the point an admin saves a value (validDomain, validIface,
-// net.ParseIP/ParseCIDR — see netsvc.go), but this function is the last
+// validates at the point an admin saves a value (validate.Domain,
+// validate.Iface, net.ParseIP/ParseCIDR — see internal/validate), but this
+// function is the last
 // place before a root daemon (unbound) reads the result, and it has callers
 // that skip the handler entirely — most concretely, a restored backup
-// (internal/api/handlers/backup.go), whose settings/blocklist entries went
+// (internal/backup), whose settings/blocklist entries went
 // straight to the DB with no validator in front of them before this fix,
-// and any row written under an older, laxer rule (validDomain's own doc
+// and any row written under an older, laxer rule (validate.Domain's own doc
 // comment already flagged this history for the blocklist).
 //
 // What happens to a value that fails depends on what that value IS (I-7):

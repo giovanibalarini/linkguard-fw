@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -15,24 +14,14 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
+	"github.com/giovanibalarini/linkguard-fw/internal/validate"
 )
 
-// Strict validators for values rendered into unbound/Kea configs.
-var (
-	// reDNSDomain is intentionally lenient about structure — single-label names
-	// ("lan", "localhost") and underscore labels ("_dmarc.example.com") are all
-	// legitimate for a DNS blocklist or a DHCP domain suffix — but strict about
-	// charset. The value is written into unbound.conf, so anything outside
-	// [a-z0-9._-] (quotes, spaces, ';', newlines) must be rejected.
-	reDNSDomain = regexp.MustCompile(`^[a-z0-9_]([a-z0-9._-]*[a-z0-9_])?$`)
-	reNetIface  = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
-)
-
-func validDomain(d string) bool {
-	return d != "" && len(d) <= 253 && reDNSDomain.MatchString(d)
-}
-
-func validIface(s string) bool { return reNetIface.MatchString(s) }
+// Os validadores estritos para valores renderizados em configs de unbound/Kea
+// (validate.Domain, validate.Iface, validate.NormalizeMAC) moraram aqui até
+// 2026-08-17. Foram para internal/validate porque a restauração de backup
+// aplica exatamente as mesmas regras sem passar por handler nenhum, e não pode
+// importar este pacote (seria ciclo). Ver o doc de internal/validate.
 
 // NetsvcHandler manages DHCP + DNS through the configured backend provider
 // (Kea + unbound). Config and lists live in the DB; the provider renders the
@@ -279,7 +268,7 @@ func (h *NetsvcHandler) UpdateDHCPConfig(w http.ResponseWriter, r *http.Request)
 	rEnd := strings.TrimSpace(b.RangeEnd)
 	gw := strings.TrimSpace(b.Gateway)
 	suffix := strings.TrimSpace(b.DomainSuffix)
-	if iface != "" && !validIface(iface) {
+	if iface != "" && !validate.Iface(iface) {
 		writeError(w, http.StatusBadRequest, "interface inválida")
 		return
 	}
@@ -295,7 +284,7 @@ func (h *NetsvcHandler) UpdateDHCPConfig(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	if suffix != "" && !validDomain(suffix) {
+	if suffix != "" && !validate.Domain(suffix) {
 		writeError(w, http.StatusBadRequest, "domínio (domain_suffix) inválido")
 		return
 	}
@@ -332,7 +321,7 @@ func (h *NetsvcHandler) UpsertReservation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	mac := normalizeMAC(b.MAC)
+	mac := validate.NormalizeMAC(b.MAC)
 	if mac == "" {
 		writeError(w, http.StatusBadRequest, "MAC inválido")
 		return
@@ -357,7 +346,7 @@ func (h *NetsvcHandler) DeleteReservation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	mac := normalizeMAC(b.MAC)
+	mac := validate.NormalizeMAC(b.MAC)
 	if mac == "" {
 		writeError(w, http.StatusBadRequest, "MAC inválido")
 		return
@@ -441,7 +430,7 @@ func (h *NetsvcHandler) blocklist(w http.ResponseWriter, r *http.Request, add bo
 	}
 	// Validate charset only when adding; a delete must always be able to remove
 	// an already-stored entry, including ones saved under an older, laxer rule.
-	if add && !validDomain(d) {
+	if add && !validate.Domain(d) {
 		writeError(w, http.StatusBadRequest, "domínio inválido")
 		return
 	}
@@ -508,12 +497,4 @@ func (h *NetsvcHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 	auditAction(h.db, r, "netsvc.apply", string(h.provider.Backend()), "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "aplicado"})
-}
-
-func normalizeMAC(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	if _, err := net.ParseMAC(s); err != nil {
-		return ""
-	}
-	return s
 }

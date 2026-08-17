@@ -177,7 +177,7 @@ func TestRestoreRejectsInvalidInterfaceInNetsvcConfigAndWritesNothing(t *testing
 		// A newline in "interface" would land in kea-dhcp4.conf's
 		// interfaces-config by string concatenation elsewhere in the config
 		// pipeline; an interface name this long/invalid is also outright
-		// rejected by validIface.
+		// rejected by validate.Iface.
 		"netsvc_config": `{"backend":"kea-unbound","interface":"this-interface-name-is-way-too-long-for-linux","subnet_cidr":"192.168.3.0/24","range_start":"192.168.3.10","range_end":"192.168.3.100","gateway":"192.168.3.3"}`,
 	}
 	rw := doRestore(t, h, malicious, testPassphrase)
@@ -379,6 +379,20 @@ func TestRestoreLocksOutAfterRepeatedWrongPassphrase(t *testing.T) {
 	}
 	if lastCode != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 after repeated wrong-passphrase attempts, got %d", lastCode)
+	}
+
+	// A trava é consultada antes de o corpo ser lido: um usuário já trancado
+	// recebe 429 mesmo mandando lixo, e não o 400 de "requisição inválida" —
+	// senão a trava ficaria invisível para quem manda um corpo malformado.
+	// Prende a ordem das checagens dentro do handler, que a mudança de camada
+	// da issue #23 poderia inverter sem que nenhum outro teste notasse.
+	rreq := httptest.NewRequest(http.MethodPost, "/api/backup/restore", bytes.NewBufferString("nem multipart isto e"))
+	rreq.Header.Set("Content-Type", "multipart/form-data; boundary=xxx")
+	rreq = rreq.WithContext(auth.ContextWithClaims(rreq.Context(), &auth.Claims{UserID: "u1", Username: "tester"}))
+	rw := httptest.NewRecorder()
+	h.Restore(rw, rreq)
+	if rw.Code != http.StatusTooManyRequests {
+		t.Fatalf("usuário trancado com corpo inválido: esperava 429, obtive %d: %s", rw.Code, rw.Body.String())
 	}
 }
 
