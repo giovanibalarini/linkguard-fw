@@ -11,6 +11,11 @@ import Modal from './ui/Modal';
 import IconButton from './ui/IconButton';
 import { useAuth } from '../context/AuthContext';
 import { adminGroupsAbove as groupsAbove, isSystemGroup, KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../lib/blockGroups';
+// As duas contas que erram em silêncio (o corte da chain e a tradução de ordem
+// local → global) moram em lib/groupRules desde que ganharam asserção própria:
+// aqui dentro nada as alcançava sem montar a tela inteira, e é a ordem de
+// avaliação do firewall que elas decidem. Ver groupRules.check.ts.
+import { globalReorder, mergeGroupRules, moveItem, splitGroupRules } from '../lib/groupRules';
 // A contagem regressiva mora em lib/pendingWindow desde que ela passou a ser
 // desenhada também pela faixa global do Layout (M-5): duas cópias divergiriam
 // justamente no número que decide se ainda dá tempo de testar o SSH.
@@ -276,13 +281,6 @@ function describeCondition(g: { cond_iif: string; cond_saddr: string; cond_daddr
     : 'todo o tráfego que atravessa o firewall';
 }
 
-function moveItem<T>(arr: T[], from: number, to: number): T[] {
-  const next = arr.slice();
-  const [item] = next.splice(from, 1);
-  next.splice(to, 0, item);
-  return next;
-}
-
 function formatCount(bytes: number, unit: Unit): string {
   const value = unit === 'bits' ? bytes * 8 : bytes;
   const suffixes = unit === 'bits' ? ['b', 'Kb', 'Mb', 'Gb', 'Tb'] : ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -302,31 +300,6 @@ function ruleAction(expr: string): Action {
   if (/\baccept$/.test(expr)) return 'accept';
   if (/\breject/.test(expr)) return 'reject';
   return 'drop';
-}
-
-/**
- * splitGroupRules separates what the merged chain carries.
- *
- * The admin's rules each have a stable DB `id`. The lines at the END with
- * no id are live-only: chiefly the group's own "e o que sobrar" verdict,
- * which is the group's `fallthrough` field and NOT a row in firewall_rules
- * — it must never grow an edit or delete button. Anything else without an
- * id is a divergence between the DB and the live chain, and is shown (never
- * hidden) but likewise not editable.
- *
- * This is why editability is decided by the presence of `id` and never by
- * `managed === false`: the verdict line comes back with managed=false, just
- * like a real rule of the admin's.
- */
-function splitGroupRules(g: FirewallGroup): { rules: NftChainRule[]; extras: NftChainRule[]; fall?: NftChainRule } {
-  const all = g.rules?.rules ?? [];
-  let end = all.length;
-  while (end > 0 && !all[end - 1].id) end--;
-  const rules = all.slice(0, end);
-  const tail = all.slice(end);
-  const fall = g.fallthrough !== 'continue' && tail.length > 0 ? tail[tail.length - 1] : undefined;
-  const extras = fall ? tail.slice(0, -1) : tail;
-  return { rules, extras, fall };
 }
 
 function errMsg(e: unknown): string {
@@ -841,19 +814,16 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   // per-group drag expressible in a global endpoint that refuses partial
   // lists.
   const reorderRules = (g: FirewallGroup, nextRows: NftChainRule[]) => {
-    const ids = nextRows.map((r) => r.id).filter((id): id is string => !!id);
-    const mine = allRules.filter((r) => r.group_id === g.id);
-    if (mine.length !== ids.length) {
+    const translated = globalReorder(allRules, g.id, nextRows);
+    if (!translated.ok) {
       onMsg('Erro: a tela está fora de sincronia com o banco. Atualize e tente de novo.');
       load();
       return;
     }
-    let k = 0;
-    const globalOrder = allRules.map((r) => (r.group_id === g.id ? ids[k++] : r.id));
+    const globalOrder = translated.ids;
 
     const previous = groups;
-    const { extras, fall } = splitGroupRules(g);
-    const merged = [...nextRows, ...extras, ...(fall ? [fall] : [])];
+    const merged = mergeGroupRules(nextRows, splitGroupRules(g));
     setGroups(groups.map((x) => (x.id === g.id ? { ...x, rules: { ...x.rules, rules: merged } } : x)));
     setBusy(true);
     onMsg('');

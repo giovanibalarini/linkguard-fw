@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "check": "node --experimental-strip-types src/lib/series.check.ts && node --experimental-strip-types src/lib/grid.check.ts && node --experimental-strip-types src/lib/widgets.check.ts"
+    "check": "node --experimental-strip-types src/lib/series.check.ts && node --experimental-strip-types src/lib/grid.check.ts && node --experimental-strip-types src/lib/widgets.check.ts && node --experimental-strip-types src/lib/groupRules.check.ts"
   },
   "dependencies": {
     "axios": "^1.6.7",
