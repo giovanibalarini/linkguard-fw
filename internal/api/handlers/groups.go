@@ -117,24 +117,6 @@ func (h *NftablesHandler) ListGroups(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// checkPendingGroups é o pré-voo de toda mutação de GRUPO: mutate recebe os
-// grupos como o banco os lê hoje e devolve o conjunto COMPLETO que existiria
-// logo após a escrita pretendida — CheckGroups valida cada chain e a forward
-// que as alcança de uma vez só, que é a mesma renderização que Reconcile
-// aplica de verdade em seguida.
-func (h *NftablesHandler) checkPendingGroups(w http.ResponseWriter, r *http.Request, mutate func([]nftables.StoredGroup) []nftables.StoredGroup) bool {
-	current, err := h.fr.StoredGroups()
-	if err != nil {
-		writeInternalError(w, err)
-		return false
-	}
-	if err := h.fr.CheckPendingGroups(r.Context(), mutate(current)); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return false
-	}
-	return true
-}
-
 // findGroup devolve a linha do grupo pelo id, ou 400 se ele não existe —
 // mesma escolha de status de UpdateRule/DeleteRule para um id que não bate
 // com nada: é um cliente desatualizado, não uma falha do servidor.
