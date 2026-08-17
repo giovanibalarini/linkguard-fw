@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -14,17 +13,12 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
+	"github.com/giovanibalarini/linkguard-fw/internal/validate"
 )
 
 const ntpCfgKey = "ntp_config"
 const ntpApplyStatusKey = "ntp_last_apply"
 const ntpFirewallApplyStatusKey = "ntp_firewall_apply"
-
-// reNTPServer guards values rendered into the chrony drop-in via string
-// formatting — hostname or IP, no spaces/quotes/control characters.
-var reNTPServer = regexp.MustCompile(`^[a-zA-Z0-9.:-]{1,253}$`)
-
-func validNTPServer(s string) bool { return reNTPServer.MatchString(s) }
 
 // NTPHandler manages NTP server/timezone config through internal/timesync.
 // Same auto-apply-on-save pattern as NetsvcHandler (DHCP/DNS,
@@ -273,7 +267,7 @@ func (h *NTPHandler) UpdateNTPConfig(w http.ResponseWriter, r *http.Request) {
 		if srv == "" {
 			continue
 		}
-		if !validNTPServer(srv) {
+		if !validate.NTPServer(srv) {
 			writeError(w, http.StatusBadRequest, "servidor NTP inválido: "+srv)
 			return
 		}

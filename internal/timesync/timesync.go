@@ -29,12 +29,16 @@ import (
 
 // reChronyServer guards values rendered into the chrony drop-in via string
 // formatting — hostname or IP, no spaces/quotes/control characters.
-// Mirrors internal/api/handlers's own reNTPServer/validNTPServer (identical
-// charset), duplicated here rather than imported: internal/api/handlers
-// already imports this package (to call ReloadConfig/GenerateChronyConf),
-// so the reverse import would be a cycle. See GenerateChronyConf's doc
-// comment for why the render boundary must re-validate independently of
-// whatever the handler already did.
+// Mirrors internal/validate's own reNTPServer/NTPServer (identical charset),
+// duplicated here on purpose rather than imported: this is the render
+// boundary, and it must re-validate independently of whatever the caller
+// already did. See GenerateChronyConf's doc comment.
+//
+// (Até 2026-08-17 estas regras moravam em internal/api/handlers, e a
+// duplicação era também obrigatória — aquele pacote importa este, e a
+// importação inversa seria ciclo. Hoje internal/validate é folha e poderia ser
+// importado; a cópia continua aqui por defesa em profundidade, não por
+// impedimento.)
 var reChronyServer = regexp.MustCompile(`^[a-zA-Z0-9.:-]{1,253}$`)
 
 func validChronyServer(s string) bool { return s != "" && reChronyServer.MatchString(s) }
