@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -181,46 +182,39 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		Scope:       b.Scope,
 		ConnState:   b.ConnState,
 	}
-	if err := nftables.ValidateGroup(firewallrules.ToStoredGroup(*row)); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
-	current, err := h.fr.StoredGroups()
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	row.Position = nextGroupPosition(current)
-	candidate := firewallrules.ToStoredGroup(*row)
-	// O candidato é o conjunto COMPLETO que existiria depois desta criação —
-	// é assim que o dry run valida também a forward, reconstruída a partir de
-	// todos os grupos de uma vez.
-	if err := h.fr.CheckPendingGroups(r.Context(), append(append([]nftables.StoredGroup{}, current...), candidate)); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	// A janela é armada AQUI, com a mudança ainda não aplicada: o snapshot é o
-	// estado anterior de verdade, e a partir desta linha todo caminho de erro
-	// passa por abortArmedWindow (ver openConfirmWindow).
-	win, ok := h.openConfirmWindow(w, r, groupReachesInput(*row), fmt.Sprintf("criação do grupo %q (escopo input)", row.Name))
+	// A ordem obrigatória mora em firewallrules.ApplyGuarded (issue #20). O que
+	// este handler descreve é só O QUE muda; QUANDO cada passo roda não é mais
+	// decisão dele.
+	out, ok := h.applyGuarded(w, r, mutation{
+		validate: func() error {
+			return nftables.ValidateGroup(firewallrules.ToStoredGroup(*row))
+		},
+		preflight: func(ctx context.Context) error {
+			current, err := h.fr.StoredGroups()
+			if err != nil {
+				return err
+			}
+			// A posição é atribuída aqui porque ela depende do estado lido
+			// agora, e o pré-voo é o primeiro passo que tem esse estado em mãos.
+			row.Position = nextGroupPosition(current)
+			// O candidato é o conjunto COMPLETO que existiria depois desta
+			// criação — é assim que o dry run valida também a forward,
+			// reconstruída a partir de todos os grupos de uma vez.
+			candidate := firewallrules.ToStoredGroup(*row)
+			return h.fr.CheckPendingGroups(ctx, append(append([]nftables.StoredGroup{}, current...), candidate))
+		},
+		window: func() (bool, string) {
+			return groupReachesInput(*row), fmt.Sprintf("criação do grupo %q (escopo input)", row.Name)
+		},
+		write: func() error { return h.db.CreateFirewallGroup(row) },
+		audit: func() (string, string, string) {
+			return "nft.group.add", row.ChainName + ":" + row.ID, row.Name
+		},
+	})
 	if !ok {
 		return
 	}
-	if err := h.db.CreateFirewallGroup(row); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	auditAction(h.db, r, "nft.group.add", row.ChainName+":"+row.ID, row.Name)
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, createdGroupResult{FirewallGroup: row, Pending: win.view})
+	writeJSON(w, http.StatusOK, createdGroupResult{FirewallGroup: row, Pending: h.pendingViewOf(out)})
 }
 
 // UpdateGroup edita o conteúdo de um grupo (nome, condição de entrada e o

@@ -34,6 +34,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 // Mutation é uma alteração de firewall que precisa passar pela ordem.
@@ -153,19 +155,14 @@ type Applied struct {
 	// precisou de janela (o caso de toda mutação que não alcança a input).
 	WindowID string
 
-	// Pending é o pendente relido para desenhar a faixa, ou nil quando não há
-	// janela — ou quando a releitura falhou, que NÃO é motivo para abortar
-	// (ver o comentário em armWindow).
-	Pending *pendingSnapshot
-}
-
-// pendingSnapshot é o que o chamador precisa saber do pendente recém-armado
-// sem ter de reler o banco.
-type pendingSnapshot struct {
-	ID        string
-	Summary   string
-	Snapshot  string
-	ExpiresAt int64
+	// Pending é o pendente recém-armado, para quem precisa desenhar a faixa.
+	// Nil quando não há janela — ou quando a releitura falhou, que NÃO é
+	// motivo para abortar (ver armWindow).
+	//
+	// É o *storage.PendingChange inteiro, e não um resumo: a faixa precisa de
+	// AppliedBy, CreatedAt, ExpiresAt e do próprio Snapshot, e recortar aqui
+	// só criaria um segundo tipo para manter em dia com o primeiro.
+	Pending *storage.PendingChange
 }
 
 // ApplyGuarded executa a ordem obrigatória para m.
@@ -262,6 +259,16 @@ func (s *Service) guardWindowOpen() error {
 		if settled {
 			return nil
 		}
+		// Recusa com frase PRÓPRIA: "espere a reversão terminar" e "confirme ou
+		// reverta" pedem coisas opostas ao operador, e a segunda, dita durante
+		// uma reversão em curso, o manda agir sobre uma janela que já está
+		// sendo desfeita.
+		return &GuardError{
+			Stage: StageLocked,
+			Message: fmt.Sprintf(
+				"a reversão da mudança %q está em andamento e o estado anterior ainda não voltou por completo ao banco; espere ela concluir antes de alterar grupos ou regras",
+				p.Summary),
+		}
 	}
 	return &GuardError{
 		Stage: StageLocked,
@@ -310,9 +317,7 @@ func (s *Service) armWindow(ctx context.Context, by string, needed bool, summary
 		}
 		return out, nil
 	}
-	out.Pending = &pendingSnapshot{
-		ID: p.ID, Summary: p.Summary, Snapshot: p.Snapshot, ExpiresAt: p.ExpiresAt.Unix(),
-	}
+	out.Pending = p
 	return out, nil
 }
 
@@ -355,6 +360,25 @@ func (s *Service) reconcileGuarded(ctx context.Context, applied *Applied, hooks 
 
 	if hooks.SnapshotNft != nil {
 		hooks.SnapshotNft()
+	}
+
+	// Uma mutação SEM janela pode ter passado pela trava porque havia uma
+	// reversão cujo trabalho no BANCO já tinha terminado e cuja única pendência
+	// era o firewall vivo (ver guardWindowOpen e RevertSettled). A reconciliação
+	// acima acabou de cumprir essa pendência: o pendente não tem mais o que
+	// fazer, e mantê-lo travaria a próxima mutação por causa de trabalho
+	// concluído. Quase sempre não há nada a fechar — é um SELECT.
+	if applied.WindowID == "" {
+		closed, err := s.FinishSettledRevert(ctx)
+		switch {
+		case err != nil:
+			// Não é motivo para transformar uma mutação bem-sucedida em erro: o
+			// watchdog fecha o pendente na próxima passada.
+			slog.Error("a alteração foi aplicada, mas o pendente da reversão já concluída não pôde ser fechado", "err", err)
+		case closed && hooks.Audit != nil:
+			hooks.Audit("nft.pending.revert", "pending:concluido",
+				"a reversão em andamento foi concluída pela reconciliação desta alteração")
+		}
 	}
 	return applied, nil
 }
