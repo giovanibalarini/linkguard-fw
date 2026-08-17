@@ -39,6 +39,10 @@ firewall. The original magnetic disk gave way to an SSD, but the rest of the
 hardware is the same as always — that is exactly the point: 2012 hardware is
 enough.
 
+<table>
+<tr>
+<td valign="top">
+
 | | |
 |---|---|
 | CPU | Intel Core i3-3220 @ 3.30 GHz — 2 cores / 4 threads (Ivy Bridge, 2012) |
@@ -47,6 +51,23 @@ enough.
 | Rede / Network | 2 links WAN + LAN, todas gigabit / all gigabit |
 | SO / OS | Debian 13 (Trixie), kernel 6.12 |
 | LinkGuard | 1.0.102 |
+
+**🇧🇷** Sem rack, sem nobreak, sem sala refrigerada: um desktop de escritório
+aposentado, de pé num canto, com duas placas de rede a mais. Os LEDs piscando
+são os dois links de Internet passando tráfego de verdade.
+
+**🇺🇸** No rack, no UPS, no cooled room: a retired office desktop standing in a
+corner with two extra network cards. The blinking LEDs are the two Internet
+links actually passing traffic.
+
+</td>
+<td width="360" valign="top">
+
+![O firewall em produção / The firewall in production](docs/images/firewall-em-producao.gif)
+
+</td>
+</tr>
+</table>
 
 ## Telas / Screenshots
 
