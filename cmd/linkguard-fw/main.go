@@ -205,12 +205,37 @@ func run() int {
 		return 0
 	}
 
-	db, err := storage.Open(cfg.DBPath)
+	db, err := openStore(cfg)
 	if err != nil {
-		slog.Error("failed to open database", "path", cfg.DBPath, "err", err)
 		return 1
 	}
 	defer db.Close()
+
+	s, err := buildServices(cfg, db)
+	if err != nil {
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	wireCallbacks(ctx, s)
+	writers := startBackground(ctx, s)
+	return serveHTTP(ctx, s, writers)
+}
+
+// openStore abre o banco e semeia o que precisa existir antes de qualquer
+// serviço: o administrador inicial e os papéis de RBAC.
+//
+// Os slog.Error ficam AQUI, com o mesmo texto e os mesmos campos de antes, e
+// quem chama só devolve 1 sem logar de novo. Log de boot de firewall é lido em
+// emergência: um refactor pode mudar de onde a linha sai, não o que ela diz.
+func openStore(cfg *config.Config) (*storage.DB, error) {
+	db, err := storage.Open(cfg.DBPath)
+	if err != nil {
+		slog.Error("failed to open database", "path", cfg.DBPath, "err", err)
+		return nil, err
+	}
 
 	// O administrador inicial vem ANTES dos papéis: é o EnsureDefaultRoles que
 	// amarra o papel de admin à conta, e a conta precisa existir para a
@@ -218,27 +243,114 @@ func run() int {
 	// então a ordem é uma garantia a mais, não a única.)
 	if err := seedInitialAdmin(db); err != nil {
 		slog.Error("failed to seed initial admin", "err", err)
-		return 1
+		db.Close() //nolint:errcheck // já estamos abortando o boot
+		return nil, err
 	}
 
 	if err := seedDefaultRoles(db); err != nil {
 		slog.Error("failed to seed default roles", "err", err)
-		return 1
+		db.Close() //nolint:errcheck // já estamos abortando o boot
+		return nil, err
 	}
+	return db, nil
+}
 
-	if err := secrets.CheckNotOrphaned("/etc/linkguard-fw/secret.key", db); err != nil {
+// services é tudo o que o boot monta, nomeado. Existe para que a MONTAGEM
+// possa ser exercitada por um teste (boot_wiring_runtime_test.go) sem passar
+// pelo main: antes disto, a única forma de perguntar "o Service saiu com a
+// guarda ligada?" era ler main.go como texto.
+//
+// Os nomes dos campos são os nomes das variáveis locais que a montagem usa,
+// para que ler buildServices e ler este struct dê a mesma imagem.
+type services struct {
+	cfg *config.Config
+	db  *storage.DB
+
+	// exec é o executor da aplicação (30 s). pkgExec é o dos gerenciadores de
+	// pacote (10 min) — ver pkgInstallTimeout.
+	exec    firewall.Executor
+	pkgExec firewall.Executor
+
+	secretsSvc   *secrets.Service
+	alertSvc     *alerts.Service
+	notifySvc    *notify.Service
+	authSvc      *auth.Service
+	linkSvc      *links.Service
+	iptSvc       *iptables.Service
+	routeSvc     *routes.Service
+	failoverSvc  *failover.Service
+	nftSvc       *nftables.Service
+	frSvc        *firewallrules.Service
+	balancerSvc  *balancer.Service
+	keaSvc       *keaunbound.Service
+	netSvc       netsvc.Provider
+	trafficSvc   *hosttraffic.Service
+	hostSvc      *hosts.Service
+	netifSvc     *netif.Service
+	sysCollector *system.Collector
+	rrdSvc       *tsdb.Service
+	aiClient     *ai.Client
+
+	promReg          *prometheus.Registry
+	appMetrics       *metrics.Metrics
+	metricsCollector *monitoring.Collector
+	backupSched      *backup.Scheduler
+	journalSched     *monitoring.JournalScheduler
+	updatesSched     *monitoring.UpdatesScheduler
+
+	monitor *links.Monitor
+	server  *api.Server
+
+	// ntpInputState é a MESMA fonte que foi entregue a
+	// nftSvc.SetInputChainSources, guardada aqui porque a reconciliação de
+	// boot (em startBackground) também precisa dela — e as duas discordarem
+	// sobre o que está configurado é o que a Fase C2 existe para impedir.
+	ntpInputState func() ([]string, bool, error)
+
+	// interval é a cadência do coletor de métricas; a do monitor de link é
+	// outra (e mais rápida) e já está dentro do próprio monitor.
+	interval time.Duration
+}
+
+// secretKeyPath é o arquivo da chave que cifra os segredos do banco.
+//
+// É var, e não const, por um motivo só: buildServices é exercitada por teste
+// (o que esta issue existe para permitir) e o teste não pode escrever em /etc.
+// Nada em produção troca este valor.
+var secretKeyPath = "/etc/linkguard-fw/secret.key"
+
+// buildServices monta os ~25 serviços do produto e devolve todos nomeados.
+//
+// A LIGAÇÃO ENTRE OS SERVIÇOS MORA AQUI, e não numa função de "wiring"
+// separada, apesar de a issue #24 propor o contrário. O motivo é o que a
+// própria issue reclama: hoje a ligação é "opcional e silenciosa", e uma
+// wireCallbacks separada mantém essa propriedade — passa a existir um
+// *services completo, com todos os campos preenchidos, que ninguém guardou.
+// Ligando aqui, quem tem um *services tem um nftSvc com a guarda do Persist e
+// com as duas fontes da chain input, porque não há outro caminho para obtê-lo.
+// É a aproximação de "não compila um Service sem PersistGuard" que se
+// consegue sem mexer na API de internal/nftables — ver o relatório da issue
+// para por que a versão literal daquele critério esbarra num ciclo
+// (nftables.Service precisa de firewallrules.Service, que precisa de
+// nftables.Service).
+//
+// wireCallbacks fica com o que é de fato callback de evento e precisa do ctx.
+//
+// Os slog.Error ficam aqui pelo mesmo motivo de openStore.
+func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
+	if err := secrets.CheckNotOrphaned(secretKeyPath, db); err != nil {
 		slog.Error("refusing to start", "err", err)
-		return 1
+		return nil, err
 	}
-	secretKey, err := secrets.LoadOrGenerateKey("/etc/linkguard-fw/secret.key")
+	secretKey, err := secrets.LoadOrGenerateKey(secretKeyPath)
 	if err != nil {
 		slog.Error("failed to load or generate secret key", "err", err)
-		return 1
+		return nil, err
 	}
 	secretsSvc := secrets.NewService(db, secretKey)
 	if err := storage.MigrateSettingsToSecrets(db, secretsSvc); err != nil {
 		slog.Error("failed to migrate legacy secrets", "err", err)
-		return 1
+		return nil, err
 	}
 
 	var exec firewall.Executor = firewall.NewRealExecutor(30 * time.Second)
@@ -355,15 +467,61 @@ func run() int {
 		PkgExec: pkgExec,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
 	// The link health probe runs on its own (faster) cadence, decoupled from the
 	// metrics collector, and sends several probes per host so packet loss/latency
 	// are real averages instead of a single pass/fail.
 	probeInterval := time.Duration(cfg.ProbeIntervalSeconds) * time.Second
 	monitor := links.NewMonitor(db, linkSvc, probeInterval, cfg.ProbeCount, rrdSvc, appMetrics)
+
+	return &services{
+		cfg:              cfg,
+		db:               db,
+		exec:             exec,
+		pkgExec:          pkgExec,
+		secretsSvc:       secretsSvc,
+		alertSvc:         alertSvc,
+		notifySvc:        notifySvc,
+		authSvc:          authSvc,
+		linkSvc:          linkSvc,
+		iptSvc:           iptSvc,
+		routeSvc:         routeSvc,
+		failoverSvc:      failoverSvc,
+		nftSvc:           nftSvc,
+		frSvc:            frSvc,
+		balancerSvc:      balancerSvc,
+		keaSvc:           keaSvc,
+		netSvc:           netSvc,
+		trafficSvc:       trafficSvc,
+		hostSvc:          hostSvc,
+		netifSvc:         netifSvc,
+		sysCollector:     sysCollector,
+		rrdSvc:           rrdSvc,
+		aiClient:         aiClient,
+		promReg:          promReg,
+		appMetrics:       appMetrics,
+		metricsCollector: metricsCollector,
+		backupSched:      backupSched,
+		journalSched:     journalSched,
+		updatesSched:     updatesSched,
+		monitor:          monitor,
+		server:           server,
+		ntpInputState:    ntpInputState,
+		interval:         interval,
+	}, nil
+}
+
+// wireCallbacks liga os callbacks de EVENTO — os que só podem ser ligados
+// depois de existir o ctx do processo, e por isso não cabem em buildServices.
+//
+// É só o monitor de link: a decisão entre balanceamento e failover a cada
+// mudança de estado, e a expulsão ativa do link degradado. As ligações que
+// NÃO dependem do ctx (a guarda do Persist, as fontes da chain input, a fonte
+// do vigia) ficam em buildServices, junto da construção — ver o doc-comment
+// de lá para por que essa separação não é arbitrária.
+func wireCallbacks(ctx context.Context, s *services) {
+	monitor, balancerSvc, failoverSvc := s.monitor, s.balancerSvc, s.failoverSvc
+
 	// On a link state change, balance mode rebuilds the weighted multipath
 	// default route; otherwise the legacy per-table failover handles it.
 	monitor.OnStatusChange(func(link *storage.Link, oldStatus, newStatus string) {
@@ -382,6 +540,35 @@ func run() int {
 			balancerSvc.EvictDegraded(ctx, link)
 		}
 	})
+}
+
+// startBackground sobe TUDO que roda em segundo plano: o provisionamento da
+// máquina (o que o LinkGuard faz no boot que mexe em nftables/rotas/NTP), o
+// timer do confirmar-ou-reverte e as goroutinas de coleta.
+//
+// Devolve o WaitGroup das goroutines que ESCREVEM no banco — ver o comentário
+// da declaração dele. Quem chama tem que esperá-lo DEPOIS de o HTTP parar
+// (serveHTTP faz isso), senão o tsdb volta a perder o balde da janela corrente
+// a cada reinício.
+//
+// Os serviços são reapontados para variáveis locais com os MESMOS nomes que a
+// montagem usa (frSvc, nftSvc, …) de propósito: a sequência abaixo é guardada
+// contra deriva por testes de AST que procuram `frSvc.RevertPendingOnBoot`,
+// `nftSvc.ReconcileNTPInput` e afins como chamadas em identificadores simples.
+// Escrever `s.frSvc.…` aqui deixaria esses guardas cegos sem uma linha sequer
+// mudar de comportamento — que é exatamente o modo de falha que eles existem
+// para pegar.
+func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
+	db := s.db
+	exec, pkgExec := s.exec, s.pkgExec
+	frSvc, nftSvc := s.frSvc, s.nftSvc
+	linkSvc, routeSvc, balancerSvc := s.linkSvc, s.routeSvc, s.balancerSvc
+	trafficSvc, keaSvc, alertSvc := s.trafficSvc, s.keaSvc, s.alertSvc
+	monitor, metricsCollector, rrdSvc := s.monitor, s.metricsCollector, s.rrdSvc
+	backupSched, journalSched, updatesSched := s.backupSched, s.journalSched, s.updatesSched
+	netifSvc, aiClient := s.netifSvc, s.aiClient
+	ntpInputState := s.ntpInputState
+	interval := s.interval
 
 	// bootPendingChecked prende a verificação de boot do confirmar-ou-reverte
 	// à primeira passada de provisionSystem que a tenha CONCLUÍDO.
@@ -753,6 +940,18 @@ func run() int {
 		return names
 	})
 
+	return &writers
+}
+
+// serveHTTP é o fim do boot: sobe o painel e fica nele até o processo receber
+// o sinal de desligamento. Devolve o código de saída do processo.
+//
+// Recebe o WaitGroup das goroutines de escrita porque a ORDEM do desligamento
+// é dele: primeiro o HTTP para, só depois se espera quem tem estado em memória
+// para gravar — ver o comentário do WaitGroup em startBackground.
+func serveHTTP(ctx context.Context, s *services, writers *sync.WaitGroup) int {
+	cfg, server := s.cfg, s.server
+
 	httpServer := &http.Server{
 		Addr:              cfg.Addr(),
 		Handler:           server.Handler(),
@@ -785,7 +984,7 @@ func run() int {
 	// gravar o que têm em memória. O teto é curto de propósito — o systemd
 	// manda SIGKILL depois do TimeoutStopSec, e é melhor perder o resíduo de
 	// uma delas do que atrasar o desligamento inteiro do serviço.
-	if !waitTimeout(&writers, 3*time.Second) {
+	if !waitTimeout(writers, 3*time.Second) {
 		slog.Warn("desligando com goroutine de escrita ainda em andamento; algum dado em memória pode não ter sido gravado")
 	}
 
