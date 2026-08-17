@@ -1957,14 +1957,42 @@ func (db *DB) ReorderFirewallGroups(ids []string) error {
 // "confirmar" uma mudança cujo estado anterior já tinha sido restaurado aqui,
 // respondia sucesso ao operador e apagava o pendente — deixando a regra que
 // trancou o acesso dele viva no firewall, sem ninguém para retomar a reversão.
+//
+// AppliedState é o OUTRO lado do Snapshot: o estado dos grupos e regras como a
+// mutação desta janela o deixou (issue #20a). Ele é gravado depois da escrita da
+// mutação, e é o que permite à reversão distinguir "o banco ainda é o que esta
+// janela produziu" de "outro admin gravou aqui dentro no meio do caminho" — a
+// diferença entre desfazer a própria mudança e apagar em silêncio a de outra
+// pessoa. Ver AppliedStateOrSnapshot e firewallrules.revert.
 type PendingChange struct {
-	ID          string    `json:"id"`
-	Snapshot    string    `json:"snapshot"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	AppliedBy   string    `json:"applied_by"`
-	Summary     string    `json:"summary"`
-	CreatedAt   time.Time `json:"created_at"`
-	RevertingAt time.Time `json:"reverting_at,omitempty"`
+	ID           string    `json:"id"`
+	Snapshot     string    `json:"snapshot"`
+	AppliedState string    `json:"applied_state,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	AppliedBy    string    `json:"applied_by"`
+	Summary      string    `json:"summary"`
+	CreatedAt    time.Time `json:"created_at"`
+	RevertingAt  time.Time `json:"reverting_at,omitempty"`
+}
+
+// AppliedStateOrSnapshot é o estado pós-mutação desta janela, com o Snapshot
+// como resposta quando ele ainda não foi registrado.
+//
+// Vazio acontece em dois casos, e a mesma resposta serve para os dois porque a
+// reversão trata o resultado com o mesmo cuidado (ver mergeRevertTarget, que
+// nunca preserva alteração que alcance a chain input):
+//
+//   - a janela foi armada e a mutação dela ainda não gravou nada. O estado
+//     pós-mutação é, literalmente, o de antes;
+//   - o processo morreu entre a escrita e o registro, ou a linha veio de uma
+//     versão anterior a esta coluna existir. Aqui o Snapshot subestima o que a
+//     janela fez, e a reversão compensa recusando-se a preservar qualquer coisa
+//     que toque a chain input — que é tudo o que uma janela pode ter mudado.
+func (p PendingChange) AppliedStateOrSnapshot() string {
+	if p.AppliedState != "" {
+		return p.AppliedState
+	}
+	return p.Snapshot
 }
 
 // Reverting diz se a reversão desta mudança já começou (o estado anterior já
@@ -1989,9 +2017,41 @@ func (db *DB) SavePendingChange(p PendingChange) error {
 		created = time.Now()
 	}
 	_, err := db.conn.Exec(`
-        INSERT INTO pending_firewall_change (id, only_row, snapshot, expires_at, applied_by, summary, created_at, reverting_at)
-        VALUES (?, 1, ?, ?, ?, ?, ?, 0)`,
-		p.ID, p.Snapshot, p.ExpiresAt.Unix(), p.AppliedBy, p.Summary, created)
+        INSERT INTO pending_firewall_change (id, only_row, snapshot, expires_at, applied_by, summary, created_at, reverting_at, applied_state)
+        VALUES (?, 1, ?, ?, ?, ?, ?, 0, ?)`,
+		p.ID, p.Snapshot, p.ExpiresAt.Unix(), p.AppliedBy, p.Summary, created, p.AppliedState)
+	return err
+}
+
+// SetPendingAppliedState grava o estado pós-mutação desta janela — o que a
+// mutação que a armou acabou de deixar no banco (issue #20a).
+//
+// Chamada logo depois da escrita da mutação, e não no arme: no arme o banco
+// ainda é o estado ANTERIOR, que já está no snapshot. É a distância entre os
+// dois que diz o que esta janela mudou, e é isso que a reversão desfaz —
+// deixando de pé o que outra pessoa gravou no meio dos 90 segundos.
+//
+// Pendente que já não existe (confirmado, revertido, trocado) NÃO é erro: a
+// janela cujo estado se ia registrar acabou, e não há nada a registrar. O id
+// na cláusula WHERE é o que impede escrever o estado desta mutação por cima da
+// janela de outra pessoa.
+func (db *DB) SetPendingAppliedState(id, state string) error {
+	_, err := db.conn.Exec(
+		`UPDATE pending_firewall_change SET applied_state = ? WHERE id = ?`, state, id)
+	return err
+}
+
+// SetPendingSnapshot troca o estado anterior guardado por esta janela.
+//
+// Tem UM chamador e uma razão: a reversão que precisou preservar a alteração de
+// outro admin restaura um estado que não é mais o snapshot original, e o
+// snapshot é o que responde "a reversão já terminou no banco?"
+// (firewallrules.RevertSettled). Sem atualizá-lo, uma reconciliação que falhasse
+// depois deixaria a trava das mutações fechada para sempre — o beco C-6, que já
+// custou uma máquina só alcançável por sqlite3.
+func (db *DB) SetPendingSnapshot(id, snapshot string) error {
+	_, err := db.conn.Exec(
+		`UPDATE pending_firewall_change SET snapshot = ? WHERE id = ?`, snapshot, id)
 	return err
 }
 
@@ -2033,9 +2093,9 @@ func (db *DB) GetPendingChange() (*PendingChange, error) {
 	var p PendingChange
 	var expires, reverting int64
 	err := db.conn.QueryRow(`
-        SELECT id, snapshot, expires_at, applied_by, summary, created_at, reverting_at
+        SELECT id, snapshot, expires_at, applied_by, summary, created_at, reverting_at, applied_state
           FROM pending_firewall_change LIMIT 1`).
-		Scan(&p.ID, &p.Snapshot, &expires, &p.AppliedBy, &p.Summary, &p.CreatedAt, &reverting)
+		Scan(&p.ID, &p.Snapshot, &expires, &p.AppliedBy, &p.Summary, &p.CreatedAt, &reverting, &p.AppliedState)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

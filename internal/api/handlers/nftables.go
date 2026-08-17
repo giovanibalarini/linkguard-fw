@@ -915,6 +915,24 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "backup not found")
 		return
 	}
+	// A trava é lida DE NOVO aqui, imediatamente antes da escrita (issue #20a).
+	//
+	// A leitura lá de cima continua existindo (recusar antes de ler o banco é o
+	// que ela faz de melhor), mas ela sozinha era o mesmo TOCTOU das dez
+	// mutações: consultada no topo, com a escrita — um `nft -f` que reescreve a
+	// tabela `inet linkguard` inteira — acontecendo bem depois. Uma janela
+	// armada nesse intervalo era atropelada.
+	//
+	// Aqui a correção não pode ser a das dez mutações. Lá a reversão confere o
+	// estado e desfaz só o delta da própria janela, porque o que a mutação
+	// escreveu está no BANCO, em grupos e regras, que é o que o snapshot cobre.
+	// O rollback não escreve linha nenhuma no banco: ele impõe um ruleset ao nft,
+	// e o snapshot da janela não cobre nada disso (nem host_wan, nem os named
+	// sets, nem os port forwards). Não há delta para preservar — o que protege a
+	// janela alheia é recusar, e o preço é o operador esperar os 90 segundos.
+	if h.confirmWindowBlocks(w, r) {
+		return
+	}
 	out, err := h.svc.Restore(r.Context(), target.Rules)
 	if err != nil {
 		// Um snapshot sem a nossa tabela não é pane do servidor: é um snapshot

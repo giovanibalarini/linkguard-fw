@@ -129,6 +129,7 @@ var schemaMigrations = []migration{
 	{8, "pending_firewall_change.reverting_at", upAddPendingChangeRevertingAt},
 	{9, "dashboard_layout", upDashboardLayout},
 	{10, "monitoring.write nos papéis operacionais", upGrantMonitoringWrite},
+	{11, "pending_firewall_change.applied_state", upAddPendingChangeAppliedState},
 }
 
 const createSchemaMigrationsTable = `
@@ -505,6 +506,39 @@ func upAddPendingChangeRevertingAt(tx *sql.Tx) error {
 	}
 	if _, err := tx.Exec(`ALTER TABLE pending_firewall_change ADD COLUMN reverting_at INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return fmt.Errorf("adicionar coluna reverting_at: %w", err)
+	}
+	return nil
+}
+
+// upAddPendingChangeAppliedState adiciona pending_firewall_change.applied_state
+// (issue #20a) nos bancos que já tinham a tabela.
+//
+// A coluna guarda o estado dos grupos e regras COMO A MUTAÇÃO DESTA JANELA O
+// DEIXOU — o par do `snapshot`, que guarda o estado de antes. Com os dois, a
+// reversão consegue responder a pergunta que ela não sabia fazer: "o banco de
+// agora ainda é o que esta janela produziu, ou tem coisa de OUTRA pessoa aqui
+// dentro?". Sem ela, restaurar o snapshot era um "volte tudo" que apagava, sem
+// erro e sem auditoria, qualquer alteração que outro admin tivesse gravado
+// dentro dos 90 segundos (ver firewallrules.revert).
+//
+// Vazio quer dizer "esta janela ainda não gravou nada, ou o processo morreu
+// antes de registrar o que gravou". É o default das linhas antigas de
+// propósito, e o lado seguro: ver PendingChange.AppliedStateOrSnapshot.
+//
+// Em transação como toda migração deste projeto (incidente de 2026-07-24).
+func upAddPendingChangeAppliedState(tx *sql.Tx) error {
+	var count int
+	err := tx.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pending_firewall_change') WHERE name = 'applied_state'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar coluna applied_state: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	if _, err := tx.Exec(`ALTER TABLE pending_firewall_change ADD COLUMN applied_state TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("adicionar coluna applied_state: %w", err)
 	}
 	return nil
 }
@@ -924,7 +958,8 @@ CREATE TABLE IF NOT EXISTS pending_firewall_change (
     applied_by   TEXT NOT NULL DEFAULT '',
     summary      TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    reverting_at INTEGER NOT NULL DEFAULT 0
+    reverting_at INTEGER NOT NULL DEFAULT 0,
+    applied_state TEXT NOT NULL DEFAULT ''
 );`
 
 // ─── Painel com widgets (Fase B) ──────────────────────────────────────────

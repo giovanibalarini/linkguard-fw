@@ -562,6 +562,26 @@ func (h *NftablesHandler) abortArmedWindow(w http.ResponseWriter, r *http.Reques
 // em vez de deixar para trás uma mudança de escopo input valendo sem rede
 // embaixo (ver abortArmedWindow).
 func (h *NftablesHandler) reconcileArmed(w http.ResponseWriter, r *http.Request, win armedWindow) bool {
+	// O estado pós-mutação é registrado ANTES da reconciliação, e o mais perto
+	// possível da escrita no banco que acabou de acontecer (issue #20a). É ele
+	// que permite à reversão desta janela desfazer só o que ela mudou, em vez de
+	// restaurar o snapshot por cima do que outro admin gravou no meio dos 90
+	// segundos — a perda silenciosa que a trava não cobre, porque ela é lida no
+	// começo da requisição e a escrita acontece um `nft -c` depois.
+	//
+	// Antes do Reconcile porque a falha DELE reverte a janela (abortArmedWindow):
+	// registrar depois deixaria justamente a reversão mais provável sem os dois
+	// estados de que ela precisa.
+	//
+	// Falhar aqui não derruba a mutação, que já está no banco. O custo é a
+	// reversão desta janela voltar a ser o "volte tudo" de antes — o lado
+	// seguro para o acesso do operador, caro só para quem gravou no meio.
+	if win.armed {
+		if err := h.fr.MarkWindowApplied(win.id); err != nil {
+			slog.Error("não foi possível registrar o estado que esta alteração deixou no banco; se esta janela for revertida, ela vai restaurar o estado anterior INTEIRO",
+				"err", err, "janela", win.id)
+		}
+	}
 	if err := h.fr.Reconcile(r.Context()); err != nil {
 		h.abortArmedWindow(w, r, win, err)
 		return false
