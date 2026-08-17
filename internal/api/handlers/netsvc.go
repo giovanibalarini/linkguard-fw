@@ -331,6 +331,16 @@ func (h *NetsvcHandler) UpsertReservation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := h.db.UpsertDHCPReservation(mac, strings.TrimSpace(b.IP), strings.TrimSpace(b.Hostname)); err != nil {
+		// A mensagem nomeia o MAC dono de propósito (issue #59). Sem ele o admin
+		// descobre que não pode usar aquele IP e não descobre qual reserva
+		// remover para poder — e a lista da tela é por MAC, não por IP.
+		//
+		// 409 e não 400: o pedido está bem formado, o que conflita é o estado.
+		var taken *storage.ErrDHCPIPTaken
+		if errors.As(err, &taken) {
+			writeError(w, http.StatusConflict, taken.Error())
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
