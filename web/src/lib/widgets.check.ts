@@ -6,7 +6,7 @@
 // 400, não há log na tela, não há nada — só um painel que some.
 //
 // Por isso a lista dos nove nomes está repetida aqui por extenso, copiada do
-// contrato do backend (`storage.DashboardWidgets`), e não importada de
+// contrato do backend (`dashboard.Catalog`), e não importada de
 // `widgets.ts`: uma asserção que lesse a mesma constante que quer conferir
 // passaria em verde justamente no dia em que alguém renomeasse o widget.
 //
@@ -44,7 +44,7 @@ function assert(cond: boolean, msg: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Os nove nomes, copiados do contrato do backend
 // ─────────────────────────────────────────────────────────────────────────────
-// Fonte: `internal/storage/repository.go`, var DashboardWidgets, e o relatório
+// Fonte: `internal/dashboard/dashboard.go`, var Catalog, e o relatório
 // da Task 3. Nunca renomeie um destes: o nome é o que está gravado no painel de
 // quem já montou o dele.
 const NOMES_DO_BACKEND = [
@@ -149,7 +149,7 @@ grupo('cada widget dá para desenhar e para escolher');
 // ─────────────────────────────────────────────────────────────────────────────
 grupo('layout de fábrica');
 {
-  // Cópia literal de `storage.DefaultDashboardLayout()`. Se as duas divergirem,
+  // Cópia literal de `dashboard.Default()`. Se as duas divergirem,
   // quem falha no `GET` vê um painel diferente de quem não falha — e o defeito
   // só apareceria em quem estivesse com o backend fora do ar.
   const DO_BACKEND = [
@@ -162,7 +162,7 @@ grupo('layout de fábrica');
   ];
   assert(
     JSON.stringify(DEFAULT_LAYOUT) === JSON.stringify(DO_BACKEND),
-    'o layout de fábrica do TypeScript divergiu do de `storage.DefaultDashboardLayout()`',
+    'o layout de fábrica do TypeScript divergiu do de `dashboard.Default()`',
   );
 
   for (const it of DEFAULT_LAYOUT) {

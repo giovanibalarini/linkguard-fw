@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"github.com/giovanibalarini/linkguard-fw/internal/dashboard"
 	"net/http"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
@@ -24,15 +25,15 @@ func NewDashboardHandler(db *storage.DB) *DashboardHandler {
 // gravado fora da permissão de quem chama não passa por aqui e não é apagado
 // (veja SaveLayout).
 type LayoutRequest struct {
-	Items []storage.LayoutItem `json:"items"`
+	Items []dashboard.LayoutItem `json:"items"`
 }
 
 // LayoutResponse é o que o painel lê. Available é o catálogo que ESTE usuário
 // pode ver — o frontend usa a lista para montar o "adicionar widget" sem
 // oferecer nada que só saberia mostrar um 403.
 type LayoutResponse struct {
-	Items     []storage.LayoutItem `json:"items"`
-	Available []string             `json:"available"`
+	Items     []dashboard.LayoutItem `json:"items"`
+	Available []string               `json:"available"`
 }
 
 // GetLayout devolve o painel do usuário autenticado, já sem os widgets que ele
@@ -86,7 +87,7 @@ func (h *DashboardHandler) SaveLayout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "corpo da requisição inválido")
 		return
 	}
-	if len(body.Items) > storage.DashboardMaxItems {
+	if len(body.Items) > dashboard.MaxItems {
 		writeError(w, http.StatusBadRequest, "layout com itens demais")
 		return
 	}
@@ -106,7 +107,7 @@ func (h *DashboardHandler) SaveLayout(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	items := storage.SanitizeDashboardLayout(mergeWithInvisibleStored(perms, body.Items, stored))
+	items := dashboard.Sanitize(mergeWithInvisibleStored(perms, body.Items, stored))
 	if err := h.db.SaveDashboardLayout(claims.UserID, items); err != nil {
 		writeInternalError(w, err)
 		return
@@ -136,8 +137,8 @@ func (h *DashboardHandler) SaveLayout(w http.ResponseWriter, r *http.Request) {
 //
 // Como as duas listas são partilhadas por VISIBILIDADE do widget, nenhum nome
 // pode sair dos dois lados: não há item duplicado a desempatar.
-func mergeWithInvisibleStored(perms map[string]bool, incoming, stored []storage.LayoutItem) []storage.LayoutItem {
-	out := make([]storage.LayoutItem, 0, len(incoming)+len(stored))
+func mergeWithInvisibleStored(perms map[string]bool, incoming, stored []dashboard.LayoutItem) []dashboard.LayoutItem {
+	out := make([]dashboard.LayoutItem, 0, len(incoming)+len(stored))
 	for _, it := range incoming {
 		if canSeeWidget(perms, it.Widget) {
 			out = append(out, it)
@@ -164,13 +165,13 @@ func (h *DashboardHandler) ResetLayout(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	h.respondLayout(w, claims.UserID, storage.DefaultDashboardLayout())
+	h.respondLayout(w, claims.UserID, dashboard.Default())
 }
 
 // respondLayout filtra por permissão e responde. Widget que o usuário não pode
 // ver não volta no layout e não aparece no catálogo: o painel abre sem ele, sem
 // erro e sem buraco (spec §4.1).
-func (h *DashboardHandler) respondLayout(w http.ResponseWriter, userID string, items []storage.LayoutItem) {
+func (h *DashboardHandler) respondLayout(w http.ResponseWriter, userID string, items []dashboard.LayoutItem) {
 	perms, err := h.db.GetUserPermissions(userID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -183,15 +184,15 @@ func (h *DashboardHandler) respondLayout(w http.ResponseWriter, userID string, i
 // usuário — o SaveLayout precisa delas para fundir, e uma segunda consulta ao
 // banco no meio da mesma requisição poderia responder com uma permissão
 // diferente da que decidiu a gravação.
-func (h *DashboardHandler) respondLayoutWithPerms(w http.ResponseWriter, perms map[string]bool, items []storage.LayoutItem) {
-	visible := make([]storage.LayoutItem, 0, len(items))
+func (h *DashboardHandler) respondLayoutWithPerms(w http.ResponseWriter, perms map[string]bool, items []dashboard.LayoutItem) {
+	visible := make([]dashboard.LayoutItem, 0, len(items))
 	for _, it := range items {
 		if canSeeWidget(perms, it.Widget) {
 			visible = append(visible, it)
 		}
 	}
-	available := make([]string, 0, len(storage.DashboardWidgets))
-	for _, wd := range storage.DashboardWidgets {
+	available := make([]string, 0, len(dashboard.Catalog))
+	for _, wd := range dashboard.Catalog {
 		if canSeeWidget(perms, wd.Name) {
 			available = append(available, wd.Name)
 		}
@@ -203,7 +204,7 @@ func (h *DashboardHandler) respondLayoutWithPerms(w http.ResponseWriter, perms m
 // desconhecido nunca é visível — é a mesma decisão da leitura do banco, aqui
 // para o caso de o catálogo mudar entre uma consulta e outra.
 func canSeeWidget(perms map[string]bool, widget string) bool {
-	perm, ok := storage.DashboardWidgetPermission(widget)
+	perm, ok := dashboard.Permission(widget)
 	if !ok {
 		return false
 	}

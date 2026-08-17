@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/giovanibalarini/linkguard-fw/internal/dashboard"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -67,7 +68,7 @@ func grantPermissions(t *testing.T, db *storage.DB, u *storage.User, perms ...au
 	}
 }
 
-func putLayout(t *testing.T, h *handlers.DashboardHandler, u *storage.User, items []storage.LayoutItem) (int, handlers.LayoutResponse) {
+func putLayout(t *testing.T, h *handlers.DashboardHandler, u *storage.User, items []dashboard.LayoutItem) (int, handlers.LayoutResponse) {
 	t.Helper()
 	body, err := json.Marshal(handlers.LayoutRequest{Items: items})
 	if err != nil {
@@ -88,13 +89,13 @@ func putLayout(t *testing.T, h *handlers.DashboardHandler, u *storage.User, item
 
 // itemDoWidget acha um item pelo nome do widget na lista, para as asserções de
 // posição ficarem legíveis.
-func itemDoWidget(items []storage.LayoutItem, widget string) (storage.LayoutItem, bool) {
+func itemDoWidget(items []dashboard.LayoutItem, widget string) (dashboard.LayoutItem, bool) {
 	for _, it := range items {
 		if it.Widget == widget {
 			return it, true
 		}
 	}
-	return storage.LayoutItem{}, false
+	return dashboard.LayoutItem{}, false
 }
 
 func getLayout(t *testing.T, h *handlers.DashboardHandler, u *storage.User) (int, handlers.LayoutResponse) {
@@ -122,7 +123,7 @@ func TestWidgetOutsidePermissionIsNotReturned(t *testing.T) {
 	// Admin de rede: monitoramento e links, SEM hosts.read.
 	u := userWithPermissions(t, db, "rede", auth.PermMonitoringRead, auth.PermLinksRead)
 
-	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+	if err := db.SaveDashboardLayout(u.ID, []dashboard.LayoutItem{
 		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
 		{Widget: "lan_hosts", X: 6, Y: 0, W: 6, H: 2},
 		{Widget: "wan_links", X: 0, Y: 2, W: 6, H: 2},
@@ -166,7 +167,7 @@ func TestSaveLayoutIsScopedToTheAuthenticatedUser(t *testing.T) {
 	rede := userWithPermissions(t, db, "rede", auth.PermMonitoringRead, auth.PermLinksRead)
 	suporte := userWithPermissions(t, db, "suporte", auth.PermMonitoringRead, auth.PermHostsRead)
 
-	body, _ := json.Marshal(handlers.LayoutRequest{Items: []storage.LayoutItem{
+	body, _ := json.Marshal(handlers.LayoutRequest{Items: []dashboard.LayoutItem{
 		{Widget: "wan_links", X: 0, Y: 0, W: 12, H: 3},
 	}})
 	req := httptest.NewRequest(http.MethodPut, "/api/dashboard/layout", bytes.NewReader(body))
@@ -200,7 +201,7 @@ func TestSaveDropsUnknownWidgetsInsteadOfRejectingTheWholeLayout(t *testing.T) {
 	h, db := newDashboardTestHandler(t)
 	u := userWithPermissions(t, db, "rede", auth.PermMonitoringRead, auth.PermLinksRead)
 
-	body, _ := json.Marshal(handlers.LayoutRequest{Items: []storage.LayoutItem{
+	body, _ := json.Marshal(handlers.LayoutRequest{Items: []dashboard.LayoutItem{
 		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
 		{Widget: "widget_de_uma_versao_futura", X: 6, Y: 0, W: 6, H: 2},
 		{Widget: "wan_links", X: 0, Y: 2, W: 12, H: 2},
@@ -270,7 +271,7 @@ func TestSaveKeepsStoredWidgetsTheCallerCannotSee(t *testing.T) {
 
 	// O painel que ele tinha, montado quando ele ainda via tudo (ou montado por
 	// outro admin antes de a permissão ser tirada).
-	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+	if err := db.SaveDashboardLayout(u.ID, []dashboard.LayoutItem{
 		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
 		{Widget: "lan_hosts", X: 6, Y: 0, W: 6, H: 2},
 		{Widget: "wan_links", X: 0, Y: 2, W: 6, H: 2},
@@ -280,7 +281,7 @@ func TestSaveKeepsStoredWidgetsTheCallerCannotSee(t *testing.T) {
 	}
 
 	// Ele arrasta: a tela manda de volta só o que ela leu, que é só o que ele vê.
-	code, resp := putLayout(t, h, u, []storage.LayoutItem{
+	code, resp := putLayout(t, h, u, []dashboard.LayoutItem{
 		{Widget: "wan_links", X: 0, Y: 0, W: 12, H: 2},
 		{Widget: "system_health", X: 0, Y: 2, W: 12, H: 2},
 	})
@@ -345,14 +346,14 @@ func TestSaveCannotWriteWidgetOutsideTheCallersPermission(t *testing.T) {
 	// aparecer depois só pode ter vindo do corpo da requisição. (Sem isto o
 	// teste ficaria ambíguo: quem nunca salvou parte do layout de fábrica, que
 	// já traz top_talkers, e a fusão preserva esse item de propósito.)
-	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+	if err := db.SaveDashboardLayout(u.ID, []dashboard.LayoutItem{
 		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
 		{Widget: "wan_links", X: 6, Y: 0, W: 6, H: 2},
 	}); err != nil {
 		t.Fatalf("salvar: %v", err)
 	}
 
-	code, resp := putLayout(t, h, u, []storage.LayoutItem{
+	code, resp := putLayout(t, h, u, []dashboard.LayoutItem{
 		{Widget: "wan_links", X: 0, Y: 0, W: 6, H: 2},
 		{Widget: "lan_hosts", X: 6, Y: 0, W: 6, H: 2},
 		{Widget: "top_talkers", X: 0, Y: 2, W: 12, H: 3},
@@ -383,7 +384,7 @@ func TestSaveStillRemovesWidgetsTheCallerCanSee(t *testing.T) {
 	h, db := newDashboardTestHandler(t)
 	u := userWithPermissions(t, db, "geral", auth.PermMonitoringRead, auth.PermLinksRead, auth.PermHostsRead)
 
-	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+	if err := db.SaveDashboardLayout(u.ID, []dashboard.LayoutItem{
 		{Widget: "system_health", X: 0, Y: 0, W: 6, H: 2},
 		{Widget: "lan_hosts", X: 6, Y: 0, W: 6, H: 2},
 		{Widget: "wan_links", X: 0, Y: 2, W: 6, H: 2},
@@ -392,7 +393,7 @@ func TestSaveStillRemovesWidgetsTheCallerCanSee(t *testing.T) {
 	}
 
 	// Ele tira "Hosts na rede" do painel e rearranja o resto.
-	code, resp := putLayout(t, h, u, []storage.LayoutItem{
+	code, resp := putLayout(t, h, u, []dashboard.LayoutItem{
 		{Widget: "system_health", X: 0, Y: 0, W: 12, H: 2},
 		{Widget: "wan_links", X: 0, Y: 2, W: 12, H: 2},
 	})
@@ -426,7 +427,7 @@ func TestResetLayoutRestoresTheFactoryDefault(t *testing.T) {
 	h, db := newDashboardTestHandler(t)
 	u := userWithPermissions(t, db, "rede", auth.PermMonitoringRead, auth.PermLinksRead)
 
-	if err := db.SaveDashboardLayout(u.ID, []storage.LayoutItem{
+	if err := db.SaveDashboardLayout(u.ID, []dashboard.LayoutItem{
 		{Widget: "quick_actions", X: 0, Y: 0, W: 12, H: 3},
 	}); err != nil {
 		t.Fatalf("salvar: %v", err)
