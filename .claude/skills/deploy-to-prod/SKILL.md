@@ -1,13 +1,13 @@
 ---
 name: deploy-to-prod
-description: Use when deploying, releasing, or updating LinkGuard FW on the production firewall — building a new .deb, cutting a release version, or installing an update on the prod box (192.168.3.3). Covers the CI pipeline, downloading the release, and installing over SSH.
+description: Use when deploying, releasing, or updating LinkGuard FW on the production firewall — building a new .deb, cutting a release version, or installing an update on the prod box (<prod-host>). Covers the CI pipeline, downloading the release, and installing over SSH.
 ---
 
 # Deploy LinkGuard FW to production
 
 ## Overview
 
-Deploy = **merge to `main` → CI builds the `.deb` → download → verify sha256 → `scp` → `dpkg -i` on prod**. The repo is **private**, so the in-app self-updater 404s — always deploy manually via the release artifacts.
+Deploy = **merge to `main` → CI builds the `.deb` → download → verify sha256 → `scp` → `dpkg -i` on prod**. Deploying manually via the release artifacts is the reliable path; the in-app self-updater is a convenience, not the deploy mechanism.
 
 Never build the `.deb` by hand for a real deploy: local machines usually lack `node`/`npm` (needed for the embedded frontend), and hand-built packages skip the CI tests. Use the pipeline.
 
@@ -21,11 +21,11 @@ Never build the `.deb` by hand for a real deploy: local machines usually lack `n
 
 ## Prod box facts
 
-- SSH: `ssh gov@192.168.3.3` (key auth, `firewall-DG`, Debian 13, amd64).
-- **Root: `su -` with NO password.** There is **no `sudo`**. Run root commands as:
-  `ssh gov@192.168.3.3 'su - -c "bash -s"' <<'EOF' ... EOF`
+- SSH: `ssh <user>@<prod-host>` (key auth, Debian 13, amd64).
+- **Root access depends on how the box was set up** (`sudo` may be absent). Run root commands as:
+  `ssh <user>@<prod-host> 'su - -c "bash -s"' <<'EOF' ... EOF`
 - The daemon runs as **root** and is `enabled`+`active`. `postinst` restarts it on install.
-- SSH is LAN-local (notebook .61 → br10 .3.3), so the service restart does **not** drop your session.
+- SSH is LAN-local (estação de trabalho → LAN do firewall), so the service restart does **not** drop your session.
 - `dpkg -i` does **not** resolve `Depends` — fine on prod (deps already present). On a **fresh** server use `apt install ./file.deb`.
 
 ## Deploy steps
@@ -38,7 +38,7 @@ gh pr merge <PR#> --rebase --delete-branch
 gh run watch $(gh run list --workflow=release.yml -L1 --json databaseId -q '.[0].databaseId') --exit-status
 VER=v1.0.54   # from the run / `gh release list -L1`
 
-# 3. Download the amd64 .deb + checksums locally (authenticated; works on private repo).
+# 3. Download the amd64 .deb + checksums locally.
 gh release download "$VER" -p 'linkguard-fw_*_amd64.deb' -p 'sha256sums.txt' -D /tmp/lg --clobber
 
 # 4. Verify checksum locally.
@@ -46,14 +46,14 @@ cd /tmp/lg && grep amd64.deb sha256sums.txt | sha256sum -c -
 dpkg-deb -f linkguard-fw_*_amd64.deb Depends   # sanity-check packaging changes landed
 
 # 5. Ship to prod and confirm sha matches before installing.
-scp linkguard-fw_*_amd64.deb gov@192.168.3.3:/tmp/
-ssh gov@192.168.3.3 'sha256sum /tmp/linkguard-fw_*_amd64.deb'
+scp linkguard-fw_*_amd64.deb <user>@<prod-host>:/tmp/
+ssh <user>@<prod-host> 'sha256sum /tmp/linkguard-fw_*_amd64.deb'
 
 # 6. Install as root (postinst restarts the service).
-ssh gov@192.168.3.3 'su - -c "dpkg -i /tmp/linkguard-fw_'"${VER#v}"'_amd64.deb"'
+ssh <user>@<prod-host> 'su - -c "dpkg -i /tmp/linkguard-fw_'"${VER#v}"'_amd64.deb"'
 
 # 7. Verify.
-ssh gov@192.168.3.3 'su - -c "systemctl is-active linkguard-fw; /usr/local/bin/linkguard-fw --version"'
+ssh <user>@<prod-host> 'su - -c "systemctl is-active linkguard-fw; /usr/local/bin/linkguard-fw --version"'
 ```
 
 ## Runtime prerequisites the app now owns
@@ -70,5 +70,5 @@ These writes need `/etc/sysctl.d` in the unit's `ReadWritePaths` (`ProtectSystem
 - **Editing only the Makefile for packaging changes** → the released `.deb` is unchanged. Edit `release.yml` too.
 - **Pushing to a feature branch expecting a build** → CI only fires on `main`.
 - **`git push origin main` / prod writes under the auto-mode classifier get blocked** → use `gh pr merge` for integration; if a prod `scp`/`dpkg` is blocked, hand the exact command to the user or run outside auto mode.
-- **Expecting the in-app updater to work** → 404 on the private repo; deploy manually.
+- **Relying on the in-app updater for a real deploy** → prefer the release artifacts; they are checksum-verified.
 - **`dpkg -i` on a fresh server** → won't pull `Depends`; use `apt install ./file.deb`.
