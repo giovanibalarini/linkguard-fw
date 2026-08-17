@@ -62,6 +62,18 @@ type fakeNft struct {
 	// incompleta se esconde: o dry run aprova a linha antiga, o apply escreve
 	// outra, e as duas passam.
 	checked []string
+	// onCheck e onApply são os GANCHOS DE ORDEM (confirm_order_test.go), nil em
+	// todo teste que não os usa. Guardar o texto dos comandos prova o QUE foi
+	// emitido; estes ganchos são a única forma de um teste observar o estado do
+	// mundo NO INSTANTE de cada passo — é assim que "o pré-voo veio antes da
+	// escrita" e "a janela já estava armada quando o nft foi tocado" viram
+	// asserções que falham sozinhas, em vez de serem inferidas do status HTTP.
+	//
+	// Os dois rodam com f.mu TRAVADO: o gancho pode ler o banco (é para isso
+	// que ele existe), mas não pode chamar nada que volte a este falso — seria
+	// deadlock. Ver hookCheck/hookApply.
+	onCheck func(script string)
+	onApply func(cmd string)
 }
 
 // errNoSuchChain é a mensagem que o nft dá para referência a chain
@@ -101,6 +113,9 @@ func (f *fakeNft) Execute(_ context.Context, cmd string, args ...string) (string
 	f.executed = append(f.executed, cmd+" "+strings.Join(args, " "))
 	if cmd != "nft" {
 		return "", nil
+	}
+	if f.onApply != nil {
+		f.onApply(strings.Join(args, " "))
 	}
 	if err := f.refusedAtApply(args); err != nil {
 		return "", err
@@ -163,6 +178,9 @@ func (f *fakeNft) check(path string) error {
 		return err
 	}
 	f.checked = append(f.checked, string(body))
+	if f.onCheck != nil {
+		f.onCheck(string(body))
+	}
 	scratch := make(map[string][]string, len(f.chains))
 	for name, rules := range f.chains {
 		scratch[name] = append([]string{}, rules...)
