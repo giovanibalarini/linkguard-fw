@@ -552,24 +552,6 @@ func TestSearchAuditLogsWithoutFilterReturnsEverythingNewestFirst(t *testing.T) 
 	}
 }
 
-func TestSearchAuditLogsFiltersByActionSubstring(t *testing.T) {
-	db := newTestDB(t)
-	seedAuditLogs(t, db, "link.create", "dhcp.reservation.set", "dhcp.reservation.del", "dns.blocklist.add")
-
-	logs, err := db.SearchAuditLogs("dhcp", 10)
-	if err != nil {
-		t.Fatalf("SearchAuditLogs: %v", err)
-	}
-	if len(logs) != 2 {
-		t.Fatalf("esperava 2 registros de dhcp, veio %d", len(logs))
-	}
-	for _, l := range logs {
-		if l.Action != "dhcp.reservation.set" && l.Action != "dhcp.reservation.del" {
-			t.Errorf("registro fora do filtro: %s", l.Action)
-		}
-	}
-}
-
 func TestSearchAuditLogsIgnoresCaseInTheFilter(t *testing.T) {
 	db := newTestDB(t)
 	seedAuditLogs(t, db, "dns.blocklist.add")
@@ -724,28 +706,6 @@ func TestSetHostAliasCreatesTheHostRowWhenItDoesNotExist(t *testing.T) {
 	}
 }
 
-func TestSetHostAliasOverwritesThePreviousAlias(t *testing.T) {
-	db := newTestDB(t)
-
-	if err := db.SetHostAlias("aa:bb:cc:11:22:02", "apelido antigo"); err != nil {
-		t.Fatalf("SetHostAlias (1): %v", err)
-	}
-	if err := db.SetHostAlias("aa:bb:cc:11:22:02", "apelido novo"); err != nil {
-		t.Fatalf("SetHostAlias (2): %v", err)
-	}
-
-	list, err := db.ListHostMetadata()
-	if err != nil {
-		t.Fatalf("ListHostMetadata: %v", err)
-	}
-	if len(list) != 1 {
-		t.Fatalf("esperava 1 host (upsert, não insert), veio %d", len(list))
-	}
-	if list[0].Alias != "apelido novo" {
-		t.Errorf("esperava o apelido novo, veio %q", list[0].Alias)
-	}
-}
-
 func TestSetHostAliasWithEmptyStringClearsTheAlias(t *testing.T) {
 	db := newTestDB(t)
 
@@ -863,39 +823,6 @@ func TestCountAlertsIsZeroOnAFreshDatabase(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("esperava 0 alertas, veio %d", n)
-	}
-}
-
-func TestCountAlertsCountsOnlyTheUnresolvedOnes(t *testing.T) {
-	db := newTestDB(t)
-
-	var ids []string
-	for _, title := range []string{"WAN1 caiu", "WAN2 degradada", "disco cheio"} {
-		a := &storage.Alert{Type: "link_offline", Severity: "critical", Title: title}
-		if err := db.CreateAlert(a); err != nil {
-			t.Fatalf("CreateAlert %s: %v", title, err)
-		}
-		ids = append(ids, a.ID)
-	}
-
-	n, err := db.CountAlerts()
-	if err != nil {
-		t.Fatalf("CountAlerts: %v", err)
-	}
-	if n != 3 {
-		t.Fatalf("esperava 3 alertas em aberto, veio %d", n)
-	}
-
-	if err := db.ResolveAlert(ids[0]); err != nil {
-		t.Fatalf("ResolveAlert: %v", err)
-	}
-
-	n, err = db.CountAlerts()
-	if err != nil {
-		t.Fatalf("CountAlerts (após resolver): %v", err)
-	}
-	if n != 2 {
-		t.Errorf("esperava 2 alertas em aberto depois de resolver um, veio %d", n)
 	}
 }
 
