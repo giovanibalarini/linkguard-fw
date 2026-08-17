@@ -54,9 +54,44 @@ func TestValidIface(t *testing.T) {
 		"eth0 extra",                          // espaço
 		"eth0\nbad",                           // quebra de linha
 		"eth0/../x",                           // barra
+
+		// Issue #61: só a regex de charset aceitava todos estes. Era a BARRA
+		// que barrava "../etc", não o "..", e um validador que aprova travessia
+		// de diretório como nome é base ruim para quem confia nele.
+		".",
+		"..",
+		"...",
+		"-",
+		"_",
+		"._-",
+		"..-._",
 	} {
 		if Iface(s) {
 			t.Errorf("Iface(%q) = true, want false", s)
+		}
+	}
+}
+
+// TestValidIfaceAceitaPontuacaoAcompanhadaDeAlfanumerico é o contraponto da
+// regra da #61, e existe para que ela não seja endurecida além da conta: o
+// proibido é o nome feito SÓ de pontuação, não a pontuação em si. Nomes reais
+// (VLAN, bridge, alias, os que o próprio produto gera) dependem de ponto, hífen
+// e sublinhado, e uma correção que os recusasse quebraria configuração legítima
+// já gravada em campo.
+func TestValidIfaceAceitaPontuacaoAcompanhadaDeAlfanumerico(t *testing.T) {
+	for _, s := range []string{
+		"eth0.1", // VLAN
+		"br-lan", // bridge com hífen
+		"wg_0",   // sublinhado
+		".eth0",  // começa com ponto
+		"eth0.",  // termina com ponto
+		"-e",     // começa com hífen
+		"e.._--", // pontuação em volta de um alfanumérico
+		"1",      // um dígito basta
+		"..0..",  // o zero no meio é o que salva
+	} {
+		if !Iface(s) {
+			t.Errorf("Iface(%q) = false, want true — a #61 proíbe nome só de pontuação, não pontuação", s)
 		}
 	}
 }
