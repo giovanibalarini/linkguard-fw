@@ -20,6 +20,8 @@ import (
 	"net/http"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 // asGuardError isola o errors.As para que writeGuardError leia como a tabela
@@ -98,6 +100,38 @@ func (h *NftablesHandler) applyGuarded(w http.ResponseWriter, r *http.Request, m
 		return nil, false
 	}
 	return out, true
+}
+
+// preflightGroups é o pré-voo das mutações de GRUPO: lê o conjunto atual,
+// deixa mutate desenhar como ele ficaria, e pergunta ao próprio nft se aquilo
+// é aceitável.
+//
+// É o antigo checkPendingGroups sem o http.ResponseWriter. A diferença não é
+// cosmética: sem o writer ele devolve erro em vez de responder, que é o que
+// permite a ApplyGuarded decidir o que fazer — e é o que torna o passo
+// alcançável por um caminho de mutação que não seja uma requisição.
+func (h *NftablesHandler) preflightGroups(ctx context.Context, mutate func([]nftables.StoredGroup) []nftables.StoredGroup) error {
+	current, err := h.fr.StoredGroups()
+	if err != nil {
+		return err
+	}
+	return h.fr.CheckPendingGroups(ctx, mutate(current))
+}
+
+// preflightRules é o mesmo para as mutações de REGRA: o candidato é montado a
+// partir da lista de regras, e StoredGroupsWithRules o converte no conjunto de
+// grupos que o nft vai conferir — porque uma regra só existe dentro da chain de
+// um grupo.
+func (h *NftablesHandler) preflightRules(ctx context.Context, mutate func([]storage.FirewallRule) []storage.FirewallRule) error {
+	current, err := h.db.ListFirewallRules()
+	if err != nil {
+		return err
+	}
+	candidate, err := h.fr.StoredGroupsWithRules(mutate(current))
+	if err != nil {
+		return err
+	}
+	return h.fr.CheckPendingGroups(ctx, candidate)
 }
 
 // pendingViewOf desenha a faixa da janela que a mutação acabou de armar, ou

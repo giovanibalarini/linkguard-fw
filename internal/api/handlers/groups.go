@@ -233,11 +233,11 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
+	// findGroup e a recusa do grupo do sistema ficam ANTES de ApplyGuarded, e
+	// não dentro do Validate dele, porque as duas precisam do banco para
+	// existir: o "validar antes de qualquer leitura" do C-5 é sobre os campos
+	// do corpo, e aqui não há campo do corpo que se possa conferir sem saber
+	// primeiro qual grupo está sendo editado. É a mesma ordem de antes.
 	existing, found := h.findGroup(w, b.ID)
 	if !found {
 		return
@@ -273,11 +273,7 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if b.ConnState != "" {
 		row.ConnState = b.ConnState
 	}
-	if err := nftables.ValidateGroup(firewallrules.ToStoredGroup(row)); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	ok := h.checkPendingGroups(w, r, func(current []nftables.StoredGroup) []nftables.StoredGroup {
+	candidato := func(current []nftables.StoredGroup) []nftables.StoredGroup {
 		out := make([]nftables.StoredGroup, len(current))
 		for i, g := range current {
 			if g.ID == b.ID {
@@ -297,32 +293,37 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 			out[i] = g
 		}
 		return out
+	}
+
+	out, ok := h.applyGuarded(w, r, mutation{
+		validate: func() error {
+			return nftables.ValidateGroup(firewallrules.ToStoredGroup(row))
+		},
+		preflight: func(ctx context.Context) error {
+			return h.preflightGroups(ctx, candidato)
+		},
+		window: func() (bool, string) {
+			// Os DOIS lados da edição contam: o grupo que JÁ era de input
+			// (mexer nele pode trancar o acesso) e o que está PASSANDO a ser
+			// (é aí que ele ganha esse poder). Sair de input para forward
+			// também abre janela — não custa nada além de 90 segundos, e "na
+			// dúvida, abre" é a regra deste mecanismo.
+			return groupReachesInput(existing) || groupReachesInput(row),
+				fmt.Sprintf("edição do grupo %q (escopo input)", row.Name)
+		},
+		// Falha do banco aqui é falha do SERVIDOR (500), não do cliente: o id
+		// já foi resolvido por findGroup e os campos já passaram por
+		// ValidateGroup, de modo que o que sobra é uma pane. StageWrite
+		// responde 500 sem pôr a mensagem interna do SQLite na tela.
+		write: func() error { return h.db.UpdateFirewallGroup(&row) },
+		audit: func() (string, string, string) {
+			return "nft.group.update", row.ChainName + ":" + row.ID, row.Name
+		},
 	})
 	if !ok {
 		return
 	}
-	// Os DOIS lados da edição contam: o grupo que JÁ era de input (mexer nele
-	// pode trancar o acesso) e o que está PASSANDO a ser (é aí que ele ganha
-	// esse poder). Sair de input para forward também abre janela — não custa
-	// nada além de 90 segundos, e "na dúvida, abre" é a regra deste mecanismo.
-	win, ok := h.openConfirmWindow(w, r, groupReachesInput(existing) || groupReachesInput(row),
-		fmt.Sprintf("edição do grupo %q (escopo input)", row.Name))
-	if !ok {
-		return
-	}
-	// Falha do banco aqui é falha do SERVIDOR (500), não do cliente: o id já
-	// foi resolvido por findGroup e os campos já passaram por ValidateGroup, de
-	// modo que o que sobra é uma pane — e o 400 com o texto cru punha a
-	// mensagem interna do SQLite na tela do operador.
-	if err := h.db.UpdateFirewallGroup(&row); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	auditAction(h.db, r, "nft.group.update", row.ChainName+":"+row.ID, row.Name)
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(win.view))
+	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
 
 // DeleteGroup remove o grupo E as regras de dentro dele (na mesma transação,
@@ -346,11 +347,8 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
+	// A trava do confirmar-ou-reverte mora agora em ApplyGuarded (issue #20).
+	//
 	// C-6: resolver o id aqui, como UpdateGroup e ToggleGroup fazem, em vez de
 	// deixar o storage responder pelo "não encontrado". Enquanto o banco
 	// responde, dá no mesmo; quando ele não responde, a assimetria aparece —
@@ -373,22 +371,24 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 			"este é um grupo do sistema e não pode ser removido; para desativá-lo, use o botão de ligar/desligar")
 		return
 	}
-	win, ok := h.openConfirmWindow(w, r, groupReachesInput(g), fmt.Sprintf("remoção do grupo %q (escopo input)", g.Name))
+	// Sem preflight, pela mesma razão de DeleteRule (ver o comentário desta
+	// função): tirar um jump da forward e apagar uma chain não é algo que o
+	// nft possa recusar por sintaxe.
+	out, ok := h.applyGuarded(w, r, mutation{
+		window: func() (bool, string) {
+			return groupReachesInput(g), fmt.Sprintf("remoção do grupo %q (escopo input)", g.Name)
+		},
+		// C-6, a outra metade: com o id já resolvido por findGroup, o que
+		// restar de erro aqui é pane do servidor. O 400 com o texto cru do
+		// banco — a mesma assimetria que este handler dizia ter corrigido —
+		// sobrevivia neste ramo; StageWrite responde 500 sem vazar o texto.
+		write: func() error { return h.db.DeleteFirewallGroup(id) },
+		audit: func() (string, string, string) { return "nft.group.del", id, "" },
+	})
 	if !ok {
 		return
 	}
-	// C-6, a outra metade: com o id já resolvido por findGroup, o que restar de
-	// erro aqui é pane do servidor. O 400 com o texto cru do banco — a mesma
-	// assimetria que este handler dizia ter corrigido — sobrevivia neste ramo.
-	if err := h.db.DeleteFirewallGroup(id); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	auditAction(h.db, r, "nft.group.del", id, "")
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(win.view))
+	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
 
 // ToggleGroup liga e desliga um grupo inteiro de uma vez — desligar é tirar
