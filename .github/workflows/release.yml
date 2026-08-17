@@ -115,39 +115,19 @@ jobs:
           TAG="${{ steps.version.outputs.version }}"
           DEB_VER="${{ steps.version.outputs.deb_version }}"
 
-          cat > release-notes.md <<EOF
-          Automated release from commit ${{ github.sha }}.
+          # A nota sai do histórico (issue #63). Ela repetia o passo a passo de
+          # instalação, que já mora no README e não muda de release para
+          # release, e não dizia uma linha sobre o que tinha sido corrigido —
+          # justamente o que decide, para quem opera um firewall, se a
+          # atualização é para agora ou para o sábado.
+          #
+          # O checkout deste job usa fetch-depth: 0, e o script depende disso:
+          # sem as tags e sem o histórico ele não tem de onde tirar a lista.
+          bash scripts/release-notes.sh \
+            "${TAG}" "${{ github.repository }}" "${{ github.sha }}" > release-notes.md
 
-          ### Install via .deb (Debian/Ubuntu - recommended)
-
-          \`\`\`bash
-          # amd64
-          wget https://github.com/${{ github.repository }}/releases/download/${TAG}/linkguard-fw_${DEB_VER}_amd64.deb
-          sudo dpkg -i linkguard-fw_${DEB_VER}_amd64.deb
-
-          # Edit config (set jwt_secret before starting)
-          sudo nano /etc/linkguard-fw/config.json
-
-          # Enable and start the service
-          sudo systemctl enable --now linkguard-fw
-          \`\`\`
-
-          ### Install binary manually
-
-          \`\`\`bash
-          # amd64
-          wget https://github.com/${{ github.repository }}/releases/download/${TAG}/linkguard-fw-linux-amd64
-          chmod +x linkguard-fw-linux-amd64
-          sudo mv linkguard-fw-linux-amd64 /usr/local/bin/linkguard-fw
-          \`\`\`
-
-          ### Verify checksums
-
-          \`\`\`bash
-          wget https://github.com/${{ github.repository }}/releases/download/${TAG}/sha256sums.txt
-          sha256sum -c sha256sums.txt
-          \`\`\`
-          EOF
+          echo "--- release-notes.md ---"
+          cat release-notes.md
 
           FILES=(
             dist/linkguard-fw-linux-amd64
