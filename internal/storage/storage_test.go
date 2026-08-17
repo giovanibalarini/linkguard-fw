@@ -808,73 +808,52 @@ func TestSecretsTableExists(t *testing.T) {
 	}
 }
 
-type fakeSecretsSetter struct {
-	stored map[string]string
-}
+// ─── Settings ────────────────────────────────────────────────────────────────
 
-func (f *fakeSecretsSetter) Set(name, plaintext string) error {
-	if f.stored == nil {
-		f.stored = map[string]string{}
-	}
-	f.stored[name] = plaintext
-	return nil
-}
-
-func TestMigrateSettingsToSecretsMovesKnownKeys(t *testing.T) {
+// SettingKeys and DeleteSetting exist for the boot-time migration in
+// internal/secrets, which is the only caller. They are tested here because
+// this is where the SQL lives.
+func TestSettingKeysListsEveryKeyAndDeleteSettingRemovesOne(t *testing.T) {
 	db := newTestDB(t)
 
-	_ = db.SetSetting("github_update_token", "ghp_abc")
-	_ = db.SetSetting("notifications", `{"webhook":{"url":"https://x"}}`)
-	_ = db.SetSetting("wireguard", `{"private_key":"wgpriv123","peers":[]}`)
-	_ = db.SetSetting("totp_user-1", `{"secret":"AAA","enabled":true}`)
-	_ = db.SetSetting("totp_user-2", `{"secret":"BBB","enabled":true}`)
-	_ = db.SetSetting("monitoring", `{"enabled":true}`) // must NOT be migrated
-
-	fake := &fakeSecretsSetter{}
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("MigrateSettingsToSecrets: %v", err)
+	if err := db.SetSetting("monitoring", `{"enabled":true}`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	if err := db.SetSetting("totp_user-1", `{"secret":"AAA"}`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
 	}
 
-	want := map[string]string{
-		"github_update_token": "ghp_abc",
-		"notifications":       `{"webhook":{"url":"https://x"}}`,
-		"wireguard":           `{"private_key":"wgpriv123","peers":[]}`,
-		"totp_user-1":         `{"secret":"AAA","enabled":true}`,
-		"totp_user-2":         `{"secret":"BBB","enabled":true}`,
-	}
-	for k, v := range want {
-		if fake.stored[k] != v {
-			t.Fatalf("expected %q migrated with value %q, got %q", k, v, fake.stored[k])
-		}
-	}
-
-	settings, err := db.ExportSettings()
+	keys, err := db.SettingKeys()
 	if err != nil {
-		t.Fatalf("ExportSettings: %v", err)
+		t.Fatalf("SettingKeys: %v", err)
 	}
-	for k := range want {
-		if _, present := settings[k]; present {
-			t.Fatalf("expected %q removed from settings after migration, still present", k)
-		}
+	seen := map[string]bool{}
+	for _, k := range keys {
+		seen[k] = true
 	}
-	if settings["monitoring"] != `{"enabled":true}` {
-		t.Fatalf("expected non-secret key 'monitoring' untouched, got %q", settings["monitoring"])
+	if !seen["monitoring"] || !seen["totp_user-1"] {
+		t.Fatalf("expected both keys listed, got %v", keys)
 	}
-}
 
-func TestMigrateSettingsToSecretsIsIdempotent(t *testing.T) {
-	db := newTestDB(t)
-	_ = db.SetSetting("github_update_token", "ghp_abc")
+	if err := db.DeleteSetting("totp_user-1"); err != nil {
+		t.Fatalf("DeleteSetting: %v", err)
+	}
+	got, err := db.GetSetting("totp_user-1")
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected key gone after DeleteSetting, got %q", got)
+	}
+	if v, _ := db.GetSetting("monitoring"); v != `{"enabled":true}` {
+		t.Fatalf("DeleteSetting touched the wrong row, monitoring=%q", v)
+	}
 
-	fake := &fakeSecretsSetter{}
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("first migrate: %v", err)
-	}
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("second migrate: %v", err)
-	}
-	if fake.stored["github_update_token"] != "ghp_abc" {
-		t.Fatalf("expected value to survive two migrate calls unchanged, got %q", fake.stored["github_update_token"])
+	// Deleting a key that was never there is not an error: the migration
+	// retries whole keys after a partial failure and must not abort boot
+	// because a row it already removed is no longer there.
+	if err := db.DeleteSetting("never_existed"); err != nil {
+		t.Fatalf("DeleteSetting on missing key should be a no-op, got %v", err)
 	}
 }
 

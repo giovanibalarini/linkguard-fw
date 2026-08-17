@@ -348,7 +348,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		return nil, err
 	}
 	secretsSvc := secrets.NewService(db, secretKey)
-	if err := storage.MigrateSettingsToSecrets(db, secretsSvc); err != nil {
+	if err := secrets.MigrateFromSettings(db, secretsSvc); err != nil {
 		slog.Error("failed to migrate legacy secrets", "err", err)
 		return nil, err
 	}
