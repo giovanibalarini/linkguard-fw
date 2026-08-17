@@ -1016,9 +1016,23 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 // o beco C-6. Gravar antes de aplicar é seguro porque a mistura é idempotente:
 // refazê-la com o alvo já no lugar do snapshot dá o mesmo alvo.
 //
-// Estado pós-mutação ilegível NÃO derruba a reversão: cai no comportamento
-// anterior (restaurar o snapshot inteiro), que é o lado seguro — devolver o
-// acesso vale mais do que preservar a alteração de terceiros.
+// Duas faltas diferentes, e elas NÃO dão no mesmo — a primeira versão deste
+// comentário dizia que sim, e era falso:
+//
+//   - pós-mutação ILEGÍVEL (json quebrado): cai mesmo no comportamento
+//     anterior, o snapshot inteiro, e aí sim a reversão é o "volte tudo" de
+//     antes;
+//   - pós-mutação NUNCA GRAVADO (applied_state vazio): AppliedStateOrSnapshot
+//     responde o snapshot, e a comparação vira "base contra o banco de agora".
+//     Toda linha que esta janela mudou parece de outro admin e é PRESERVADA. A
+//     reversão passa a desfazer só o que alcança a chain input — o quase-oposto
+//     de "volte tudo".
+//
+// O acesso do operador está garantido nos dois casos, mas por caminhos
+// diferentes: no segundo quem garante é o limite da chain input, e não o
+// fallback. O resto do que a janela mudou fica de pé — inclusive coisas que ela
+// mudou de verdade, como as posições dos grupos de forward reescritas por uma
+// reordenação.
 func (s *Service) revertTarget(p *storage.PendingChange, base stateSnapshot) (revertMerge, error) {
 	plain := revertMerge{target: base}
 

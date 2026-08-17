@@ -573,12 +573,24 @@ func (h *NftablesHandler) reconcileArmed(w http.ResponseWriter, r *http.Request,
 	// registrar depois deixaria justamente a reversão mais provável sem os dois
 	// estados de que ela precisa.
 	//
-	// Falhar aqui não derruba a mutação, que já está no banco. O custo é a
-	// reversão desta janela voltar a ser o "volte tudo" de antes — o lado
-	// seguro para o acesso do operador, caro só para quem gravou no meio.
+	// Falhar aqui não derruba a mutação, que já está no banco — mas o custo NÃO
+	// é a reversão voltar a ser o "volte tudo" de antes. É quase o contrário, e
+	// vale dizer por extenso: sem o applied_state, AppliedStateOrSnapshot
+	// responde o próprio snapshot, então toda linha que ESTA janela mudou passa
+	// a "divergir do pós-mutação" — isto é, a parecer obra de outro admin — e é
+	// PRESERVADA pela mistura. A reversão desfaz só o que alcança a chain input.
+	//
+	// O acesso do operador continua garantido, e quem o garante é o limite da
+	// chain input (mergeRevertTarget nunca preserva o que a alcança), não este
+	// fallback. O que se perde é a reversão da parte que não alcança a input, e
+	// ela não é hipotética: a reordenação de grupos abre janela pelo índice de
+	// um grupo de input e reescreve a posição de TODOS, forward inclusive —
+	// nesse caso a ordem de avaliação da forward fica de pé e a auditoria ainda
+	// registra como "alteração de outro administrador" o que esta mesma janela
+	// fez (ver TestTheRevertUndoesAReorderInsteadOfPreservingIt).
 	if win.armed {
 		if err := h.fr.MarkWindowApplied(win.id); err != nil {
-			slog.Error("não foi possível registrar o estado que esta alteração deixou no banco; se esta janela for revertida, ela vai restaurar o estado anterior INTEIRO",
+			slog.Error("não foi possível registrar o estado que esta alteração deixou no banco; se esta janela for revertida, ela vai desfazer apenas o que alcança a chain input e PRESERVAR o resto, como se fosse de outro administrador",
 				"err", err, "janela", win.id)
 		}
 	}

@@ -1978,16 +1978,27 @@ type PendingChange struct {
 // AppliedStateOrSnapshot é o estado pós-mutação desta janela, com o Snapshot
 // como resposta quando ele ainda não foi registrado.
 //
-// Vazio acontece em dois casos, e a mesma resposta serve para os dois porque a
-// reversão trata o resultado com o mesmo cuidado (ver mergeRevertTarget, que
-// nunca preserva alteração que alcance a chain input):
+// Vazio acontece em dois casos, e a mesma resposta serve para os dois:
 //
 //   - a janela foi armada e a mutação dela ainda não gravou nada. O estado
-//     pós-mutação é, literalmente, o de antes;
+//     pós-mutação é, literalmente, o de antes, e responder o Snapshot está
+//     CERTO;
 //   - o processo morreu entre a escrita e o registro, ou a linha veio de uma
 //     versão anterior a esta coluna existir. Aqui o Snapshot subestima o que a
-//     janela fez, e a reversão compensa recusando-se a preservar qualquer coisa
-//     que toque a chain input — que é tudo o que uma janela pode ter mudado.
+//     janela fez, e a resposta é o lado possível, não o lado certo.
+//
+// E o segundo caso tem um preço que não dá para suavizar. Com applied ==
+// snapshot, tudo o que esta janela mudou "diverge do pós-mutação" — parece
+// escrita de outro admin — e é PRESERVADO pela reversão. Ela deixa de ser um
+// "volte tudo" e passa a ser quase o oposto: desfaz apenas o que alcança a
+// chain input.
+//
+// O que continua segurando o ACESSO à máquina é esse limite da input
+// (mergeRevertTarget nunca preserva o que a alcança), e não o fallback. Fora
+// dele a janela fica de pé, e não é pouco: uma reordenação de grupos abre a
+// janela pelo índice de um grupo de input mas reescreve a posição de todos os
+// grupos, os de forward inclusive — essas posições não voltam, e a auditoria
+// ainda registra como alteração de terceiros o que a própria janela fez.
 func (p PendingChange) AppliedStateOrSnapshot() string {
 	if p.AppliedState != "" {
 		return p.AppliedState
