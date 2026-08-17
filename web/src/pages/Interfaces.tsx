@@ -245,7 +245,7 @@ export default function Interfaces() {
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="flex items-center gap-2 shrink-0">
                     {i.kind === 'physical' && (
                       <Tag variant={physAbnormal ? 'warn' : 'ok'} dot>
                         {i.live.carrier ? 'link ativo' : 'sem link'}

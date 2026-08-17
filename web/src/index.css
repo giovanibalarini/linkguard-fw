@@ -1,3 +1,8 @@
+/* `@import` has to precede every other rule, so Tailwind comes first here and
+   the @font-face blocks follow — in v3 the @tailwind directives were not
+   imports and could sit anywhere. */
+@import "tailwindcss";
+
 /* Self-hosted fonts (bundled into the binary — no external CDN, works offline) */
 @font-face {
   font-family: 'Inter Variable';
@@ -14,11 +19,76 @@
   src: url('/fonts/jetbrains-mono-latin-wght-normal.woff2') format('woff2');
 }
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Explicit scan roots. Tailwind 4 auto-detects sources, but this appliance
+   keeps a quarantined node_modules copy next to the app; pinning the sources
+   keeps the generated CSS deterministic instead of dependent on what happens
+   to be sitting in the working tree. */
+@source "../index.html";
+@source "./";
 
+/* Design tokens — the Tailwind 3 `theme.extend` block, ported to CSS.
+   In v4 a `--color-x` entry generates bg-x / text-x / border-x / ring-x, so
+   `warn` + `warn-bg` + `warn-border` reproduce the old
+   { DEFAULT, bg, border } object exactly. */
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-primary-50: #eff6ff;
+  --color-primary-100: #dbeafe;
+  --color-primary-500: #3b82f6;
+  --color-primary-600: #2563eb;
+  --color-primary-700: #1d4ed8;
+  --color-primary-900: #1e3a8a;
+
+  /* ok/warn/crit eram #34d399 / #fbbf24 / #f87171 — que são, letra por letra,
+     o emerald-400, amber-400 e red-400 da paleta do Tailwind 3. Ou seja: a
+     intenção sempre foi "o verde/âmbar/vermelho da paleta", não três hexes
+     avulsos.
+
+     O v4 reescreveu a paleta em oklch e esses três tons se moveram. Se os hexes
+     ficassem fixos aqui, `bg-ok` e `text-emerald-400` — que hoje são a MESMA
+     cor e aparecem lado a lado no Painel (widget de hosts x <Tag>) — passariam
+     a ser dois verdes diferentes. Apontar para a variável mantém a paleta
+     coerente e preserva a intenção original.
+
+     Os tons -bg/-border eram alpha 10%/20%; o color-mix reproduz exatamente o
+     que o v4 gera para `/10` e `/20`. */
+  --color-ok: var(--color-emerald-400);
+  --color-ok-bg: color-mix(in oklab, var(--color-emerald-400) 10%, transparent);
+  --color-ok-border: color-mix(in oklab, var(--color-emerald-400) 20%, transparent);
+
+  --color-warn: var(--color-amber-400);
+  --color-warn-bg: color-mix(in oklab, var(--color-amber-400) 10%, transparent);
+  --color-warn-border: color-mix(in oklab, var(--color-amber-400) 20%, transparent);
+
+  --color-crit: var(--color-red-400);
+  --color-crit-bg: color-mix(in oklab, var(--color-red-400) 10%, transparent);
+  --color-crit-border: color-mix(in oklab, var(--color-red-400) 20%, transparent);
+}
+
+/* Tailwind 4 preflight changes two defaults that this panel relied on.
+   Both are restored on purpose rather than chased through ~130 call sites. */
 @layer base {
+  /* v3 preflight gave every `border` utility a concrete gray; v4 defaults to
+     currentColor. Every call site here already pairs `border` with an explicit
+     `border-<color>`, so this is a belt-and-braces default, not a fix. */
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-800, currentColor);
+  }
+
+  /* v4 preflight resets buttons to `cursor: default`. On a firewall console
+     every action — confirm rule, revert, apply DHCP — is a <button>, and a
+     control that does not look clickable is a control the admin hesitates on. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
   body {
     @apply bg-gray-950 text-gray-100 font-sans antialiased;
     /* Inter character variants for a cleaner, more professional look */
@@ -41,8 +111,8 @@
     @apply bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg font-medium transition-colors;
   }
   .input {
-    @apply bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 
-           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
+    @apply bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-100
+           focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:border-transparent
            placeholder-gray-500;
   }
   .label {

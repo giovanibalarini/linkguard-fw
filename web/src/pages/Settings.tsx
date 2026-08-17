@@ -292,7 +292,7 @@ export default function Settings() {
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-4">
-      <span className="text-gray-500 w-28 flex-shrink-0">{label}</span>
+      <span className="text-gray-500 w-28 shrink-0">{label}</span>
       <span className="text-gray-200">{value}</span>
     </div>
   );

@@ -122,8 +122,8 @@ export default function PendingWindowBanner() {
   // mínimo honesto — pode haver um relógio correndo agora.
   if (!pending) {
     return (
-      <div className="flex items-start gap-3 px-4 py-2.5 bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-200 text-sm flex-shrink-0">
-        <HelpCircle className="w-4 h-4 mt-0.5 flex-shrink-0" aria-hidden="true" />
+      <div className="flex items-start gap-3 px-4 py-2.5 bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-200 text-sm shrink-0">
+        <HelpCircle className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
         <p className="flex-1">
           Não foi possível saber se há uma alteração de firewall aguardando confirmação. Se você acabou de aplicar uma, ela pode estar contando os 90 segundos agora —{' '}
           <NavLink to="/firewall" className="underline font-medium hover:text-yellow-100">abra os grupos de regras</NavLink>.
@@ -136,8 +136,8 @@ export default function PendingWindowBanner() {
   // edição está LIBERADA — o texto não pode prometer trava.
   if (pending.reverting) {
     return (
-      <div className="flex items-start gap-3 px-4 py-2.5 bg-blue-500/10 border-b border-blue-500/30 text-blue-100 text-sm flex-shrink-0">
-        <RotateCcw className="w-4 h-4 mt-0.5 flex-shrink-0 animate-spin" aria-hidden="true" />
+      <div className="flex items-start gap-3 px-4 py-2.5 bg-blue-500/10 border-b border-blue-500/30 text-blue-100 text-sm shrink-0">
+        <RotateCcw className="w-4 h-4 mt-0.5 shrink-0 animate-spin" aria-hidden="true" />
         <p className="flex-1">
           Uma alteração de firewall está sendo revertida ({pending.summary}). Os grupos e as regras já voltaram ao estado anterior; falta o firewall aceitar, e o LinkGuard repete até conseguir.{' '}
           <NavLink to="/firewall" className="underline font-medium hover:text-blue-50">Ver na tela de firewall</NavLink>.
@@ -147,7 +147,7 @@ export default function PendingWindowBanner() {
   }
 
   return (
-    <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-100 text-sm flex-shrink-0">
+    <div className="flex flex-col sm:flex-row sm:items-center gap-2 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-100 text-sm shrink-0">
       <div className="flex items-center gap-2 shrink-0">
         <Timer className="w-4 h-4 text-amber-400" aria-hidden="true" />
         {/* "reverte em", nunca "expira em": o relógio diz o que vai acontecer. */}

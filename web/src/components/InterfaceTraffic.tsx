@@ -350,9 +350,9 @@ export default function InterfaceTraffic() {
             return (
               <div
                 key={iface.name}
-                className={`relative overflow-hidden rounded-2xl border border-gray-800 bg-gradient-to-br from-gray-900 via-gray-900 to-gray-950 shadow-xl ${isOpen ? 'col-span-full' : ''}`}
+                className={`relative overflow-hidden rounded-2xl border border-gray-800 bg-linear-to-br from-gray-900 via-gray-900 to-gray-950 shadow-xl ${isOpen ? 'col-span-full' : ''}`}
               >
-                <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-500 via-cyan-400 to-green-400 opacity-70" />
+                <div className="absolute inset-x-0 top-0 h-1 bg-linear-to-r from-blue-500 via-cyan-400 to-green-400 opacity-70" />
 
                 {/* Always-visible summary — click anywhere to expand/collapse.
                     Stacked (name on its own row), not crammed alongside the
