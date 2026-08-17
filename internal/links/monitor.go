@@ -43,6 +43,16 @@ type Monitor struct {
 	onDegradedSustained func(link *storage.Link)
 	sustainThreshold    func() int
 
+	// mu protege tanto o mapa states quanto os campos de CADA *linkState nele
+	// contido — não é só o mapa. Todo acesso (leitura ou escrita) a
+	// consecutiveFails, consecutiveSuccesses, consecutiveDegraded,
+	// degradedEpisodeFired, lastStatus e cooldownUntil de um linkState deve
+	// acontecer com mu travado. Hoje o único chamador é checkLink, uma
+	// goroutine por link por tick, então nunca colide de fato — mas o tipo
+	// não deve depender disso: a próxima cadência de probe concorrente (ou um
+	// endpoint de leitura) sobre o mesmo link vai ler este mutex e assumir que
+	// está protegido. Os probes de rede (a parte lenta) continuam FORA do
+	// lock; só a aritmética de máquina de estados entra.
 	mu     sync.Mutex
 	states map[string]*linkState // key = link ID
 }
@@ -236,14 +246,6 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	}
 	avgLatency, packetLoss := summarize(results)
 
-	m.mu.Lock()
-	state, ok := m.states[l.ID]
-	if !ok {
-		state = &linkState{lastStatus: l.Status}
-		m.states[l.ID] = state
-	}
-	m.mu.Unlock()
-
 	// Classify this sample. "Degraded" = reachable but lossy/slow — a STABLE
 	// state: a consistently degraded link must NOT escalate to offline, so the
 	// balancer can keep it as a last resort and switch back when it recovers.
@@ -251,7 +253,32 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	reachable := packetLoss < 100.0
 	degradedNow := reachable && (packetLoss > degradedLossPct || avgLatency > degradedLatencyMs)
 
-	newStatus, fireSustained := state.advance(reachable, degradedNow, l.Status, m.sustainN())
+	// sustainN() sai do banco (SustainThreshold → balancer.LoadConfig →
+	// db.GetSetting) e por isso é resolvido ANTES de travar. O banco abre uma
+	// conexão só (SetMaxOpenConns(1)): ler dentro da seção crítica faria a
+	// goroutine de um link esperar a conexão enquanto segura mu, e as dos
+	// outros links esperarem esse mutex — atrasando a detecção de queda do
+	// segundo link exatamente durante o incidente do primeiro.
+	sustain := m.sustainN()
+
+	// advance() muta o linkState (consecutiveFails/Degraded/etc.) e a leitura
+	// de oldStatus + a escrita de lastStatus fazem parte do mesmo cálculo —
+	// tudo isso precisa estar sob mu (ver comentário no campo mu do Monitor).
+	// Aqui dentro só entra aritmética em memória: nada de I/O, nada de
+	// callback. Os probes de rede acima e o onStatusChange abaixo (que chama
+	// Rebuild com 30 s de timeout) ficam FORA do lock.
+	m.mu.Lock()
+	state, ok := m.states[l.ID]
+	if !ok {
+		state = &linkState{lastStatus: l.Status}
+		m.states[l.ID] = state
+	}
+	newStatus, fireSustained := state.advance(reachable, degradedNow, l.Status, sustain)
+	oldStatus := state.lastStatus
+	if newStatus != oldStatus {
+		state.lastStatus = newStatus
+	}
+	m.mu.Unlock()
 
 	if m.rec != nil {
 		m.rec.Gauge("link.latency_ms", l.Name, avgLatency)
@@ -271,13 +298,12 @@ func (m *Monitor) checkLink(ctx context.Context, l storage.Link) {
 	}
 
 	// Fire callback on status change
-	if newStatus != state.lastStatus && m.onStatusChange != nil {
+	if newStatus != oldStatus && m.onStatusChange != nil {
 		updated := l
 		updated.Status = newStatus
 		updated.LatencyMs = avgLatency
 		updated.PacketLoss = packetLoss
-		m.onStatusChange(&updated, state.lastStatus, newStatus)
-		state.lastStatus = newStatus
+		m.onStatusChange(&updated, oldStatus, newStatus)
 	}
 
 	// Edge-triggered: a link that has been degraded for the sustained threshold

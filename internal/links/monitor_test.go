@@ -3,6 +3,7 @@ package links
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -235,4 +236,109 @@ func TestCheckLinkPassesFreshMeasurementToCallback(t *testing.T) {
 		t.Fatal("expected fresh latency, got the stale seed value 999 — updated.LatencyMs was never set")
 	}
 	_ = gotLoss // loss is asserted indirectly via gotLatency != stale sentinel above
+}
+
+// TestCheckLinkConcurrentProbesDoNotRace overlaps two probe cadences on the
+// SAME link — e.g. a future second polling loop, or a manual re-check
+// endpoint racing the ticker — and requires `go test -race` to stay silent.
+//
+// Antes da correção (issue #29), checkLink pegava o *linkState sob m.mu,
+// SOLTAVA o lock, e só então chamava state.advance(...) e escrevia
+// state.lastStatus — tudo fora da proteção do mutex. Com uma única goroutine
+// por link e checkAll fazendo wg.Wait() antes do próximo tick isso nunca
+// colidia de fato, o que é exatamente por que o -race nunca acusava nada em
+// produção nem nos testes existentes (nenhum deles sobrepõe duas chamadas a
+// checkLink para o mesmo link). Este teste força a sobreposição.
+//
+// Prova por mutação: revertendo o fix (voltando a soltar m.mu antes de
+// state.advance/lastStatus, como no código original) este teste ACUSA data
+// race sob -race; com o fix ele passa limpo. Essa é a prova pedida na issue
+// — o "antes" é o próprio código pré-correção.
+func TestCheckLinkConcurrentProbesDoNotRace(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewService(db)
+	l := &storage.Link{
+		Name: "WAN1", Interface: "lo", Gateway: "127.0.0.1",
+		DNSTest: "127.0.0.1", MonitorHosts: "127.0.0.1:1", // porta fechada -> advance() muda estado a cada chamada
+		Enabled: true,
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	mon := NewMonitor(db, svc, time.Second, 1, nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	const goroutines = 2
+	const iterations = 200
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				mon.checkLink(ctx, *l)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestSustainThresholdIsResolvedOutsideTheLock guards the SCOPE of mu, not its
+// existence. The provider set by SustainThreshold reaches the database
+// (balancer.LoadConfig → db.GetSetting) and the database opens a single
+// connection (SetMaxOpenConns(1)). Resolving it while holding mu would make one
+// link's goroutine wait on that connection with the mutex in hand, and every
+// other link's goroutine wait on the mutex — delaying detection of the second
+// WAN going down during the first one's incident.
+//
+// TryLock is the whole point: it answers "was mu held when the provider ran?"
+// without deadlocking the suite if the answer is yes.
+func TestSustainThresholdIsResolvedOutsideTheLock(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	l := &storage.Link{
+		Name: "WAN1", Interface: "lo", Gateway: "127.0.0.1",
+		DNSTest: "127.0.0.1", MonitorHosts: "127.0.0.1:1",
+		Enabled: true,
+	}
+	if err := db.CreateLink(l); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	mon := NewMonitor(db, NewService(db), time.Second, 1, nil, nil)
+
+	var called bool
+	mon.SustainThreshold(func() int {
+		called = true
+		if !mon.mu.TryLock() {
+			t.Error("SustainThreshold foi resolvido com mu travado: o provider lê o banco " +
+				"(LoadConfig → GetSetting) e o banco tem uma conexão só, então isso serializa " +
+				"os links uns nos outros. Resolva sustainN() ANTES de m.mu.Lock().")
+			return 1
+		}
+		mon.mu.Unlock()
+		return 1
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mon.checkLink(ctx, *l)
+
+	if !called {
+		t.Fatal("o provider nunca foi chamado; o teste não mediu nada")
+	}
 }
