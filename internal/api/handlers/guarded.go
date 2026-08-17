@@ -134,6 +134,34 @@ func (h *NftablesHandler) preflightRules(ctx context.Context, mutate func([]stor
 	return h.fr.CheckPendingGroups(ctx, candidate)
 }
 
+// groupsReachInput diz se algum dos grupos citados é alcançado pela chain
+// input — a pergunta que decide se a mutação precisa da janela de 90 segundos.
+//
+// Devolve ERRO em vez de escrever na resposta, e essa é a diferença que
+// importa. Mutation.Window() não tem canal de erro: se esta leitura falhasse lá
+// dentro, a única saída seria responder "não alcança a input", e uma regra que
+// decide sobre o SSH desta máquina seria aplicada SEM rede embaixo por causa de
+// um banco lento. Por isso ela é resolvida no passo de pré-voo, que pode
+// falhar, e o resultado é guardado para o Window() só devolver.
+func (h *NftablesHandler) groupsReachInput(ids ...string) (bool, error) {
+	groups, err := h.db.ListFirewallGroups()
+	if err != nil {
+		return false, err
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			want[id] = true
+		}
+	}
+	for _, g := range groups {
+		if want[g.ID] && groupReachesInput(g) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // pendingViewOf desenha a faixa da janela que a mutação acabou de armar, ou
 // nil quando ela não armou nenhuma.
 //

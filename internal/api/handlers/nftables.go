@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -469,11 +470,6 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
 	if !h.requireGroup(w, b.GroupID) {
 		return
 	}
@@ -491,35 +487,38 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	candidateRow := storage.FirewallRule{Enabled: true, GroupID: groupID,
 		Action: f.Action, Iif: f.Iif, Oif: f.Oif,
 		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport}
-	ok := h.checkPendingRules(w, r, func(current []storage.FirewallRule) []storage.FirewallRule {
-		return append(append([]storage.FirewallRule{}, current...), candidateRow)
+	// Uma regra dentro de um grupo de escopo input é escrita na chain que
+	// decide sobre o SSH e o painel desta máquina: é ela que exige a rede de
+	// proteção dos 90 segundos (Fase C2, spec §5). A resposta é resolvida no
+	// pré-voo — que pode falhar — e só LIDA no Window(), que não pode.
+	var inGroup bool
+
+	out, ok := h.applyGuarded(w, r, mutation{
+		preflight: func(ctx context.Context) error {
+			if err := h.preflightRules(ctx, func(current []storage.FirewallRule) []storage.FirewallRule {
+				return append(append([]storage.FirewallRule{}, current...), candidateRow)
+			}); err != nil {
+				return err
+			}
+			var err error
+			inGroup, err = h.groupsReachInput(groupID)
+			return err
+		},
+		window: func() (bool, string) {
+			return inGroup, "criação de uma regra em grupo de escopo input"
+		},
+		write: func() error { return h.db.CreateFirewallRule(row) },
+		// I-2: audita a mutação do BANCO, não só um apply bem-sucedido — uma
+		// reconciliação que falhe depois ainda precisa deixar rastro do que
+		// foi escrito.
+		audit: func() (string, string, string) {
+			return "nft.rule.add", "user_rules:" + row.ID, b.Action
+		},
 	})
 	if !ok {
 		return
 	}
-	// Uma regra dentro de um grupo de escopo input é escrita na chain que
-	// decide sobre o SSH e o painel desta máquina: é aqui que a rede de
-	// proteção dos 90 segundos é armada (Fase C2, spec §5).
-	inGroup, ok := h.anyGroupReachesInput(w, groupID)
-	if !ok {
-		return
-	}
-	win, ok := h.openConfirmWindow(w, r, inGroup, "criação de uma regra em grupo de escopo input")
-	if !ok {
-		return
-	}
-	if err := h.db.CreateFirewallRule(row); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	// I-2: audit the DB mutation itself, not just a successful apply — a
-	// reconcile that fails afterwards must still leave an audit trail of
-	// what was written.
-	auditAction(h.db, r, "nft.rule.add", "user_rules:"+row.ID, b.Action)
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, createdRuleResult{FirewallRule: row, Pending: win.view})
+	writeJSON(w, http.StatusOK, createdRuleResult{FirewallRule: row, Pending: h.pendingViewOf(out)})
 }
 
 // UpdateRule edits a rule's content in place, by id — its position and
