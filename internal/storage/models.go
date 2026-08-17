@@ -80,6 +80,12 @@ type FailoverEvent struct {
 // ─── RoutingPolicy ───────────────────────────────────────────────────────────
 
 // RoutingPolicy defines how traffic from/to a CIDR is routed.
+//
+// NÃO É UM RECURSO DO PRODUTO. Nada fora de internal/storage constrói ou lê
+// este tipo: sem handler, sem service, sem tela (issue #62). A forma dos campos
+// sugere um desenho que nunca foi implementado do outro lado — ver o comentário
+// do bloco "Routing Policies" em repo_netsvc.go antes de assumir que basta
+// ligá-lo na interface.
 type RoutingPolicy struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
