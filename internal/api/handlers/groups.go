@@ -408,58 +408,55 @@ func (h *NftablesHandler) ToggleGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
 	g, found := h.findGroup(w, id)
 	if !found {
 		return
 	}
-	// Só religar precisa de pré-voo: é o que acrescenta um jump (e, com ele,
-	// a condição de entrada do grupo) à forward. Desligar apenas remove
-	// linhas, e remover linha o nft não recusa.
-	if b.Enabled {
-		ok := h.checkPendingGroups(w, r, func(current []nftables.StoredGroup) []nftables.StoredGroup {
-			out := make([]nftables.StoredGroup, len(current))
-			for i, g := range current {
-				if g.ID == id {
-					g.Enabled = true
-				}
-				out[i] = g
+
+	out, ok := h.applyGuarded(w, r, mutation{
+		preflight: func(ctx context.Context) error {
+			// Só religar precisa de pré-voo: é o que acrescenta um jump (e,
+			// com ele, a condição de entrada do grupo) à forward. Desligar
+			// apenas remove linhas, e remover linha o nft não recusa.
+			if !b.Enabled {
+				return nil
 			}
-			return out
-		})
-		if !ok {
-			return
-		}
-	}
-	// Desligar um grupo de input não pode trancar ninguém (a chain nasce e
-	// permanece com policy accept, então tirar linhas dela só libera), mas
-	// abre janela do mesmo jeito: religar depois é o caminho perigoso, e "na
-	// dúvida, abre" custa 90 segundos contra o risco de errar o julgamento.
-	summary := fmt.Sprintf("desativação do grupo %q (escopo input)", g.Name)
-	if b.Enabled {
-		summary = fmt.Sprintf("ativação do grupo %q (escopo input)", g.Name)
-	}
-	win, ok := h.openConfirmWindow(w, r, groupReachesInput(g), summary)
+			return h.preflightGroups(ctx, func(current []nftables.StoredGroup) []nftables.StoredGroup {
+				out := make([]nftables.StoredGroup, len(current))
+				for i, g := range current {
+					if g.ID == id {
+						g.Enabled = true
+					}
+					out[i] = g
+				}
+				return out
+			})
+		},
+		window: func() (bool, string) {
+			// Desligar um grupo de input não pode trancar ninguém (a chain
+			// nasce e permanece com policy accept, então tirar linhas dela só
+			// libera), mas abre janela do mesmo jeito: religar depois é o
+			// caminho perigoso, e "na dúvida, abre" custa 90 segundos contra o
+			// risco de errar o julgamento.
+			summary := fmt.Sprintf("desativação do grupo %q (escopo input)", g.Name)
+			if b.Enabled {
+				summary = fmt.Sprintf("ativação do grupo %q (escopo input)", g.Name)
+			}
+			return groupReachesInput(g), summary
+		},
+		write: func() error { return h.db.SetFirewallGroupEnabled(id, b.Enabled) },
+		audit: func() (string, string, string) {
+			action := "nft.group.disable"
+			if b.Enabled {
+				action = "nft.group.enable"
+			}
+			return action, id, ""
+		},
+	})
 	if !ok {
 		return
 	}
-	if err := h.db.SetFirewallGroupEnabled(id, b.Enabled); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	action := "nft.group.disable"
-	if b.Enabled {
-		action = "nft.group.enable"
-	}
-	auditAction(h.db, r, action, id, "")
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(win.view))
+	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
 
 // ReorderGroups define, numa requisição só, a ordem em que os grupos são
@@ -478,11 +475,10 @@ func (h *NftablesHandler) ReorderGroups(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
+	// A trava mora em ApplyGuarded (issue #20). A conferência da lista fica
+	// aqui, e não no Validate da mutação, porque ela compara o corpo contra o
+	// conjunto ATUAL de grupos — precisa do banco, e o Validate é o passo que
+	// roda antes de qualquer leitura.
 	current, err := h.db.ListFirewallGroups()
 	if err != nil {
 		writeInternalError(w, err)
@@ -520,20 +516,20 @@ func (h *NftablesHandler) ReorderGroups(w http.ResponseWriter, r *http.Request) 
 		currentIDs[i] = g.ID
 		isInput[g.ID] = groupReachesInput(g)
 	}
-	win, ok := h.openConfirmWindow(w, r, inputOrderChanged(currentIDs, b.IDs, isInput),
-		"reordenação dos grupos (há grupo de escopo input entre eles)")
+	out, ok := h.applyGuarded(w, r, mutation{
+		window: func() (bool, string) {
+			return inputOrderChanged(currentIDs, b.IDs, isInput),
+				"reordenação dos grupos (há grupo de escopo input entre eles)"
+		},
+		write: func() error { return h.db.ReorderFirewallGroups(b.IDs) },
+		audit: func() (string, string, string) {
+			return "nft.group.reorder", "forward", fmt.Sprintf("%d grupos", len(b.IDs))
+		},
+	})
 	if !ok {
 		return
 	}
-	if err := h.db.ReorderFirewallGroups(b.IDs); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	auditAction(h.db, r, "nft.group.reorder", "forward", fmt.Sprintf("%d grupos", len(b.IDs)))
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(win.view))
+	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
 
 // nextGroupPosition põe o grupo novo no fim da ordem de avaliação, com a
