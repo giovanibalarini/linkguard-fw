@@ -141,11 +141,17 @@ const maxInternalImportsPerFile = 6
 // Congelar antes seria congelar a foto errada: a lista carregaria os pacotes
 // que o restore arrastava para dentro do handler.
 //
-// São 27 pacotes internos em arquivos não-teste. A diferença para a auditoria
-// é de um só: a lista nominal do ARQ-10 tem 26 nomes (o cabeçalho dele diz
+// São 28 pacotes internos em arquivos não-teste. A diferença para a auditoria
+// é de dois: a lista nominal do ARQ-10 tem 26 nomes (o cabeçalho dele diz
 // "24", mas a própria enumeração traz 26 — divergência do documento, anotada e
 // não corrigida aqui), e hoje há esses 26 mais internal/validate, o pacote
-// folha que a #23 criou para tirar validDomain/validIface/normalizeMAC daqui.
+// folha que a #23 criou para tirar validDomain/validIface/normalizeMAC daqui,
+// mais internal/dashboard, que a #25 criou para tirar do storage o catálogo de
+// widgets e o RBAC do painel. Os dois entraram aqui pelo motivo certo: o
+// handler passou a DELEGAR a regra em vez de carregá-la, e delegar exige
+// importar. Esta linha foi acrescentada ao integrar a #25 com a #27 — as duas
+// nasceram em ramos irmãos, e a lista foi congelada antes de internal/dashboard
+// existir.
 //
 // Acrescentar um pacote aqui é barato e legítimo — uma linha. O ponto é que
 // seja um ato deliberado, com um humano perguntando "isto é HTTP?", em vez de
@@ -156,6 +162,7 @@ var allowedInternalImports = map[string]bool{
 	"internal/auth":          true,
 	"internal/backup":        true,
 	"internal/balancer":      true,
+	"internal/dashboard":     true,
 	"internal/dnslog":        true,
 	"internal/failover":      true,
 	"internal/firewallrules": true,
