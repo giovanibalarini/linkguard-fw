@@ -372,7 +372,16 @@ battery_confirm_revert() {
   else bad "a recusa de 409 não diz qual mudança está pendente"; fi
 
   # C4 — confirmar resolve a janela e libera a edição.
-  st=$(status POST /api/nftables/pending/confirm "$tok" '{}')
+  #
+  # O id no corpo é OBRIGATÓRIO, e não burocracia: sem ele a ação valeria sobre
+  # a janela que estivesse aberta no instante da chamada, e não sobre a que o
+  # operador viu na faixa. Escrever esta bateria sem o id rendeu um 400 com
+  # exatamente essa explicação — o produto está certo, o teste é que estava.
+  local janela
+  janela=$(body GET /api/nftables/pending "$tok" | jqk pending.id)
+  if [[ -n "$janela" ]]; then ok "o painel devolve o id da janela aberta"
+  else bad "GET /pending não trouxe o id da janela"; fi
+  st=$(status POST /api/nftables/pending/confirm "$tok" "{\"id\":\"$janela\"}")
   if [[ "$st" == "200" ]]; then ok "confirmar acesso resolveu a janela (200)"
   else bad "confirmar devolveu $st"; fi
   if [[ "$(body GET /api/nftables/pending "$tok" | jqk pending)" == "" ]]; then
@@ -383,6 +392,13 @@ battery_confirm_revert() {
   if [[ "$st" == "200" ]]; then ok "a edição voltou a ser aceita depois de confirmar"
   else bad "a edição continua travada depois de confirmar ($st)"; fi
 
+  # C4b — e sem o id a ação é RECUSADA. Isto é uma garantia, não um detalhe de
+  # validação: aceitar "confirme o que estiver aberto" faria o operador
+  # confirmar a janela de outro admin que tivesse nascido no meio do caminho.
+  st=$(status POST /api/nftables/pending/confirm "$tok" '{}')
+  if [[ "$st" == "400" ]]; then ok "confirmar sem o id da janela é recusado (400)"
+  else bad "confirmar sem id devolveu $st — agiria sobre a janela que estivesse aberta"; fi
+
   # C5 — REVERTER desfaz a mudança no banco E no firewall vivo.
   resp=$(api POST /api/nftables/groups "$tok" \
     '{"name":"Bateria C reverter","scope":"input","fallthrough":"continue","cond_saddr":"10.9.9.0/24"}')
@@ -391,7 +407,8 @@ battery_confirm_revert() {
   if [[ -n "$gid" ]]; then ok "grupo de input criado para o teste de reversão"
   else bad "não consegui criar o grupo de input para reverter"; fi
 
-  st=$(status POST /api/nftables/pending/revert "$tok" '{}')
+  janela=$(body GET /api/nftables/pending "$tok" | jqk pending.id)
+  st=$(status POST /api/nftables/pending/revert "$tok" "{\"id\":\"$janela\"}")
   if [[ "$st" == "200" ]]; then ok "reverter agora concluiu (200)"
   else bad "reverter devolveu $st"; fi
 
@@ -442,20 +459,35 @@ for g in json.load(sys.stdin).get('groups',[]):
     else ok "a regra recusada não existe no banco"; fi
   else bad "não achei o grupo de forward para o teste de pré-voo"; fi
 
-  # C9 — a janela SOBREVIVE a um restart. Ela mora no banco justamente para
-  # isso: com a marca só em memória, um processo novo voltava a aceitar
-  # "confirmar" uma mudança cujo estado anterior já tinha sido restaurado.
+  # C9 — reiniciar com a janela aberta REVERTE a mudança
+  # (firewallrules.RevertPendingOnBoot).
+  #
+  # A primeira versão desta verificação afirmava o contrário — que a janela
+  # sobreviveria ao restart — e ficou vermelha. O produto é que está certo, e a
+  # razão é a melhor possível: se o serviço reiniciou, o motivo pode muito bem
+  # ter sido a própria mudança tirando o acesso à máquina. Esperar confirmação
+  # de alguém que talvez não consiga mais chegar ao painel é apostar contra o
+  # operador. O boot desfaz e pronto.
+  #
+  # O que mora no banco, e é isso que o pendente garante, é a MARCA de que a
+  # reversão começou: sem ela, um processo novo voltava a aceitar "confirmar"
+  # uma mudança cujo estado anterior já tinha sido restaurado.
   api POST /api/nftables/groups "$tok" \
     '{"name":"Bateria C restart","scope":"input","fallthrough":"continue","cond_saddr":"10.9.9.0/24"}' >/dev/null
   vm "systemctl restart linkguard-fw" >/dev/null 2>&1
   wait_api || { bad "o serviço não voltou depois do restart"; return; }
   tok=$(login admin "$initial"); [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
-  if [[ -n "$(body GET /api/nftables/pending "$tok" | jqk pending.id)" ]]; then
-    ok "a janela pendente sobreviveu ao restart do serviço"
-  else bad "a janela sumiu no restart — a mudança de input ficaria sem reversão automática"; fi
+  if [[ -z "$(body GET /api/nftables/pending "$tok" | jqk pending.id)" ]]; then
+    ok "o restart resolveu a janela em aberto (reversão no boot)"
+  else bad "a janela continua pendente depois do restart"; fi
+  if body GET /api/nftables/groups "$tok" | grep -q "Bateria C restart"; then
+    bad "o restart não desfez a mudança de input que ninguém confirmou"
+  else ok "o restart desfez a mudança de input não confirmada"; fi
 
   # C10 — e a reversão automática por PRAZO acontece sozinha, sem ninguém pedir.
   # É a promessa inteira do mecanismo: "se você não confirmar, volta".
+  api POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C prazo","scope":"input","fallthrough":"continue","cond_saddr":"10.9.9.0/24"}' >/dev/null
   printf '       (aguardando o prazo de 90s vencer para a reversão automática)\n'
   local i
   for i in $(seq 1 24); do
@@ -465,7 +497,7 @@ for g in json.load(sys.stdin).get('groups',[]):
   if [[ -z "$(body GET /api/nftables/pending "$tok" | jqk pending.id)" ]]; then
     ok "a janela venceu e foi revertida automaticamente"
   else bad "o prazo passou e a janela continua aberta — a reversão automática não aconteceu"; fi
-  if body GET /api/nftables/groups "$tok" | grep -q "Bateria C restart"; then
+  if body GET /api/nftables/groups "$tok" | grep -q "Bateria C prazo"; then
     bad "a reversão automática não desfez o grupo de input"
   else ok "a reversão automática desfez o grupo que ninguém confirmou"; fi
 }
