@@ -805,6 +805,11 @@ CREATE TABLE IF NOT EXISTS failover_events (
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 
+// createRoutingPoliciesTable cria uma tabela que NENHUMA parte do produto lê ou
+// escreve (issue #62): não há handler, service nem tela do outro lado. Ela
+// continua sendo criada porque dropá-la é irreversível — e uma base instalada
+// pode ter linhas que alguém colocou por SQL. Ver o comentário do bloco
+// "Routing Policies" em repo_netsvc.go.
 const createRoutingPoliciesTable = `
 CREATE TABLE IF NOT EXISTS routing_policies (
     id           TEXT PRIMARY KEY,
