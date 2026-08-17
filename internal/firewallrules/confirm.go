@@ -346,6 +346,13 @@ func (s *Service) OpenConfirmWindow(_ context.Context, by, summary string) (stri
 	// operador acredita cirúrgica. São dois statements adjacentes, e agora não
 	// existe mais um caminho de chamada capaz de armar a janela com um
 	// snapshot de outro instante.
+	//
+	// Isso resolve a metade do instante do snapshot, e SÓ ela: a mutação alheia
+	// que aterrissa DEPOIS deste ponto continua fora do snapshot e continuava
+	// sendo apagada pela reversão (issue #20a). Quem fecha essa outra metade é a
+	// conferência do estado na hora de reverter — ver revertTarget e
+	// MarkWindowApplied; aqui não cabe, porque a mutação alheia ainda nem
+	// aconteceu.
 	snapshot, err := s.SnapshotState()
 	if err != nil {
 		return "", err
@@ -880,12 +887,19 @@ func (s *Service) RevertPendingOnBoot(ctx context.Context) error {
 //     ABORTA sem tocar em nada, e o pendente FICA (o operador vê a faixa e
 //     pode confirmar). Uma reversão que não pode ser feita com segurança não
 //     é motivo para derrubar o firewall.
-//  2. Restaura no banco, em transação (ReplaceFirewallGroupsAndRules).
-//  3. Reconcilia. Falhou, a função PARA AQUI e o pendente CONTINUA no banco.
-//  4. Só com o firewall vivo já de volta ao estado anterior é que o pendente
+//  2. CONFERE O ESTADO (revertTarget, issue #20a): o banco de agora ainda é o
+//     que a mutação desta janela deixou, ou outro admin gravou aqui dentro? No
+//     segundo caso o que se aplica não é o snapshot cru e sim a mistura — o
+//     delta desta janela desfeito, o do outro admin de pé —, e a auditoria
+//     registra o que ficou. Sem este passo, restaurar o snapshot era um "volte
+//     tudo" que apagava do banco E da chain viva a alteração de terceiros, sem
+//     erro, sem alerta e sem histórico.
+//  3. Restaura no banco, em transação (ReplaceFirewallGroupsAndRules).
+//  4. Reconcilia. Falhou, a função PARA AQUI e o pendente CONTINUA no banco.
+//  5. Só com o firewall vivo já de volta ao estado anterior é que o pendente
 //     é apagado.
 //
-// A ordem de 3 e 4 é a correção mais importante desta revisão, e o motivo é
+// A ordem de 4 e 5 é a correção mais importante desta revisão, e o motivo é
 // o que acontecia quando ela era a inversa. Apagar o pendente antes de saber
 // se o nft aceitou desarmava a própria rede de proteção: banco revertido,
 // pendente apagado, REGRA PERIGOSA AINDA VIVA no nft, watchdog sem nada para
@@ -938,9 +952,20 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 		return revertFailed(fmt.Errorf("a mudança pendente NÃO foi revertida: %w", err))
 	}
 
+	// O que esta reversão vai aplicar não é mais o snapshot cru e sim o
+	// resultado da conferência do estado (issue #20a): se outro admin gravou
+	// dentro dos 90 segundos, o que se desfaz é só o delta DESTA janela. Ver
+	// mergeRevertTarget.
+	merge, err := s.revertTarget(p, snap)
+	if err != nil {
+		return revertFailed(err)
+	}
+	snap = merge.target
+
 	if err := s.db.ReplaceFirewallGroupsAndRules(snap.Groups, snap.Rules); err != nil {
 		return revertFailed(fmt.Errorf("restaurar o estado anterior dos grupos e regras: %w", err))
 	}
+	s.recordPreserved(p, merge)
 
 	// A marca de "reversão em andamento" vem DEPOIS do commit acima, nunca
 	// antes (N-2). Ela afirma que o estado anterior JÁ está no banco, e marcar
@@ -970,6 +995,139 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 	}
 
 	return s.finishRevert(ctx, p, reason)
+}
+
+// revertTarget confere o estado antes de a reversão aplicar qualquer coisa e
+// devolve o que ela DEVE aplicar (issue #20a).
+//
+// Chamada com s.mu já travado.
+//
+// A conferência é entre três estados — o anterior (p.Snapshot), o pós-mutação
+// (p.AppliedState) e o de agora — e o caminho comum é o que não mudou: banco
+// igual ao pós-mutação significa que ninguém gravou no meio, e o alvo é o
+// snapshot LITERAL, exatamente como antes desta correção.
+//
+// Quando há divergência, o alvo passa a ser a mistura (mergeRevertTarget) e ela
+// é gravada no lugar do snapshot ANTES de ser aplicada. Isso não é
+// contabilidade: o snapshot é o que responde "a reversão já terminou no banco?"
+// (RevertSettled), e é essa resposta que LIBERA a trava das mutações quando a
+// reconciliação não passa. Deixar lá o snapshot antigo, que a reversão nunca
+// mais vai produzir, trancaria o operador do lado de fora do próprio painel —
+// o beco C-6. Gravar antes de aplicar é seguro porque a mistura é idempotente:
+// refazê-la com o alvo já no lugar do snapshot dá o mesmo alvo.
+//
+// Duas faltas diferentes, e elas NÃO dão no mesmo — a primeira versão deste
+// comentário dizia que sim, e era falso:
+//
+//   - pós-mutação ILEGÍVEL (json quebrado): cai mesmo no comportamento
+//     anterior, o snapshot inteiro, e aí sim a reversão é o "volte tudo" de
+//     antes;
+//   - pós-mutação NUNCA GRAVADO (applied_state vazio): AppliedStateOrSnapshot
+//     responde o snapshot, e a comparação vira "base contra o banco de agora".
+//     Toda linha que esta janela mudou parece de outro admin e é PRESERVADA. A
+//     reversão passa a desfazer só o que alcança a chain input — o quase-oposto
+//     de "volte tudo".
+//
+// O acesso do operador está garantido nos dois casos, mas por caminhos
+// diferentes: no segundo quem garante é o limite da chain input, e não o
+// fallback. O resto do que a janela mudou fica de pé — inclusive coisas que ela
+// mudou de verdade, como as posições dos grupos de forward reescritas por uma
+// reordenação.
+func (s *Service) revertTarget(p *storage.PendingChange, base stateSnapshot) (revertMerge, error) {
+	plain := revertMerge{target: base}
+
+	var applied stateSnapshot
+	if err := json.Unmarshal([]byte(p.AppliedStateOrSnapshot()), &applied); err != nil {
+		slog.Error("o estado pós-mutação desta janela está ilegível; a reversão restaura o estado anterior INTEIRO, inclusive o que outro admin tenha gravado no meio",
+			"err", err, "resumo", p.Summary)
+		return plain, nil
+	}
+	current, err := s.readState()
+	if err != nil {
+		return plain, fmt.Errorf("ler o estado de agora para conferir com o pós-mutação desta janela: %w", err)
+	}
+
+	merge := mergeRevertTarget(base, applied, current)
+	if !merge.merged() {
+		return plain, nil
+	}
+	if err := validateSnapshotGroups(merge.target.Groups); err != nil {
+		// Preservar a alteração de outro admin não pode custar a reversão em si.
+		slog.Error("a reversão não pôde preservar o que outro admin gravou no meio da janela (o estado resultante não seria restaurável); o estado anterior volta INTEIRO",
+			"err", err, "resumo", p.Summary)
+		return plain, nil
+	}
+	blob, err := json.Marshal(merge.target)
+	if err != nil {
+		return plain, fmt.Errorf("serializar o estado que esta reversão vai aplicar: %w", err)
+	}
+	if err := s.db.SetPendingSnapshot(p.ID, string(blob)); err != nil {
+		return plain, fmt.Errorf("gravar o estado que esta reversão vai aplicar: %w", err)
+	}
+	p.Snapshot = string(blob)
+	return merge, nil
+}
+
+// recordPreserved é a linha de auditoria que faltava: o que esta reversão
+// DEIXOU DE PÉ porque não era dela.
+//
+// Chamada com s.mu já travado, depois de a restauração ter commitado — só se
+// registra o que já aconteceu.
+//
+// Falhar aqui não desfaz nada e não vira erro do chamador: a reversão está
+// feita e o acesso do operador é o que está em jogo. Vira ERROR no journal,
+// nunca silêncio.
+func (s *Service) recordPreserved(p *storage.PendingChange, m revertMerge) {
+	if !m.merged() {
+		return
+	}
+	detail := fmt.Sprintf("A reversão de %q (aplicada por %s) desfez apenas o que esta janela mudou. Outro administrador gravou dentro dos 90 segundos e isto foi PRESERVADO: %s.",
+		p.Summary, p.AppliedBy, joinPT(m.preserved))
+	if len(m.dropped) > 0 {
+		detail += fmt.Sprintf(" NÃO foi possível preservar (o grupo que a continha some com a reversão): %s.", joinPT(m.dropped))
+	}
+	slog.Warn("a reversão preservou a alteração que outro administrador gravou dentro da janela",
+		"resumo", p.Summary, "preservado", m.preserved, "descartado", m.dropped)
+	if err := s.db.CreateAuditLog(&storage.AuditLog{
+		User:     "linkguard",
+		Action:   "nft.pending.revert.preserved",
+		Resource: "pending:" + p.ID,
+		Details:  detail,
+	}); err != nil {
+		slog.Error("a reversão preservou a alteração de outro administrador, mas não foi possível registrar isso na auditoria", "err", err)
+	}
+}
+
+// MarkWindowApplied registra o estado dos grupos e regras COMO ESTA JANELA OS
+// DEIXOU — o passo que a mutação executa logo depois de escrever no banco
+// (issue #20a).
+//
+// É o segundo dos dois estados de que a reversão precisa. Com só o snapshot
+// (o de antes), reverter é "volte tudo" e apaga o que outro admin gravou no
+// meio dos 90 segundos; com os dois, a reversão sabe qual parte do banco é obra
+// desta janela — ver revertTarget.
+//
+// A hora de chamar é a mais próxima possível da escrita. O que ficar de fora
+// desse intervalo é uma escrita alheia que esta janela vai adotar como sua e
+// desfazer junto; hoje o intervalo é [arme, aqui], que são poucos statements —
+// contra o intervalo antigo, que ia da leitura da trava até a reversão e
+// incluía um `nft -c` inteiro.
+//
+// Janela que já não é esta (confirmada, revertida, substituída) é NO-OP e não
+// é erro: o id na cláusula WHERE existe justamente para não escrever o estado
+// desta mutação por cima da janela de outra pessoa.
+func (s *Service) MarkWindowApplied(id string) error {
+	if id == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.SnapshotState()
+	if err != nil {
+		return fmt.Errorf("ler o estado que esta alteração deixou no banco: %w", err)
+	}
+	return s.db.SetPendingAppliedState(id, state)
 }
 
 // finishRevert é a metade final da reversão — a que impõe ao firewall vivo o

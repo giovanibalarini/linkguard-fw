@@ -34,7 +34,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -511,7 +510,9 @@ func TestTheWindowIsArmedBeforeTheWriteAndBeforeTheFirewallIsTouched(t *testing.
 
 // ─── (b) A mutação sem janela intercalada com o arme de OUTRA ─────────────
 //
-// O CASO, passo a passo (dois admins, um painel só):
+// O CASO, passo a passo (dois admins, um painel só) — descrito como ele
+// acontecia antes da issue #20a, porque é isto que os testes deste bloco
+// continuam medindo:
 //
 //	A: POST /api/nftables/groups {"scope":"forward"}      → não abre janela
 //	A: passa pela trava (não há janela nenhuma ainda)
@@ -529,24 +530,28 @@ func TestTheWindowIsArmedBeforeTheWriteAndBeforeTheFirewallIsTouched(t *testing.
 // uma linha só, sob mutex) protege duas mutações que ABREM janela uma da outra;
 // a que não abre atravessa o arme alheio sem tocar em nada que o detecte.
 //
-// Vale para as duas pontas: qualquer mutação de forward, de port forward, de
-// bloqueio por host ou de NTP feita dentro dos 90 segundos de outra pessoa é
-// desfeita pela reversão dela — o snapshot cobre `groups` e `rules` inteiros, e
-// restaurá-lo é um "volte tudo", não um "desfaça a minha mudança".
+// Valia para as duas pontas: qualquer mutação de grupo ou regra de escopo
+// forward feita dentro dos 90 segundos de outra pessoa era desfeita pela
+// reversão dela — o snapshot cobre `groups` e `rules` inteiros, e restaurá-lo
+// era um "volte tudo", não um "desfaça a minha mudança".
 //
-// ESTA TAREFA NÃO CORRIGE O BUG. Os dois testes abaixo o registram: um diz o
-// que TEM que acontecer (e fica vermelho hoje), o outro guarda o
-// comportamento de hoje para que a correção não passe despercebida.
-
-// knownBugsEnv liga os testes que descrevem bug conhecido e ainda não
-// corrigido. Sem ele o teste é pulado com a explicação inteira — o CI segue
-// verde e ninguém precisa decidir se "aquele vermelho" é o de sempre.
-const knownBugsEnv = "LINKGUARD_KNOWN_BUGS"
+// CORRIGIDO na issue #20a, e é o que os dois testes abaixo guardam. A saída
+// escolhida pelo dono: a REVERSÃO confere o estado antes de aplicar o snapshot.
+// Ela tem os três estados nas mãos — o anterior (o snapshot), o pós-mutação
+// (pending_firewall_change.applied_state, gravado logo depois da escrita) e o
+// de agora — e desfaz apenas o delta da própria janela, deixando de pé o que
+// outro admin gravou no meio e registrando na auditoria o que preservou. Ver
+// internal/firewallrules/revert_merge.go.
+//
+// A outra saída possível — trava lida e escrita na mesma seção crítica — foi
+// descartada de propósito: ela teria de englobar o pré-voo `nft -c`, e uma
+// trava segurada por dezenas de milissegundos é como se prende o operador
+// dentro da própria janela (C-5/C-6).
 
 // swallowedByAnotherAdminsRevert roda a sonda inteira e devolve se o grupo de
-// A sobreviveu à reversão de B. Compartilhada pelos dois testes para que os
-// dois falem, literalmente, do mesmo caminho.
-func swallowedByAnotherAdminsRevert(t *testing.T) (grupoDeA storage.FirewallGroup, sobreviveu bool) {
+// A sobreviveu à reversão de B, mais o nft de mentira para quem quiser
+// perguntar pelo firewall VIVO — o banco sozinho não é a resposta completa.
+func swallowedByAnotherAdminsRevert(t *testing.T) (grupoDeA storage.FirewallGroup, sobreviveu bool, vivo *fakeNft) {
 	t.Helper()
 	h, db, exec, fr := newGroupTestHandlerFR(t)
 
@@ -598,7 +603,7 @@ func swallowedByAnotherAdminsRevert(t *testing.T) (grupoDeA storage.FirewallGrou
 	if rv.Code != http.StatusOK {
 		t.Fatalf("a reversão de B: %d (%s)", rv.Code, rv.Body.String())
 	}
-	return grupoDeA, existeNoBanco(t, db, grupoDeA.ID)
+	return grupoDeA, existeNoBanco(t, db, grupoDeA.ID), exec
 }
 
 func existeNoBanco(t *testing.T, db *storage.DB, id string) bool {
@@ -615,78 +620,41 @@ func existeNoBanco(t *testing.T, db *storage.DB, id string) bool {
 	return false
 }
 
-// O TESTE QUE DESCREVE O CERTO — e que fica VERMELHO contra o código de hoje.
+// O GUARDA DA CORREÇÃO, rodando sempre.
 //
-// Como reproduzir:
-//
-//	LINKGUARD_KNOWN_BUGS=1 go test -race -count=1 \
-//	  -run TestAnotherAdminsRevertMustNotSwallowAConcurrentMutation \
-//	  ./internal/api/handlers/
-//
-// O que se vê hoje: "o 200 que o admin A recebeu foi desfeito pela reversão de
-// outro admin". A correção é de quem for consertar o mecanismo (as saídas
-// possíveis, para o registro: o snapshot deixar de ser um "volte tudo" e virar
-// um desfazer cirúrgico; ou a trava passar a valer para TODA mutação e ser
-// verificada de novo imediatamente antes da escrita; ou o arme rejeitar a
-// abertura enquanto houver mutação em voo). Nenhuma delas cabe aqui: esta
-// tarefa é a rede de teste, não o conserto.
-func TestAnotherAdminsRevertMustNotSwallowAConcurrentMutation_KnownBug_(t *testing.T) {
-	if os.Getenv(knownBugsEnv) == "" {
-		t.Skipf(`BUG CONHECIDO E NÃO CORRIGIDO — este teste FALHA de propósito.
-
-Uma mutação que não abre janela (escopo forward, e o mesmo vale para port
-forward, bloqueio por host e NTP) pode ser gravada DEPOIS de outro admin ter
-armado a janela dele e ANTES de a reversão dessa janela acontecer. O snapshot
-da janela alheia não contém essa mudança, e restaurá-lo a apaga: o operador
-recebeu 200, viu a regra na tela, e ela some sem erro, sem alerta e sem linha
-de auditoria dizendo que foi desfeita.
-
-Para ver o vermelho: %s=1 go test -race -count=1 -run %s ./internal/api/handlers/
-
-Enquanto o bug existir, quem guarda o comportamento de hoje no CI é
-TestKnownBug_AConcurrentMutationIsStillSwallowed, logo abaixo: ele fica
-vermelho no dia em que a correção entrar, e é o lembrete de apagar este skip.`,
-			knownBugsEnv, t.Name())
-	}
-
-	g, sobreviveu := swallowedByAnotherAdminsRevert(t)
+// Ele nasceu vermelho contra o código anterior à issue #20a — "o 200 que o
+// admin A recebeu foi desfeito pela reversão de OUTRO admin" —, que é o que o
+// torna um guarda e não um enfeite. Se um dia a reversão voltar a ser um
+// "volte tudo", este teste é quem avisa.
+func TestAnotherAdminsRevertMustNotSwallowAConcurrentMutation(t *testing.T) {
+	g, sobreviveu, vivo := swallowedByAnotherAdminsRevert(t)
 	if !sobreviveu {
 		t.Fatalf("o 200 que o admin A recebeu foi desfeito pela reversão de OUTRO admin: o grupo %q (%s) sumiu do banco porque não estava no snapshot da janela alheia",
 			g.Name, g.ID)
 	}
-}
-
-// O guarda que roda SEMPRE, e que existe por causa da regra "um guarda que
-// nunca ficou vermelho é indistinguível de guarda quebrado": ele afirma o
-// comportamento de HOJE. Enquanto o bug existir ele fica verde; no dia em que
-// alguém corrigir o mecanismo, ele fica vermelho apontando para o teste de
-// cima — que é o que passa a valer.
-//
-// Ele NÃO abençoa o comportamento. É o oposto: é o alarme de que o
-// comportamento mudou, num caminho que nenhum teste de status HTTP enxerga.
-func TestKnownBug_AConcurrentMutationIsStillSwallowed(t *testing.T) {
-	g, sobreviveu := swallowedByAnotherAdminsRevert(t)
-	if sobreviveu {
-		t.Fatalf(`BOA NOTÍCIA: o grupo %q (%s) sobreviveu à reversão do outro admin — o bug parece corrigido.
-
-Agora: apague este teste e tire o t.Skip de
-TestAnotherAdminsRevertMustNotSwallowAConcurrentMutation_KnownBug_ (que passa a
-ser o guarda de verdade, rodando sempre).`, g.Name, g.ID)
+	// E não basta a linha ficar no banco: o firewall vivo é o que decide o que
+	// passa. Um grupo preservado no banco e sem jump na forward seria a mesma
+	// confiança falsa, só que com a tela concordando com o banco e os dois
+	// discordando da máquina.
+	if !vivo.forwardHasJumpTo(g.ChainName) {
+		t.Errorf("o grupo %q sobreviveu no banco mas o jump dele sumiu da forward viva depois da reversão de outro admin", g.Name)
 	}
 }
 
-// ─── O que o operador NÃO recebe quando isso acontece ─────────────────────
+// ─── O que o operador RECEBE quando isso acontece ─────────────────────────
 
-// A mesma sonda, olhada pelo outro lado: o desaparecimento é SILENCIOSO. Não
-// há erro para o admin A (ele já recebeu 200 e foi embora), não há alerta e a
-// auditoria fica com a linha `nft.group.add` da criação dele e nada dizendo que
-// ela foi desfeita — o histórico afirma uma alteração que já não existe.
+// A mesma sonda, olhada pelo outro lado: preservar em silêncio seria só um
+// segundo tipo de silêncio.
 //
-// Este teste também roda sempre e também descreve o hoje: ele documenta o
-// TAMANHO do estrago, que é o que decide a prioridade da correção. Se um dia a
-// auditoria passar a registrar o desfazer, ele fica vermelho e é atualizado
-// junto com a correção.
-func TestKnownBug_TheSwallowedMutationLeavesNoTraceOfBeingUndone(t *testing.T) {
+// Uma reversão que devolve o estado anterior MENOS o que outro admin gravou no
+// meio é uma reversão parcial, e o operador que aperta "Reverter agora" acredita
+// que o firewall voltou inteiro ao que era. A diferença entre as duas coisas tem
+// que estar escrita em algum lugar — e o lugar é a auditoria, que é onde se
+// procura na manhã seguinte.
+//
+// Este teste exige a linha e exige que ela NOMEIE o que ficou de pé: "a reversão
+// preservou alguma coisa" sozinho não deixa ninguém reconstruir o que aconteceu.
+func TestTheRevertRecordsWhatItPreserved(t *testing.T) {
 	h, db, exec, fr := newGroupTestHandlerFR(t)
 
 	var idDeB string
@@ -718,24 +686,25 @@ func TestKnownBug_TheSwallowedMutationLeavesNoTraceOfBeingUndone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAuditLogs: %v", err)
 	}
-	var criacao, desfazer bool
+	var criacao, preservou bool
 	for _, l := range logs {
 		if l.Action == "nft.group.add" && strings.Contains(l.Details, "Bloqueio do torrent") {
 			criacao = true
 		}
-		// A reversão de B registra o desfazer DELA (pending:<id>), não o do
-		// grupo de A: nada no histórico liga a criação de A ao sumiço dela.
-		if l.Action == "nft.group.del" {
-			desfazer = true
+		if l.Action == "nft.pending.revert.preserved" {
+			if !strings.Contains(l.Details, "Bloqueio do torrent") {
+				t.Errorf("a auditoria registrou que a reversão preservou algo, sem dizer O QUÊ: %q", l.Details)
+			}
+			if l.Resource != "pending:"+idDeB {
+				t.Errorf("a linha tinha que apontar para a janela revertida (pending:%s); veio %q", idDeB, l.Resource)
+			}
+			preservou = true
 		}
 	}
 	if !criacao {
 		t.Fatalf("a criação de A tinha que estar na auditoria: %+v", logs)
 	}
-	if desfazer {
-		t.Fatalf(`BOA NOTÍCIA: a auditoria passou a registrar o desfazer do grupo engolido.
-
-Confira o teste TestKnownBug_AConcurrentMutationIsStillSwallowed e atualize
-estes dois junto com a correção.`)
+	if !preservou {
+		t.Fatalf("a reversão de B preservou o grupo de A e não registrou isso na auditoria: uma reversão parcial que o histórico descreve como completa\n%+v", logs)
 	}
 }

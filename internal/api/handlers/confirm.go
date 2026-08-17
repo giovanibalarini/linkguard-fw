@@ -562,6 +562,38 @@ func (h *NftablesHandler) abortArmedWindow(w http.ResponseWriter, r *http.Reques
 // em vez de deixar para trás uma mudança de escopo input valendo sem rede
 // embaixo (ver abortArmedWindow).
 func (h *NftablesHandler) reconcileArmed(w http.ResponseWriter, r *http.Request, win armedWindow) bool {
+	// O estado pós-mutação é registrado ANTES da reconciliação, e o mais perto
+	// possível da escrita no banco que acabou de acontecer (issue #20a). É ele
+	// que permite à reversão desta janela desfazer só o que ela mudou, em vez de
+	// restaurar o snapshot por cima do que outro admin gravou no meio dos 90
+	// segundos — a perda silenciosa que a trava não cobre, porque ela é lida no
+	// começo da requisição e a escrita acontece um `nft -c` depois.
+	//
+	// Antes do Reconcile porque a falha DELE reverte a janela (abortArmedWindow):
+	// registrar depois deixaria justamente a reversão mais provável sem os dois
+	// estados de que ela precisa.
+	//
+	// Falhar aqui não derruba a mutação, que já está no banco — mas o custo NÃO
+	// é a reversão voltar a ser o "volte tudo" de antes. É quase o contrário, e
+	// vale dizer por extenso: sem o applied_state, AppliedStateOrSnapshot
+	// responde o próprio snapshot, então toda linha que ESTA janela mudou passa
+	// a "divergir do pós-mutação" — isto é, a parecer obra de outro admin — e é
+	// PRESERVADA pela mistura. A reversão desfaz só o que alcança a chain input.
+	//
+	// O acesso do operador continua garantido, e quem o garante é o limite da
+	// chain input (mergeRevertTarget nunca preserva o que a alcança), não este
+	// fallback. O que se perde é a reversão da parte que não alcança a input, e
+	// ela não é hipotética: a reordenação de grupos abre janela pelo índice de
+	// um grupo de input e reescreve a posição de TODOS, forward inclusive —
+	// nesse caso a ordem de avaliação da forward fica de pé e a auditoria ainda
+	// registra como "alteração de outro administrador" o que esta mesma janela
+	// fez (ver TestTheRevertUndoesAReorderInsteadOfPreservingIt).
+	if win.armed {
+		if err := h.fr.MarkWindowApplied(win.id); err != nil {
+			slog.Error("não foi possível registrar o estado que esta alteração deixou no banco; se esta janela for revertida, ela vai desfazer apenas o que alcança a chain input e PRESERVAR o resto, como se fosse de outro administrador",
+				"err", err, "janela", win.id)
+		}
+	}
 	if err := h.fr.Reconcile(r.Context()); err != nil {
 		h.abortArmedWindow(w, r, win, err)
 		return false
