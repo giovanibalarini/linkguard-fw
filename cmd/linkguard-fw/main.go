@@ -182,27 +182,7 @@ func run() int {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
 
 	if *notifyDown {
-		db, err := storage.Open(cfg.DBPath)
-		if err == nil {
-			defer db.Close()
-			if orphanErr := secrets.CheckNotOrphaned("/etc/linkguard-fw/secret.key", db); orphanErr != nil {
-				slog.Warn("notify-down: refusing to start", "err", orphanErr)
-				return 1
-			}
-			key, keyErr := secrets.LoadOrGenerateKey("/etc/linkguard-fw/secret.key")
-			if keyErr != nil {
-				slog.Warn("notify-down: failed to load secret key", "err", keyErr)
-				return 1
-			}
-			sec := secrets.NewService(db, key)
-			for _, e := range notify.NewService(db, sec).SendNow("critical",
-				"LinkGuard caiu", "O serviço linkguard-fw parou inesperadamente no firewall.") {
-				if e != nil {
-					slog.Warn("notify-down send failed", "err", e)
-				}
-			}
-		}
-		return 0
+		return notifyDownRun(cfg.DBPath)
 	}
 
 	db, err := openStore(cfg)
@@ -222,6 +202,78 @@ func run() int {
 	wireCallbacks(ctx, s)
 	writers := startBackground(ctx, s)
 	return serveHTTP(ctx, s, writers)
+}
+
+// notifyDownRun é o caminho do --notify-down: avisa que o serviço caiu e sai.
+// Devolve o código de saída do processo.
+//
+// A unidade que chama é Type=oneshot (deploy/linkguard-notify-down.service,
+// disparada pelo OnFailure= da unidade principal), então este código de saída
+// vira o estado da unidade — aparece no `systemctl status`, no `is-failed` e no
+// journal. Ele é a única forma de quem olha a máquina depois distinguir "o aviso
+// saiu" de "o aviso não saiu".
+//
+// O defeito que isto fecha (issue #60): o storage.Open era seguido de
+// `if err == nil { … }` sem else, sem log, e a função terminava em `return 0`.
+// Com o banco ilegível o processo dizia "avisei" tendo enviado nada. É o pior
+// modo de falha possível — silencioso, no mecanismo que existe para avisar que
+// algo deu errado, e disparado justamente quando algo deu errado. Banco
+// ilegível no momento em que o serviço caiu é sinal de problema MAIOR, não
+// menor.
+//
+// O mapeamento dos códigos:
+//
+//	banco não abre, chave órfã, chave não carrega → 1 (não dá para nem tentar)
+//	todos os canais habilitados falharam          → 1 (o aviso não saiu)
+//	ao menos um canal entregou                    → 0
+//	nenhum canal habilitado                       → 0
+//
+// O último merece a explicação: não ter canal configurado é escolha do admin,
+// não falha. Sair 1 aí deixaria uma unidade permanentemente vermelha em toda
+// instalação sem notificação — e uma unidade que vive vermelha é uma que
+// ninguém mais olha, o que custaria justamente o sinal que este código de saída
+// existe para dar.
+func notifyDownRun(dbPath string) int {
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		slog.Error("notify-down: banco inacessível, nenhum aviso foi enviado",
+			"path", dbPath, "err", err)
+		return 1
+	}
+	defer db.Close() //nolint:errcheck // processo saindo
+
+	if orphanErr := secrets.CheckNotOrphaned(secretKeyPath, db); orphanErr != nil {
+		slog.Error("notify-down: refusing to start", "err", orphanErr)
+		return 1
+	}
+	key, keyErr := secrets.LoadOrGenerateKey(secretKeyPath)
+	if keyErr != nil {
+		slog.Error("notify-down: failed to load secret key", "err", keyErr)
+		return 1
+	}
+
+	sec := secrets.NewService(db, key)
+	errs := notify.NewService(db, sec).SendNow("critical",
+		"LinkGuard caiu", "O serviço linkguard-fw parou inesperadamente no firewall.")
+
+	// send() devolve uma entrada por canal HABILITADO: slice vazia é "nenhum
+	// canal configurado", que não é o mesmo que "todos falharam".
+	failed := 0
+	for _, e := range errs {
+		if e != nil {
+			failed++
+			slog.Warn("notify-down send failed", "err", e)
+		}
+	}
+	if len(errs) > 0 && failed == len(errs) {
+		slog.Error("notify-down: todos os canais falharam, nenhum aviso saiu",
+			"canais", len(errs))
+		return 1
+	}
+	if len(errs) == 0 {
+		slog.Warn("notify-down: nenhum canal de notificação está habilitado; nada foi enviado")
+	}
+	return 0
 }
 
 // openStore abre o banco e semeia o que precisa existir antes de qualquer
