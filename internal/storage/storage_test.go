@@ -1490,3 +1490,53 @@ func TestOutOfGridItemIsDroppedItemByItem(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeDescartaWidgetRepetido guarda o dedupe do mapa `seen`. Não havia
+// nenhuma asserção em Go sobre ele: o mesmo widget duas vezes seriam duas cópias
+// disputando o mesmo dado e a mesma alça de arrasto, e a segunda tem que cair
+// fora. Sem este teste, um "mover de pacote" que perdesse o mapa passaria verde.
+func TestSanitizeDescartaWidgetRepetido(t *testing.T) {
+	entrada := []storage.LayoutItem{
+		{Widget: "system_health", X: 0, Y: 0, W: 4, H: 2},
+		{Widget: "wan_links", X: 4, Y: 0, W: 4, H: 2},
+		{Widget: "system_health", X: 0, Y: 2, W: 4, H: 2}, // repetido
+	}
+	got := storage.SanitizeDashboardLayout(entrada)
+	if len(got) != 2 {
+		t.Fatalf("esperava 2 itens após o dedupe, veio %d: %+v", len(got), got)
+	}
+	// A PRIMEIRA ocorrência é a que fica — a posição original do operador.
+	if got[0].Widget != "system_health" || got[0].Y != 0 {
+		t.Errorf("o dedupe tem que manter a PRIMEIRA ocorrência; veio %+v", got[0])
+	}
+	if got[1].Widget != "wan_links" {
+		t.Errorf("a ordem dos demais tem que ser preservada; veio %+v", got[1])
+	}
+}
+
+// TestDefaultDashboardLayoutDevolveCopiaNova guarda contra a otimização
+// aparentemente inofensiva de transformar o default numa `var` de pacote. Se ela
+// acontecer, o primeiro chamador que ordenar ou mexer no slice altera o painel
+// de fábrica de TODOS os usuários seguintes — e a suíte fica verde, porque
+// nenhum outro teste compara duas chamadas entre si.
+func TestDefaultDashboardLayoutDevolveCopiaNova(t *testing.T) {
+	a := storage.DefaultDashboardLayout()
+	if len(a) == 0 {
+		t.Fatal("o layout de fábrica está vazio; o teste não mediria nada")
+	}
+	original := a[0].Widget
+
+	a[0].Widget = "corrompido-pelo-chamador"
+	a[0].X = 999
+
+	b := storage.DefaultDashboardLayout()
+	if b[0].Widget != original {
+		t.Fatalf("mexer no slice devolvido contaminou a chamada seguinte: "+
+			"esperava %q, veio %q. DefaultDashboardLayout tem que devolver "+
+			"uma cópia nova a cada chamada, nunca um var de pacote compartilhado.",
+			original, b[0].Widget)
+	}
+	if b[0].X == 999 {
+		t.Error("a geometria também vazou entre chamadas")
+	}
+}
