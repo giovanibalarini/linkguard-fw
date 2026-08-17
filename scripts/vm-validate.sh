@@ -296,6 +296,181 @@ battery_fresh() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Bateria C — confirmar-ou-reverte (issue #20)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Por que esta bateria existe: o confirmar-ou-reverte é a rede que impede o
+# admin de se trancar fora da máquina, e nenhuma das 37 verificações anteriores
+# encostava nele. A #20 trouxe a ordem dos oito passos para um lugar só
+# (firewallrules.ApplyGuarded), e um refactor dessa rede não pode ser dado por
+# bom só porque a suíte Go passou: o que interessa é o comportamento por HTTP
+# contra um sistema instalado, com nftables de verdade embaixo.
+#
+# Cada verificação abaixo é um dos becos que os comentários do mecanismo
+# registram ter sido vividos — C-5, C-6, N-2, N-3, N-4 — mais a trava e o
+# caminho feliz.
+
+# jqk CHAVE — extrai uma chave do JSON no stdin (o jqf já existe, mas este
+# aceita caminho aninhado "a.b").
+jqk() {
+  python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for part in sys.argv[1].split('.'):
+    d = (d or {}).get(part) if isinstance(d, dict) else None
+print(d if d is not None else '')
+" "$1" 2>/dev/null
+}
+
+battery_confirm_revert() {
+  [[ -n "$FROM_DEB" ]] && recreate_vm || true
+  head_ "C. Confirmar-ou-reverte"
+  # A VM já está instalada pela bateria anterior quando --from-deb foi passado;
+  # senão, reaproveita a instalação da bateria A.
+  if [[ -n "$FROM_DEB" ]]; then
+    install_deb "$DEB" "novo" || return
+  fi
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria C não roda"; return; }
+
+  local st resp
+
+  # C1 — mutação de FORWARD não abre janela. Abrir uma para toda mutação
+  # travaria a edição do firewall por 90 segundos a cada regra salva.
+  st=$(status POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C forward","scope":"forward","fallthrough":"continue","cond_saddr":"10.9.9.0/24"}')
+  if [[ "$st" == "200" ]]; then ok "grupo de forward criado (200)"
+  else bad "criação de grupo de forward devolveu $st"; fi
+  if [[ "$(body GET /api/nftables/pending "$tok" | jqk pending)" == "" ]]; then
+    ok "mutação de forward NÃO abriu janela de confirmação"
+  else bad "uma mutação de forward abriu janela — a edição ficaria travada 90s à toa"; fi
+
+  # C2 — o caminho que importa: mutação de INPUT abre a janela.
+  resp=$(api POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C input","scope":"input","fallthrough":"continue","cond_saddr":"10.9.9.0/24"}')
+  st=$(head -1 <<<"$resp")
+  local pend_id
+  pend_id=$(tail -n +2 <<<"$resp" | jqk pending.id)
+  if [[ "$st" == "200" && -n "$pend_id" ]]; then ok "mutação de escopo input abriu a janela de confirmação"
+  else bad "mutação de input NÃO abriu janela (status $st) — ela valeria sem reversão automática"; fi
+
+  # C3 — a TRAVA (spec §5.3). Com duas mudanças pendentes, "reverter ao estado
+  # anterior" não teria resposta.
+  resp=$(api POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C segunda","scope":"forward","fallthrough":"continue"}')
+  st=$(head -1 <<<"$resp")
+  if [[ "$st" == "409" ]]; then ok "segunda mutação recusada com janela aberta (409)"
+  else bad "segunda mutação passou com janela aberta (status $st)"; fi
+  # E a recusa precisa NOMEAR a mudança e quem a aplicou: é o que o operador usa
+  # para decidir entre confirmar e reverter.
+  if grep -q 'aguardando confirmação' <<<"$(tail -n +2 <<<"$resp")"; then
+    ok "a recusa nomeia a mudança pendente"
+  else bad "a recusa de 409 não diz qual mudança está pendente"; fi
+
+  # C4 — confirmar resolve a janela e libera a edição.
+  st=$(status POST /api/nftables/pending/confirm "$tok" '{}')
+  if [[ "$st" == "200" ]]; then ok "confirmar acesso resolveu a janela (200)"
+  else bad "confirmar devolveu $st"; fi
+  if [[ "$(body GET /api/nftables/pending "$tok" | jqk pending)" == "" ]]; then
+    ok "não há mais pendente depois de confirmar"
+  else bad "o pendente sobreviveu ao confirmar"; fi
+  st=$(status POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C pos-confirm","scope":"forward","fallthrough":"continue"}')
+  if [[ "$st" == "200" ]]; then ok "a edição voltou a ser aceita depois de confirmar"
+  else bad "a edição continua travada depois de confirmar ($st)"; fi
+
+  # C5 — REVERTER desfaz a mudança no banco E no firewall vivo.
+  resp=$(api POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C reverter","scope":"input","fallthrough":"continue","cond_saddr":"10.9.9.0/24"}')
+  local gid
+  gid=$(tail -n +2 <<<"$resp" | jqk id)
+  if [[ -n "$gid" ]]; then ok "grupo de input criado para o teste de reversão"
+  else bad "não consegui criar o grupo de input para reverter"; fi
+
+  st=$(status POST /api/nftables/pending/revert "$tok" '{}')
+  if [[ "$st" == "200" ]]; then ok "reverter agora concluiu (200)"
+  else bad "reverter devolveu $st"; fi
+
+  # O grupo tem que ter SUMIDO — é o que "voltar ao estado anterior" significa.
+  if body GET /api/nftables/groups "$tok" | grep -q "Bateria C reverter"; then
+    bad "a reversão respondeu 200 e o grupo continua no banco"
+  else ok "a reversão apagou do banco o grupo que a janela criou"; fi
+
+  # E o firewall VIVO não pode ter ficado com a chain do grupo revertido: banco
+  # e nft discordando é a confiança falsa que este painel existe para eliminar.
+  if vm "nft list ruleset 2>/dev/null" | grep -q "$(cut -c1-12 <<<"${gid//-/}")"; then
+    bad "a chain do grupo revertido continua no nftables vivo"
+  else ok "o nftables vivo não tem mais a chain do grupo revertido"; fi
+
+  # C6 — N-2, o beco sem saída: a trava LIBERA quando a reversão já terminou no
+  # banco. Travar aí prendia o operador sem saída — não dava para apagar a regra
+  # que quebra o reconcile, nem confirmar, nem reverter, e o reboot repetia tudo.
+  st=$(status POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C pos-revert","scope":"forward","fallthrough":"continue"}')
+  if [[ "$st" == "200" ]]; then ok "a edição voltou a ser aceita depois de reverter"
+  else bad "a edição ficou travada depois de uma reversão concluída ($st) — é o beco N-2"; fi
+
+  # C7 — C-5: corpo inválido é recusado com 400, e a mensagem fala do CAMPO.
+  # Antes da correção original, ler o banco primeiro fazia um corpo inválido
+  # virar 500 quando o banco estava fora do ar, e o admin não ficava sabendo que
+  # o problema era o que ele mandou.
+  resp=$(api POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C invalida","scope":"nao-existe","fallthrough":"continue"}')
+  st=$(head -1 <<<"$resp")
+  if [[ "$st" == "400" ]]; then ok "escopo inválido recusado com 400 (validação antes do banco)"
+  else bad "escopo inválido devolveu $st, esperado 400"; fi
+
+  # C8 — o pré-voo `nft -c`: uma regra que o nft recusa não pode chegar ao
+  # banco. Porta 99999 não existe.
+  local fwd_gid
+  fwd_gid=$(body GET /api/nftables/groups "$tok" | python3 -c "
+import json,sys
+for g in json.load(sys.stdin).get('groups',[]):
+    if g.get('name')=='Bateria C forward': print(g['id']); break
+" 2>/dev/null)
+  if [[ -n "$fwd_gid" ]]; then
+    st=$(status POST /api/nftables/rules "$tok" \
+      "{\"group_id\":\"$fwd_gid\",\"action\":\"drop\",\"proto\":\"tcp\",\"dport\":\"99999\"}")
+    if [[ "$st" == "400" ]]; then ok "porta inválida recusada antes de chegar ao banco (400)"
+    else bad "porta 99999 devolveu $st, esperado 400"; fi
+    if body GET /api/nftables/rules "$tok" | grep -q '99999'; then
+      bad "a regra recusada pelo pré-voo foi gravada no banco assim mesmo"
+    else ok "a regra recusada não existe no banco"; fi
+  else bad "não achei o grupo de forward para o teste de pré-voo"; fi
+
+  # C9 — a janela SOBREVIVE a um restart. Ela mora no banco justamente para
+  # isso: com a marca só em memória, um processo novo voltava a aceitar
+  # "confirmar" uma mudança cujo estado anterior já tinha sido restaurado.
+  api POST /api/nftables/groups "$tok" \
+    '{"name":"Bateria C restart","scope":"input","fallthrough":"continue","cond_saddr":"10.9.9.0/24"}' >/dev/null
+  vm "systemctl restart linkguard-fw" >/dev/null 2>&1
+  wait_api || { bad "o serviço não voltou depois do restart"; return; }
+  tok=$(login admin "$initial"); [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  if [[ -n "$(body GET /api/nftables/pending "$tok" | jqk pending.id)" ]]; then
+    ok "a janela pendente sobreviveu ao restart do serviço"
+  else bad "a janela sumiu no restart — a mudança de input ficaria sem reversão automática"; fi
+
+  # C10 — e a reversão automática por PRAZO acontece sozinha, sem ninguém pedir.
+  # É a promessa inteira do mecanismo: "se você não confirmar, volta".
+  printf '       (aguardando o prazo de 90s vencer para a reversão automática)\n'
+  local i
+  for i in $(seq 1 24); do
+    sleep 5
+    [[ -z "$(body GET /api/nftables/pending "$tok" | jqk pending.id)" ]] && break
+  done
+  if [[ -z "$(body GET /api/nftables/pending "$tok" | jqk pending.id)" ]]; then
+    ok "a janela venceu e foi revertida automaticamente"
+  else bad "o prazo passou e a janela continua aberta — a reversão automática não aconteceu"; fi
+  if body GET /api/nftables/groups "$tok" | grep -q "Bateria C restart"; then
+    bad "a reversão automática não desfez o grupo de input"
+  else ok "a reversão automática desfez o grupo que ninguém confirmou"; fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Bateria B — upgrade sobre uma instalação que já roda
 # ─────────────────────────────────────────────────────────────────────────────
 battery_upgrade() {
@@ -404,6 +579,7 @@ battery_upgrade() {
 
 battery_fresh
 battery_upgrade
+battery_confirm_revert
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"
