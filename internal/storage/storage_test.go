@@ -2,7 +2,6 @@ package storage_test
 
 import (
 	"database/sql"
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -809,180 +808,52 @@ func TestSecretsTableExists(t *testing.T) {
 	}
 }
 
-type fakeSecretsSetter struct {
-	stored map[string]string
-	// failOn makes Set return an error for these names, simulating a
-	// keyfile/disk/DB failure halfway through the migration.
-	failOn map[string]bool
-}
+// ─── Settings ────────────────────────────────────────────────────────────────
 
-func (f *fakeSecretsSetter) Set(name, plaintext string) error {
-	if f.failOn[name] {
-		return errors.New("boom: secrets write failed")
-	}
-	if f.stored == nil {
-		f.stored = map[string]string{}
-	}
-	f.stored[name] = plaintext
-	return nil
-}
-
-func TestMigrateSettingsToSecretsMovesKnownKeys(t *testing.T) {
+// SettingKeys and DeleteSetting exist for the boot-time migration in
+// internal/secrets, which is the only caller. They are tested here because
+// this is where the SQL lives.
+func TestSettingKeysListsEveryKeyAndDeleteSettingRemovesOne(t *testing.T) {
 	db := newTestDB(t)
 
-	_ = db.SetSetting("github_update_token", "ghp_abc")
-	_ = db.SetSetting("notifications", `{"webhook":{"url":"https://x"}}`)
-	_ = db.SetSetting("wireguard", `{"private_key":"wgpriv123","peers":[]}`)
-	_ = db.SetSetting("totp_user-1", `{"secret":"AAA","enabled":true}`)
-	_ = db.SetSetting("totp_user-2", `{"secret":"BBB","enabled":true}`)
-	_ = db.SetSetting("monitoring", `{"enabled":true}`) // must NOT be migrated
-
-	fake := &fakeSecretsSetter{}
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("MigrateSettingsToSecrets: %v", err)
+	if err := db.SetSetting("monitoring", `{"enabled":true}`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	if err := db.SetSetting("totp_user-1", `{"secret":"AAA"}`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
 	}
 
-	want := map[string]string{
-		"github_update_token": "ghp_abc",
-		"notifications":       `{"webhook":{"url":"https://x"}}`,
-		"wireguard":           `{"private_key":"wgpriv123","peers":[]}`,
-		"totp_user-1":         `{"secret":"AAA","enabled":true}`,
-		"totp_user-2":         `{"secret":"BBB","enabled":true}`,
-	}
-	for k, v := range want {
-		if fake.stored[k] != v {
-			t.Fatalf("expected %q migrated with value %q, got %q", k, v, fake.stored[k])
-		}
-	}
-
-	settings, err := db.ExportSettings()
+	keys, err := db.SettingKeys()
 	if err != nil {
-		t.Fatalf("ExportSettings: %v", err)
+		t.Fatalf("SettingKeys: %v", err)
 	}
-	for k := range want {
-		if _, present := settings[k]; present {
-			t.Fatalf("expected %q removed from settings after migration, still present", k)
-		}
+	seen := map[string]bool{}
+	for _, k := range keys {
+		seen[k] = true
 	}
-	if settings["monitoring"] != `{"enabled":true}` {
-		t.Fatalf("expected non-secret key 'monitoring' untouched, got %q", settings["monitoring"])
-	}
-}
-
-func TestMigrateSettingsToSecretsIsIdempotent(t *testing.T) {
-	db := newTestDB(t)
-	_ = db.SetSetting("github_update_token", "ghp_abc")
-
-	fake := &fakeSecretsSetter{}
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("first migrate: %v", err)
-	}
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("second migrate: %v", err)
-	}
-	if fake.stored["github_update_token"] != "ghp_abc" {
-		t.Fatalf("expected value to survive two migrate calls unchanged, got %q", fake.stored["github_update_token"])
-	}
-}
-
-// TestMigrateSettingsToSecretsKeepsRowWhenSetFails is the "never lose a
-// secret" guarantee. If the secrets write fails, the plaintext in settings is
-// the ONLY remaining copy — deleting it before the write is confirmed would
-// destroy a TOTP seed and lock the admin out of the UI permanently. The row
-// must still be there so the next boot re-attempts the same key.
-func TestMigrateSettingsToSecretsKeepsRowWhenSetFails(t *testing.T) {
-	db := newTestDB(t)
-	_ = db.SetSetting("totp_user-1", `{"secret":"AAA","enabled":true}`)
-	_ = db.SetSetting("github_update_token", "ghp_abc")
-
-	fake := &fakeSecretsSetter{failOn: map[string]bool{"totp_user-1": true}}
-	err := storage.MigrateSettingsToSecrets(db, fake)
-	if err == nil {
-		t.Fatal("expected an error when the secrets write fails, got nil")
+	if !seen["monitoring"] || !seen["totp_user-1"] {
+		t.Fatalf("expected both keys listed, got %v", keys)
 	}
 
-	settings, exportErr := db.ExportSettings()
-	if exportErr != nil {
-		t.Fatalf("ExportSettings: %v", exportErr)
+	if err := db.DeleteSetting("totp_user-1"); err != nil {
+		t.Fatalf("DeleteSetting: %v", err)
 	}
-	if settings["totp_user-1"] != `{"secret":"AAA","enabled":true}` {
-		t.Fatalf("secret lost: settings row must survive a failed secrets write, got %q", settings["totp_user-1"])
-	}
-	if _, present := fake.stored["totp_user-1"]; present {
-		t.Fatal("failing Set must not have stored anything")
-	}
-}
-
-// TestMigrateSettingsToSecretsGlobIsExact pins the "_" precision of the
-// pattern. SQLite's LIKE treats "_" as a single-character wildcard, so
-// `LIKE 'totp_%'` would also drag "totpXfoo" into the secrets table, where
-// nothing reads it back — a silent data move. The pattern must match only
-// the literal "totp_<userID>" prefix.
-func TestMigrateSettingsToSecretsGlobIsExact(t *testing.T) {
-	db := newTestDB(t)
-	_ = db.SetSetting("totp_user-1", `{"secret":"AAA"}`)
-	_ = db.SetSetting("totpXfoo", "not-a-secret")
-	_ = db.SetSetting("totp", "also-not-a-secret")
-	_ = db.SetSetting("xtotp_user-9", "not-a-secret-either")
-
-	fake := &fakeSecretsSetter{}
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("MigrateSettingsToSecrets: %v", err)
-	}
-
-	if fake.stored["totp_user-1"] != `{"secret":"AAA"}` {
-		t.Fatalf("expected totp_user-1 migrated, got %q", fake.stored["totp_user-1"])
-	}
-	for _, key := range []string{"totpXfoo", "totp", "xtotp_user-9"} {
-		if _, migrated := fake.stored[key]; migrated {
-			t.Fatalf("key %q must NOT be migrated: it is not totp_<userID>", key)
-		}
-	}
-
-	settings, err := db.ExportSettings()
+	got, err := db.GetSetting("totp_user-1")
 	if err != nil {
-		t.Fatalf("ExportSettings: %v", err)
+		t.Fatalf("GetSetting: %v", err)
 	}
-	if settings["totpXfoo"] != "not-a-secret" {
-		t.Fatalf("expected totpXfoo left in settings, got %q", settings["totpXfoo"])
+	if got != "" {
+		t.Fatalf("expected key gone after DeleteSetting, got %q", got)
 	}
-	if settings["totp"] != "also-not-a-secret" {
-		t.Fatalf("expected totp left in settings, got %q", settings["totp"])
-	}
-	if settings["xtotp_user-9"] != "not-a-secret-either" {
-		t.Fatalf("expected xtotp_user-9 left in settings, got %q", settings["xtotp_user-9"])
-	}
-}
-
-// TestMigrateSettingsToSecretsDoesNotClobberNewerValue covers the boot after
-// the boot after the migration: the DB is already migrated and the admin has
-// since rotated the TOTP seed through the app, which writes straight to
-// secrets. Re-running the migration must not resurrect the stale plaintext,
-// which would silently invalidate the authenticator the admin just enrolled.
-func TestMigrateSettingsToSecretsDoesNotClobberNewerValue(t *testing.T) {
-	db := newTestDB(t)
-	_ = db.SetSetting("totp_user-1", `{"secret":"OLD","enabled":true}`)
-	_ = db.SetSetting("github_update_token", "ghp_old")
-
-	fake := &fakeSecretsSetter{}
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("first migrate: %v", err)
+	if v, _ := db.GetSetting("monitoring"); v != `{"enabled":true}` {
+		t.Fatalf("DeleteSetting touched the wrong row, monitoring=%q", v)
 	}
 
-	// The admin re-enrolls TOTP and rotates the token; both writes land in
-	// secrets only, since settings no longer holds these keys.
-	_ = fake.Set("totp_user-1", `{"secret":"NEW","enabled":true}`)
-	_ = fake.Set("github_update_token", "ghp_new")
-
-	if err := storage.MigrateSettingsToSecrets(db, fake); err != nil {
-		t.Fatalf("second migrate: %v", err)
-	}
-
-	if fake.stored["totp_user-1"] != `{"secret":"NEW","enabled":true}` {
-		t.Fatalf("migration overwrote a newer TOTP seed, got %q", fake.stored["totp_user-1"])
-	}
-	if fake.stored["github_update_token"] != "ghp_new" {
-		t.Fatalf("migration overwrote a newer token, got %q", fake.stored["github_update_token"])
+	// Deleting a key that was never there is not an error: the migration
+	// retries whole keys after a partial failure and must not abort boot
+	// because a row it already removed is no longer there.
+	if err := db.DeleteSetting("never_existed"); err != nil {
+		t.Fatalf("DeleteSetting on missing key should be a no-op, got %v", err)
 	}
 }
 
