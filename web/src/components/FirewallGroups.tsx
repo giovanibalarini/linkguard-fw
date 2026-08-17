@@ -21,6 +21,12 @@ import { globalReorder, mergeGroupRules, moveItem, splitGroupRules } from '../li
 // justamente no número que decide se ainda dá tempo de testar o SSH.
 import { anchorFrom, claimFullBanner, countdownNow, formatCountdown } from '../lib/pendingWindow';
 import type { CountdownAnchor } from '../lib/pendingWindow';
+// Quem fechou a janela de confirmação — a conta que decide se o aviso da
+// reversão por prazo sai ou é engolido. Ela mora em lib/resolutionMark porque
+// aqui dentro nada a alcançava sem montar a tela inteira e esperar noventa
+// segundos, que é exatamente o cenário que ninguém reproduz por acaso. Ver
+// resolutionMark.check.ts.
+import { claim, consume, release } from '../lib/resolutionMark';
 import type {
   FirewallApplyStatus, FirewallGroup, FirewallGroupsData, FirewallPendingChange,
   FirewallPendingResponse, FirewallRule, FirewallRulesData, GroupConnState,
@@ -375,7 +381,8 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const pendingRef = useRef<FirewallPendingChange | null>(null);
   // resolvedRef guarda o id da janela que NÓS acabamos de confirmar ou
   // reverter: sem ele, o poll seguinte veria o pendente sumir e anunciaria uma
-  // reversão automática que não houve.
+  // reversão automática que não houve. Quem mexe nele são claim/release/consume
+  // — ver resolutionMark.
   const resolvedRef = useRef('');
   // expiredRef marca a janela cujo vencimento já disparou uma releitura, para
   // que o relógio chegando a zero peça o estado ao servidor uma vez, e não a
@@ -462,9 +469,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
         // ou o watchdog concluiu por nós) deixava na tela um grupo que já não
         // existia mais no banco — a tela afirmando uma regra de firewall que
         // não está lá.
-        if (resolvedRef.current === prev.id) {
-          resolvedRef.current = '';
-        } else {
+        if (!consume(resolvedRef, prev.id)) {
           // Em ÂMBAR, não em verde: uma alteração desfeita pelo relógio não é
           // uma boa notícia, e a cor é a primeira coisa que o operador lê.
           onMsg('O prazo acabou sem confirmação: a alteração foi revertida e os grupos e as regras voltaram ao estado anterior.', 'warn');
@@ -619,22 +624,46 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const lockReason = 'Há uma alteração aguardando confirmação. Confirme o acesso ou reverta agora, na faixa no topo, para voltar a editar.';
   const editDisabled = busy || locked;
 
+  /**
+   * A marca em resolvedRef vai ANTES da chamada porque o `run` relê o pendente
+   * dentro dele: quando a chamada dá certo, é ela que impede o poll seguinte de
+   * anunciar uma reversão automática que não houve.
+   *
+   * E ela é DESFEITA no ramo de erro, dentro do próprio `fn`, antes de o `run`
+   * chegar à releitura dele. Uma chamada que falhou não resolveu janela
+   * nenhuma: deixar a marca presa aí fazia a janela — a mesma, que continua
+   * correndo — sumir em silêncio quando o prazo vencesse, engolindo a única
+   * mensagem que o painel tem para dizer ao operador que a alteração dele foi
+   * desfeita. O lado seguro é este: na dúvida, avisar.
+   */
   const confirmPending = () => {
     const p = pending;
     if (!p) return;
-    resolvedRef.current = p.id;
-    // O id vai no corpo porque a janela tem dono: sem ele, confirmar agiria
-    // sobre a janela que estiver aberta no instante da chamada — que pode ser
-    // a de outro admin, com uma mudança que este operador nunca viu.
-    run(() => client.post('/api/nftables/pending/confirm', { id: p.id }),
-      'Acesso confirmado: a alteração passa a valer e não será mais revertida.');
+    claim(resolvedRef, p.id);
+    run(async () => {
+      try {
+        // O id vai no corpo porque a janela tem dono: sem ele, confirmar agiria
+        // sobre a janela que estiver aberta no instante da chamada — que pode
+        // ser a de outro admin, com uma mudança que este operador nunca viu.
+        return await client.post('/api/nftables/pending/confirm', { id: p.id });
+      } catch (e) {
+        release(resolvedRef, p.id);
+        throw e;
+      }
+    }, 'Acesso confirmado: a alteração passa a valer e não será mais revertida.');
   };
   const revertPending = () => {
     const p = pending;
     if (!p) return;
-    resolvedRef.current = p.id;
-    run(() => client.post('/api/nftables/pending/revert', { id: p.id }),
-      'Alteração revertida: os grupos e as regras voltaram ao estado anterior.');
+    claim(resolvedRef, p.id);
+    run(async () => {
+      try {
+        return await client.post('/api/nftables/pending/revert', { id: p.id });
+      } catch (e) {
+        release(resolvedRef, p.id);
+        throw e;
+      }
+    }, 'Alteração revertida: os grupos e as regras voltaram ao estado anterior.');
   };
 
   // ─── Grupos ────────────────────────────────────────────────────────────
