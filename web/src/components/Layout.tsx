@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import PendingWindowBanner from './PendingWindowBanner';
+import ErrorBoundary from './ErrorBoundary';
 import { useUIMode } from '../context/UIModeContext';
 import { useI18n } from '../i18n';
 import {
@@ -273,8 +274,16 @@ export default function Layout() {
             onde a faixa completa já existe. */}
         <PendingWindowBanner />
 
+        {/* Rede de segurança por tela. Fica DENTRO do Layout de propósito: se
+            uma página cair, o menu acima e a faixa do confirmar-ou-reverte
+            continuam desenhados, então o operador ainda alcança o firewall para
+            confirmar ou reverter dentro dos 90 segundos. A chave por rota
+            descarta o estado de erro ao navegar — senão a tela quebrada
+            grudaria em todas as outras. */}
         <main className="flex-1 overflow-auto">
-          <Outlet />
+          <ErrorBoundary key={location.pathname} variant="page">
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>
