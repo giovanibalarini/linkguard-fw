@@ -60,6 +60,28 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   return <I18nContext.Provider value={{ lang, setLang, t }}>{children}</I18nContext.Provider>;
 }
 
+// tStatic traduz FORA de um componente React.
+//
+// Existe por causa do ErrorBoundary, que é class component e não pode chamar
+// hook — e ele é justamente a tela que aparece quando o resto quebrou, então
+// deixá-la só em português seria o pior lugar para economizar. Também serve a
+// qualquer módulo que precise de uma frase sem estar dentro da árvore.
+//
+// Lê o idioma do localStorage em vez do contexto: sem contexto disponível, essa
+// é a mesma fonte que o provider usa para inicializar, então as duas concordam.
+// A troca de idioma em tempo real NÃO chega aqui, e para o ErrorBoundary isso é
+// irrelevante — ele é remontado a cada erro.
+export function tStatic(key: string, vars?: Record<string, string | number>): string {
+  const lang = readStored();
+  let out = dicts[lang][key] ?? dicts.pt[key] ?? key;
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      out = out.split('{' + k + '}').join(String(v));
+    }
+  }
+  return out;
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function useI18n(): I18nValue {
   const ctx = useContext(I18nContext);

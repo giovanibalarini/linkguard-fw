@@ -82,7 +82,7 @@ export default function ConfirmOrRevertBanner({ cor, canWrite }: { cor: ConfirmO
                   nada. Acreditar numa volta completa que não aconteceu é o
                   pior resultado possível aqui. */}
               <p className="text-amber-200/60 text-xs mt-1.5">
-                A reversão desfaz apenas <span className="text-amber-200">grupos e regras</span>. Bloqueios por host, encaminhamentos de porta e o NTP não voltam atrás — o que você mudou neles durante a janela continua valendo.
+                {t('fwx.revert.scope.head')}<span className="text-amber-200">{t('fwx.revert.scope.strong')}</span>{t('fwx.revert.scope.tail')}
               </p>
             </div>
           </div>
@@ -93,14 +93,14 @@ export default function ConfirmOrRevertBanner({ cor, canWrite }: { cor: ConfirmO
                 disabled={busy}
                 className="btn-primary text-sm flex items-center justify-center gap-2 disabled:opacity-50"
               >
-                <Check className="w-4 h-4" aria-hidden="true" /> Confirmar acesso
+                <Check className="w-4 h-4" aria-hidden="true" /> {t('fwx.confirm.btn.confirm')}
               </button>
               <button
                 onClick={cor.revertPending}
                 disabled={busy}
                 className="btn-secondary text-sm flex items-center justify-center gap-2 disabled:opacity-50"
               >
-                <RotateCcw className="w-4 h-4" aria-hidden="true" /> Reverter agora
+                <RotateCcw className="w-4 h-4" aria-hidden="true" /> {t('fwx.confirm.btn.revert')}
               </button>
             </div>
           ) : (

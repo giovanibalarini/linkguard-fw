@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw, Plus, Pencil, Trash2, Server, Network, ListChecks, Play } from 'lucide-react';
 import client, { INSTALL_TIMEOUT_MS, isTimeout } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { useI18n } from '../i18n';
 import type { DHCPData, DHCPReservation, NetsvcConfig } from '../types';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
@@ -11,12 +12,20 @@ const emptyRes = { mac: '', ip: '', hostname: '' };
 
 export default function Dhcp() {
   const { can } = useAuth();
+  const { t } = useI18n();
   const canWrite = can('dhcp.write');
   const [data, setData] = useState<DHCPData | null>(null);
   const [cfg, setCfg] = useState<NetsvcConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [msg, setMsg] = useState('');
+  // A cor da faixa sai de um booleano, e não de farejar o prefixo de `msg`.
+  // `msg` guarda a frase já traduzida no idioma em que foi criada, e o seletor
+  // de idioma mora no Layout, que não desmonta esta página: trocar de idioma
+  // com a faixa na tela faria o teste de prefixo falhar e pintar de verde um
+  // erro. O timeout continua NÃO sendo erro — ele diz que a aplicação segue
+  // rodando em segundo plano.
+  const [msgError, setMsgError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resModal, setResModal] = useState<typeof emptyRes & { editing: boolean } | null>(null);
 
@@ -36,31 +45,33 @@ export default function Dhcp() {
   useEffect(() => { fetchData(); }, []);
 
   const run = async (fn: () => Promise<any>, ok: string) => {
-    setBusy(true); setMsg('');
+    setBusy(true); setMsg(''); setMsgError(false);
     try { await fn(); if (ok) setMsg(ok); await fetchData(); }
     catch (e: any) {
       // Desistir de esperar não é o mesmo que ter falhado: se o LinkGuard
       // estiver instalando kea/unbound, o apt continua rodando fora do
       // ciclo de vida desta requisição (unidade transiente do systemd-run) e
       // o resultado real fica registrado em last_apply.
-      setMsg(isTimeout(e)
-        ? 'A aplicação está demorando mais que o normal — provavelmente o LinkGuard está instalando os pacotes de DHCP/DNS. Ela continua em segundo plano: atualize a página em alguns minutos para ver o resultado.'
-        : `Erro: ${e.response?.data?.error || e.message}`);
+      const timeout = isTimeout(e);
+      setMsgError(!timeout);
+      setMsg(timeout
+        ? t('svc.netsvc.applyTimeout')
+        : `${t('svc.common.errorPrefix')}: ${e.response?.data?.error || e.message}`);
     }
     finally { setBusy(false); }
   };
 
-  const saveConfig = () => cfg && run(() => client.put('/api/dhcp/config', cfg), 'Config DHCP salva — aplicando automaticamente.');
+  const saveConfig = () => cfg && run(() => client.put('/api/dhcp/config', cfg), t('svc.dhcp.msg.configSaved'));
   const saveRes = () => {
     if (!resModal) return;
-    run(() => client.post('/api/dhcp/reservations', { mac: resModal.mac, ip: resModal.ip, hostname: resModal.hostname }), 'Reserva salva — aplicando automaticamente.').then(() => setResModal(null));
+    run(() => client.post('/api/dhcp/reservations', { mac: resModal.mac, ip: resModal.ip, hostname: resModal.hostname }), t('svc.dhcp.msg.resSaved')).then(() => setResModal(null));
   };
-  const delRes = (r: DHCPReservation) => confirm(`Remover a reserva de ${r.ip} (${r.mac})?`) && run(() => client.delete('/api/dhcp/reservations', { data: { mac: r.mac } }), 'Reserva removida — aplicando automaticamente.');
-  const apply = () => run(() => client.post('/api/netsvc/apply', null, { timeout: INSTALL_TIMEOUT_MS }), 'Aplicado com sucesso.');
+  const delRes = (r: DHCPReservation) => confirm(t('svc.dhcp.confirmDelRes', { ip: r.ip, mac: r.mac })) && run(() => client.delete('/api/dhcp/reservations', { data: { mac: r.mac } }), t('svc.dhcp.msg.resRemoved'));
+  const apply = () => run(() => client.post('/api/netsvc/apply', null, { timeout: INSTALL_TIMEOUT_MS }), t('svc.common.applied'));
 
   const expiresIn = (epoch: number) => {
     const s = epoch - Math.floor(Date.now() / 1000);
-    if (s <= 0) return 'expirado';
+    if (s <= 0) return t('svc.dhcp.expired');
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
   };
@@ -70,17 +81,17 @@ export default function Dhcp() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-white">DHCP</h1>
-          <p className="text-gray-500 text-sm">Servidor DHCP {data?.backend === 'kea-unbound' ? '(Kea)' : ''} — config, reservas e leases</p>
+          <p className="text-gray-500 text-sm">{t('svc.dhcp.subtitle', { backend: data?.backend === 'kea-unbound' ? '(Kea)' : '' })}</p>
         </div>
         <div className="flex gap-2">
-          {canWrite && <button onClick={apply} disabled={busy} title="Salvar já aplica sozinho; use para forçar agora" className="btn-secondary flex items-center gap-2 disabled:opacity-50"><Play className="w-4 h-4" /> Aplicar agora</button>}
-          <button onClick={fetchData} className="btn-secondary flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar</button>
+          {canWrite && <button onClick={apply} disabled={busy} title={t('svc.common.applyNow.title')} className="btn-secondary flex items-center gap-2 disabled:opacity-50"><Play className="w-4 h-4" /> {t('svc.common.applyNow')}</button>}
+          <button onClick={fetchData} className="btn-secondary flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> {t('svc.common.refresh')}</button>
         </div>
       </div>
 
       {data?.last_apply && !data.last_apply.ok && (
         <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
-          Última aplicação automática falhou: {data.last_apply.error || 'erro desconhecido'}. Corrija e use "Aplicar agora".
+          {t('svc.common.lastApplyFailed', { error: data.last_apply.error || t('svc.common.unknownError') })}
         </div>
       )}
 
@@ -98,44 +109,44 @@ export default function Dhcp() {
           aviso já diz por conta própria o que fazer. */}
       {data?.last_apply?.warning && (
         <div className="card border border-amber-500/30 bg-amber-500/10 text-amber-400 text-sm">
-          Aplicado, com ressalvas: {data.last_apply.warning}
+          {t('svc.common.appliedWithWarnings', { warning: data.last_apply.warning })}
         </div>
       )}
-      <p className="text-gray-500 text-xs">Salvar reservas ou config já aplica automaticamente (sem reiniciar o serviço).</p>
+      <p className="text-gray-500 text-xs">{t('svc.dhcp.autoApplyHint')}</p>
 
       {busy && (
         <div className="card border border-blue-500/30 bg-blue-500/10 text-blue-300 text-sm">
-          Aplicando… Se os pacotes de DHCP/DNS (kea, unbound) ainda não estiverem instalados, o LinkGuard os instala agora — isso pode levar alguns minutos na primeira vez.
+          {t('svc.netsvc.applying')}
         </div>
       )}
-      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchData} className="underline">Tentar novamente</button></div>}
-      {msg && <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">{t('svc.common.loadFailed')} <button onClick={fetchData} className="underline">{t('svc.common.tryAgain')}</button></div>}
+      {msg && <div className={`card border text-sm ${msgError ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
 
       {loading || !cfg ? (
-        <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
+        <div className="card text-center py-8 text-gray-500 animate-pulse">{t('common.loading')}</div>
       ) : (
         <>
           {/* Config */}
-          <Panel title={<span className="flex items-center gap-2"><Server className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Configuração</span></span>}>
+          <Panel title={<span className="flex items-center gap-2"><Server className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('svc.dhcp.section.config')}</span></span>}>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div><label className="label">Interface (LAN)</label><input className="input w-full" value={cfg.interface} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, interface: e.target.value })} /></div>
-              <div><label className="label">Sub-rede (CIDR)</label><input className="input w-full" value={cfg.subnet_cidr} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, subnet_cidr: e.target.value })} /></div>
-              <div><label className="label">Gateway</label><input className="input w-full" value={cfg.gateway} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, gateway: e.target.value })} /></div>
-              <div><label className="label">Início do range</label><input className="input w-full" value={cfg.range_start} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, range_start: e.target.value })} /></div>
-              <div><label className="label">Fim do range</label><input className="input w-full" value={cfg.range_end} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, range_end: e.target.value })} /></div>
-              <div><label className="label">Lease (horas)</label><input type="number" className="input w-full" value={cfg.lease_hours} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, lease_hours: +e.target.value })} /></div>
-              <div className="sm:col-span-2 lg:col-span-3"><label className="label">DNS para os clientes (separados por vírgula)</label><input className="input w-full" value={cfg.dns_to_clients.join(', ')} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, dns_to_clients: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.interface')}</label><input className="input w-full" value={cfg.interface} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, interface: e.target.value })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.subnet')}</label><input className="input w-full" value={cfg.subnet_cidr} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, subnet_cidr: e.target.value })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.gateway')}</label><input className="input w-full" value={cfg.gateway} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, gateway: e.target.value })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.rangeStart')}</label><input className="input w-full" value={cfg.range_start} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, range_start: e.target.value })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.rangeEnd')}</label><input className="input w-full" value={cfg.range_end} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, range_end: e.target.value })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.leaseHours')}</label><input type="number" className="input w-full" value={cfg.lease_hours} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, lease_hours: +e.target.value })} /></div>
+              <div className="sm:col-span-2 lg:col-span-3"><label className="label">{t('svc.dhcp.field.dnsToClients')}</label><input className="input w-full" value={cfg.dns_to_clients.join(', ')} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, dns_to_clients: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} /></div>
             </div>
-            {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">Salvar config</button></div>}
+            {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">{t('svc.common.saveConfig')}</button></div>}
           </Panel>
 
           {/* Reservations */}
           <Panel
-            title={<span className="flex items-center gap-2"><ListChecks className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Reservas (IP fixo por MAC)</span></span>}
-            action={canWrite ? <button onClick={() => setResModal({ ...emptyRes, editing: false })} className="btn-primary flex items-center gap-2 justify-center"><Plus className="w-4 h-4" /> Nova reserva</button> : undefined}
+            title={<span className="flex items-center gap-2"><ListChecks className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('svc.dhcp.section.reservations')}</span></span>}
+            action={canWrite ? <button onClick={() => setResModal({ ...emptyRes, editing: false })} className="btn-primary flex items-center gap-2 justify-center"><Plus className="w-4 h-4" /> {t('svc.dhcp.res.new')}</button> : undefined}
           >
             {(data?.reservations.length ?? 0) === 0 ? (
-              <p className="text-gray-600 text-sm">Nenhuma reserva. Reservas dão IP estável por MAC (conserta o pin de WAN).</p>
+              <p className="text-gray-600 text-sm">{t('svc.dhcp.res.empty')}</p>
             ) : (
               <>
                 {/* Mobile: stacked cards (< sm) */}
@@ -148,15 +159,15 @@ export default function Dhcp() {
                         </div>
                         {canWrite && (
                           <div className="flex shrink-0 gap-1">
-                            <IconButton icon={Pencil} onClick={() => setResModal({ mac: r.mac, ip: r.ip, hostname: r.hostname, editing: true })} label="Editar reserva" />
-                            <IconButton icon={Trash2} onClick={() => delRes(r)} label="Remover reserva" variant="danger" />
+                            <IconButton icon={Pencil} onClick={() => setResModal({ mac: r.mac, ip: r.ip, hostname: r.hostname, editing: true })} label={t('svc.dhcp.res.edit')} />
+                            <IconButton icon={Trash2} onClick={() => delRes(r)} label={t('svc.dhcp.res.remove')} variant="danger" />
                           </div>
                         )}
                       </div>
                       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                        <dt className="text-gray-500">IP</dt>
+                        <dt className="text-gray-500">{t('svc.dhcp.col.ip')}</dt>
                         <dd className="text-gray-400 font-mono">{r.ip}</dd>
-                        <dt className="text-gray-500">MAC</dt>
+                        <dt className="text-gray-500">{t('svc.dhcp.col.mac')}</dt>
                         <dd className="text-gray-500 font-mono">{r.mac}</dd>
                       </dl>
                     </div>
@@ -166,15 +177,15 @@ export default function Dhcp() {
                 {/* Desktop: table (>= sm) */}
                 <div className="hidden sm:block overflow-x-auto">
                   <table className="hidden sm:table w-full text-sm">
-                    <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">Hostname</th><th className="pb-3 pr-4 font-medium">IP</th><th className="pb-3 pr-4 font-medium">MAC</th>{canWrite && <th className="pb-3 font-medium">Ações</th>}</tr></thead>
+                    <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">{t('svc.dhcp.col.hostname')}</th><th className="pb-3 pr-4 font-medium">{t('svc.dhcp.col.ip')}</th><th className="pb-3 pr-4 font-medium">{t('svc.dhcp.col.mac')}</th>{canWrite && <th className="pb-3 font-medium">{t('svc.dhcp.col.actions')}</th>}</tr></thead>
                     <tbody>{data!.reservations.map((r) => (
                       <tr key={r.mac} className="table-row">
                         <td className="py-3 pr-4 text-white">{r.hostname || '—'}</td>
                         <td className="py-3 pr-4 text-gray-300 font-mono text-xs">{r.ip}</td>
                         <td className="py-3 pr-4 text-gray-500 font-mono text-xs">{r.mac}</td>
                         {canWrite && <td className="py-3"><div className="flex gap-2">
-                          <IconButton icon={Pencil} onClick={() => setResModal({ mac: r.mac, ip: r.ip, hostname: r.hostname, editing: true })} label="Editar reserva" />
-                          <IconButton icon={Trash2} onClick={() => delRes(r)} label="Remover reserva" variant="danger" />
+                          <IconButton icon={Pencil} onClick={() => setResModal({ mac: r.mac, ip: r.ip, hostname: r.hostname, editing: true })} label={t('svc.dhcp.res.edit')} />
+                          <IconButton icon={Trash2} onClick={() => delRes(r)} label={t('svc.dhcp.res.remove')} variant="danger" />
                         </div></td>}
                       </tr>
                     ))}</tbody>
@@ -185,9 +196,9 @@ export default function Dhcp() {
           </Panel>
 
           {/* Active leases */}
-          <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-green-400" /><span className="text-white font-semibold">Leases ativos ({data?.leases.length ?? 0})</span></span>}>
+          <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-green-400" /><span className="text-white font-semibold">{t('svc.dhcp.section.leases', { n: data?.leases.length ?? 0 })}</span></span>}>
             {(data?.leases.length ?? 0) === 0 ? (
-              <p className="text-gray-600 text-sm">Nenhum lease ativo (o servidor DHCP pode ainda não estar ativo).</p>
+              <p className="text-gray-600 text-sm">{t('svc.dhcp.leases.empty')}</p>
             ) : (
               <>
                 {/* Mobile: stacked cards (< sm) */}
@@ -198,11 +209,11 @@ export default function Dhcp() {
                         <div className="text-white font-medium truncate">{l.hostname || '—'}</div>
                       </div>
                       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                        <dt className="text-gray-500">IP</dt>
+                        <dt className="text-gray-500">{t('svc.dhcp.col.ip')}</dt>
                         <dd className="text-gray-400 font-mono">{l.ip}</dd>
-                        <dt className="text-gray-500">MAC</dt>
+                        <dt className="text-gray-500">{t('svc.dhcp.col.mac')}</dt>
                         <dd className="text-gray-500 font-mono">{l.mac}</dd>
-                        <dt className="text-gray-500">Expira em</dt>
+                        <dt className="text-gray-500">{t('svc.dhcp.col.expiresIn')}</dt>
                         <dd className="text-gray-400">{expiresIn(l.expiry)}</dd>
                       </dl>
                     </div>
@@ -212,7 +223,7 @@ export default function Dhcp() {
                 {/* Desktop: table (>= sm) */}
                 <div className="hidden sm:block overflow-x-auto">
                   <table className="hidden sm:table w-full text-sm">
-                    <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">Hostname</th><th className="pb-3 pr-4 font-medium">IP</th><th className="pb-3 pr-4 font-medium">MAC</th><th className="pb-3 font-medium">Expira em</th></tr></thead>
+                    <thead><tr className="text-left text-gray-500 border-b border-gray-800"><th className="pb-3 pr-4 font-medium">{t('svc.dhcp.col.hostname')}</th><th className="pb-3 pr-4 font-medium">{t('svc.dhcp.col.ip')}</th><th className="pb-3 pr-4 font-medium">{t('svc.dhcp.col.mac')}</th><th className="pb-3 font-medium">{t('svc.dhcp.col.expiresIn')}</th></tr></thead>
                     <tbody>{data!.leases.map((l) => (
                       <tr key={l.ip + l.mac} className="table-row">
                         <td className="py-3 pr-4 text-white">{l.hostname || '—'}</td>
@@ -233,18 +244,18 @@ export default function Dhcp() {
       <Modal
         open={resModal !== null}
         onClose={() => setResModal(null)}
-        title={resModal ? (resModal.editing ? 'Editar reserva' : 'Nova reserva') : ''}
+        title={resModal ? (resModal.editing ? t('svc.dhcp.res.edit') : t('svc.dhcp.res.new')) : ''}
         size="sm"
         className="bg-gray-900 border border-gray-800 rounded-xl"
       >
         {resModal && (
         <div className="p-6 space-y-4">
-              <div><label className="label">MAC *</label><input className="input w-full disabled:opacity-50" placeholder="aa:bb:cc:dd:ee:ff" value={resModal.mac} disabled={resModal.editing} onChange={(e) => setResModal({ ...resModal, mac: e.target.value })} /></div>
-              <div><label className="label">IP *</label><input className="input w-full" placeholder="192.168.3.50" value={resModal.ip} onChange={(e) => setResModal({ ...resModal, ip: e.target.value })} /></div>
-              <div><label className="label">Hostname</label><input className="input w-full" placeholder="opcional" value={resModal.hostname} onChange={(e) => setResModal({ ...resModal, hostname: e.target.value })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.mac')}</label><input className="input w-full disabled:opacity-50" placeholder="aa:bb:cc:dd:ee:ff" value={resModal.mac} disabled={resModal.editing} onChange={(e) => setResModal({ ...resModal, mac: e.target.value })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.ip')}</label><input className="input w-full" placeholder="192.168.3.50" value={resModal.ip} onChange={(e) => setResModal({ ...resModal, ip: e.target.value })} /></div>
+              <div><label className="label">{t('svc.dhcp.field.hostname')}</label><input className="input w-full" placeholder={t('svc.dhcp.placeholder.hostname')} value={resModal.hostname} onChange={(e) => setResModal({ ...resModal, hostname: e.target.value })} /></div>
               <div className="flex gap-3 pt-2">
-                <button onClick={saveRes} disabled={busy} className="btn-primary flex-1 disabled:opacity-50">{busy ? 'Salvando...' : 'Salvar'}</button>
-                <button onClick={() => setResModal(null)} className="btn-secondary flex-1">Cancelar</button>
+                <button onClick={saveRes} disabled={busy} className="btn-primary flex-1 disabled:opacity-50">{busy ? t('common.saving') : t('common.save')}</button>
+                <button onClick={() => setResModal(null)} className="btn-secondary flex-1">{t('common.cancel')}</button>
               </div>
         </div>
         )}

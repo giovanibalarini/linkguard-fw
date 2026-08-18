@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { GripVertical, X } from 'lucide-react';
 import { GRID_COLUMNS, MAX_ROW_SPAN, normalize, sortForColumn } from '../lib/grid';
+import { useI18n } from '../i18n';
 import type { LayoutItem } from '../lib/grid';
 
 // A grade do painel, sem biblioteca (spec §4.3). Este arquivo cuida só de
@@ -93,6 +94,7 @@ export default function WidgetGrid({
   titleOf,
   minSizeOf,
 }: WidgetGridProps) {
+  const { t } = useI18n();
   const narrow = useNarrowScreen();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const grabRef = useRef<Grab | null>(null);
@@ -324,8 +326,8 @@ export default function WidgetGrid({
                     data-testid={`widget-remove-${item.widget}`}
                     onClick={() => onRemove(item.widget)}
                     onPointerDown={(e) => e.stopPropagation()}
-                    title={`Remover ${titleOf(item.widget)}`}
-                    aria-label={`Remover ${titleOf(item.widget)}`}
+                    title={t('shell.grid.remove', { widget: titleOf(item.widget) })}
+                    aria-label={t('shell.grid.remove', { widget: titleOf(item.widget) })}
                     className="shrink-0 rounded-md bg-gray-900/95 p-1 text-gray-400 transition-colors hover:bg-red-500/20 hover:text-red-400"
                   >
                     <X className="h-4 w-4" />
@@ -337,8 +339,8 @@ export default function WidgetGrid({
                     data-testid={`widget-resize-${item.widget}`}
                     onPointerDown={(e) => startResize(e, item)}
                     onDragStart={(e) => e.preventDefault()}
-                    title="Redimensionar"
-                    aria-label={`Redimensionar ${titleOf(item.widget)}`}
+                    title={t('shell.grid.resize.title')}
+                    aria-label={t('shell.grid.resize', { widget: titleOf(item.widget) })}
                     className="h-5 w-5 cursor-se-resize rounded-br-lg border-b-2 border-r-2 border-blue-400/70 bg-transparent"
                   />
                 </div>

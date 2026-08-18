@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { tStatic } from '../i18n';
 import client from '../api/client';
 
 /**
@@ -42,7 +43,7 @@ export function useNftPreview(endpoint: string, body: unknown, enabled = true) {
           if (cancelado) return;
           const ax = e as { response?: { data?: { error?: string } } };
           setRendered('');
-          setErro(ax?.response?.data?.error || 'não foi possível renderizar');
+          setErro(ax?.response?.data?.error || tStatic('fw.preview.failed'));
         });
     }, 250);
     return () => {

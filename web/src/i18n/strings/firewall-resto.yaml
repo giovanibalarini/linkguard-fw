@@ -1,0 +1,341 @@
+# Área "firewall-resto": o que sobrou da tela de Firewall depois que postura,
+# visão geral, modal de grupo, assistente e membros dos grupos do sistema
+# ganharam dono próprio — a página com as abas e os snapshots, a tela de grupos
+# de regras (índice + detalhe), o direcionamento por WAN, o encaminhamento de
+# portas, o modal da regra, a pré-visualização da linha nft e a faixa do
+# confirmar-ou-reverte.
+#
+# Prefixo obrigatório: fwx.*
+#
+# Termos que NÃO têm chave porque não se traduzem: palavras do nftables
+# (accept, drop, reject, continue, forward, input, ct state new, jump, chain,
+# ruleset, table inet linkguard), nomes de chain (mark_hosts), protocolos
+# (tcp, udp, icmp), caminhos (/etc/nftables.conf), comandos
+# (systemctl restart linkguard-fw), nomes próprios (LinkGuard, WAN1, WAN2,
+# docker, libvirt), siglas (SSH, DNS, DHCP, MAC, NTP, IP) e unidades (KB).
+
+# ─── Página do Firewall / cabeçalho ─────────────────────────────────────────
+fwx.title:
+  pt: "Firewall"
+  en: "Firewall"
+fwx.subtitle:
+  pt: "Gestão nativa via nftables (table inet linkguard)"
+  en: "Native management through nftables (table inet linkguard)"
+fwx.btn.snapshot:
+  pt: "Snapshot"
+  en: "Snapshot"
+fwx.btn.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
+fwx.btn.add:
+  pt: "Adicionar"
+  en: "Add"
+
+# ─── Erros genéricos ────────────────────────────────────────────────────────
+fwx.error:
+  pt: "Erro: {msg}"
+  en: "Error: {msg}"
+fwx.err.generic:
+  pt: "falha na operação"
+  en: "the operation failed"
+
+# ─── Aba "Ruleset" ──────────────────────────────────────────────────────────
+fwx.ruleset.empty:
+  pt: "Ruleset vazio."
+  en: "Ruleset is empty."
+
+# ─── Aba "Snapshots" ────────────────────────────────────────────────────────
+fwx.backups.explain.1:
+  pt: "Restaurar um snapshot recarrega direcionamento por WAN, destinos bloqueados, encaminhamentos de porta e as chains internas exatamente como estavam."
+  en: "Restoring a snapshot reloads WAN steering, blocked destinations, port forwards and the internal chains exactly as they were."
+fwx.backups.explain.2:
+  pt: "As suas regras personalizadas (aba \"Grupos de regras\") não fazem parte do snapshot — elas continuam vindo do banco de dados e são reaplicadas por cima logo em seguida."
+  en: "Your own rules (the \"Rule groups\" tab) are not part of the snapshot — they still come from the database and are reapplied on top right afterwards."
+fwx.backups.rollback.confirm:
+  pt: "Restaurar a tabela \"inet linkguard\" a partir do snapshot \"{label}\"? As tabelas de outros programas (docker, libvirt, ...) não são tocadas."
+  en: "Restore the \"inet linkguard\" table from the snapshot \"{label}\"? Tables belonging to other programs (docker, libvirt, ...) are left untouched."
+fwx.backups.empty:
+  pt: "Nenhum snapshot disponível"
+  en: "No snapshots available"
+fwx.backups.restore:
+  pt: "Restaurar"
+  en: "Restore"
+fwx.backups.col.label:
+  pt: "Label"
+  en: "Label"
+fwx.backups.col.size:
+  pt: "Tamanho"
+  en: "Size"
+fwx.backups.col.date:
+  pt: "Data"
+  en: "Date"
+fwx.backups.col.actions:
+  pt: "Ações"
+  en: "Actions"
+fwx.toast.snapshot.created:
+  pt: "Snapshot criado."
+  en: "Snapshot created."
+fwx.toast.rollback.done:
+  pt: "Tabela inet linkguard restaurada."
+  en: "Table inet linkguard restored."
+
+# ─── Direcionamento por WAN ─────────────────────────────────────────────────
+# As frases quebradas em head/tail existem porque o WAN2 e o nome da tela de
+# Hosts vão dentro de um <span> colorido no meio do parágrafo. A posição do
+# trecho destacado é a mesma nos dois idiomas.
+fwx.steering.line.head:
+  pt: "Estes hosts saem pela "
+  en: "These hosts go out through "
+fwx.steering.line.tail:
+  pt: "; os demais pela WAN1."
+  en: "; everything else goes through WAN1."
+fwx.steering.notFilter:
+  pt: "Isto não bloqueia nem libera nada — só escolhe por qual link o tráfego sai. Acontece antes de qualquer regra de grupo, na etapa de marcação (chain "
+  en: "This neither blocks nor allows anything — it only picks which link the traffic leaves through. It happens before any group rule, at the marking stage (chain "
+fwx.steering.revert.aria:
+  pt: "Reverter {ip} para a WAN1"
+  en: "Send {ip} back to WAN1"
+fwx.steering.hostsNote.head:
+  pt: "A tela de "
+  en: "The "
+fwx.steering.hostsNote.tail:
+  pt: " é onde a máquina é reconhecida pelo nome e MAC; a edição do direcionamento mora aqui, no Firewall."
+  en: " screen is where a machine is identified by name and MAC; steering itself is edited here, in the Firewall."
+
+# ─── Encaminhamento de portas ───────────────────────────────────────────────
+fwx.pf.help.1:
+  pt: "Permite que algo de "
+  en: "Lets something from "
+fwx.pf.help.2:
+  pt: " (internet) alcance um "
+  en: " (the internet) reach "
+fwx.pf.help.3:
+  pt: " — como um servidor, câmera ou jogo. Você diz: \"conexões que chegam na porta X da minha internet devem ir para o aparelho Y na porta Z\". Abra só o necessário."
+  en: " — a server, a camera or a game, for instance. You are saying: \"connections arriving on port X of my internet link must go to device Y on port Z\". Open only what you need."
+fwx.pf.toggle.on:
+  pt: "Ativo — clique para desativar"
+  en: "Enabled — click to disable"
+fwx.pf.toggle.off:
+  pt: "Inativo — clique para ativar"
+  en: "Disabled — click to enable"
+fwx.pf.anyIface:
+  pt: "qualquer"
+  en: "any"
+fwx.pf.tip:
+  pt: "Dica: reserve um IP fixo para o aparelho no DHCP antes, para o encaminhamento não \"mudar de dono\"."
+  en: "Tip: reserve a fixed IP for the device in DHCP first, so the forward does not end up pointing at a different machine."
+
+# ─── Pré-visualização da linha nft ──────────────────────────────────────────
+fwx.preview.rendering:
+  pt: "renderizando…"
+  en: "rendering…"
+
+# ─── Modal da regra ─────────────────────────────────────────────────────────
+fwx.rule.modal.edit:
+  pt: "Editar regra"
+  en: "Edit rule"
+fwx.rule.modal.new:
+  pt: "Nova regra em \"{group}\""
+  en: "New rule in \"{group}\""
+fwx.rule.desc.in:
+  pt: "entrada {v}"
+  en: "in {v}"
+fwx.rule.desc.out:
+  pt: "saída {v}"
+  en: "out {v}"
+fwx.rule.desc.src:
+  pt: "origem {v}"
+  en: "from {v}"
+fwx.rule.desc.dst:
+  pt: "destino {v}"
+  en: "to {v}"
+fwx.rule.desc.any:
+  pt: "qualquer tráfego"
+  en: "any traffic"
+fwx.rule.freeText.address:
+  pt: "como endereço"
+  en: "as an address"
+fwx.rule.freeText.port:
+  pt: "como porta"
+  en: "as a port"
+fwx.rule.anySource:
+  pt: "Qualquer origem"
+  en: "Any source"
+fwx.rule.anyDest:
+  pt: "Qualquer destino"
+  en: "Any destination"
+fwx.rule.anyPort:
+  pt: "Qualquer porta"
+  en: "Any port"
+
+# ─── Índice de grupos (lista da esquerda) ───────────────────────────────────
+fwx.groups.count.one:
+  pt: "{n} grupo"
+  en: "{n} group"
+fwx.groups.count.many:
+  pt: "{n} grupos"
+  en: "{n} groups"
+fwx.groups.refresh:
+  pt: "Atualizar grupos"
+  en: "Refresh groups"
+fwx.groups.none:
+  pt: "Nenhum grupo ainda."
+  en: "No groups yet."
+fwx.groups.none.hint:
+  pt: " Clique em \"Novo\"."
+  en: " Click \"New\"."
+# Frase inteira, e não o pedaço de fw.groups.emptyHint mais " vez." colado no
+# JSX: em inglês a última palavra não cai no fim da frase, e a cola imprimia
+# "...at once vez." na tela.
+fwx.groups.emptyHint:
+  pt: "Um grupo junta regras sob uma condição de entrada e liga ou desliga todas de uma vez."
+  en: "A group gathers rules under one entry condition and turns them all on or off at once."
+fwx.noun.rule.one:
+  pt: "regra"
+  en: "rule"
+fwx.noun.rule.many:
+  pt: "regras"
+  en: "rules"
+fwx.label.newOnly:
+  pt: "só conexões novas"
+  en: "new connections only"
+fwx.aria.systemGroup:
+  pt: "grupo do sistema"
+  en: "system group"
+fwx.aria.inputGroup:
+  pt: "grupo de tráfego destinado ao firewall"
+  en: "group for traffic addressed to the firewall itself"
+fwx.aria.newOnlyGroup:
+  pt: "grupo que vale só para conexões novas"
+  en: "group that applies only to new connections"
+
+# ─── Faixas de estado da tela de grupos ─────────────────────────────────────
+fwx.apply.failed:
+  pt: "A última tentativa de aplicar seus grupos ao nftables falhou: {err}. O que está em vigor pode não refletir o que está configurado aqui — confira a aba \"Visão geral\" antes de confiar nas regras abaixo."
+  en: "The last attempt to apply your groups to nftables failed: {err}. What is in force may not match what is configured here — check the \"Overview\" tab before trusting the rules below."
+fwx.apply.unknownError:
+  pt: "erro desconhecido"
+  en: "unknown error"
+fwx.boot.persist.body:
+  pt: "O firewall em vigor não pôde ser gravado no arquivo que a máquina carrega no boot: {err}. Se a máquina reiniciar antes de isso ser resolvido, ela volta com o firewall anterior — não com o que está nesta tela."
+  en: "The firewall now in force could not be written to the file the machine loads at boot: {err}. If the machine reboots before this is sorted out, it comes back with the previous firewall — not with what is on this screen."
+fwx.boot.restartNote:
+  pt: "Aplicar outra regra não apaga este aviso: o serviço em execução continua sem poder escrever no arquivo até ser reiniciado."
+  en: "Applying another rule will not clear this warning: the running service still cannot write to the file until it is restarted."
+fwx.evalOrder.tail:
+  pt: "O que a condição de entrada de um grupo não casar é pulado inteiro; os bloqueios do sistema nascem no topo e podem ser arrastados como qualquer outro item."
+  en: "Whatever a group's entry condition does not match skips that group entirely; the system blocks start at the top and can be dragged like any other item."
+
+# ─── Detalhe do grupo ───────────────────────────────────────────────────────
+fwx.badge.input.label:
+  pt: "destinado ao firewall"
+  en: "addressed to the firewall"
+fwx.badge.input.title:
+  pt: "Este grupo filtra o tráfego destinado ao próprio firewall (chain input): SSH, este painel, DNS. Qualquer alteração nele abre a janela de 90 segundos."
+  en: "This group filters traffic addressed to the firewall itself (chain input): SSH, this panel, DNS. Any change to it opens the 90-second window."
+fwx.badge.new.title:
+  pt: "Este grupo só decide sobre conexões NOVAS: a linha de jump dele carrega `ct state new`. O que já está estabelecido segue até terminar sem passar por ele — inclusive a sessão de quem acabou de ser bloqueado."
+  en: "This group only decides about NEW connections: its jump line carries `ct state new`. Anything already established runs to completion without going through it — including the session of someone who has just been blocked."
+fwx.badge.off:
+  pt: "Desligado"
+  en: "Off"
+fwx.badge.notApplied.group:
+  pt: "Configurado, não aplicado"
+  en: "Configured, not applied"
+fwx.badge.notApplied.group.title:
+  pt: "O grupo está ligado aqui, mas o firewall não confirma que o jump para a chain dele está em vigor — pode ser um erro ao aplicar; confira o aviso no topo."
+  en: "The group is on here, but the firewall does not confirm that the jump to its chain is in force — this may be an apply error; check the warning at the top."
+fwx.badge.notApplied.rule:
+  pt: "Configurada, não aplicada"
+  en: "Configured, not applied"
+fwx.badge.notApplied.rule.title:
+  pt: "Está ativada aqui, mas o firewall não confirma que ela está em vigor — pode ser um erro ao aplicar; confira o aviso no topo."
+  en: "It is enabled here, but the firewall does not confirm that it is in force — this may be an apply error; check the warning at the top."
+fwx.badge.ruleDisabled:
+  pt: "Desativada"
+  en: "Disabled"
+fwx.badge.outsidePanel:
+  pt: "fora do painel"
+  en: "outside the panel"
+fwx.action.editGroup:
+  pt: "Editar grupo"
+  en: "Edit group"
+fwx.action.removeGroup:
+  pt: "Remover grupo"
+  en: "Delete group"
+fwx.action.enableRule:
+  pt: "Ativar regra"
+  en: "Enable rule"
+fwx.action.disableRule:
+  pt: "Desativar regra"
+  en: "Disable rule"
+fwx.action.editRule:
+  pt: "Editar regra"
+  en: "Edit rule"
+fwx.action.deleteRule:
+  pt: "Excluir regra"
+  en: "Delete rule"
+fwx.group.jumpCounter:
+  pt: "entraram {pkts} pct · {bytes}"
+  en: "{pkts} pkts in · {bytes}"
+fwx.counter.pkts:
+  pt: "{pkts} pct · {bytes}"
+  en: "{pkts} pkts · {bytes}"
+fwx.group.jumpUnconfirmed:
+  pt: "O firewall não confirma o jump para este grupo: nenhuma regra abaixo está em vigor."
+  en: "The firewall does not confirm the jump into this group: no rule below is in force."
+fwx.group.offNoRules:
+  pt: "Grupo desligado: nenhuma regra abaixo está em vigor. Elas continuam guardadas para quando ele voltar."
+  en: "Group is off: no rule below is in force. They stay stored for when it comes back on."
+fwx.rules.empty:
+  pt: "Nenhuma regra neste grupo."
+  en: "No rules in this group."
+fwx.rules.empty.continue:
+  pt: "Nenhuma regra neste grupo — todo tráfego que entrar aqui segue adiante sem decisão."
+  en: "No rules in this group — everything that enters here moves on with no decision taken."
+
+# ─── Confirmações e avisos de escrita ───────────────────────────────────────
+fwx.group.remove.confirm:
+  pt: "Remover o grupo \"{name}\"?{detail}"
+  en: "Delete the group \"{name}\"?{detail}"
+fwx.group.remove.detail.one:
+  pt: " A regra dentro dele será apagada junto."
+  en: " The rule inside it will be deleted along with it."
+fwx.group.remove.detail.many:
+  pt: " As {n} regras dentro dele serão apagadas junto."
+  en: " The {n} rules inside it will be deleted along with it."
+fwx.rule.remove.confirm:
+  pt: "Remover esta regra?\n\n{expr}"
+  en: "Delete this rule?\n\n{expr}"
+fwx.err.ruleGone:
+  pt: "Erro: essa regra não está mais no banco. Atualize a tela."
+  en: "Error: this rule is no longer in the database. Refresh the screen."
+fwx.err.outOfSync:
+  pt: "Erro: a tela está fora de sincronia com o banco. Atualize e tente de novo."
+  en: "Error: this screen is out of sync with the database. Refresh and try again."
+fwx.toast.rule.removed:
+  pt: "Regra removida."
+  en: "Rule removed."
+fwx.toast.rule.enabled:
+  pt: "Regra ativada."
+  en: "Rule enabled."
+fwx.toast.rule.disabled:
+  pt: "Regra desativada."
+  en: "Rule disabled."
+
+# ─── Faixa do confirmar-ou-reverte ──────────────────────────────────────────
+fwx.revert.scope.head:
+  pt: "A reversão desfaz apenas "
+  en: "The revert only undoes "
+fwx.revert.scope.strong:
+  pt: "grupos e regras"
+  en: "groups and rules"
+fwx.revert.scope.tail:
+  pt: ". Bloqueios por host, encaminhamentos de porta e o NTP não voltam atrás — o que você mudou neles durante a janela continua valendo."
+  en: ". Host blocks, port forwards and NTP are not rolled back — whatever you changed in them during the window stays in effect."
+fwx.confirm.btn.confirm:
+  pt: "Confirmar acesso"
+  en: "Confirm access"
+fwx.confirm.btn.revert:
+  pt: "Reverter agora"
+  en: "Revert now"

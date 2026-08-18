@@ -4,11 +4,15 @@ import {
   Loader2, ChevronDown, Info, Zap,
 } from 'lucide-react';
 import client from '../api/client';
+import { useI18n } from '../i18n';
 import HelpTip from './HelpTip';
 import Panel from './ui/Panel';
 import type { WanLink, BalanceStatus, BalanceSchedule } from '../types';
 
-const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const WEEKDAY_KEYS = [
+  'links.weekday.sun', 'links.weekday.mon', 'links.weekday.tue', 'links.weekday.wed',
+  'links.weekday.thu', 'links.weekday.fri', 'links.weekday.sat',
+];
 
 interface Props {
   links: WanLink[];
@@ -21,6 +25,7 @@ interface Props {
  * a safe apply that auto-rolls-back unless confirmed, plus scheduled rebalancing.
  */
 export default function WanBalancing({ links, onChanged }: Props) {
+  const { t } = useI18n();
   const [status, setStatus] = useState<BalanceStatus | null>(null);
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
@@ -81,7 +86,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
       await client.put('/api/routing/balance', { ...status.config, mode: m });
       await fetchStatus();
     } catch (e) {
-      setError(errMsg(e));
+      setError(errMsg(e, t('links.bal.error.generic')));
     } finally { setBusy(false); }
   };
 
@@ -98,7 +103,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
       await client.post('/api/routing/balance/apply?arm=true');
       await fetchStatus();
     } catch (e) {
-      setError(errMsg(e));
+      setError(errMsg(e, t('links.bal.error.generic')));
     } finally { setBusy(false); }
   };
 
@@ -111,7 +116,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
   const rollback = async () => {
     setBusy(true);
     try { await client.post('/api/routing/balance/rollback'); await fetchStatus(); await onChanged(); }
-    catch (e) { setError(errMsg(e)); }
+    catch (e) { setError(errMsg(e, t('links.bal.error.generic'))); }
     finally { setBusy(false); }
   };
 
@@ -120,7 +125,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
     try {
       await client.put('/api/routing/balance', { ...status.config, schedules });
       await fetchStatus();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { setError(errMsg(e, t('links.bal.error.generic'))); }
     finally { setBusy(false); }
   };
 
@@ -129,7 +134,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
     try {
       await client.put('/api/routing/balance', { ...status.config, ...patch });
       await fetchStatus();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { setError(errMsg(e, t('links.bal.error.generic'))); }
     finally { setBusy(false); }
   };
 
@@ -140,17 +145,15 @@ export default function WanBalancing({ links, onChanged }: Props) {
       title={
         <span className="flex items-center gap-2">
           <Scale className="w-5 h-5 text-blue-400" />
-          <span className="text-white font-semibold">Balanceamento de saída (multi-WAN)</span>
-          <HelpTip title="Balanceamento vs. Failover">
-            <><b>Failover</b>: usa um link por vez e troca se ele cair. <b>Balanceamento</b>: distribui as
-            conexões entre os links ao mesmo tempo, na proporção dos <b>pesos</b> — e ainda tira um link
-            do rodízio automaticamente se ele cair.</>
+          <span className="text-white font-semibold">{t('links.bal.title')}</span>
+          <HelpTip title={t('links.bal.help.title')}>
+            <><b>{t('links.bal.help.failoverTerm')}</b>{t('links.bal.help.failoverBody')} <b>{t('links.bal.help.balanceTerm')}</b>{t('links.bal.help.balanceBody1')} <b>{t('links.bal.help.weightsTerm')}</b> {t('links.bal.help.balanceBody2')}</>
           </HelpTip>
         </span>
       }
       className="mb-1"
     >
-      <p className="text-gray-500 text-xs mb-4">Define como o tráfego geral sai pelas suas internets.</p>
+      <p className="text-gray-500 text-xs mb-4">{t('links.bal.subtitle')}</p>
 
       {/* Mode selector */}
       <div className="flex items-center gap-1 rounded-lg bg-gray-800 p-1 w-full max-w-sm mb-4" role="group">
@@ -161,7 +164,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
             mode === 'failover' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
           }`}
         >
-          <Shield className="w-4 h-4" /> Failover
+          <Shield className="w-4 h-4" /> {t('links.bal.mode.failover')}
         </button>
         <button
           onClick={() => setMode('balance')}
@@ -170,7 +173,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
             mode === 'balance' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
           }`}
         >
-          <Scale className="w-4 h-4" /> Balanceamento
+          <Scale className="w-4 h-4" /> {t('links.bal.mode.balance')}
         </button>
       </div>
 
@@ -185,17 +188,17 @@ export default function WanBalancing({ links, onChanged }: Props) {
         <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
           <div className="flex items-center gap-2 text-amber-300 text-sm font-medium">
             <Clock className="w-4 h-4" />
-            Confirme em {secondsLeft}s ou revertemos a rota automaticamente.
+            {t('links.bal.pending.title', { s: secondsLeft })}
           </div>
           <p className="text-amber-200/70 text-xs mt-1">
-            Verifique se a internet continua funcionando antes de confirmar. Em caso de dúvida, reverta.
+            {t('links.bal.pending.hint')}
           </p>
           <div className="flex gap-2 mt-3">
             <button onClick={confirm} disabled={busy} className="btn-primary text-xs flex items-center gap-1">
-              <Check className="w-3.5 h-3.5" /> Manter alteração
+              <Check className="w-3.5 h-3.5" /> {t('links.bal.pending.keep')}
             </button>
             <button onClick={rollback} disabled={busy} className="btn-secondary text-xs flex items-center gap-1">
-              <RotateCcw className="w-3.5 h-3.5" /> Reverter agora
+              <RotateCcw className="w-3.5 h-3.5" /> {t('links.bal.pending.rollback')}
             </button>
           </div>
         </div>
@@ -204,8 +207,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
       {mode === 'failover' ? (
         <div className="flex items-start gap-2 rounded-lg bg-gray-800/40 px-3 py-3 text-sm text-gray-400">
           <Info className="w-4 h-4 mt-0.5 shrink-0 text-gray-500" />
-          <span>O balanceamento está desativado. Cada link é usado conforme a prioridade/failover.
-            Ative o <b>Balanceamento</b> para distribuir o tráfego entre as WANs pelos pesos.</span>
+          <span>{t('links.bal.failoverInfo.pre')} <b>{t('links.bal.mode.balance')}</b> {t('links.bal.failoverInfo.post')}</span>
         </div>
       ) : (
         <>
@@ -232,9 +234,9 @@ export default function WanBalancing({ links, onChanged }: Props) {
                       value={weights[l.id] ?? 0}
                       onChange={(e) => setWeights((w) => ({ ...w, [l.id]: Math.max(0, Number(e.target.value)) }))}
                       className="w-20 rounded-md bg-gray-800 border border-gray-700 px-2 py-1 text-sm text-white text-right"
-                      title="Peso (proporção do tráfego)"
+                      title={t('links.bal.weightTitle')}
                     />
-                    <span className="text-gray-500 text-xs w-9 text-right">{online ? `${share}%` : 'off'}</span>
+                    <span className="text-gray-500 text-xs w-9 text-right">{online ? `${share}%` : t('links.bal.off')}</span>
                   </div>
                 </div>
               );
@@ -244,9 +246,9 @@ export default function WanBalancing({ links, onChanged }: Props) {
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <button onClick={saveWeightsAndApply} disabled={busy} className="btn-primary text-sm flex items-center gap-1.5">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Scale className="w-4 h-4" />}
-              Aplicar pesos
+              {t('links.bal.applyWeights')}
             </button>
-            <span className="text-gray-600 text-xs">Aplica com rede protegida (reverte sozinho se você não confirmar).</span>
+            <span className="text-gray-600 text-xs">{t('links.bal.applyHint')}</span>
           </div>
 
           {/* Live route detail */}
@@ -254,13 +256,13 @@ export default function WanBalancing({ links, onChanged }: Props) {
             <div className="mt-4 space-y-2 text-xs">
               {status.plan.current_default && (
                 <div>
-                  <span className="text-gray-500">Rota atual: </span>
+                  <span className="text-gray-500">{t('links.bal.currentRoute')}</span>
                   <code className="text-gray-300">{status.plan.current_default}</code>
                 </div>
               )}
               {status.plan.command && (
                 <div>
-                  <span className="text-gray-500">Rota alvo: </span>
+                  <span className="text-gray-500">{t('links.bal.targetRoute')}</span>
                   <code className="text-blue-300 break-all">{status.plan.command}</code>
                 </div>
               )}
@@ -271,12 +273,9 @@ export default function WanBalancing({ links, onChanged }: Props) {
           <div className="mt-5 border-t border-gray-800 pt-4">
             <div className="flex items-center gap-2 mb-1">
               <Zap className="w-4 h-4 text-amber-400" />
-              <span className="text-sm font-medium text-white">Reação a link degradado</span>
-              <HelpTip title="Expulsar conexões de link degradado">
-                <>Quando um link fica <b>degradado</b> (ping alto / oscilando, mas ainda vivo) por várias
-                verificações seguidas, o LinkGuard pode <b>migrar as conexões ativas</b> dele para um link
-                saudável. As conexões no link ruim são <b>reiniciadas</b> (reconectam na hora no link bom) —
-                ideal para chamadas/VoIP que estavam travando. Só age se houver outro link saudável.</>
+              <span className="text-sm font-medium text-white">{t('links.bal.degrade.title')}</span>
+              <HelpTip title={t('links.bal.degrade.evict')}>
+                <>{t('links.bal.degrade.help1')} <b>{t('links.bal.degrade.helpDegradedTerm')}</b> {t('links.bal.degrade.help2')} <b>{t('links.bal.degrade.helpMigrateTerm')}</b> {t('links.bal.degrade.help3')} <b>{t('links.bal.degrade.helpResetTerm')}</b> {t('links.bal.degrade.help4')}</>
               </HelpTip>
             </div>
 
@@ -288,13 +287,13 @@ export default function WanBalancing({ links, onChanged }: Props) {
                 onChange={(e) => saveDegradeReaction({ evict_on_degrade: e.target.checked })}
                 className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-600"
               />
-              <span className="text-sm text-gray-300">Expulsar conexões de link degradado</span>
+              <span className="text-sm text-gray-300">{t('links.bal.degrade.evict')}</span>
             </label>
 
             {status.config.evict_on_degrade && (
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg">
                 <label className="block">
-                  <span className="text-xs text-gray-400">Amostras ruins seguidas antes de agir</span>
+                  <span className="text-xs text-gray-400">{t('links.bal.degrade.samples')}</span>
                   <input
                     type="number" min={1} max={20}
                     value={status.config.degraded_sustain_samples}
@@ -302,10 +301,10 @@ export default function WanBalancing({ links, onChanged }: Props) {
                     onChange={(e) => saveDegradeReaction({ degraded_sustain_samples: Math.max(1, Number(e.target.value)) })}
                     className="mt-1 w-full rounded-md bg-gray-800 border border-gray-700 px-2 py-1 text-sm text-white"
                   />
-                  <span className="text-gray-600 text-xs">~10s por amostra (ex.: 3 ≈ 30s de link ruim).</span>
+                  <span className="text-gray-600 text-xs">{t('links.bal.degrade.samplesHint')}</span>
                 </label>
                 <label className="block">
-                  <span className="text-xs text-gray-400">Intervalo mínimo entre migrações (s)</span>
+                  <span className="text-xs text-gray-400">{t('links.bal.degrade.cooldown')}</span>
                   <input
                     type="number" min={10} max={3600}
                     value={status.config.evict_cooldown_seconds}
@@ -313,7 +312,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
                     onChange={(e) => saveDegradeReaction({ evict_cooldown_seconds: Math.max(10, Number(e.target.value)) })}
                     className="mt-1 w-full rounded-md bg-gray-800 border border-gray-700 px-2 py-1 text-sm text-white"
                   />
-                  <span className="text-gray-600 text-xs">Evita migrar repetidamente num link que oscila.</span>
+                  <span className="text-gray-600 text-xs">{t('links.bal.degrade.cooldownHint')}</span>
                 </label>
               </div>
             )}
@@ -328,7 +327,7 @@ export default function WanBalancing({ links, onChanged }: Props) {
           className="flex w-full items-center justify-between text-left"
         >
           <span className="flex items-center gap-2 text-sm font-medium text-white">
-            <Clock className="w-4 h-4 text-blue-400" /> Rebalanceamento agendado
+            <Clock className="w-4 h-4 text-blue-400" /> {t('links.bal.sched.title')}
             <span className="text-gray-600 text-xs font-normal">({(status.config.schedules ?? []).length})</span>
           </span>
           <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${showSchedules ? '' : '-rotate-90'}`} />
@@ -356,6 +355,7 @@ function ScheduleEditor({
   busy: boolean;
   onChange: (s: BalanceSchedule[]) => void | Promise<void>;
 }) {
+  const { t } = useI18n();
   const [name, setName] = useState('');
   const [at, setAt] = useState('08:00');
   const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
@@ -380,8 +380,7 @@ function ScheduleEditor({
   return (
     <div className="mt-3 space-y-3">
       <p className="text-gray-500 text-xs">
-        Aplica pesos diferentes em horários definidos (ex.: priorizar a WAN1 no horário comercial e
-        equilibrar à noite). Roda no fuso do servidor.
+        {t('links.bal.sched.hint')}
       </p>
 
       {schedules.length > 0 && (
@@ -391,14 +390,14 @@ function ScheduleEditor({
               <button
                 onClick={() => toggleEnabled(s.id)} disabled={busy}
                 className={`w-2 h-2 rounded-full ${s.enabled ? 'bg-green-400' : 'bg-gray-600'}`}
-                title={s.enabled ? 'Ativo — clique para pausar' : 'Pausado — clique para ativar'}
+                title={s.enabled ? t('links.bal.sched.activeTitle') : t('links.bal.sched.pausedTitle')}
               />
               <span className="text-white font-medium">{s.at}</span>
               <span className="text-gray-400 min-w-0 flex-1 truncate">
-                {s.name} · {s.days.map((d) => WEEKDAYS[d]).join(' ')} ·{' '}
+                {s.name} · {s.days.map((d) => t(WEEKDAY_KEYS[d])).join(' ')} ·{' '}
                 {links.map((l) => `${l.name.split(' ')[0]}:${s.weights[l.id] ?? 0}`).join(' / ')}
               </span>
-              <button onClick={() => remove(s.id)} disabled={busy} className="text-gray-500 hover:text-red-400" title="Remover">
+              <button onClick={() => remove(s.id)} disabled={busy} className="text-gray-500 hover:text-red-400" title={t('links.bal.sched.remove')}>
                 <Trash2 className="w-4 h-4" />
               </button>
             </li>
@@ -411,7 +410,7 @@ function ScheduleEditor({
         <div className="flex flex-wrap gap-2">
           <input
             value={name} onChange={(e) => setName(e.target.value)}
-            placeholder="Nome (ex.: Horário comercial)"
+            placeholder={t('links.bal.sched.namePlaceholder')}
             className="flex-1 min-w-[10rem] rounded-md bg-gray-800 border border-gray-700 px-2.5 py-1.5 text-sm text-white"
           />
           <input
@@ -420,13 +419,13 @@ function ScheduleEditor({
           />
         </div>
         <div className="flex gap-1">
-          {WEEKDAYS.map((d, i) => (
+          {WEEKDAY_KEYS.map((k, i) => (
             <button
               key={i} onClick={() => toggleDay(i)}
               className={`px-2 py-1 rounded text-xs font-medium ${
                 days.includes(i) ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-500 hover:text-gray-300'
               }`}
-            >{d}</button>
+            >{t(k)}</button>
           ))}
         </div>
         <div className="flex flex-wrap gap-3">
@@ -444,14 +443,14 @@ function ScheduleEditor({
         </div>
         <button onClick={add} disabled={busy || !name.trim() || days.length === 0}
           className="btn-secondary text-xs flex items-center gap-1 disabled:opacity-50">
-          <Plus className="w-3.5 h-3.5" /> Adicionar agendamento
+          <Plus className="w-3.5 h-3.5" /> {t('links.bal.sched.add')}
         </button>
       </div>
     </div>
   );
 }
 
-function errMsg(e: unknown): string {
+function errMsg(e: unknown, fallback: string): string {
   const ax = e as { response?: { data?: { error?: string } } };
-  return ax?.response?.data?.error || 'Falha na operação. Tente novamente.';
+  return ax?.response?.data?.error || fallback;
 }

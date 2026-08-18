@@ -2,18 +2,19 @@ import { useEffect, useState } from 'react';
 import { Sparkles, Check, X } from 'lucide-react';
 import client from '../api/client';
 import Panel from './ui/Panel';
+import { useI18n } from '../i18n';
 import type { AIStatus, AIConfig } from '../types';
 
 const MODELS = [
-  { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', desc: 'Melhor análise — recomendado' },
-  { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', desc: 'Equilíbrio' },
-  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', desc: 'Mais barato' },
+  { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', descKey: 'cfg.ai.model.opus.desc' },
+  { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', descKey: 'cfg.ai.model.sonnet.desc' },
+  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', descKey: 'cfg.ai.model.haiku.desc' },
 ];
 
-const CONSENT_FIELDS: { key: string; label: string }[] = [
-  { key: 'hostname', label: 'Nome do host' },
-  { key: 'mac', label: 'Endereço MAC' },
-  { key: 'dns_queries', label: 'Consultas DNS' },
+const CONSENT_FIELDS: { key: string; labelKey: string }[] = [
+  { key: 'hostname', labelKey: 'cfg.ai.consent.hostname' },
+  { key: 'mac', labelKey: 'cfg.ai.consent.mac' },
+  { key: 'dns_queries', labelKey: 'cfg.ai.consent.dns' },
 ];
 
 // digest_hour não tem controle na UI ainda (sem seletor de horário do resumo
@@ -26,6 +27,7 @@ const CONSENT_FIELDS: { key: string; label: string }[] = [
 const DEFAULT_DIGEST_HOUR = 6;
 
 export default function AISettings() {
+  const { t } = useI18n();
   const [status, setStatus] = useState<AIStatus | null>(null);
   const [token, setToken] = useState('');
   const [saving, setSaving] = useState(false);
@@ -103,11 +105,10 @@ export default function AISettings() {
   };
 
   return (
-    <Panel title={<span className="flex items-center gap-2"><Sparkles className="w-4 h-4 text-purple-400" /><span className="text-white font-semibold">Assistente de IA</span></span>}>
+    <Panel title={<span className="flex items-center gap-2"><Sparkles className="w-4 h-4 text-purple-400" /><span className="text-white font-semibold">{t('cfg.ai.title')}</span></span>}>
       <div className="space-y-4">
       <p className="text-gray-500 text-sm">
-        Análise opcional de padrões de degradação usando sua própria chave da API do Claude.
-        Nunca decide failover, peso ou expulsão de link — só explica e sugere.
+        {t('cfg.ai.intro')}
       </p>
 
       {!status?.configured ? (
@@ -119,36 +120,36 @@ export default function AISettings() {
             onChange={e => setToken(e.target.value)}
             className="input flex-1"
           />
-          <button onClick={saveToken} disabled={saving} className="btn-primary">Salvar token</button>
+          <button onClick={saveToken} disabled={saving} className="btn-primary">{t('cfg.ai.saveToken')}</button>
         </div>
       ) : (
         <div className="flex items-center justify-between text-sm">
-          <span className="text-gray-300">Token configurado: <span className="font-mono">{status.hint}</span></span>
+          <span className="text-gray-300">{t('cfg.ai.tokenConfigured')} <span className="font-mono">{status.hint}</span></span>
           <div className="flex gap-2">
             <button onClick={testConnection} disabled={testing} className="btn-secondary">
-              {testing ? 'Testando…' : 'Testar conexão'}
+              {testing ? t('cfg.ai.testing') : t('cfg.ai.testConnection')}
             </button>
-            <button onClick={removeToken} disabled={saving} className="btn-secondary text-red-400">Remover</button>
+            <button onClick={removeToken} disabled={saving} className="btn-secondary text-red-400">{t('cfg.ai.removeToken')}</button>
           </div>
         </div>
       )}
 
       {testResult === 'ok' && (
-        <p className="text-emerald-400 text-xs flex items-center gap-1"><Check className="w-3 h-3" /> Conexão funcionando.</p>
+        <p className="text-emerald-400 text-xs flex items-center gap-1"><Check className="w-3 h-3" /> {t('cfg.ai.testOk')}</p>
       )}
       {testResult === 'fail' && (
-        <p className="text-red-400 text-xs flex items-center gap-1"><X className="w-3 h-3" /> Falha ao conectar — confira o token.</p>
+        <p className="text-red-400 text-xs flex items-center gap-1"><X className="w-3 h-3" /> {t('cfg.ai.testFail')}</p>
       )}
 
       {status?.configured && (
         <>
           <label className="flex items-center gap-2 text-sm text-gray-300">
             <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
-            Ativar análise automática
+            {t('cfg.ai.autoAnalysis')}
           </label>
 
           <div>
-            <p className="text-gray-500 text-xs mb-2">Modelo</p>
+            <p className="text-gray-500 text-xs mb-2">{t('cfg.ai.model')}</p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {MODELS.map(m => (
                 <button
@@ -157,14 +158,14 @@ export default function AISettings() {
                   className={`p-2 rounded border text-left text-xs ${model === m.id ? 'border-blue-500 bg-blue-500/10' : 'border-gray-700'}`}
                 >
                   <p className="text-white font-medium">{m.label}</p>
-                  <p className="text-gray-500">{m.desc}</p>
+                  <p className="text-gray-500">{t(m.descKey)}</p>
                 </button>
               ))}
             </div>
           </div>
 
           <div>
-            <p className="text-gray-500 text-xs mb-1">Orçamento mensal (USD)</p>
+            <p className="text-gray-500 text-xs mb-1">{t('cfg.ai.budget')}</p>
             <input
               type="number" min={1} step={0.5}
               value={budget}
@@ -172,12 +173,15 @@ export default function AISettings() {
               className="input w-32"
             />
             <p className="text-gray-600 text-xs mt-1">
-              Gasto este mês: ${status?.spent_this_month_usd.toFixed(2) ?? '0.00'} de ${status?.monthly_budget_usd.toFixed(2) ?? budget.toFixed(2)}
+              {t('cfg.ai.spent', {
+                spent: status?.spent_this_month_usd.toFixed(2) ?? '0.00',
+                budget: status?.monthly_budget_usd.toFixed(2) ?? budget.toFixed(2),
+              })}
             </p>
           </div>
 
           <div>
-            <p className="text-gray-500 text-xs mb-2">Enviar para análise (além dos números de latência/perda, sempre enviados):</p>
+            <p className="text-gray-500 text-xs mb-2">{t('cfg.ai.consent')}</p>
             <div className="space-y-1">
               {CONSENT_FIELDS.map(f => (
                 <label key={f.key} className="flex items-center gap-2 text-sm text-gray-300">
@@ -186,13 +190,13 @@ export default function AISettings() {
                     checked={consent[f.key] ?? false}
                     onChange={e => setConsent(c => ({ ...c, [f.key]: e.target.checked }))}
                   />
-                  {f.label}
+                  {t(f.labelKey)}
                 </label>
               ))}
             </div>
           </div>
 
-          <button onClick={saveConfig} disabled={saving} className="btn-primary">Salvar configurações</button>
+          <button onClick={saveConfig} disabled={saving} className="btn-primary">{t('cfg.ai.saveConfig')}</button>
         </>
       )}
       </div>

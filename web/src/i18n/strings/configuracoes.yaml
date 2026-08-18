@@ -1,0 +1,757 @@
+# Textos da área de Configurações: a página Configurações, a página
+# Administração (usuários/papéis) e os cartões que vivem dentro delas
+# (notificações, 2FA, IA, troca de senha, HTTPS, backup).
+#
+# Prefixo: cfg.
+
+# ─── mensagens compartilhadas pelos cartões ──────────────────────────────────
+cfg.msg.errorPrefix:
+  pt: "Erro: "
+  en: "Error: "
+cfg.msg.opFailed:
+  pt: "falha na operação"
+  en: "the operation failed"
+
+# ─── página Configurações ────────────────────────────────────────────────────
+cfg.title:
+  pt: "Configurações"
+  en: "Settings"
+cfg.subtitle:
+  pt: "Configurações do sistema"
+  en: "System settings"
+cfg.nav.about:
+  pt: "Sobre"
+  en: "About"
+cfg.nav.general:
+  pt: "Geral"
+  en: "General"
+cfg.nav.security:
+  pt: "Segurança"
+  en: "Security"
+cfg.nav.notifications:
+  pt: "Notificações"
+  en: "Notifications"
+cfg.nav.ai:
+  pt: "Assistente de IA"
+  en: "AI assistant"
+cfg.nav.backup:
+  pt: "Backup"
+  en: "Backup"
+cfg.nav.updates:
+  pt: "Atualizações"
+  en: "Updates"
+cfg.nav.retention:
+  pt: "Retenção de tráfego"
+  en: "Traffic retention"
+
+cfg.about.title:
+  pt: "Sobre o LinkGuard FW"
+  en: "About LinkGuard FW"
+cfg.about.version:
+  pt: "Versão"
+  en: "Version"
+cfg.about.description:
+  pt: "Descrição"
+  en: "Description"
+cfg.about.description.value:
+  pt: "Ferramenta de gestão de firewall Linux para servidores Debian com múltiplos links de internet"
+  en: "Linux firewall management tool for Debian servers with multiple internet links"
+cfg.about.tech:
+  pt: "Tecnologias"
+  en: "Built with"
+cfg.about.license:
+  pt: "Licença"
+  en: "License"
+cfg.about.features:
+  pt: "Funcionalidades"
+  en: "Features"
+cfg.about.feature.wan:
+  pt: "Gestão de links WAN com monitoramento contínuo"
+  en: "WAN link management with continuous monitoring"
+cfg.about.feature.failover:
+  pt: "Failover automático com dry-run mode"
+  en: "Automatic failover with dry-run mode"
+cfg.about.feature.routes:
+  pt: "Visualização de tabelas de roteamento"
+  en: "Routing table view"
+cfg.about.feature.iptables:
+  pt: "Listagem de regras iptables"
+  en: "iptables rule listing"
+cfg.about.feature.backup:
+  pt: "Backup e restore de regras"
+  en: "Rule backup and restore"
+cfg.about.feature.metrics:
+  pt: "Métricas Prometheus em /metrics"
+  en: "Prometheus metrics on /metrics"
+cfg.about.feature.alerts:
+  pt: "Alertas de sistema"
+  en: "System alerts"
+cfg.about.feature.audit:
+  pt: "Logs de auditoria"
+  en: "Audit logs"
+
+cfg.general.title:
+  pt: "Configurações Gerais"
+  en: "General settings"
+cfg.general.readonly:
+  pt: "Somente leitura — editável via arquivo de configuração."
+  en: "Read-only — edited through the configuration file."
+cfg.general.intro:
+  pt: "As configurações são gerenciadas via arquivo de configuração JSON. Reinicie o serviço após alterar as configurações."
+  en: "These settings live in a JSON configuration file. Restart the service after changing them."
+cfg.general.defaultPath:
+  pt: "Caminho padrão:"
+  en: "Default path:"
+cfg.general.listenAddr:
+  pt: "Endereço de escuta (padrão: 127.0.0.1)"
+  en: "Address the panel listens on (default: 127.0.0.1)"
+cfg.general.port:
+  pt: "Porta HTTP (padrão: 8080)"
+  en: "HTTP port (default: 8080)"
+cfg.general.dryRun:
+  pt: "Modo dry-run para comandos de firewall"
+  en: "dry-run mode for firewall commands"
+cfg.general.monitorInterval:
+  pt: "Intervalo de verificação dos links"
+  en: "How often each link is checked"
+cfg.general.failoverEnabled:
+  pt: "Habilitar failover automático"
+  en: "Enable automatic failover"
+cfg.general.failThreshold:
+  pt: "Falhas consecutivas para marcar offline"
+  en: "Consecutive failures before a link is marked offline"
+cfg.general.recoverThreshold:
+  pt: "Sucessos para marcar online"
+  en: "Successful checks before a link is marked online"
+
+cfg.retention.title:
+  pt: "Retenção de tráfego (RRD)"
+  en: "Traffic retention (RRD)"
+cfg.retention.intro:
+  pt: "Define por quanto tempo as amostras históricas de tráfego ficam persistidas. Esta configuração afeta as janelas de 30d, 1y e 5y usadas na aba Interfaces."
+  en: "Sets how long historical traffic samples are kept. It drives the 30d, 1y and 5y windows shown on the Interfaces tab."
+cfg.retention.loadError:
+  pt: "Não foi possível carregar o perfil de retenção atual."
+  en: "Could not load the current retention profile."
+cfg.retention.saveError:
+  pt: "Erro ao salvar perfil de retenção."
+  en: "Failed to save the retention profile."
+cfg.retention.saved:
+  pt: "Perfil salvo"
+  en: "Profile saved"
+cfg.retention.loading:
+  pt: "Carregando perfil de retenção..."
+  en: "Loading retention profile..."
+cfg.retention.profile.30d:
+  pt: "30 dias"
+  en: "30 days"
+cfg.retention.profile.1y:
+  pt: "1 ano"
+  en: "1 year"
+cfg.retention.profile.5y:
+  pt: "5 anos"
+  en: "5 years"
+cfg.retention.active:
+  pt: "Perfil ativo:"
+  en: "Active profile:"
+cfg.retention.storage:
+  pt: "Armazenamento dos dados:"
+  en: "Data is stored in:"
+cfg.retention.table:
+  pt: "Tabela:"
+  en: "Table:"
+cfg.retention.dbPathHint:
+  pt: "O caminho do banco pode ser alterado pela chave "
+  en: "The database path can be changed with the "
+cfg.retention.dbPathHint.tail:
+  pt: " no arquivo de configuração."
+  en: " key in the configuration file."
+cfg.retention.confirm.title:
+  pt: "Reduzir retenção de tráfego"
+  en: "Reduce traffic retention"
+cfg.retention.confirm.body:
+  pt: "Reduzir a retenção pode descartar amostras antigas. Continuar?"
+  en: "Reducing retention can discard older samples. Continue?"
+cfg.retention.confirm.current:
+  pt: "Perfil atual:"
+  en: "Current profile:"
+cfg.retention.confirm.new:
+  pt: "novo perfil:"
+  en: "new profile:"
+cfg.retention.confirm.continue:
+  pt: "Continuar"
+  en: "Continue"
+
+# ─── página Administração ────────────────────────────────────────────────────
+cfg.admin.title:
+  pt: "Administração"
+  en: "Administration"
+cfg.admin.subtitle:
+  pt: "Usuários, papéis e permissões de acesso"
+  en: "Users, roles and access permissions"
+cfg.admin.tab.users:
+  pt: "Usuários"
+  en: "Users"
+cfg.admin.tab.roles:
+  pt: "Papéis"
+  en: "Roles"
+cfg.admin.noPermission:
+  pt: "Você não tem permissão para administrar usuários ou papéis."
+  en: "You do not have permission to manage users or roles."
+cfg.admin.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
+cfg.admin.loadFailed:
+  pt: "Não foi possível carregar os dados."
+  en: "Could not load the data."
+cfg.admin.actions:
+  pt: "Ações"
+  en: "Actions"
+cfg.admin.delete:
+  pt: "Excluir"
+  en: "Delete"
+cfg.admin.deleting:
+  pt: "Excluindo..."
+  en: "Deleting..."
+
+cfg.admin.users.new:
+  pt: "Novo Usuário"
+  en: "New user"
+cfg.admin.users.loadError:
+  pt: "Erro ao carregar usuários e papéis"
+  en: "Failed to load users and roles"
+cfg.admin.users.empty:
+  pt: "Nenhum usuário"
+  en: "No users"
+cfg.admin.users.you:
+  pt: "(você)"
+  en: "(you)"
+cfg.admin.users.col.user:
+  pt: "Usuário"
+  en: "User"
+cfg.admin.users.col.roles:
+  pt: "Papéis"
+  en: "Roles"
+cfg.admin.users.col.createdAt:
+  pt: "Criado em"
+  en: "Created"
+cfg.admin.users.noRole:
+  pt: "sem papel"
+  en: "no role"
+cfg.admin.users.editAria:
+  pt: "Editar usuário {name}"
+  en: "Edit user {name}"
+cfg.admin.users.deleteAria:
+  pt: "Excluir usuário {name}"
+  en: "Delete user {name}"
+cfg.admin.users.modal.edit:
+  pt: "Editar Usuário"
+  en: "Edit user"
+cfg.admin.users.modal.new:
+  pt: "Novo Usuário"
+  en: "New user"
+cfg.admin.users.username:
+  pt: "Nome de usuário *"
+  en: "Username *"
+cfg.admin.users.newPassword:
+  pt: "Nova senha (deixe vazio para manter)"
+  en: "New password (leave empty to keep the current one)"
+cfg.admin.users.password:
+  pt: "Senha *"
+  en: "Password *"
+cfg.admin.users.passwordPlaceholder:
+  pt: "mínimo 8 caracteres"
+  en: "at least 8 characters"
+cfg.admin.users.roles:
+  pt: "Papéis"
+  en: "Roles"
+cfg.admin.users.saveError:
+  pt: "Erro ao salvar usuário"
+  en: "Failed to save the user"
+cfg.admin.users.delete.title:
+  pt: "Excluir usuário"
+  en: "Delete user"
+cfg.admin.users.delete.body:
+  pt: "Tem certeza que deseja excluir o usuário "
+  en: "Are you sure you want to delete the user "
+cfg.admin.users.delete.body.tail:
+  pt: "? Esta ação não pode ser desfeita."
+  en: "? This cannot be undone."
+cfg.admin.users.deleteError:
+  pt: "Erro ao excluir usuário"
+  en: "Failed to delete the user"
+
+cfg.admin.roles.new:
+  pt: "Novo Papel"
+  en: "New role"
+cfg.admin.roles.loadError:
+  pt: "Erro ao carregar papéis e permissões"
+  en: "Failed to load roles and permissions"
+cfg.admin.roles.empty:
+  pt: "Nenhum papel"
+  en: "No roles"
+cfg.admin.roles.builtin:
+  pt: "Papel embutido"
+  en: "Built-in role"
+cfg.admin.roles.editAria:
+  pt: "Editar papel {name}"
+  en: "Edit role {name}"
+cfg.admin.roles.deleteAria:
+  pt: "Excluir papel {name}"
+  en: "Delete role {name}"
+cfg.admin.roles.permCount:
+  pt: "{n} permissões"
+  en: "{n} permissions"
+cfg.admin.roles.modal.edit:
+  pt: "Editar Papel"
+  en: "Edit role"
+cfg.admin.roles.modal.new:
+  pt: "Novo Papel"
+  en: "New role"
+cfg.admin.roles.name:
+  pt: "Nome *"
+  en: "Name *"
+cfg.admin.roles.description:
+  pt: "Descrição"
+  en: "Description"
+cfg.admin.roles.permsByFeature:
+  pt: "Permissões por funcionalidade"
+  en: "Permissions by feature"
+cfg.admin.roles.clear:
+  pt: "Limpar"
+  en: "Clear"
+cfg.admin.roles.selectAll:
+  pt: "Marcar tudo"
+  en: "Select all"
+cfg.admin.roles.clearAria:
+  pt: "Limpar em {area}"
+  en: "Clear everything under {area}"
+cfg.admin.roles.selectAllAria:
+  pt: "Marcar tudo em {area}"
+  en: "Select everything under {area}"
+cfg.admin.roles.selected:
+  pt: "{n}/{total} selecionadas"
+  en: "{n}/{total} selected"
+cfg.admin.roles.saveError:
+  pt: "Erro ao salvar papel"
+  en: "Failed to save the role"
+cfg.admin.roles.delete.title:
+  pt: "Excluir papel"
+  en: "Delete role"
+cfg.admin.roles.delete.body:
+  pt: "Tem certeza que deseja excluir o papel "
+  en: "Are you sure you want to delete the role "
+cfg.admin.roles.delete.body.tail:
+  pt: "? Esta ação não pode ser desfeita."
+  en: "? This cannot be undone."
+cfg.admin.roles.deleteError:
+  pt: "Erro ao excluir papel"
+  en: "Failed to delete the role"
+
+# ─── notificações ────────────────────────────────────────────────────────────
+cfg.notify.title:
+  pt: "Notificações"
+  en: "Notifications"
+cfg.notify.help.title:
+  pt: "Notificações"
+  en: "Notifications"
+cfg.notify.help.body:
+  pt: "Avise você fora do painel quando algo importante acontecer (um link cair, falha de regra...). Escolha um ou mais canais e o nível mínimo de severidade."
+  en: "Reaches you outside the panel when something important happens (a link goes down, a rule fails to apply). Pick one or more channels and the minimum severity."
+cfg.notify.saved:
+  pt: "Configuração salva."
+  en: "Settings saved."
+cfg.notify.tested:
+  pt: "Teste enviado por {channel}."
+  en: "Test message sent over {channel}."
+cfg.notify.minSeverity:
+  pt: "Avisar a partir de"
+  en: "Notify from"
+cfg.notify.sev.info:
+  pt: "Tudo (info)"
+  en: "Everything (info)"
+cfg.notify.sev.warning:
+  pt: "Avisos e críticos (recomendado)"
+  en: "Warnings and critical (recommended)"
+cfg.notify.sev.critical:
+  pt: "Só críticos"
+  en: "Critical only"
+cfg.notify.channel.enabled:
+  pt: "Ativo"
+  en: "Enabled"
+cfg.notify.channel.test:
+  pt: "Testar"
+  en: "Test"
+cfg.notify.webhook.placeholder:
+  pt: "https://… (recebe um POST JSON)"
+  en: "https://… (receives a JSON POST)"
+cfg.notify.telegram.token:
+  pt: "Token do bot (BotFather)"
+  en: "Bot token (BotFather)"
+cfg.notify.telegram.chatId:
+  pt: "Chat ID"
+  en: "Chat ID"
+cfg.notify.whatsapp.phone:
+  pt: "Telefone com DDI (ex.: 5527999999999)"
+  en: "Phone number with country code (e.g. 5527999999999)"
+cfg.notify.whatsapp.token:
+  pt: "Token (Bearer) — expira, atualize aqui"
+  en: "Bearer token — it expires, paste the new one here"
+cfg.notify.whatsapp.note:
+  pt: "Provedor zapvite (endereço fixo, não configurável por segurança). O token expira — quando parar de enviar, gere um novo e cole aqui."
+  en: "zapvite provider (fixed endpoint, not configurable, for security). The token expires — when messages stop going out, generate a new one and paste it here."
+cfg.notify.email.title:
+  pt: "E-mail (SMTP)"
+  en: "E-mail (SMTP)"
+cfg.notify.email.host:
+  pt: "Servidor SMTP (ex.: smtp.gmail.com)"
+  en: "SMTP server (e.g. smtp.gmail.com)"
+cfg.notify.email.port:
+  pt: "Porta (587)"
+  en: "Port (587)"
+cfg.notify.email.username:
+  pt: "Usuário"
+  en: "Username"
+cfg.notify.email.password:
+  pt: "Senha"
+  en: "Password"
+cfg.notify.email.from:
+  pt: "De (remetente)"
+  en: "From (sender)"
+cfg.notify.email.to:
+  pt: "Para (destinatário)"
+  en: "To (recipient)"
+cfg.notify.email.hint:
+  pt: "Use porta 587 (STARTTLS). Para Gmail, gere uma \"senha de app\"."
+  en: "Use port 587 (STARTTLS). For Gmail, generate an \"app password\"."
+
+# ─── 2FA ─────────────────────────────────────────────────────────────────────
+cfg.twofa.title:
+  pt: "Verificação em duas etapas (2FA)"
+  en: "Two-step verification (2FA)"
+cfg.twofa.help.title:
+  pt: "2FA"
+  en: "2FA"
+cfg.twofa.help.body:
+  pt: "Além da senha, pede um "
+  en: "On top of the password, it asks for a "
+cfg.twofa.help.body.strong:
+  pt: "código que muda a cada 30s"
+  en: "code that changes every 30s"
+cfg.twofa.help.body.tail:
+  pt: " gerado por um app autenticador (Google Authenticator, Authy, etc.). Mesmo que descubram sua senha, não entram sem o código."
+  en: " generated by an authenticator app (Google Authenticator, Authy, etc.). Even if someone learns your password, they cannot get in without the code."
+cfg.twofa.enabledMsg:
+  pt: "2FA ativado!"
+  en: "2FA enabled."
+cfg.twofa.disabledMsg:
+  pt: "2FA desativado."
+  en: "2FA disabled."
+cfg.twofa.active:
+  pt: "2FA está ativo na sua conta."
+  en: "2FA is active on your account."
+cfg.twofa.disableHint:
+  pt: "Para desativar, confirme com um código atual do seu app."
+  en: "To turn it off, confirm with a current code from your app."
+cfg.twofa.disable:
+  pt: "Desativar"
+  en: "Turn off"
+cfg.twofa.inactive:
+  pt: "Sua conta está protegida apenas por senha. Ative o 2FA para uma camada extra."
+  en: "Your account is protected by a password alone. Turn on 2FA for an extra layer."
+cfg.twofa.enable:
+  pt: "Ativar 2FA"
+  en: "Turn on 2FA"
+cfg.twofa.step1:
+  pt: "Abra seu app autenticador e adicione uma conta manualmente."
+  en: "Open your authenticator app and add an account manually."
+cfg.twofa.step2:
+  pt: "Use esta chave secreta:"
+  en: "Use this secret key:"
+cfg.twofa.copy:
+  pt: "Copiar"
+  en: "Copy"
+cfg.twofa.otpauthLink:
+  pt: "ou abra pelo link otpauth://"
+  en: "or open the otpauth:// link"
+cfg.twofa.step3:
+  pt: "Digite o código de 6 dígitos que o app mostrar:"
+  en: "Enter the 6-digit code the app shows:"
+cfg.twofa.activate:
+  pt: "Ativar"
+  en: "Turn on"
+
+# ─── assistente de IA ────────────────────────────────────────────────────────
+cfg.ai.title:
+  pt: "Assistente de IA"
+  en: "AI assistant"
+cfg.ai.intro:
+  pt: "Análise opcional de padrões de degradação usando sua própria chave da API do Claude. Nunca decide failover, peso ou expulsão de link — só explica e sugere."
+  en: "Optional analysis of degradation patterns using your own Claude API key. It never decides failover, weights or link eviction — it only explains and suggests."
+cfg.ai.model.opus.desc:
+  pt: "Melhor análise — recomendado"
+  en: "Best analysis — recommended"
+cfg.ai.model.sonnet.desc:
+  pt: "Equilíbrio"
+  en: "Balanced"
+cfg.ai.model.haiku.desc:
+  pt: "Mais barato"
+  en: "Cheapest"
+cfg.ai.saveToken:
+  pt: "Salvar token"
+  en: "Save token"
+cfg.ai.tokenConfigured:
+  pt: "Token configurado:"
+  en: "Token configured:"
+cfg.ai.testing:
+  pt: "Testando…"
+  en: "Testing…"
+cfg.ai.testConnection:
+  pt: "Testar conexão"
+  en: "Test connection"
+cfg.ai.removeToken:
+  pt: "Remover"
+  en: "Remove"
+cfg.ai.testOk:
+  pt: "Conexão funcionando."
+  en: "Connection working."
+cfg.ai.testFail:
+  pt: "Falha ao conectar — confira o token."
+  en: "Could not connect — check the token."
+cfg.ai.autoAnalysis:
+  pt: "Ativar análise automática"
+  en: "Enable automatic analysis"
+cfg.ai.model:
+  pt: "Modelo"
+  en: "Model"
+cfg.ai.budget:
+  pt: "Orçamento mensal (USD)"
+  en: "Monthly budget (USD)"
+cfg.ai.spent:
+  pt: "Gasto este mês: ${spent} de ${budget}"
+  en: "Spent this month: ${spent} of ${budget}"
+cfg.ai.consent:
+  pt: "Enviar para análise (além dos números de latência/perda, sempre enviados):"
+  en: "Send for analysis (on top of the latency/loss figures, which always go):"
+cfg.ai.consent.hostname:
+  pt: "Nome do host"
+  en: "Hostname"
+cfg.ai.consent.mac:
+  pt: "Endereço MAC"
+  en: "MAC address"
+cfg.ai.consent.dns:
+  pt: "Consultas DNS"
+  en: "DNS queries"
+cfg.ai.saveConfig:
+  pt: "Salvar configurações"
+  en: "Save settings"
+
+# ─── troca de senha ──────────────────────────────────────────────────────────
+cfg.pwd.title:
+  pt: "Trocar a minha senha"
+  en: "Change my password"
+cfg.pwd.help.title:
+  pt: "Trocar a senha"
+  en: "Changing the password"
+cfg.pwd.help.body:
+  pt: "Troca a senha "
+  en: "Changes the password of "
+cfg.pwd.help.body.strong:
+  pt: "desta"
+  en: "this"
+cfg.pwd.help.body.tail:
+  pt: " conta. Ao confirmar, todas as sessões abertas (inclusive esta) são encerradas e você entra de novo com a senha nova."
+  en: " account. Once you confirm, every open session (including this one) ends and you sign in again with the new password."
+cfg.pwd.success:
+  pt: "Senha alterada. Entre de novo com a senha nova."
+  en: "Password changed. Sign in again with the new password."
+cfg.pwd.current:
+  pt: "Senha atual"
+  en: "Current password"
+cfg.pwd.new:
+  pt: "Senha nova"
+  en: "New password"
+cfg.pwd.repeat:
+  pt: "Repita a senha nova"
+  en: "Repeat the new password"
+cfg.pwd.minLength:
+  pt: "Mínimo de {n} caracteres."
+  en: "At least {n} characters."
+cfg.pwd.mismatch:
+  pt: "As duas não conferem."
+  en: "The two do not match."
+cfg.pwd.submit:
+  pt: "Trocar senha"
+  en: "Change password"
+
+# ─── HTTPS ───────────────────────────────────────────────────────────────────
+cfg.https.title:
+  pt: "Acesso ao painel (HTTPS)"
+  en: "Panel access (HTTPS)"
+cfg.https.help.title:
+  pt: "HTTPS"
+  en: "HTTPS"
+cfg.https.help.body:
+  pt: "HTTPS criptografa o tráfego entre o seu navegador e o painel. Importante se o painel for acessível pela internet ou por uma rede não confiável."
+  en: "HTTPS encrypts the traffic between your browser and the panel. It matters if the panel is reachable from the internet or from a network you do not trust."
+cfg.https.secure:
+  pt: "Você está acessando via HTTPS (conexão criptografada). 🔒"
+  en: "You are connected over HTTPS (encrypted connection). 🔒"
+cfg.https.insecure:
+  pt: "Você está acessando via HTTP — o tráfego não é criptografado."
+  en: "You are connected over HTTP — the traffic is not encrypted."
+cfg.https.enable:
+  pt: "Para ativar o HTTPS, no arquivo "
+  en: "To turn HTTPS on, in the file "
+cfg.https.enable.tail:
+  pt: " defina:"
+  en: " set:"
+cfg.https.restart:
+  pt: "e reinicie o serviço: "
+  en: "then restart the service: "
+cfg.https.cert:
+  pt: "Um certificado "
+  en: "A "
+cfg.https.cert.strong:
+  pt: "autoassinado"
+  en: "self-signed"
+cfg.https.cert.tail:
+  pt: " é gerado automaticamente (o navegador mostrará um aviso na 1ª vez — normal). Para um certificado confiável, aponte "
+  en: " certificate is generated automatically (the browser warns you the first time — that is expected). For a trusted certificate, point "
+cfg.https.cert.and:
+  pt: " e "
+  en: " and "
+cfg.https.cert.tail2:
+  pt: " para os seus arquivos. Depois, acesse por "
+  en: " at your own files. After that, reach the panel over "
+
+# ─── backup e restauração ────────────────────────────────────────────────────
+cfg.backup.title:
+  pt: "Backup e restauração"
+  en: "Backup and restore"
+cfg.backup.help.title:
+  pt: "Backup"
+  en: "Backup"
+cfg.backup.help.body:
+  pt: "Salva num arquivo todas as suas configurações (links, firewall, DHCP/DNS, balanceamento, notificações...). Útil antes de mexer em algo ou para migrar de máquina. O arquivo é sempre cifrado com a senha configurada abaixo."
+  en: "Saves every setting you have to a file (links, firewall, DHCP/DNS, load balancing, notifications). Handy before changing something or when moving to another machine. The file is always encrypted with the passphrase set below."
+cfg.backup.schedule.off:
+  pt: "Desligado"
+  en: "Off"
+cfg.backup.schedule.daily:
+  pt: "Diário"
+  en: "Daily"
+cfg.backup.schedule.weekly:
+  pt: "Semanal"
+  en: "Weekly"
+cfg.backup.schedule.monthly:
+  pt: "Mensal"
+  en: "Monthly"
+cfg.backup.pass.tooShort:
+  pt: "a senha precisa ter pelo menos 12 caracteres."
+  en: "the passphrase needs at least 12 characters."
+cfg.backup.pass.mismatch:
+  pt: "as senhas não coincidem."
+  en: "the passphrases do not match."
+cfg.backup.pass.saved:
+  pt: "Senha de backup configurada."
+  en: "Backup passphrase configured."
+cfg.backup.downloaded:
+  pt: "Backup baixado."
+  en: "Backup downloaded."
+cfg.backup.restore.needPass:
+  pt: "informe a senha do backup."
+  en: "enter the backup passphrase."
+cfg.backup.restored:
+  pt: "Restaurado com sucesso."
+  en: "Restore finished."
+cfg.backup.schedule.updated:
+  pt: "Agendamento atualizado."
+  en: "Schedule updated."
+cfg.backup.sent:
+  pt: "Backup enviado por e-mail."
+  en: "Backup sent by e-mail."
+cfg.backup.pass.configured:
+  pt: "Senha de backup configurada"
+  en: "Backup passphrase configured"
+cfg.backup.pass.none:
+  pt: "Nenhuma senha de backup configurada"
+  en: "No backup passphrase configured"
+cfg.backup.pass.note:
+  pt: "Protege o arquivo de backup (topologia de rede e inventário de hosts). Trocar a senha não recifra backups já gerados — eles continuam abrindo só com a senha usada na hora."
+  en: "Protects the backup file (network topology and host inventory). Changing the passphrase does not re-encrypt backups already generated — those still open only with the passphrase used when they were made."
+cfg.backup.pass.newPlaceholder:
+  pt: "Nova senha (mínimo 12 caracteres)"
+  en: "New passphrase (at least 12 characters)"
+cfg.backup.pass.confirmPlaceholder:
+  pt: "Confirmar senha"
+  en: "Confirm passphrase"
+cfg.backup.pass.save:
+  pt: "Salvar senha"
+  en: "Save passphrase"
+cfg.backup.needPassFirst:
+  pt: "Configure uma senha de backup primeiro"
+  en: "Set a backup passphrase first"
+cfg.backup.restore.summary:
+  pt: "Restaurado: {settings} configs, {reservations} reservas, {blocklist} domínios."
+  en: "Restored: {settings} settings, {reservations} reservations, {blocklist} domains."
+cfg.backup.restore.reapply:
+  pt: "Reaplique DHCP/DNS e Firewall onde necessário."
+  en: "Re-apply DHCP/DNS and Firewall where needed."
+cfg.backup.restore.secretsTitle:
+  pt: "Reconfigure estas credenciais:"
+  en: "Reconfigure these credentials:"
+cfg.backup.restore.secret.github:
+  pt: "Token do GitHub (Configurações → Atualizações)"
+  en: "GitHub token (Settings → Updates)"
+cfg.backup.restore.secret.notifications:
+  pt: "Notificações (Configurações → Notificações)"
+  en: "Notifications (Settings → Notifications)"
+cfg.backup.restore.secretsNote:
+  pt: "Segredos nunca fazem parte do arquivo de backup — precisam ser reinformados manualmente."
+  en: "Secrets are never part of the backup file — they have to be entered again by hand."
+cfg.backup.download:
+  pt: "Baixar backup"
+  en: "Download backup"
+cfg.backup.sendNow:
+  pt: "Enviar por e-mail agora"
+  en: "Send by e-mail now"
+cfg.backup.restoreFromFile:
+  pt: "Restaurar de arquivo"
+  en: "Restore from file"
+cfg.backup.scope:
+  pt: "A restauração aplica configurações, reservas de DHCP e blocklist de DNS. "
+  en: "A restore applies settings, DHCP reservations and the DNS blocklist. It does "
+cfg.backup.scope.strong:
+  pt: "Não"
+  en: "not"
+cfg.backup.scope.tail:
+  pt: " altera usuários/papéis nem os links WAN ativos — então não há risco de te trancar para fora. Depois de restaurar, reaplique DHCP/DNS e Firewall."
+  en: " touch users/roles or the live WAN links, so it cannot lock you out of the panel. After restoring, re-apply DHCP/DNS and Firewall."
+cfg.backup.restore.confirmTitle:
+  pt: "Confirmar restauração?"
+  en: "Confirm restore?"
+cfg.backup.restore.confirmBody:
+  pt: "Isto sobrescreve as configurações atuais pelas do arquivo. Recomendamos baixar um backup antes."
+  en: "This overwrites the current settings with the ones in the file. Download a backup first."
+cfg.backup.restore.passPlaceholder:
+  pt: "Senha do backup"
+  en: "Backup passphrase"
+cfg.backup.restore.now:
+  pt: "Restaurar agora"
+  en: "Restore now"
+cfg.backup.auto.title:
+  pt: "Backup automático por e-mail"
+  en: "Automatic backup by e-mail"
+cfg.backup.auto.note:
+  pt: "Envia o backup cifrado por e-mail no intervalo escolhido, usando o e-mail já configurado em Notificações."
+  en: "Sends the encrypted backup by e-mail at the chosen interval, using the e-mail account already configured under Notifications."
+cfg.backup.lastRun:
+  pt: "Último envio automático: {status}, {when}"
+  en: "Last automatic send: {status}, {when}"
+cfg.backup.lastRun.ok:
+  pt: "ok"
+  en: "ok"
+cfg.backup.lastRun.failed:
+  pt: "falhou — {error}"
+  en: "failed — {error}"

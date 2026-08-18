@@ -8,6 +8,7 @@ import SystemResourcesWidget from './SystemResourcesWidget';
 import TopTalkersWidget from './TopTalkersWidget';
 import WanLinksWidget from './WanLinksWidget';
 import { WidgetNote } from './WidgetCard';
+import { useI18n } from '../../i18n';
 import { GRID_GAP, ROW_HEIGHT } from '../WidgetGrid';
 import type { LayoutItem } from '../../lib/grid';
 
@@ -40,6 +41,7 @@ export default function WidgetView({
   /** O widget que já tinha o próprio "ocultar" usa isto para virar remoção. */
   onSelfRemove: () => void;
 }) {
+  const { t } = useI18n();
   switch (item.widget) {
     case 'system_health':
       return <SystemHealth />;
@@ -64,7 +66,7 @@ export default function WidgetView({
       // item a item. Se chegar, o painel diz o que houve em vez de quebrar.
       return (
         <div className="card h-full">
-          <WidgetNote>Widget desconhecido: <span className="font-mono">{item.widget}</span></WidgetNote>
+          <WidgetNote>{t('wid.unknown')} <span className="font-mono">{item.widget}</span></WidgetNote>
         </div>
       );
   }

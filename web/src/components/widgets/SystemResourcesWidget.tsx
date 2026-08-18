@@ -1,4 +1,5 @@
 import WidgetCard, { WidgetNote, usePolled } from './WidgetCard';
+import { useI18n } from '../../i18n';
 import type { SystemMetrics } from '../../types';
 
 function formatBytes(bytes: number): string {
@@ -34,19 +35,20 @@ function Barra({ label, pct, detalhe }: { label: string; pct: number; detalhe: s
 
 /** CPU, memória, disco, carga e tempo no ar — o estado da máquina em si. */
 export default function SystemResourcesWidget() {
+  const { t } = useI18n();
   const { data: sys, state } = usePolled<SystemMetrics>('/api/system/status');
 
   if (state === 'loading') {
     return (
-      <WidgetCard title="CPU, memória e disco">
-        <WidgetNote>Carregando…</WidgetNote>
+      <WidgetCard title={t('wid.sys.title')}>
+        <WidgetNote>{t('wid.loading')}</WidgetNote>
       </WidgetCard>
     );
   }
   if (!sys) {
     return (
-      <WidgetCard title="CPU, memória e disco">
-        <WidgetNote>Não foi possível ler o estado da máquina agora.</WidgetNote>
+      <WidgetCard title={t('wid.sys.title')}>
+        <WidgetNote>{t('wid.sys.error')}</WidgetNote>
       </WidgetCard>
     );
   }
@@ -55,27 +57,31 @@ export default function SystemResourcesWidget() {
 
   return (
     <WidgetCard
-      title="CPU, memória e disco"
-      action={<span className="shrink-0 font-mono text-xs text-gray-500">no ar há {sys.uptime_str || '—'}</span>}
+      title={t('wid.sys.title')}
+      action={
+        <span className="shrink-0 font-mono text-xs text-gray-500">
+          {t('wid.sys.uptime', { tempo: sys.uptime_str || '—' })}
+        </span>
+      }
     >
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Barra label="CPU" pct={sys.cpu_percent ?? 0} detalhe={`load ${load.map((n) => n.toFixed(2)).join(' ')}`} />
         <Barra
-          label="Memória"
+          label={t('wid.sys.mem')}
           pct={sys.mem_percent ?? 0}
           detalhe={`${formatBytes(sys.mem_used_bytes ?? 0)} / ${formatBytes(sys.mem_total_bytes ?? 0)}`}
         />
         <Barra
-          label="Disco"
+          label={t('wid.sys.disk')}
           pct={sys.disk_percent ?? 0}
           detalhe={`${formatBytes(sys.disk_used_bytes ?? 0)} / ${formatBytes(sys.disk_total_bytes ?? 0)}`}
         />
         <div className="min-w-0">
-          <span className="text-xs text-gray-400">Interfaces</span>
+          <span className="text-xs text-gray-400">{t('wid.sys.interfaces')}</span>
           <p className="font-mono text-lg text-white">
             {(sys.interfaces ?? []).filter((i) => i.name !== 'lo').length}
           </p>
-          <p className="truncate font-mono text-[11px] text-gray-500">exceto <span className="font-mono">lo</span></p>
+          <p className="truncate font-mono text-[11px] text-gray-500">{t('wid.sys.except')} <span className="font-mono">lo</span></p>
         </div>
       </div>
     </WidgetCard>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { RefreshCw, Route as RouteIcon, Plus, Pencil, Trash2, ListTree } from 'lucide-react';
 import client from '../api/client';
+import { useI18n } from '../i18n';
 import type { Route, IpRule } from '../types';
 import IconButton from '../components/ui/IconButton';
 
@@ -22,6 +23,7 @@ const emptyRouteForm: RouteForm = { destination: 'default', gateway: '', interfa
 const emptyRuleForm: RuleForm = { from: 'all', fwmark: '', table: 'main', priority: '' };
 
 export default function Routes() {
+  const { t } = useI18n();
   const [routes, setRoutes] = useState<Route[]>([]);
   const [rules, setRules] = useState<IpRule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -120,7 +122,7 @@ export default function Routes() {
   const submitRoute = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!routeForm.destination.trim()) {
-      setRouteError('Informe o destino da rota.');
+      setRouteError(t('net.routes.form.destRequired'));
       return;
     }
 
@@ -137,7 +139,7 @@ export default function Routes() {
           interface: routeForm.interface.trim(),
           table: routeForm.table.trim(),
         });
-        setMsg('Rota atualizada com sucesso!');
+        setMsg(t('net.routes.toast.updated'));
       } else {
         await client.post('/api/routes', {
           destination: routeForm.destination.trim(),
@@ -145,27 +147,27 @@ export default function Routes() {
           interface: routeForm.interface.trim(),
           table: routeForm.table.trim(),
         });
-        setMsg('Rota adicionada com sucesso!');
+        setMsg(t('net.routes.toast.added'));
       }
       setShowRouteModal(false);
       await fetchData();
     } catch (err: any) {
-      setRouteError(err.response?.data?.error || err.message || 'Erro ao salvar rota.');
+      setRouteError(err.response?.data?.error || err.message || t('net.routes.form.saveFailed'));
     } finally {
       setSaving(false);
     }
   };
 
   const handleDeleteRoute = async (r: Route) => {
-    if (!confirm(`Remover rota ${r.destination}?`)) return;
+    if (!confirm(t('net.routes.confirm.delete', { d: r.destination }))) return;
     setSaving(true);
     setMsg('');
     try {
       await client.delete('/api/routes', { data: { destination: r.destination, table: parseRouteTable(r) } });
-      setMsg('Rota removida com sucesso!');
+      setMsg(t('net.routes.toast.removed'));
       await fetchData();
     } catch (e: any) {
-      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+      setMsg(t('net.msg.error', { e: e.response?.data?.error || e.message }));
     } finally {
       setSaving(false);
     }
@@ -194,7 +196,7 @@ export default function Routes() {
   const submitRule = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ruleForm.table.trim()) {
-      setRuleError('Informe a tabela lookup (ex.: main ou 100).');
+      setRuleError(t('net.rules.form.tableRequired'));
       return;
     }
     const priorityNum = Number(ruleForm.priority || 0);
@@ -215,7 +217,7 @@ export default function Routes() {
           table: ruleForm.table.trim(),
           priority,
         });
-        setMsg('Regra atualizada com sucesso!');
+        setMsg(t('net.rules.toast.updated'));
       } else {
         await client.post('/api/routes/rules', {
           from: ruleForm.from.trim(),
@@ -223,19 +225,19 @@ export default function Routes() {
           table: ruleForm.table.trim(),
           priority,
         });
-        setMsg('Regra adicionada com sucesso!');
+        setMsg(t('net.rules.toast.added'));
       }
       setShowRuleModal(false);
       await fetchData();
     } catch (err: any) {
-      setRuleError(err.response?.data?.error || err.message || 'Erro ao salvar regra.');
+      setRuleError(err.response?.data?.error || err.message || t('net.rules.form.saveFailed'));
     } finally {
       setSaving(false);
     }
   };
 
   const handleDeleteRule = async (r: IpRule) => {
-    if (!confirm(`Remover regra ${r.priority}: ${r.selector}?`)) return;
+    if (!confirm(t('net.rules.confirm.delete', { p: r.priority, s: r.selector }))) return;
     setSaving(true);
     setMsg('');
     try {
@@ -247,10 +249,10 @@ export default function Routes() {
           priority: Number(r.priority || 0),
         },
       });
-      setMsg('Regra removida com sucesso!');
+      setMsg(t('net.rules.toast.removed'));
       await fetchData();
     } catch (e: any) {
-      setMsg(`Erro: ${e.response?.data?.error || e.message}`);
+      setMsg(t('net.msg.error', { e: e.response?.data?.error || e.message }));
     } finally {
       setSaving(false);
     }
@@ -260,30 +262,30 @@ export default function Routes() {
     <div className="p-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-white">Rotas</h1>
-          <p className="text-gray-500 text-sm">Tabelas de roteamento e regras ip rule</p>
+          <h1 className="text-xl font-bold text-white">{t('net.routes.title')}</h1>
+          <p className="text-gray-500 text-sm">{t('net.routes.subtitle')}</p>
         </div>
         <div className="flex gap-2">
           {activeTab === 'routes' ? (
             <button onClick={openAddRoute} disabled={saving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
               <Plus className="w-4 h-4" />
-              Nova Rota
+              {t('net.routes.new')}
             </button>
           ) : (
             <button onClick={openAddRule} disabled={saving} className="btn-primary flex items-center gap-2 disabled:opacity-50">
               <Plus className="w-4 h-4" />
-              Nova Regra
+              {t('net.rules.new')}
             </button>
           )}
           <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
             <RefreshCw className="w-4 h-4" />
-            Atualizar
+            {t('net.action.refresh')}
           </button>
         </div>
       </div>
 
       {msg && (
-        <div className={`px-4 py-3 rounded-lg text-sm ${msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'}`}>
+        <div className={`px-4 py-3 rounded-lg text-sm ${msg.startsWith(t('net.msg.errorPrefix')) ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'}`}>
           {msg}
         </div>
       )}
@@ -295,7 +297,7 @@ export default function Routes() {
             activeTab === 'routes' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'
           }`}
         >
-          Rotas ({routes.length})
+          {t('net.routes.tab.routes', { n: routes.length })}
         </button>
         <button
           onClick={() => setActiveTab('rules')}
@@ -303,18 +305,18 @@ export default function Routes() {
             activeTab === 'rules' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'
           }`}
         >
-          Regras ip rule ({rules.length})
+          {t('net.routes.tab.rules', { n: rules.length })}
         </button>
       </div>
 
       <div className="card">
         {loading ? (
-          <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
+          <div className="text-gray-500 text-center py-8 animate-pulse">{t('common.loading')}</div>
         ) : activeTab === 'routes' ? (
           routes.length === 0 ? (
             <div className="text-center py-12">
               <RouteIcon className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-              <p className="text-gray-500">Nenhuma rota disponível</p>
+              <p className="text-gray-500">{t('net.routes.empty')}</p>
             </div>
           ) : (
             <>
@@ -327,20 +329,20 @@ export default function Routes() {
                         <div className="text-white font-medium font-mono truncate">{r.destination}</div>
                       </div>
                       <div className="flex shrink-0 gap-1">
-                        <IconButton icon={Pencil} onClick={() => openEditRoute(r)} label="Editar rota" disabled={saving} />
-                        <IconButton icon={Trash2} onClick={() => handleDeleteRoute(r)} label="Remover rota" variant="danger" disabled={saving} />
+                        <IconButton icon={Pencil} onClick={() => openEditRoute(r)} label={t('net.routes.action.edit')} disabled={saving} />
+                        <IconButton icon={Trash2} onClick={() => handleDeleteRoute(r)} label={t('net.routes.action.delete')} variant="danger" disabled={saving} />
                       </div>
                     </div>
                     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                      <dt className="text-gray-500">Gateway</dt>
+                      <dt className="text-gray-500">{t('net.routes.col.gateway')}</dt>
                       <dd className="text-gray-400 font-mono">{r.gateway || '—'}</dd>
-                      <dt className="text-gray-500">Interface</dt>
+                      <dt className="text-gray-500">{t('net.routes.col.interface')}</dt>
                       <dd className="text-gray-400 font-mono">{r.interface || '—'}</dd>
-                      <dt className="text-gray-500">Protocolo</dt>
+                      <dt className="text-gray-500">{t('net.routes.col.protocol')}</dt>
                       <dd className="text-gray-400">{r.protocol || '—'}</dd>
-                      <dt className="text-gray-500">Métrica</dt>
+                      <dt className="text-gray-500">{t('net.routes.col.metric')}</dt>
                       <dd className="text-gray-400">{r.metric || '—'}</dd>
-                      <dt className="text-gray-500">Escopo</dt>
+                      <dt className="text-gray-500">{t('net.routes.col.scope')}</dt>
                       <dd className="text-gray-400">{r.scope || '—'}</dd>
                     </dl>
                   </div>
@@ -352,13 +354,13 @@ export default function Routes() {
                 <table className="hidden sm:table w-full text-sm">
                   <thead>
                     <tr className="text-left text-gray-500 border-b border-gray-800">
-                      <th className="pb-3 pr-4 font-medium">Destino</th>
-                      <th className="pb-3 pr-4 font-medium">Gateway</th>
-                      <th className="pb-3 pr-4 font-medium">Interface</th>
-                      <th className="pb-3 pr-4 font-medium">Protocolo</th>
-                      <th className="pb-3 pr-4 font-medium">Métrica</th>
-                      <th className="pb-3 font-medium">Escopo</th>
-                      <th className="pb-3 font-medium">Ações</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.routes.col.destination')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.routes.col.gateway')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.routes.col.interface')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.routes.col.protocol')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.routes.col.metric')}</th>
+                      <th className="pb-3 font-medium">{t('net.routes.col.scope')}</th>
+                      <th className="pb-3 font-medium">{t('net.col.actions')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -372,8 +374,8 @@ export default function Routes() {
                         <td className="py-3 text-gray-400">{r.scope || '—'}</td>
                         <td className="py-3">
                           <div className="flex gap-2">
-                            <IconButton icon={Pencil} onClick={() => openEditRoute(r)} label="Editar rota" disabled={saving} />
-                            <IconButton icon={Trash2} onClick={() => handleDeleteRoute(r)} label="Remover rota" variant="danger" disabled={saving} />
+                            <IconButton icon={Pencil} onClick={() => openEditRoute(r)} label={t('net.routes.action.edit')} disabled={saving} />
+                            <IconButton icon={Trash2} onClick={() => handleDeleteRoute(r)} label={t('net.routes.action.delete')} variant="danger" disabled={saving} />
                           </div>
                         </td>
                       </tr>
@@ -387,7 +389,7 @@ export default function Routes() {
           rules.length === 0 ? (
             <div className="text-center py-12">
               <ListTree className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-              <p className="text-gray-500">Nenhuma regra ip rule disponível</p>
+              <p className="text-gray-500">{t('net.rules.empty')}</p>
             </div>
           ) : (
             <>
@@ -398,21 +400,21 @@ export default function Routes() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-white font-medium font-mono truncate">{r.selector}</div>
-                        <span className="text-xs text-gray-500 font-mono">prioridade {r.priority}</span>
+                        <span className="text-xs text-gray-500 font-mono">{t('net.rules.priorityInline', { p: r.priority })}</span>
                       </div>
                       <div className="flex shrink-0 gap-1">
-                        <IconButton icon={Pencil} onClick={() => openEditRule(r)} label="Editar regra" disabled={saving} />
-                        <IconButton icon={Trash2} onClick={() => handleDeleteRule(r)} label="Remover regra" variant="danger" disabled={saving} />
+                        <IconButton icon={Pencil} onClick={() => openEditRule(r)} label={t('net.rules.action.edit')} disabled={saving} />
+                        <IconButton icon={Trash2} onClick={() => handleDeleteRule(r)} label={t('net.rules.action.delete')} variant="danger" disabled={saving} />
                       </div>
                     </div>
                     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                      <dt className="text-gray-500">Prioridade</dt>
+                      <dt className="text-gray-500">{t('net.rules.col.priority')}</dt>
                       <dd className="text-gray-400 font-mono">{r.priority}</dd>
-                      <dt className="text-gray-500">FWMark</dt>
+                      <dt className="text-gray-500">{t('net.rules.col.fwmark')}</dt>
                       <dd className="text-gray-400 font-mono">{r.fwmark || '—'}</dd>
-                      <dt className="text-gray-500">Ação</dt>
+                      <dt className="text-gray-500">{t('net.rules.col.action')}</dt>
                       <dd className="text-gray-400">{r.action || '—'}</dd>
-                      <dt className="text-gray-500">Tabela</dt>
+                      <dt className="text-gray-500">{t('net.rules.col.table')}</dt>
                       <dd className="text-gray-400 font-mono">{r.table || '—'}</dd>
                     </dl>
                   </div>
@@ -424,12 +426,12 @@ export default function Routes() {
                 <table className="hidden sm:table w-full text-sm">
                   <thead>
                     <tr className="text-left text-gray-500 border-b border-gray-800">
-                      <th className="pb-3 pr-4 font-medium">Prioridade</th>
-                      <th className="pb-3 pr-4 font-medium">Seletor</th>
-                      <th className="pb-3 pr-4 font-medium">FWMark</th>
-                      <th className="pb-3 pr-4 font-medium">Ação</th>
-                      <th className="pb-3 font-medium">Tabela</th>
-                      <th className="pb-3 font-medium">Ações</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.rules.col.priority')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.rules.col.selector')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.rules.col.fwmark')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.rules.col.action')}</th>
+                      <th className="pb-3 font-medium">{t('net.rules.col.table')}</th>
+                      <th className="pb-3 font-medium">{t('net.col.actions')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -442,8 +444,8 @@ export default function Routes() {
                         <td className="py-3 text-gray-400 font-mono">{r.table || '—'}</td>
                         <td className="py-3">
                           <div className="flex gap-2">
-                            <IconButton icon={Pencil} onClick={() => openEditRule(r)} label="Editar regra" disabled={saving} />
-                            <IconButton icon={Trash2} onClick={() => handleDeleteRule(r)} label="Remover regra" variant="danger" disabled={saving} />
+                            <IconButton icon={Pencil} onClick={() => openEditRule(r)} label={t('net.rules.action.edit')} disabled={saving} />
+                            <IconButton icon={Trash2} onClick={() => handleDeleteRule(r)} label={t('net.rules.action.delete')} variant="danger" disabled={saving} />
                           </div>
                         </td>
                       </tr>
@@ -462,22 +464,22 @@ export default function Routes() {
           <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-800">
               <h2 className="text-white font-semibold">
-                {routeEditing ? 'Editar Rota' : 'Nova Rota'}
+                {routeEditing ? t('net.routes.modal.edit') : t('net.routes.new')}
               </h2>
             </div>
             <form onSubmit={submitRoute} className="p-6 space-y-4">
               <div>
-                <label className="label">Destino *</label>
+                <label className="label">{t('net.routes.field.destination')}</label>
                 <input
                   className="input w-full"
-                  placeholder="default ou 10.0.0.0/24"
+                  placeholder={t('net.routes.ph.destination')}
                   value={routeForm.destination}
                   onChange={(e) => setRouteForm({ ...routeForm, destination: e.target.value })}
                 />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="label">Gateway</label>
+                  <label className="label">{t('net.routes.field.gateway')}</label>
                   <input
                     className="input w-full"
                     placeholder="192.168.1.254"
@@ -486,7 +488,7 @@ export default function Routes() {
                   />
                 </div>
                 <div>
-                  <label className="label">Interface</label>
+                  <label className="label">{t('net.routes.field.interface')}</label>
                   <input
                     className="input w-full"
                     placeholder="eth0"
@@ -496,24 +498,24 @@ export default function Routes() {
                 </div>
               </div>
               <div>
-                <label className="label">Tabela</label>
+                <label className="label">{t('net.routes.field.table')}</label>
                 <input
                   className="input w-full"
-                  placeholder="main ou 100"
+                  placeholder={t('net.routes.ph.table')}
                   value={routeForm.table}
                   onChange={(e) => setRouteForm({ ...routeForm, table: e.target.value })}
                 />
-                <p className="text-xs text-gray-500 mt-1">Deixe vazio para usar a tabela principal (main).</p>
+                <p className="text-xs text-gray-500 mt-1">{t('net.routes.hint.table')}</p>
               </div>
               {routeError && (
                 <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{routeError}</div>
               )}
               <div className="flex gap-3 pt-2">
                 <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
-                  {saving ? 'Salvando...' : 'Salvar'}
+                  {saving ? t('common.saving') : t('common.save')}
                 </button>
                 <button type="button" onClick={() => setShowRouteModal(false)} className="btn-secondary flex-1">
-                  Cancelar
+                  {t('common.cancel')}
                 </button>
               </div>
             </form>
@@ -527,22 +529,22 @@ export default function Routes() {
           <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-800">
               <h2 className="text-white font-semibold">
-                {ruleEditing ? 'Editar Regra ip rule' : 'Nova Regra ip rule'}
+                {ruleEditing ? t('net.rules.modal.edit') : t('net.rules.modal.new')}
               </h2>
             </div>
             <form onSubmit={submitRule} className="p-6 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="label">Origem (from)</label>
+                  <label className="label">{t('net.rules.field.from')}</label>
                   <input
                     className="input w-full"
-                    placeholder="192.168.1.0/24 ou all"
+                    placeholder={t('net.rules.ph.from')}
                     value={ruleForm.from}
                     onChange={(e) => setRuleForm({ ...ruleForm, from: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="label">FWMark</label>
+                  <label className="label">{t('net.rules.field.fwmark')}</label>
                   <input
                     className="input w-full"
                     placeholder="0x1"
@@ -551,16 +553,16 @@ export default function Routes() {
                   />
                 </div>
                 <div>
-                  <label className="label">Tabela lookup *</label>
+                  <label className="label">{t('net.rules.field.table')}</label>
                   <input
                     className="input w-full"
-                    placeholder="main ou 100"
+                    placeholder={t('net.routes.ph.table')}
                     value={ruleForm.table}
                     onChange={(e) => setRuleForm({ ...ruleForm, table: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="label">Prioridade</label>
+                  <label className="label">{t('net.rules.field.priority')}</label>
                   <input
                     type="number"
                     className="input w-full"
@@ -575,10 +577,10 @@ export default function Routes() {
               )}
               <div className="flex gap-3 pt-2">
                 <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
-                  {saving ? 'Salvando...' : 'Salvar'}
+                  {saving ? t('common.saving') : t('common.save')}
                 </button>
                 <button type="button" onClick={() => setShowRuleModal(false)} className="btn-secondary flex-1">
-                  Cancelar
+                  {t('common.cancel')}
                 </button>
               </div>
             </form>

@@ -127,7 +127,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       setAllRules(rl.data?.rules ?? []);
       setManaged(mg.data ?? { wan_hosts: [], blocklist: [], blocked_hosts: [] });
     } catch (e) {
-      if (!quiet) onMsg('Erro: ' + errMsg(e));
+      if (!quiet) onMsg(t('fwx.error', { msg: errMsg(e) }), 'error');
     } finally {
       setLoading(false);
     }
@@ -210,8 +210,8 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   );
   const removeGroup = (g: FirewallGroup) => {
     const n = splitGroupRules(g).rules.length;
-    const detail = n === 0 ? '' : ` As ${n} regra${n === 1 ? '' : 's'} dentro dele ${n === 1 ? 'será apagada' : 'serão apagadas'} junto.`;
-    if (!confirm(`Remover o grupo "${g.name}"?${detail}`)) return;
+    const detail = n === 0 ? '' : (n === 1 ? t('fwx.group.remove.detail.one') : t('fwx.group.remove.detail.many', { n }));
+    if (!confirm(t('fwx.group.remove.confirm', { name: g.name, detail }))) return;
     run(() => client.delete('/api/nftables/groups', { data: { id: g.id } }), t('fw.toast.group.removed'));
   };
 
@@ -230,7 +230,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
       // muda a ordem da chain input) e também pode levar 409 da trava: as duas
       // pontas passam por uma releitura do pendente, senão a tela mostraria a
       // ordem nova sem a faixa, ou o 409 sem o motivo.
-      .catch((e) => { setGroups(previous); onMsg('Erro: ' + errMsg(e)); })
+      .catch((e) => { setGroups(previous); onMsg(t('fwx.error', { msg: errMsg(e) }), 'error'); })
       .finally(() => { cor.setBusy(false); refreshPending(); });
   };
 
@@ -238,7 +238,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const openNewRule = (g: FirewallGroup) => setRuleModal({ ...emptyRuleModal, open: true, groupId: g.id, groupName: g.name });
   const openEditRule = (g: FirewallGroup, r: NftChainRule) => {
     const row = allRules.find((x) => x.id === r.id);
-    if (!row) { onMsg('Erro: essa regra não está mais no banco. Atualize a tela.'); return; }
+    if (!row) { onMsg(t('fwx.err.ruleGone'), 'error'); return; }
     setRuleModal({
       open: true, id: row.id, groupId: g.id, groupName: g.name,
       action: (row.action as Action) || 'drop', iif: row.iif, oif: row.oif,
@@ -249,13 +249,13 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const closeRuleModal = () => setRuleModal((m) => ({ ...m, open: false }));
   const removeRule = (r: NftChainRule) => {
     if (!r.id) return;
-    if (!confirm(`Remover esta regra?\n\n${r.expression}`)) return;
-    run(() => client.delete('/api/nftables/rules', { data: { id: r.id } }), 'Regra removida.');
+    if (!confirm(t('fwx.rule.remove.confirm', { expr: r.expression }))) return;
+    run(() => client.delete('/api/nftables/rules', { data: { id: r.id } }), t('fwx.toast.rule.removed'));
   };
   const toggleRule = (r: NftChainRule) => {
     if (!r.id) return;
     run(() => client.post('/api/nftables/rules/toggle', { id: r.id, enabled: r.enabled === false }),
-      r.enabled === false ? 'Regra ativada.' : 'Regra desativada.');
+      r.enabled === false ? t('fwx.toast.rule.enabled') : t('fwx.toast.rule.disabled'));
   };
 
   // reorderRules rebuilds the COMPLETE global list: it walks every rule in
@@ -267,7 +267,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const reorderRules = (g: FirewallGroup, nextRows: NftChainRule[]) => {
     const translated = globalReorder(allRules, g.id, nextRows);
     if (!translated.ok) {
-      onMsg('Erro: a tela está fora de sincronia com o banco. Atualize e tente de novo.');
+      onMsg(t('fwx.err.outOfSync'), 'error');
       load();
       return;
     }
@@ -280,7 +280,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     onMsg('');
     client.post('/api/nftables/rules/reorder', { ids: globalOrder })
       .then((res) => { adoptPending(res); return load(); })
-      .catch((e) => { setGroups(previous); onMsg('Erro: ' + errMsg(e)); })
+      .catch((e) => { setGroups(previous); onMsg(t('fwx.error', { msg: errMsg(e) }), 'error'); })
       .finally(() => { cor.setBusy(false); refreshPending(); });
   };
   // I-6 (Fase B): Firefox will not start an HTML5 drag session unless
@@ -339,7 +339,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
           sem detalhe, não um silêncio. */}
       {applyStatus && !applyStatus.ok && (applyStatus.error || !applyStatus.boot_persist_error) && (
         <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
-          A última tentativa de aplicar seus grupos ao nftables falhou: {applyStatus.error || 'erro desconhecido'}. O que está em vigor pode não refletir o que está configurado aqui — confira a aba "Visão geral" antes de confiar nas regras abaixo.
+          {t('fwx.apply.failed', { err: applyStatus.error || t('fwx.apply.unknownError') })}
         </div>
       )}
 
@@ -351,7 +351,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
         <div className="card border border-amber-500/30 bg-amber-500/10 text-amber-300 text-sm">
           <p className="font-medium">{t('fw.groups.notPersisted')}</p>
           <p className="mt-1 text-amber-200/80">
-            O firewall em vigor não pôde ser gravado no arquivo que a máquina carrega no boot: {applyStatus.boot_persist_error}. Se a máquina reiniciar antes de isso ser resolvido, ela volta com o firewall anterior — não com o que está nesta tela.
+            {t('fwx.boot.persist.body', { err: applyStatus.boot_persist_error })}
           </p>
           {/* A instrução de saída, e não só o diagnóstico. Medido em VM
               (cenário 5 da validação de 2026-08-13): depois de devolver a
@@ -362,7 +362,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               exatamente isso primeiro, vê que não muda nada e conclui que o
               produto está quebrado. */}
           <p className="mt-2 text-amber-200/80">
-            <span className="font-medium text-amber-300">{t('fw.groups.howToFix')}</span> {t('fw.groups.restorePermission')} <code className="font-mono text-xs">/etc/nftables.conf</code> e depois <span className="font-medium text-amber-300">{t('fw.groups.restartService')}</span> — <code className="font-mono text-xs break-all">systemctl restart linkguard-fw</code>. Aplicar outra regra não apaga este aviso: o serviço em execução continua sem poder escrever no arquivo até ser reiniciado.
+            <span className="font-medium text-amber-300">{t('fw.groups.howToFix')}</span> {t('fw.groups.restorePermission')} <code className="font-mono text-xs">/etc/nftables.conf</code> {t('fw.groups.andThen')} <span className="font-medium text-amber-300">{t('fw.groups.restartService')}</span> — <code className="font-mono text-xs break-all">systemctl restart linkguard-fw</code>. {t('fwx.boot.restartNote')}
           </p>
         </div>
       )}
@@ -376,7 +376,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
           <ShieldAlert className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
           <span>
             <span className="text-gray-300">{t('fw.groups.evalOrder')}</span>{' '}
-            O que a condição de entrada de um grupo não casar é pulado inteiro; os bloqueios do sistema nascem no topo e podem ser arrastados como qualquer outro item.
+            {t('fwx.evalOrder.tail')}
           </span>
         </p>
         <div className="flex items-center gap-2 text-xs shrink-0">
@@ -408,7 +408,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
           <div className="card text-center py-16">
             <Layers className="w-10 h-10 text-gray-700 mx-auto mb-3" />
             <p className="text-gray-400 text-sm">{t('fw.groups.empty')}</p>
-            <p className="text-gray-600 text-xs mt-1">{t('fw.groups.emptyHint')} vez.</p>
+            <p className="text-gray-600 text-xs mt-1">{t('fwx.groups.emptyHint')}</p>
           </div>
         ) : selectedSys ? (
           /* ─── Detalhe de um grupo do sistema (spec §4) ───────────────── */
@@ -436,30 +436,30 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 {groupScope(selected) === 'input' && (
                   <span
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-orange-500/40 bg-orange-500/10 text-orange-300"
-                    title="Este grupo filtra o tráfego destinado ao próprio firewall (chain input): SSH, este painel, DNS. Qualquer alteração nele abre a janela de 90 segundos."
+                    title={t('fwx.badge.input.title')}
                   >
-                    <AlertTriangle className="w-3 h-3" aria-hidden="true" /> destinado ao firewall
+                    <AlertTriangle className="w-3 h-3" aria-hidden="true" /> {t('fwx.badge.input.label')}
                   </span>
                 )}
                 {groupConnState(selected) === 'new' && (
                   <span
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-sky-500/40 bg-sky-500/10 text-sky-300"
-                    title="Este grupo só decide sobre conexões NOVAS: a linha de jump dele carrega `ct state new`. O que já está estabelecido segue até terminar sem passar por ele — inclusive a sessão de quem acabou de ser bloqueado."
+                    title={t('fwx.badge.new.title')}
                   >
-                    <DoorOpen className="w-3 h-3" aria-hidden="true" /> só conexões novas
+                    <DoorOpen className="w-3 h-3" aria-hidden="true" /> {t('fwx.label.newOnly')}
                   </span>
                 )}
                 {!selected.enabled && (
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-400">
-                    Desligado
+                    {t('fwx.badge.off')}
                   </span>
                 )}
                 {selected.enabled && !selected.applied && (
                   <span
                     className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border border-yellow-500/40 bg-yellow-500/10 text-yellow-400"
-                    title="O grupo está ligado aqui, mas o firewall não confirma que o jump para a chain dele está em vigor — pode ser um erro ao aplicar; confira o aviso no topo."
+                    title={t('fwx.badge.notApplied.group.title')}
                   >
-                    Configurada, não aplicada
+                    {t('fwx.badge.notApplied.group')}
                   </span>
                 )}
                 {canWrite && (
@@ -472,8 +472,8 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                     >
                       {selected.enabled ? <><PowerOff className="w-3.5 h-3.5" />{t('fw.groups.disable')}</> : <><Power className="w-3.5 h-3.5" />{t('fw.groups.enable')}</>}
                     </button>
-                    <IconButton icon={Pencil} onClick={() => openEditGroup(selected)} disabled={editDisabled} label="Editar grupo" title={locked ? lockReason : undefined} />
-                    <IconButton icon={Trash2} onClick={() => removeGroup(selected)} disabled={editDisabled} label="Remover grupo" title={locked ? lockReason : undefined} variant="danger" />
+                    <IconButton icon={Pencil} onClick={() => openEditGroup(selected)} disabled={editDisabled} label={t('fwx.action.editGroup')} title={locked ? lockReason : undefined} />
+                    <IconButton icon={Trash2} onClick={() => removeGroup(selected)} disabled={editDisabled} label={t('fwx.action.removeGroup')} title={locked ? lockReason : undefined} variant="danger" />
                   </>
                 )}
               </div>
@@ -516,7 +516,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 </div>
                 <div className="text-xs font-mono text-gray-400 shrink-0">
                   {selected.has_counter
-                    ? <>entraram {selected.packets.toLocaleString('pt-BR')} pct · {formatCount(selected.bytes, unit)}</>
+                    ? t('fwx.group.jumpCounter', { pkts: selected.packets.toLocaleString('pt-BR'), bytes: formatCount(selected.bytes, unit) })
                     : <span className="text-gray-600">{t('fw.groups.noCounter')}</span>}
                 </div>
               </div>
@@ -537,8 +537,8 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               {!selected.applied && (
                 <p className={`mt-1.5 text-[11px] ${selected.enabled ? 'text-yellow-500' : 'text-gray-500'}`}>
                   {selected.enabled
-                    ? 'O firewall não confirma o jump para este grupo: nenhuma regra abaixo está em vigor.'
-                    : 'Grupo desligado: nenhuma regra abaixo está em vigor. Elas continuam guardadas para quando ele voltar.'}
+                    ? t('fwx.group.jumpUnconfirmed')
+                    : t('fwx.group.offNoRules')}
                 </p>
               )}
             </div>
@@ -563,7 +563,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                   {detail.rules.length === 0 && detail.extras.length === 0 && (
                     <tr>
                       <td colSpan={canWrite ? 7 : 6} className="py-4 text-gray-600 text-sm">
-                        Nenhuma regra neste grupo{selected.fallthrough === 'continue' ? ' — todo tráfego que entrar aqui segue adiante sem decisão.' : '.'}
+                        {t(selected.fallthrough === 'continue' ? 'fwx.rules.empty.continue' : 'fwx.rules.empty')}
                       </td>
                     </tr>
                   )}
@@ -603,15 +603,15 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                             <span className={noteOf(r) ? '' : 'text-gray-700'}>{noteOf(r) || '—'}</span>
                             {disabled && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border border-gray-600 bg-gray-700/40 text-gray-400">
-                                Desativada
+                                {t('fwx.badge.ruleDisabled')}
                               </span>
                             )}
                             {notApplied && (
                               <span
                                 className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border border-yellow-500/40 bg-yellow-500/10 text-yellow-400"
-                                title="Está ativada aqui, mas o firewall não confirma que ela está em vigor — pode ser um erro ao aplicar; confira o aviso no topo."
+                                title={t('fwx.badge.notApplied.rule.title')}
                               >
-                                Configurada, não aplicada
+                                {t('fwx.badge.notApplied.rule')}
                               </span>
                             )}
                           </span>
@@ -634,12 +634,12 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                                   onClick={() => toggleRule(r)}
                                   disabled={editDisabled}
                                   title={locked ? lockReason : undefined}
-                                  label={disabled ? 'Ativar regra' : 'Desativar regra'}
+                                  label={disabled ? t('fwx.action.enableRule') : t('fwx.action.disableRule')}
                                   variant={disabled ? 'custom' : 'default'}
                                   className={`min-w-[32px] min-h-[32px] ${disabled ? 'text-yellow-500 hover:text-yellow-400' : ''}`}
                                 />
-                                <IconButton icon={Pencil} onClick={() => openEditRule(selected, r)} disabled={editDisabled} title={locked ? lockReason : undefined} label="Editar regra" className="min-w-[32px] min-h-[32px]" />
-                                <IconButton icon={Trash2} onClick={() => removeRule(r)} disabled={editDisabled} title={locked ? lockReason : undefined} label="Excluir regra" variant="danger" className="min-w-[32px] min-h-[32px]" />
+                                <IconButton icon={Pencil} onClick={() => openEditRule(selected, r)} disabled={editDisabled} title={locked ? lockReason : undefined} label={t('fwx.action.editRule')} className="min-w-[32px] min-h-[32px]" />
+                                <IconButton icon={Trash2} onClick={() => removeRule(r)} disabled={editDisabled} title={locked ? lockReason : undefined} label={t('fwx.action.deleteRule')} variant="danger" className="min-w-[32px] min-h-[32px]" />
                               </div>
                             ) : (
                               <span className="block text-right text-[10px] text-gray-600">{t('fw.groups.notYourRule')}</span>
@@ -657,7 +657,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                       <td className="py-2 pr-2 align-top text-gray-700 text-xs font-mono">·</td>
                       <td className="py-2 pr-3 align-top">
                         <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border border-yellow-500/30 bg-yellow-500/5 text-yellow-500">
-                          fora do painel
+                          {t('fwx.badge.outsidePanel')}
                         </span>
                       </td>
                       <td className="py-2 pr-3 align-top font-mono text-[12px] text-gray-400 break-words">{r.expression}</td>
@@ -687,7 +687,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               </div>
               <div className="text-xs font-mono text-gray-500 shrink-0">
                 {detail.fall?.has_counter
-                  ? <>{detail.fall.packets.toLocaleString('pt-BR')} pct · {formatCount(detail.fall.bytes, unit)}</>
+                  ? t('fwx.counter.pkts', { pkts: detail.fall.packets.toLocaleString('pt-BR'), bytes: formatCount(detail.fall.bytes, unit) })
                   : '—'}
               </div>
             </div>

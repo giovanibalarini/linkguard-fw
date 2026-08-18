@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Sparkles, ExternalLink, AlertTriangle } from 'lucide-react';
 import client from '../api/client';
 import { parseReleases, type ChangeType, type ParsedRelease, type RawRelease } from '../lib/releaseNotes';
+import { useI18n } from '../i18n';
 
 // As novidades vêm das releases publicadas, e não de um arquivo curado à mão.
 //
@@ -11,11 +12,12 @@ import { parseReleases, type ChangeType, type ParsedRelease, type RawRelease } f
 // a parte que falha. Desde a issue #63 a nota de release sai do próprio
 // histórico de commits, no workflow de publicação.
 
+// `label` guarda uma chave de i18n resolvida com t() na hora de desenhar.
 const TYPE_META: Record<ChangeType, { label: string; cls: string }> = {
-  feat: { label: 'Novo', cls: 'bg-green-500/10 text-green-400 border border-green-500/20' },
-  fix: { label: 'Correção', cls: 'bg-blue-500/10 text-blue-400 border border-blue-500/20' },
-  security: { label: 'Segurança', cls: 'bg-amber-500/10 text-amber-300 border border-amber-500/20' },
-  chore: { label: 'Interno', cls: 'bg-gray-500/10 text-gray-400 border border-gray-500/20' },
+  feat: { label: 'shell.changelog.type.feat', cls: 'bg-green-500/10 text-green-400 border border-green-500/20' },
+  fix: { label: 'shell.changelog.type.fix', cls: 'bg-blue-500/10 text-blue-400 border border-blue-500/20' },
+  security: { label: 'shell.changelog.type.security', cls: 'bg-amber-500/10 text-amber-300 border border-amber-500/20' },
+  chore: { label: 'shell.changelog.type.chore', cls: 'bg-gray-500/10 text-gray-400 border border-gray-500/20' },
 };
 
 interface ChangelogResponse {
@@ -32,6 +34,7 @@ function fmtDate(iso: string): string {
 }
 
 export default function Changelog() {
+  const { t } = useI18n();
   const [releases, setReleases] = useState<ParsedRelease[]>([]);
   const [stale, setStale] = useState(false);
   const [fetchedAt, setFetchedAt] = useState(0);
@@ -72,21 +75,21 @@ export default function Changelog() {
         // A mensagem do servidor explica o caso mais comum (firewall sem
         // internet na primeira visita) melhor do que qualquer texto genérico.
         const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
-        setErro(msg || 'não foi possível carregar as novidades');
+        setErro(msg || t('shell.changelog.loadError'));
       } finally {
         if (vivo) setCarregando(false);
       }
     })();
     return () => { vivo = false; };
-  }, []);
+  }, [t]);
 
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-2">
         <Sparkles className="w-5 h-5 text-blue-400" />
         <div>
-          <h1 className="text-xl font-bold text-white">Novidades</h1>
-          <p className="text-gray-500 text-sm">O que mudou em cada versão do LinkGuard.</p>
+          <h1 className="text-xl font-bold text-white">{t('shell.changelog.title')}</h1>
+          <p className="text-gray-500 text-sm">{t('shell.changelog.subtitle')}</p>
         </div>
         {internasEscondidas > 0 && (
           <button
@@ -95,8 +98,8 @@ export default function Changelog() {
             className="ml-auto text-xs text-gray-400 hover:text-gray-200 border border-gray-700 rounded px-2 py-1"
           >
             {verInternas
-              ? 'ocultar mudanças internas'
-              : `mostrar ${internasEscondidas} mudanças internas`}
+              ? t('shell.changelog.hideInternal')
+              : t('shell.changelog.showInternal', { n: internasEscondidas })}
           </button>
         )}
       </div>
@@ -108,21 +111,20 @@ export default function Changelog() {
         <div className="card flex items-start gap-2.5 text-sm border-amber-500/20">
           <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
           <span className="text-gray-300">
-            Não foi possível falar com o GitHub agora; esta lista é a última que o
-            firewall conseguiu buscar
+            {t('shell.changelog.stale')}
             {fetchedAt > 0 && ` (${new Date(fetchedAt * 1000).toLocaleString('pt-BR')})`}.
           </span>
         </div>
       )}
 
-      {carregando && <div className="card text-gray-500 text-sm">Buscando as novidades…</div>}
+      {carregando && <div className="card text-gray-500 text-sm">{t('shell.changelog.loading')}</div>}
 
       {!carregando && erro && (
         <div className="card text-gray-300 text-sm">{erro}</div>
       )}
 
       {!carregando && !erro && releases.length === 0 && (
-        <div className="card text-gray-500 text-sm">Nenhuma versão publicada ainda.</div>
+        <div className="card text-gray-500 text-sm">{t('shell.changelog.empty')}</div>
       )}
 
       <div className="space-y-4">
@@ -136,21 +138,21 @@ export default function Changelog() {
                 rel="noreferrer"
                 className="text-gray-500 hover:text-gray-300 inline-flex items-center gap-1 text-xs"
               >
-                ver no GitHub <ExternalLink className="w-3 h-3" />
+                {t('shell.changelog.viewOnGitHub')} <ExternalLink className="w-3 h-3" />
               </a>
               <span className="text-gray-600 text-xs ml-auto">{fmtDate(entry.date)}</span>
             </div>
 
             {entry.hasContent && entry.changes.length === 0 ? (
               <p className="text-gray-500 text-sm">
-                Só mudanças internas nesta versão.
+                {t('shell.changelog.onlyInternal')}
               </p>
             ) : entry.hasContent ? (
               <ul className="space-y-2">
                 {entry.changes.map((c, i) => (
                   <li key={i} className="flex items-start gap-2.5 text-sm">
                     <span className={`shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[11px] font-medium ${TYPE_META[c.type].cls}`}>
-                      {TYPE_META[c.type].label}
+                      {t(TYPE_META[c.type].label)}
                     </span>
                     <span className="text-gray-300">
                       {c.scope && <span className="text-gray-500">{c.scope} · </span>}
@@ -163,7 +165,7 @@ export default function Changelog() {
               // A versão fica na lista mesmo sem mudança reconhecível: sumir com
               // ela faria o admin concluir que ela não existiu.
               <p className="text-gray-500 text-sm">
-                Esta versão não traz uma lista de mudanças no formato do painel — abra a nota no GitHub.
+                {t('shell.changelog.unparsed')}
               </p>
             )}
           </div>

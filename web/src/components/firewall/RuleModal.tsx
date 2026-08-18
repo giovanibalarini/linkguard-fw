@@ -26,14 +26,16 @@ import type { FirewallRule } from '../../types';
 
 type RuleLike = Pick<FirewallRule, 'iif' | 'oif' | 'saddr' | 'daddr' | 'proto' | 'dport'>;
 
-function describe(r: RuleLike): string {
+type Traduz = (key: string, vars?: Record<string, string | number>) => string;
+
+function describe(r: RuleLike, t: Traduz): string {
   const parts: string[] = [];
-  if (r.iif) parts.push(`entrada ${r.iif}`);
-  if (r.oif) parts.push(`saída ${r.oif}`);
-  if (r.saddr) parts.push(`origem ${r.saddr}`);
-  if (r.daddr) parts.push(`destino ${r.daddr}`);
+  if (r.iif) parts.push(t('fwx.rule.desc.in', { v: r.iif }));
+  if (r.oif) parts.push(t('fwx.rule.desc.out', { v: r.oif }));
+  if (r.saddr) parts.push(t('fwx.rule.desc.src', { v: r.saddr }));
+  if (r.daddr) parts.push(t('fwx.rule.desc.dst', { v: r.daddr }));
   if (r.proto) parts.push(r.proto.toUpperCase() + (r.dport ? `:${r.dport}` : ''));
-  return parts.length ? parts.join(' · ') : 'qualquer tráfego';
+  return parts.length ? parts.join(' · ') : t('fwx.rule.desc.any');
 }
 
 interface Props {
@@ -100,7 +102,7 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
     <Modal
       open={state.open}
       onClose={onClose}
-      title={state.id ? 'Editar regra' : `Nova regra em "${state.groupName}"`}
+      title={state.id ? t('fwx.rule.modal.edit') : t('fwx.rule.modal.new', { group: state.groupName })}
       size="md"
       className="rounded-xl border border-gray-700 bg-gray-900 shadow-2xl flex flex-col"
     >
@@ -154,10 +156,10 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
               items={itensDeRede}
               value={idDoValor(state.saddr)}
               onPick={(i) => setState({ ...state, saddr: i ? valorDe(i) : '' })}
-              onFreeText={(t) => setState({ ...state, saddr: t })}
-              freeTextHint="como endereço"
+              onFreeText={(texto) => setState({ ...state, saddr: texto })}
+              freeTextHint={t('fwx.rule.freeText.address')}
               placeholder={t('fw.rule.searchTarget')}
-              emptyLabel="Qualquer origem"
+              emptyLabel={t('fwx.rule.anySource')}
             />
           </div>
           <div>
@@ -166,10 +168,10 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
               items={itensDeRede}
               value={idDoValor(state.daddr)}
               onPick={(i) => setState({ ...state, daddr: i ? valorDe(i) : '' })}
-              onFreeText={(t) => setState({ ...state, daddr: t })}
-              freeTextHint="como endereço"
+              onFreeText={(texto) => setState({ ...state, daddr: texto })}
+              freeTextHint={t('fwx.rule.freeText.address')}
               placeholder={t('fw.rule.searchTarget')}
-              emptyLabel="Qualquer destino"
+              emptyLabel={t('fwx.rule.anyDest')}
             />
           </div>
           <div>
@@ -191,10 +193,10 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
                 items={itensDeServico}
                 value={state.dport ? `svc:${state.dport}/${state.proto}` : ''}
                 onPick={(i) => setState({ ...state, dport: i ? String(i.id).split(':')[1].split('/')[0] : '' })}
-                onFreeText={(t) => setState({ ...state, dport: t })}
-                freeTextHint="como porta"
+                onFreeText={(texto) => setState({ ...state, dport: texto })}
+                freeTextHint={t('fwx.rule.freeText.port')}
                 placeholder={t('fw.rule.searchService')}
-                emptyLabel="Qualquer porta"
+                emptyLabel={t('fwx.rule.anyPort')}
               />
             </div>
           )}
@@ -214,7 +216,7 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
         <div className="rounded-lg border border-gray-700 bg-gray-950/60 p-3">
           <p className="text-xs text-gray-400 mb-1">
             <span className={`font-mono ${ACTIONS[state.action].color}`}>{ACTIONS[state.action].label}</span>{' '}
-            {describe(state)}
+            {describe(state, t)}
           </p>
           <NftPreview endpoint="/api/nftables/rules/preview" body={state} />
         </div>

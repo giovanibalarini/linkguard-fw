@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Network, ArrowDownToLine, ArrowUpToLine, Pencil, Pause, Play, ChevronDown, ChevronUp } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Brush } from 'recharts';
 import client from '../api/client';
+import { useI18n } from '../i18n';
 import type { SystemMetrics, TrafficHistoryResponse } from '../types';
 import { deriveRate } from '../lib/interfaceRates';
 import { formatBps, pointsFromHistory } from '../lib/series';
@@ -66,6 +67,7 @@ function calcStats(values: number[]): RateStats {
 }
 
 export default function InterfaceTraffic() {
+  const { t } = useI18n();
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -229,7 +231,7 @@ export default function InterfaceTraffic() {
       await fetchData();
     } catch (e) {
       console.error(e);
-      setAliasError('Erro ao salvar apelido da interface');
+      setAliasError(t('net.traffic.aliasSaveFailed'));
     } finally {
       setAliasSaving('');
     }
@@ -260,52 +262,52 @@ export default function InterfaceTraffic() {
     <div className="p-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-white">Interfaces</h1>
+          <h1 className="text-xl font-bold text-white">{t('net.if.title')}</h1>
           <p className="text-gray-500 text-sm">
-            Métricas vêm de /proc com histórico RRD persistente
-            {sys && <> · uptime do host <span className="font-mono text-gray-400">{formatUptime(sys.uptime_seconds || 0)}</span></>}
+            {t('net.traffic.subtitle')}
+            {sys && <> · {t('net.traffic.hostUptime')} <span className="font-mono text-gray-400">{formatUptime(sys.uptime_seconds || 0)}</span></>}
           </p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center rounded-lg border border-gray-700 bg-gray-900/70 p-1 text-xs">
             <button
               onClick={() => setRange('5m')}
-              title="Janela de 5 minutos, amostra a cada 1s"
+              title={t('net.traffic.range.5m.title')}
               className={`px-2 py-1 rounded ${range === '5m' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               5m (1s)
             </button>
             <button
               onClick={() => setRange('30m')}
-              title="Janela de 30 minutos, amostra a cada 5s"
+              title={t('net.traffic.range.30m.title')}
               className={`px-2 py-1 rounded ${range === '30m' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               30m (5s)
             </button>
             <button
               onClick={() => setRange('12h')}
-              title="Janela de 12 horas, amostra a cada 1m"
+              title={t('net.traffic.range.12h.title')}
               className={`px-2 py-1 rounded ${range === '12h' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               12h (1m)
             </button>
             <button
               onClick={() => setRange('30d')}
-              title="Histórico de 30 dias (RRD persistente)"
+              title={t('net.traffic.range.30d.title')}
               className={`px-2 py-1 rounded ${range === '30d' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               30d
             </button>
             <button
               onClick={() => setRange('1y')}
-              title="Histórico de 1 ano (RRD persistente)"
+              title={t('net.traffic.range.1y.title')}
               className={`px-2 py-1 rounded ${range === '1y' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               1y
             </button>
             <button
               onClick={() => setRange('5y')}
-              title="Histórico de 5 anos (RRD persistente)"
+              title={t('net.traffic.range.5y.title')}
               className={`px-2 py-1 rounded ${range === '5y' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
             >
               5y
@@ -313,27 +315,27 @@ export default function InterfaceTraffic() {
           </div>
 
           <div className="text-xs text-gray-600">
-            {paused ? 'Pausado' : `Atualizado às ${lastUpdated.toLocaleTimeString()}`}
+            {paused ? t('net.traffic.paused') : t('net.traffic.updatedAt', { time: lastUpdated.toLocaleTimeString() })}
           </div>
           <button
             onClick={togglePaused}
-            title={paused ? 'Retomar atualização automática (1s)' : 'Pausar atualização automática (1s)'}
+            title={paused ? t('net.traffic.resume.title') : t('net.traffic.pause.title')}
             className="btn-secondary flex items-center gap-2"
           >
             {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-            {paused ? 'Retomar' : 'Pausar'}
+            {paused ? t('net.traffic.resume') : t('net.traffic.pause')}
           </button>
         </div>
       </div>
 
-      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={() => { fetchData(); loadRrdHistory(true); }} className="underline">Tentar novamente</button></div>}
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">{t('net.traffic.loadFailed')} <button onClick={() => { fetchData(); loadRrdHistory(true); }} className="underline">{t('net.traffic.retry')}</button></div>}
 
       {loading ? (
-        <div className="card text-center py-10 text-gray-500 animate-pulse">Carregando interfaces...</div>
+        <div className="card text-center py-10 text-gray-500 animate-pulse">{t('net.traffic.loadingIfaces')}</div>
       ) : interfaces.length === 0 ? (
         <div className="card text-center py-10">
           <Network className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-          <p className="text-gray-400">Nenhuma interface detectada</p>
+          <p className="text-gray-400">{t('net.traffic.noIfaces')}</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
@@ -405,7 +407,7 @@ export default function InterfaceTraffic() {
                       >
                         <span className="inline-flex items-center gap-2">
                           <Pencil className="w-3.5 h-3.5" />
-                          {aliasSaving === iface.name ? 'Salvando...' : iface.alias ? 'Editar apelido' : 'Adicionar apelido'}
+                          {aliasSaving === iface.name ? t('common.saving') : iface.alias ? t('net.traffic.alias.edit') : t('net.traffic.alias.add')}
                         </span>
                       </button>
                     </div>
@@ -418,9 +420,9 @@ export default function InterfaceTraffic() {
                         </div>
                         <div className="text-white font-mono text-sm mt-0.5">{formatBytes(iface.rx_bytes)}</div>
                         <div className="text-gray-500 text-[11px] mt-0.5">
-                          {iface.rx_packets.toLocaleString()} pacotes
+                          {t('net.traffic.packets', { n: iface.rx_packets.toLocaleString() })}
                           {rxTrouble && (
-                            <span className="text-amber-400"> · {iface.rx_errors} erros, {iface.rx_dropped} descartes</span>
+                            <span className="text-amber-400"> {t('net.traffic.errDrops', { e: iface.rx_errors, d: iface.rx_dropped })}</span>
                           )}
                         </div>
                       </div>
@@ -432,9 +434,9 @@ export default function InterfaceTraffic() {
                         </div>
                         <div className="text-white font-mono text-sm mt-0.5">{formatBytes(iface.tx_bytes)}</div>
                         <div className="text-gray-500 text-[11px] mt-0.5">
-                          {iface.tx_packets.toLocaleString()} pacotes
+                          {t('net.traffic.packets', { n: iface.tx_packets.toLocaleString() })}
                           {txTrouble && (
-                            <span className="text-amber-400"> · {iface.tx_errors} erros, {iface.tx_dropped} descartes</span>
+                            <span className="text-amber-400"> {t('net.traffic.errDrops', { e: iface.tx_errors, d: iface.tx_dropped })}</span>
                           )}
                         </div>
                       </div>
@@ -442,14 +444,14 @@ export default function InterfaceTraffic() {
 
                     <div className="mt-2 rounded-lg border border-gray-800 bg-gray-900/70 p-2.5">
                       <div className="mb-1 flex items-center justify-between">
-                        <p className="text-gray-500 text-[11px] uppercase tracking-wide">Consumo ({range})</p>
-                        {chartData.length >= 2 && <p className="text-[11px] text-gray-600">arraste pra dar zoom</p>}
+                        <p className="text-gray-500 text-[11px] uppercase tracking-wide">{t('net.traffic.usage', { r: range })}</p>
+                        {chartData.length >= 2 && <p className="text-[11px] text-gray-600">{t('net.traffic.dragZoom')}</p>}
                       </div>
                       {chartData.length < 2 ? (
                         <p className="text-gray-500 text-sm py-6 text-center">
                           {range !== '5m' && rrdLoading
-                            ? 'Carregando histórico...'
-                            : 'Aguardando amostras...'}
+                            ? t('net.traffic.loadingHistory')
+                            : t('net.traffic.waitingSamples')}
                         </p>
                       ) : (
                         <ResponsiveContainer width="100%" height={160}>
@@ -522,18 +524,18 @@ export default function InterfaceTraffic() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-sm">
             <div className="px-6 py-4 border-b border-gray-800">
-              <h2 className="text-white font-semibold">Apelido da interface</h2>
+              <h2 className="text-white font-semibold">{t('net.traffic.alias.title')}</h2>
               <p className="text-gray-500 text-xs mt-1 font-mono">{aliasFor}</p>
             </div>
             <div className="p-6 space-y-4">
               <input
                 className="input w-full"
-                placeholder="Ex.: WAN, LAN, Fibra"
+                placeholder={t('net.traffic.alias.ph')}
                 value={aliasValue}
                 onChange={(e) => setAliasValue(e.target.value)}
                 autoFocus
               />
-              <p className="text-gray-500 text-xs">Deixe vazio para remover o apelido.</p>
+              <p className="text-gray-500 text-xs">{t('net.traffic.alias.hint')}</p>
               {aliasError && (
                 <div className="rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 text-sm px-3 py-2">{aliasError}</div>
               )}
@@ -543,9 +545,9 @@ export default function InterfaceTraffic() {
                   disabled={aliasSaving === aliasFor}
                   className="btn-primary flex-1 disabled:opacity-50"
                 >
-                  {aliasSaving === aliasFor ? 'Salvando...' : 'Salvar'}
+                  {aliasSaving === aliasFor ? t('common.saving') : t('common.save')}
                 </button>
-                <button onClick={() => setAliasFor(null)} className="btn-secondary flex-1">Cancelar</button>
+                <button onClick={() => setAliasFor(null)} className="btn-secondary flex-1">{t('common.cancel')}</button>
               </div>
             </div>
           </div>

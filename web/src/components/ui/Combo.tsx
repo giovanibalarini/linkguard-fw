@@ -16,6 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, ChevronDown, X } from 'lucide-react';
+import { useI18n } from '../../i18n';
 
 export interface ComboItem {
   id: string;
@@ -43,9 +44,11 @@ interface Props {
 }
 
 export default function Combo({
-  items, value, onPick, placeholder = 'Buscar…',
+  items, value, onPick, placeholder,
   emptyLabel, onFreeText, freeTextHint, disabled,
 }: Props) {
+  const { t } = useI18n();
+  const textoBusca = placeholder ?? t('shell.combo.search');
   const [aberto, setAberto] = useState(false);
   const [busca, setBusca] = useState('');
   const caixa = useRef<HTMLDivElement>(null);
@@ -96,7 +99,7 @@ export default function Combo({
               {escolhido.hint && <span className="text-gray-500 text-xs ml-2 font-mono">{escolhido.hint}</span>}
             </>
           ) : (
-            <span className="text-gray-500">{emptyLabel || placeholder}</span>
+            <span className="text-gray-500">{emptyLabel || textoBusca}</span>
           )}
         </span>
         {escolhido && emptyLabel && (
@@ -115,7 +118,7 @@ export default function Combo({
             <input
               autoFocus
               className="bg-transparent outline-none text-sm text-gray-200 w-full"
-              placeholder={placeholder}
+              placeholder={textoBusca}
               value={busca}
               onChange={(e) => setBusca(e.target.value)}
             />
@@ -163,13 +166,13 @@ export default function Combo({
               onClick={() => { onFreeText!(busca.trim()); setAberto(false); setBusca(''); }}
               className="w-full text-left px-3 py-2 text-sm text-blue-400 hover:bg-gray-800 border-t border-gray-800"
             >
-              usar “{busca.trim()}”
+              {t('shell.combo.useFreeText', { text: busca.trim() })}
               {freeTextHint && <span className="text-gray-500 text-xs ml-2">{freeTextHint}</span>}
             </button>
           )}
 
           {filtrados.length === 0 && !podeLivre && (
-            <p className="px-3 py-4 text-center text-sm text-gray-600">Nada encontrado.</p>
+            <p className="px-3 py-4 text-center text-sm text-gray-600">{t('shell.combo.noMatch')}</p>
           )}
         </div>
       )}

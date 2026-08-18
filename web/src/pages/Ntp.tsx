@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw, Clock, Play, Download, Wifi } from 'lucide-react';
 import client, { INSTALL_TIMEOUT_MS, isTimeout } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { useI18n } from '../i18n';
 import Panel from '../components/ui/Panel';
 import type { NTPData, NTPConfig } from '../types';
 
@@ -14,6 +15,7 @@ const parseList = (raw: string): string[] =>
 
 export default function Ntp() {
   const { can } = useAuth();
+  const { t } = useI18n();
   const canWrite = can('ntp.write');
   const [data, setData] = useState<NTPData | null>(null);
   const [cfg, setCfg] = useState<NTPConfig | null>(null);
@@ -33,6 +35,13 @@ export default function Ntp() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [msg, setMsg] = useState('');
+  // A cor da faixa sai de um booleano, e não de farejar o prefixo de `msg`.
+  // `msg` guarda a frase já traduzida no idioma em que foi criada, e o seletor
+  // de idioma mora no Layout, que não desmonta esta página: trocar de idioma
+  // com a faixa na tela faria o teste de prefixo falhar e pintar de verde um
+  // erro. O timeout continua NÃO sendo erro — ele diz que a aplicação segue
+  // rodando em segundo plano.
+  const [msgError, setMsgError] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const fetchData = async () => {
@@ -47,14 +56,16 @@ export default function Ntp() {
   useEffect(() => { fetchData(); }, []);
 
   const run = async (fn: () => Promise<any>, ok: string) => {
-    setBusy(true); setMsg('');
+    setBusy(true); setMsg(''); setMsgError(false);
     try { await fn(); if (ok) setMsg(ok); await fetchData(); }
     catch (e: any) {
       // Instalar o chrony é um download: desistir de esperar não quer dizer
       // que falhou (o apt segue numa unidade transiente do systemd).
-      setMsg(isTimeout(e)
-        ? 'A instalação está demorando mais que o normal e continua em segundo plano. Atualize a página em alguns minutos para ver o resultado.'
-        : `Erro: ${e.response?.data?.error || e.message}`);
+      const timeout = isTimeout(e);
+      setMsgError(!timeout);
+      setMsg(timeout
+        ? t('svc.ntp.installTimeout')
+        : `${t('svc.common.errorPrefix')}: ${e.response?.data?.error || e.message}`);
     }
     finally { setBusy(false); }
   };
@@ -74,10 +85,10 @@ export default function Ntp() {
       timezone: cfg.timezone,
       serve_lan: cfg.serve_lan,
       allowed_networks: allowedNetworks,
-    }), 'Config de NTP salva — aplicando automaticamente.');
+    }), t('svc.ntp.msg.configSaved'));
   };
-  const apply = () => run(() => client.post('/api/ntp/apply'), 'Aplicado com sucesso.');
-  const installChrony = () => run(() => client.post('/api/ntp/install-chrony', null, { timeout: INSTALL_TIMEOUT_MS }), 'chrony instalado.');
+  const apply = () => run(() => client.post('/api/ntp/apply'), t('svc.common.applied'));
+  const installChrony = () => run(() => client.post('/api/ntp/install-chrony', null, { timeout: INSTALL_TIMEOUT_MS }), t('svc.ntp.msg.chronyInstalled'));
 
   // Syncs cfg.allowed_networks from the raw text field on blur, so logic
   // that reads cfg (the pending-changes indicator, toggleServeLAN's
@@ -131,17 +142,17 @@ export default function Ntp() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-white">NTP</h1>
-          <p className="text-gray-500 text-sm">Sincronização de horário — servidores, fuso horário e status</p>
+          <p className="text-gray-500 text-sm">{t('svc.ntp.subtitle')}</p>
         </div>
         <div className="flex gap-2">
-          {canWrite && <button onClick={apply} disabled={busy} title="Salvar já aplica sozinho; use para forçar agora" className="btn-secondary flex items-center gap-2 disabled:opacity-50"><Play className="w-4 h-4" /> Aplicar agora</button>}
-          <button onClick={fetchData} className="btn-secondary flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar</button>
+          {canWrite && <button onClick={apply} disabled={busy} title={t('svc.common.applyNow.title')} className="btn-secondary flex items-center gap-2 disabled:opacity-50"><Play className="w-4 h-4" /> {t('svc.common.applyNow')}</button>}
+          <button onClick={fetchData} className="btn-secondary flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> {t('svc.common.refresh')}</button>
         </div>
       </div>
 
       {data?.last_apply && !data.last_apply.ok && (
         <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
-          Última aplicação automática falhou: {data.last_apply.error || 'erro desconhecido'}. Corrija e use "Aplicar agora".
+          {t('svc.common.lastApplyFailed', { error: data.last_apply.error || t('svc.common.unknownError') })}
         </div>
       )}
 
@@ -152,7 +163,7 @@ export default function Ntp() {
           afirmação — esta faixa é a diferença entre as duas. */}
       {data?.last_apply?.warning && (
         <div className="card border border-amber-500/30 bg-amber-500/10 text-amber-400 text-sm">
-          Aplicado, com ressalvas: {data.last_apply.warning}
+          {t('svc.common.appliedWithWarnings', { warning: data.last_apply.warning })}
         </div>
       )}
 
@@ -163,66 +174,66 @@ export default function Ntp() {
           last_apply's message. */}
       {data?.firewall_apply && !data.firewall_apply.ok && (
         <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
-          Última aplicação da proteção de firewall (nftables) falhou: {data.firewall_apply.error || 'erro desconhecido'}. O NTP pode estar exposto além das redes autorizadas. Corrija e use "Aplicar agora".
+          {t('svc.ntp.firewallApplyFailed', { error: data.firewall_apply.error || t('svc.common.unknownError') })}
         </div>
       )}
 
-      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchData} className="underline">Tentar novamente</button></div>}
-      {msg && <div className={`card border text-sm ${msg.startsWith('Erro') ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">{t('svc.common.loadFailed')} <button onClick={fetchData} className="underline">{t('svc.common.tryAgain')}</button></div>}
+      {msg && <div className={`card border text-sm ${msgError ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-green-500/30 bg-green-500/10 text-green-400'}`}>{msg}</div>}
 
       {loading || !cfg ? (
-        <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
+        <div className="card text-center py-8 text-gray-500 animate-pulse">{t('common.loading')}</div>
       ) : (
         <>
-          <Panel title={<span className="flex items-center gap-2"><Clock className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Status</span></span>}>
+          <Panel title={<span className="flex items-center gap-2"><Clock className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('svc.ntp.section.status')}</span></span>}>
             {!data?.status.installed ? (
               <div className="space-y-3">
-                <p className="text-gray-400 text-sm">O chrony (serviço de sincronização NTP) não está instalado nesta máquina.</p>
+                <p className="text-gray-400 text-sm">{t('svc.ntp.notInstalled')}</p>
                 {canWrite && (
-                  <button onClick={installChrony} disabled={busy} className="btn-primary flex items-center gap-2 disabled:opacity-50"><Download className="w-4 h-4" /> Instalar chrony</button>
+                  <button onClick={installChrony} disabled={busy} className="btn-primary flex items-center gap-2 disabled:opacity-50"><Download className="w-4 h-4" /> {t('svc.ntp.installChrony')}</button>
                 )}
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                 <div>
-                  <div className="text-gray-500">Sincronizado</div>
-                  <div className={data?.status.synced ? 'text-green-400' : 'text-red-400'}>{data?.status.synced ? 'Sim' : 'Não'}</div>
+                  <div className="text-gray-500">{t('svc.ntp.status.synced')}</div>
+                  <div className={data?.status.synced ? 'text-green-400' : 'text-red-400'}>{data?.status.synced ? t('svc.ntp.status.yes') : t('svc.ntp.status.no')}</div>
                 </div>
                 <div>
-                  <div className="text-gray-500">Stratum</div>
+                  <div className="text-gray-500">{t('svc.ntp.status.stratum')}</div>
                   <div className="text-white">{data?.status.stratum ?? '—'}</div>
                 </div>
                 <div>
-                  <div className="text-gray-500">Offset</div>
+                  <div className="text-gray-500">{t('svc.ntp.status.offset')}</div>
                   <div className="text-white font-mono">{data?.status.offset_secs != null ? `${(data.status.offset_secs * 1000).toFixed(3)} ms` : '—'}</div>
                 </div>
                 <div>
-                  <div className="text-gray-500">Fonte</div>
+                  <div className="text-gray-500">{t('svc.ntp.status.source')}</div>
                   <div className="text-white font-mono truncate">{data?.status.source || '—'}</div>
                 </div>
               </div>
             )}
           </Panel>
 
-          <Panel title={<span className="flex items-center gap-2"><Clock className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Configuração</span></span>}>
+          <Panel title={<span className="flex items-center gap-2"><Clock className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('svc.ntp.section.config')}</span></span>}>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="label">Servidores NTP (separados por vírgula)</label>
-                <input className="input w-full" placeholder="a.ntp.br, b.ntp.br (vazio = pool padrão do Debian)" value={serversText} disabled={!canWrite} onChange={(e) => setServersText(e.target.value)} onBlur={syncServersFromText} />
-                <p className="text-xs text-gray-600 mt-1">Vazio = usa o pool padrão do Debian, sem gerenciar nada.</p>
+                <label className="label">{t('svc.ntp.field.servers')}</label>
+                <input className="input w-full" placeholder={t('svc.ntp.placeholder.servers')} value={serversText} disabled={!canWrite} onChange={(e) => setServersText(e.target.value)} onBlur={syncServersFromText} />
+                <p className="text-xs text-gray-600 mt-1">{t('svc.ntp.hint.servers')}</p>
               </div>
               <div>
-                <label className="label">Fuso horário</label>
+                <label className="label">{t('svc.ntp.field.timezone')}</label>
                 <select className="input w-full" value={cfg.timezone} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, timezone: e.target.value })}>
-                  <option value="">Não gerenciar (mantém o que já está configurado)</option>
+                  <option value="">{t('svc.ntp.timezone.unmanaged')}</option>
                   {data?.timezones.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
                 </select>
               </div>
             </div>
-            {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">Salvar config</button></div>}
+            {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">{t('svc.common.saveConfig')}</button></div>}
           </Panel>
 
-          <Panel title={<span className="flex items-center gap-2"><Wifi className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Servir horário para a rede local</span></span>}>
+          <Panel title={<span className="flex items-center gap-2"><Wifi className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('svc.ntp.section.serveLan')}</span></span>}>
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -231,14 +242,14 @@ export default function Ntp() {
                 disabled={!canWrite}
                 onChange={(e) => toggleServeLAN(e.target.checked)}
               />
-              <span className="text-gray-300 text-sm">Este firewall também serve NTP para a rede local (via chrony, protegido por firewall)</span>
+              <span className="text-gray-300 text-sm">{t('svc.ntp.serveLan.check')}</span>
             </label>
 
             {(cfg.serve_lan || savedServing) && (
               <div className="mt-4 space-y-3">
                 {cfg.serve_lan && (
                   <div>
-                    <label className="label">Redes autorizadas (CIDR, separadas por vírgula)</label>
+                    <label className="label">{t('svc.ntp.field.allowedNetworks')}</label>
                     <input
                       className="input w-full"
                       placeholder={data?.suggested_network || '192.168.3.0/24'}
@@ -248,7 +259,7 @@ export default function Ntp() {
                       onBlur={syncNetworksFromText}
                     />
                     <p className="text-xs text-gray-600 mt-1">
-                      Escolha quais redes podem sincronizar o horário aqui — LAN, VLANs, Wi-Fi ou rede de convidados. Vazio = nenhuma rede liberada (não é "liberar tudo").
+                      {t('svc.ntp.hint.allowedNetworks')}
                     </p>
                   </div>
                 )}
@@ -260,22 +271,22 @@ export default function Ntp() {
                     already live. */}
                 <div className="text-xs text-gray-500 border border-gray-800 rounded p-3 bg-gray-900/40 space-y-1">
                   {!savedServing ? (
-                    <div>Em vigor: NTP não está sendo servido para a rede local.</div>
+                    <div>{t('svc.ntp.live.off')}</div>
                   ) : savedNetworks.length > 0 ? (
                     <div>
-                      Em vigor: servindo NTP para <span className="text-gray-300 font-mono">{savedNetworks.join(', ')}</span>, anunciado via DHCP (opção 42) e negado para qualquer outra origem.
+                      {t('svc.ntp.live.serving.prefix')} <span className="text-gray-300 font-mono">{savedNetworks.join(', ')}</span>{t('svc.ntp.live.serving.tail')}
                     </div>
                   ) : (
-                    <div>Em vigor: nenhuma rede autorizada — NTP negado para todo mundo até uma rede ser adicionada e salva.</div>
+                    <div>{t('svc.ntp.live.noNetworks')}</div>
                   )}
                   {hasPendingChanges && (
-                    <div className="text-yellow-400">Há alterações não salvas acima — clique em "Salvar config" para aplicá-las.</div>
+                    <div className="text-yellow-400">{t('svc.ntp.pendingChanges')}</div>
                   )}
                 </div>
               </div>
             )}
 
-            {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">Salvar config</button></div>}
+            {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">{t('svc.common.saveConfig')}</button></div>}
           </Panel>
         </>
       )}

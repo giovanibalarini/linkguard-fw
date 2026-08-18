@@ -1,0 +1,292 @@
+# Textos da área "recipes": o cartão "O que você quer fazer?" (Recipes.tsx) e o
+# cartão "Primeiros passos" (GettingStarted.tsx).
+#
+# Os dois são material de ensino: quem lê é alguém que ainda não sabe onde as
+# coisas ficam. Por isso o inglês repete a CONSEQUÊNCIA que o português explica
+# ("cada porta aberta é uma porta de entrada na sua rede") em vez de encurtar
+# para um rótulo.
+#
+# Marcadores de ênfase dentro do texto, resolvidos no componente:
+#   *assim*  vira <b>   — destaca o alvo do clique (tela, botão, campo)
+#   `assim`  vira <code> — literal que a pessoa digita
+#   _assim_  vira <i>
+# Eles existem para a frase INTEIRA caber numa chave só: partida em pedaços, a
+# ordem das palavras do português não sobreviveria ao inglês.
+
+# ---------------------------------------------------------------- Recipes.tsx
+recipes.panel.title:
+  pt: "O que você quer fazer?"
+  en: "What do you want to do?"
+recipes.panel.subtitle:
+  pt: "Tarefas comuns, passo a passo — escolha uma e a gente te leva até lá."
+  en: "Common tasks, step by step — pick one and it takes you to the right screen."
+recipes.hide:
+  pt: "Ocultar"
+  en: "Hide"
+recipes.hide.title:
+  pt: "Ocultar este card"
+  en: "Hide this card"
+
+recipes.block-site.title:
+  pt: "Bloquear um site ou aplicativo"
+  en: "Block a site or app"
+recipes.block-site.summary:
+  pt: "Impedir o acesso a um domínio (ex.: redes sociais) em toda a rede."
+  en: "Block access to a domain (social networks, for example) across the whole network."
+recipes.block-site.cta:
+  pt: "Ir para DNS"
+  en: "Go to DNS"
+recipes.block-site.step1:
+  pt: "Abra a tela *DNS*."
+  en: "Open the *DNS* screen."
+recipes.block-site.step2:
+  pt: "Na *lista de bloqueio*, digite o domínio (ex.: `facebook.com`) e adicione."
+  en: "In the *block list*, type the domain (`facebook.com`, for example) and add it."
+recipes.block-site.step3:
+  pt: "Clique em *Aplicar*. O bloqueio vale para todos os aparelhos que usam este firewall como DNS."
+  en: "Click *Apply*. The block covers every device that uses this firewall as its DNS."
+recipes.block-site.step4:
+  pt: "Para liberar de novo, é só remover o domínio da lista."
+  en: "To allow it again, remove the domain from the list."
+
+recipes.top-talkers.title:
+  pt: "Ver quem está consumindo a internet"
+  en: "See who is using up the internet"
+recipes.top-talkers.summary:
+  pt: "Descobrir qual aparelho está usando mais banda agora."
+  en: "Find out which device is using the most bandwidth right now."
+recipes.top-talkers.cta:
+  pt: "Ir para Hosts"
+  en: "Go to Hosts"
+recipes.top-talkers.step1:
+  pt: "Abra a tela *Hosts*."
+  en: "Open the *Hosts* screen."
+recipes.top-talkers.step2:
+  pt: "No topo, veja o card *Top consumidores* — lista os aparelhos por uso de banda em tempo real."
+  en: "At the top, look at the *Top talkers* card — it ranks devices by bandwidth use in real time."
+recipes.top-talkers.step3:
+  pt: "A barra azul mostra o consumo relativo; à direita, o *download* e o *upload* de cada um."
+  en: "The blue bar shows relative usage; to the right, the *download* and *upload* of each one."
+
+recipes.reserve-ip.title:
+  pt: "Dar um IP fixo a um aparelho"
+  en: "Give a device a fixed IP"
+recipes.reserve-ip.summary:
+  pt: "Garantir que um aparelho receba sempre o mesmo endereço."
+  en: "Make sure a device always gets the same address."
+recipes.reserve-ip.cta:
+  pt: "Ir para DHCP"
+  en: "Go to DHCP"
+recipes.reserve-ip.step1:
+  pt: "Em *Hosts*, encontre o aparelho e copie o *MAC* (o \"RG\" da placa de rede)."
+  en: "In *Hosts*, find the device and copy its *MAC* (the network card's own ID number)."
+recipes.reserve-ip.step2:
+  pt: "Abra a tela *DHCP* e vá em *Reservas*."
+  en: "Open the *DHCP* screen and go to *Reservations*."
+recipes.reserve-ip.step3:
+  pt: "Informe o *MAC*, o *IP fixo* desejado e um nome, e salve."
+  en: "Enter the *MAC*, the *fixed IP* you want and a name, then save."
+recipes.reserve-ip.step4:
+  pt: "Clique em *Aplicar*. Na próxima conexão o aparelho receberá esse IP."
+  en: "Click *Apply*. The device picks up that IP the next time it connects."
+
+recipes.port-forward.title:
+  pt: "Liberar / encaminhar uma porta"
+  en: "Open / forward a port"
+recipes.port-forward.summary:
+  pt: "Deixar algo de fora acessar um serviço seu (servidor, câmera, jogo)."
+  en: "Let something outside reach a service of yours (server, camera, game)."
+recipes.port-forward.cta:
+  pt: "Ir para Firewall"
+  en: "Go to Firewall"
+recipes.port-forward.step1:
+  pt: "Reserve um *IP fixo* para o aparelho no *DHCP* (assim o encaminhamento não muda de dono)."
+  en: "Reserve a *fixed IP* for the device in *DHCP*, so the forward never ends up pointing at some other machine."
+recipes.port-forward.step2:
+  pt: "Abra *Firewall → Encaminhamento*."
+  en: "Open *Firewall → Port forwarding*."
+recipes.port-forward.step3:
+  pt: "Informe a *porta externa*, o *protocolo* (TCP/UDP) e o *IP:porta interna* do aparelho, e salve."
+  en: "Enter the *external port*, the *protocol* (TCP/UDP) and the device's *internal IP:port*, then save."
+recipes.port-forward.step4:
+  pt: "Abra só o necessário — cada porta aberta é uma porta de entrada na sua rede."
+  en: "Open only what you actually need — every open port is a way into your network."
+
+recipes.block-device.title:
+  pt: "Bloquear um aparelho da rede"
+  en: "Block a device from the network"
+recipes.block-device.summary:
+  pt: "Cortar o acesso à internet de um dispositivo específico."
+  en: "Cut off internet access for one specific device."
+recipes.block-device.cta:
+  pt: "Ir para Hosts"
+  en: "Go to Hosts"
+recipes.block-device.step1:
+  pt: "Abra a tela *Hosts*."
+  en: "Open the *Hosts* screen."
+recipes.block-device.step2:
+  pt: "Localize o aparelho pelo nome, IP ou MAC."
+  en: "Find the device by name, IP or MAC."
+recipes.block-device.step3:
+  pt: "Clique em *Bloquear*. Ele perde o acesso à internet imediatamente."
+  en: "Click *Block*. It loses internet access immediately."
+recipes.block-device.step4:
+  pt: "Para liberar, clique em *Desbloquear* no mesmo aparelho."
+  en: "To let it back on, click *Unblock* on the same device."
+
+recipes.balance-wan.title:
+  pt: "Escolher / equilibrar a internet (WAN)"
+  en: "Choose / balance the internet (WAN)"
+recipes.balance-wan.summary:
+  pt: "Definir prioridade entre links ou dividir o tráfego (multi-WAN)."
+  en: "Set priority between links or split traffic across them (multi-WAN)."
+recipes.balance-wan.cta:
+  pt: "Ir para Links WAN"
+  en: "Go to WAN Links"
+recipes.balance-wan.step1:
+  pt: "Abra a tela *Links WAN*."
+  en: "Open the *WAN Links* screen."
+recipes.balance-wan.step2:
+  pt: "Ajuste o *peso* de cada link: maior peso recebe mais tráfego."
+  en: "Adjust the *weight* of each link: the higher the weight, the more traffic it takes."
+recipes.balance-wan.step3:
+  pt: "Com dois links, o LinkGuard equilibra o uso e troca sozinho se um cair (*failover*)."
+  en: "With two links, LinkGuard balances usage between them and switches over on its own if one goes down (*failover*)."
+
+recipes.secure-panel.title:
+  pt: "Proteger o acesso ao painel"
+  en: "Lock down access to the panel"
+recipes.secure-panel.summary:
+  pt: "Trocar a senha padrão e criar usuários nominais."
+  en: "Change the default password and create named accounts."
+recipes.secure-panel.cta:
+  pt: "Ir para Administração"
+  en: "Go to Administration"
+recipes.secure-panel.step1:
+  pt: "Abra a tela *Administração*."
+  en: "Open the *Administration* screen."
+recipes.secure-panel.step2:
+  pt: "Crie um *usuário só seu* e defina uma senha forte."
+  en: "Create *a user that is yours alone* and set a strong password."
+recipes.secure-panel.step3:
+  pt: "Para cada pessoa, você pode dar *permissões diferentes* (papéis)."
+  en: "You can give each person *different permissions* (roles)."
+recipes.secure-panel.step4:
+  pt: "Deixe de usar a conta padrão *admin/admin*."
+  en: "Stop using the default *admin/admin* account."
+
+# --------------------------------------------------------- GettingStarted.tsx
+recipes.start.heading:
+  pt: "Primeiros passos"
+  en: "Getting started"
+recipes.start.heading.done:
+  pt: "Tudo pronto! 🎉"
+  en: "All set 🎉"
+recipes.start.subtitle:
+  pt: "Vamos transformar esta máquina num firewall — a gente explica cada passo."
+  en: "Let's turn this machine into a firewall — each step is explained as you go."
+recipes.start.subtitle.done:
+  pt: "Seu firewall está configurado. Você pode ocultar este guia."
+  en: "Your firewall is configured. You can hide this guide."
+recipes.start.hide:
+  pt: "Ocultar guia"
+  en: "Hide guide"
+recipes.start.progress:
+  pt: "{feitos} de {total}"
+  en: "{feitos} of {total}"
+
+recipes.start.iface.title:
+  pt: "Identifique suas conexões"
+  en: "Identify your connections"
+recipes.start.iface.body:
+  pt: "Toda máquina-firewall tem pelo menos duas conexões de rede."
+  en: "Every firewall machine has at least two network connections."
+recipes.start.iface.cta:
+  pt: "Ver interfaces"
+  en: "View interfaces"
+recipes.start.iface.help.title:
+  pt: "WAN e LAN"
+  en: "WAN and LAN"
+recipes.start.iface.help.body:
+  pt: "A *WAN* é a sua conexão com a *internet* (o cabo do provedor/modem). A *LAN* é a sua *rede local* (os aparelhos de casa). O firewall fica no meio, protegendo a LAN e compartilhando a internet."
+  en: "The *WAN* is your connection to the *internet* (the cable from the provider or modem). The *LAN* is your *local network* (the devices at home). The firewall sits between the two, protecting the LAN and sharing the internet."
+
+recipes.start.wan.title:
+  pt: "Configure sua internet (WAN)"
+  en: "Set up your internet (WAN)"
+recipes.start.wan.body:
+  pt: "Diga qual interface é a sua internet. Pode ter mais de uma (multi-WAN)."
+  en: "Say which interface carries your internet. There can be more than one (multi-WAN)."
+recipes.start.wan.cta:
+  pt: "Configurar WAN"
+  en: "Configure WAN"
+recipes.start.wan.help.title:
+  pt: "Link WAN"
+  en: "WAN link"
+recipes.start.wan.help.body:
+  pt: "É a porta por onde a internet entra. Com *duas WANs*, o LinkGuard pode equilibrar o uso e trocar automaticamente se uma cair (*failover*)."
+  en: "It is the port the internet comes in through. With *two WANs*, LinkGuard can balance usage and switch over automatically if one goes down (*failover*)."
+
+recipes.start.nat.title:
+  pt: "Transforme em firewall (NAT)"
+  en: "Turn it into a firewall (NAT)"
+recipes.start.nat.body:
+  pt: "Compartilha a internet com a sua rede local com segurança."
+  en: "Shares the internet with your local network, safely."
+recipes.start.nat.cta:
+  pt: "Ver firewall"
+  en: "View firewall"
+recipes.start.nat.help.title:
+  pt: "NAT / roteamento"
+  en: "NAT / routing"
+recipes.start.nat.help.body:
+  pt: "O *NAT* deixa vários aparelhos da sua casa usarem uma única internet, escondidos atrás do firewall. É o que transforma a máquina num *roteador*."
+  en: "*NAT* lets many devices in your home share a single internet connection, hidden behind the firewall. It is what turns this machine into a *router*."
+
+recipes.start.dhcp.title:
+  pt: "Distribua IPs (DHCP)"
+  en: "Hand out IPs (DHCP)"
+recipes.start.dhcp.body:
+  pt: "Dá um endereço automático para cada aparelho que conecta na sua rede."
+  en: "Gives an automatic address to every device that joins your network."
+recipes.start.dhcp.cta:
+  pt: "Configurar DHCP"
+  en: "Configure DHCP"
+recipes.start.dhcp.help.title:
+  pt: "DHCP"
+  en: "DHCP"
+recipes.start.dhcp.help.body:
+  pt: "Sem DHCP você teria que configurar o IP de cada celular, TV e PC na mão. O *DHCP* faz isso sozinho. Você ainda pode *reservar* um IP fixo para um aparelho específico."
+  en: "Without DHCP you would have to set the IP of every phone, TV and PC by hand. *DHCP* does it on its own. You can still *reserve* a fixed IP for one specific device."
+
+recipes.start.dns.title:
+  pt: "Resolva nomes (DNS)"
+  en: "Resolve names (DNS)"
+recipes.start.dns.body:
+  pt: "Traduz \"google.com\" no endereço real — e pode filtrar sites."
+  en: "Translates \"google.com\" into the real address — and can filter sites."
+recipes.start.dns.cta:
+  pt: "Configurar DNS"
+  en: "Configure DNS"
+recipes.start.dns.help.title:
+  pt: "DNS"
+  en: "DNS"
+recipes.start.dns.help.body:
+  pt: "O *DNS* é a \"lista telefônica\" da internet: transforma nomes (_google.com_) em números (IPs). Pelo LinkGuard você vê o que cada aparelho acessa e pode *bloquear* domínios."
+  en: "*DNS* is the \"phone book\" of the internet: it turns names (_google.com_) into numbers (IPs). Through LinkGuard you see what each device reaches and can *block* domains."
+
+recipes.start.sec.title:
+  pt: "Proteja o acesso ao painel"
+  en: "Protect access to the panel"
+recipes.start.sec.body:
+  pt: "Crie seu usuário e troque a senha padrão antes de usar pra valer."
+  en: "Create your own user and change the default password before running this for real."
+recipes.start.sec.cta:
+  pt: "Criar meu usuário"
+  en: "Create my user"
+recipes.start.sec.help.title:
+  pt: "Segurança do painel"
+  en: "Panel security"
+recipes.start.sec.help.body:
+  pt: "O usuário padrão é *admin/admin* — qualquer um na rede entraria. Crie um *usuário seu* e troque a senha. Você pode dar permissões diferentes para cada pessoa."
+  en: "The default account is *admin/admin* — anyone on the network could log in. Create *a user of your own* and change the password. You can give each person different permissions."

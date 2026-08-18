@@ -3,16 +3,19 @@ import { useI18n } from '../i18n';
 import { Plus, X, Network } from 'lucide-react';
 import client from '../api/client';
 import Panel from './ui/Panel';
-import type { NftManaged } from '../types';
+import type { MsgLevel, NftManaged } from '../types';
 
 interface Props {
   canWrite: boolean;
-  onMsg: (m: string) => void;
+  // O tom é explícito nas falhas: a faixa do pai só adivinha "vermelho" quando o
+  // texto começa com "Erro", e essa palavra deixou de ser constante quando a
+  // mensagem passou a vir do dicionário.
+  onMsg: (m: string, level?: MsgLevel) => void;
 }
 
-function errMsg(e: unknown): string {
+function errMsg(e: unknown, generico: string): string {
   const ax = e as { response?: { data?: { error?: string } }; message?: string };
-  return ax?.response?.data?.error || ax?.message || 'falha na operação';
+  return ax?.response?.data?.error || ax?.message || generico;
 }
 
 /**
@@ -43,7 +46,7 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
       const { data } = await client.get<NftManaged>('/api/nftables/managed');
       setManaged(data ?? { wan_hosts: [], blocklist: [], blocked_hosts: [] });
     } catch (e) {
-      onMsg('Erro: ' + errMsg(e));
+      onMsg(t('fwx.error', { msg: errMsg(e, t('fwx.err.generic')) }), 'error');
     } finally {
       setLoading(false);
     }
@@ -59,7 +62,7 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
       onMsg(ok);
       await load();
     } catch (e) {
-      onMsg('Erro: ' + errMsg(e));
+      onMsg(t('fwx.error', { msg: errMsg(e, t('fwx.err.generic')) }), 'error');
     } finally {
       setBusy(false);
     }
@@ -79,10 +82,10 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
             único do firewall que não filtra, e sem essa frase ele parece
             mais um bloqueio. */}
         <p className="text-gray-400 text-sm mb-1">
-          Estes hosts saem pela <span className="text-blue-300">WAN2</span>; os demais pela WAN1.
+          {t('fwx.steering.line.head')}<span className="text-blue-300">WAN2</span>{t('fwx.steering.line.tail')}
         </p>
         <p className="text-gray-500 text-xs mb-3">
-          Isto não bloqueia nem libera nada — só escolhe por qual link o tráfego sai. Acontece antes de qualquer regra de grupo, na etapa de marcação (chain <span className="font-mono">mark_hosts</span>).
+          {t('fwx.steering.notFilter')}<span className="font-mono">mark_hosts</span>).
         </p>
         {canWrite && (
           <div className="flex flex-col sm:flex-row gap-2 mb-3">
@@ -94,7 +97,7 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
               onKeyDown={(e) => e.key === 'Enter' && addWan()}
             />
             <button onClick={addWan} disabled={busy || !newWan.trim()} className="btn-primary flex items-center gap-2 justify-center disabled:opacity-50">
-              <Plus className="w-4 h-4" /> Adicionar
+              <Plus className="w-4 h-4" /> {t('fwx.btn.add')}
             </button>
           </div>
         )}
@@ -107,7 +110,7 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
                   nft tem, não um rótulo do painel. */}
               <span className="text-blue-400 text-xs">{h.mark}</span>
               {canWrite && (
-                <button onClick={() => delWan(h.ip)} disabled={busy} className="text-gray-500 hover:text-red-400 disabled:opacity-50" aria-label={`Reverter ${h.ip} para a WAN1`}>
+                <button onClick={() => delWan(h.ip)} disabled={busy} className="text-gray-500 hover:text-red-400 disabled:opacity-50" aria-label={t('fwx.steering.revert.aria', { ip: h.ip })}>
                   <X className="w-3.5 h-3.5" />
                 </button>
               )}
@@ -115,7 +118,7 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
           ))}
         </div>
         <p className="text-[11px] text-gray-600 mt-3">
-          A tela de <span className="text-gray-400">{t('fw.steering.hosts')}</span> é onde a máquina é reconhecida pelo nome e MAC; a edição do direcionamento mora aqui, no Firewall.
+          {t('fwx.steering.hostsNote.head')}<span className="text-gray-400">{t('fw.steering.hosts')}</span>{t('fwx.steering.hostsNote.tail')}
         </p>
       </Panel>
     </div>

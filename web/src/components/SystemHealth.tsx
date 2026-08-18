@@ -2,22 +2,23 @@ import { useEffect, useState } from 'react';
 import { ShieldCheck, ShieldAlert } from 'lucide-react';
 import client from '../api/client';
 import Panel from './ui/Panel';
+import { useI18n } from '../i18n';
 import type { HealthItem, UpdatesReport } from '../types';
 
 // Friendly labels for known service unit names.
-const LABEL: Record<string, string> = {
-  'nftables': 'Firewall',
-  'kea-dhcp4-server': 'DHCP',
-  'unbound': 'DNS',
-  'ntp-sync': 'Sincronização de horário',
-  'smart-health': 'Disco (SMART)',
-  'boot-time': 'Tempo de boot',
-  'journal-integrity': 'Integridade dos logs',
-  'firewall-nat': 'Regra de NAT',
-  'firewall-boot-persist': 'Regras no próximo boot',
-  'wan-interface': 'Interfaces WAN',
-  'dns-resolver': 'Resolver DNS',
-  'system-updates': 'Atualizações do sistema',
+const LABEL_KEY: Record<string, string> = {
+  'nftables': 'mon.health.label.nftables',
+  'kea-dhcp4-server': 'mon.health.label.dhcp',
+  'unbound': 'mon.health.label.dns',
+  'ntp-sync': 'mon.health.label.ntpSync',
+  'smart-health': 'mon.health.label.smart',
+  'boot-time': 'mon.health.label.bootTime',
+  'journal-integrity': 'mon.health.label.journalIntegrity',
+  'firewall-nat': 'mon.health.label.firewallNat',
+  'firewall-boot-persist': 'mon.health.label.firewallBootPersist',
+  'wan-interface': 'mon.health.label.wanInterface',
+  'dns-resolver': 'mon.health.label.dnsResolver',
+  'system-updates': 'mon.health.label.systemUpdates',
 };
 
 // O que fazer quando o vigia está fora do ar — só para os itens em que a saída
@@ -32,12 +33,12 @@ const LABEL: Record<string, string> = {
 // continua sem conseguir escrever por mais mutações que venham. Sem esta linha o
 // operador tenta a mutação, vê que nada muda e conclui que o produto está
 // quebrado — às 3 da manhã, numa máquina que ele só alcança por SSH.
-const FIX_HINT: Record<string, string> = {
-  'firewall-boot-persist':
-    'Devolva a permissão de escrita em /etc/nftables.conf e reinicie o serviço: systemctl restart linkguard-fw. Aplicar outra regra não resolve.',
+const FIX_HINT_KEY: Record<string, string> = {
+  'firewall-boot-persist': 'mon.health.hint.firewallBootPersist',
 };
 
 export default function SystemHealth() {
+  const { t } = useI18n();
   const [items, setItems] = useState<HealthItem[]>([]);
   const [updates, setUpdates] = useState<UpdatesReport | null>(null);
   const [showUpdates, setShowUpdates] = useState(false);
@@ -62,20 +63,23 @@ export default function SystemHealth() {
   // se não há o que vigiar.
   if (items.length === 0) {
     return (
-      <Panel title="Saúde do sistema" className="h-full overflow-y-auto">
-        <p className="py-2 text-sm text-gray-500">Nenhum vigia configurado ainda.</p>
+      <Panel title={t('mon.health.title')} className="h-full overflow-y-auto">
+        <p className="py-2 text-sm text-gray-500">{t('mon.health.empty')}</p>
       </Panel>
     );
   }
   return (
-    <Panel title="Saúde do sistema" className="h-full overflow-y-auto">
+    <Panel title={t('mon.health.title')} className="h-full overflow-y-auto">
       {/* auto-fill, e não `sm:`/`lg:`: dentro de um widget quem manda é a largura
           do CARTÃO, não a da janela. Com os breakpoints do Tailwind (que olham a
           janela) um widget de 4 colunas numa tela larga tentava caber 4 vigias
           lado a lado e todos os rótulos viravam "Sinc...", "Inte...", "Tem...". */}
       <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(8.5rem,1fr))]">
         {items.map((it) => {
-          const hint = it.up ? undefined : FIX_HINT[it.name];
+          const hintKey = it.up ? undefined : FIX_HINT_KEY[it.name];
+          const hint = hintKey ? t(hintKey) : undefined;
+          const labelKey = LABEL_KEY[it.name];
+          const label = labelKey ? t(labelKey) : it.name;
           return (
           <div key={`${it.kind}:${it.name}`}
             className={`rounded-lg border p-3 ${it.up ? 'border-green-500/20 bg-green-500/5' : 'border-red-500/30 bg-red-500/10'}`}>
@@ -87,8 +91,8 @@ export default function SystemHealth() {
                     fora do ar. O title devolve o nome inteiro no hover — vale
                     para todos os vigias, não só o novo ("Sincroniza...",
                     "Temperatu...", "Atualizaçõ..." já sofriam do mesmo). */}
-                <div className="text-white text-sm truncate" title={LABEL[it.name] ?? it.name}>{LABEL[it.name] ?? it.name}</div>
-                <div className={`text-xs ${it.up ? 'text-green-400' : 'text-red-400'}`}>{it.up ? 'no ar' : 'fora do ar'}</div>
+                <div className="text-white text-sm truncate" title={label}>{label}</div>
+                <div className={`text-xs ${it.up ? 'text-green-400' : 'text-red-400'}`}>{it.up ? t('mon.health.up') : t('mon.health.down')}</div>
               </div>
             </div>
             {/* Visível, não só no `title`: em tela de toque não há hover, e esta
@@ -104,8 +108,8 @@ export default function SystemHealth() {
       {updates && updates.total > 0 && (
         <div className="mt-3 pt-3 border-t border-gray-800/50">
           <button onClick={() => setShowUpdates(!showUpdates)} className="text-sm text-gray-400 hover:text-white">
-            {updates.total} atualização(ões) pendente(s)
-            {updates.security > 0 && <span className="text-amber-400"> — {updates.security} de segurança</span>}
+            {t('mon.health.updates.pending', { n: updates.total })}
+            {updates.security > 0 && <span className="text-amber-400">{t('mon.health.updates.security', { n: updates.security })}</span>}
             <span className="text-gray-600"> {showUpdates ? '▲' : '▼'}</span>
           </button>
           {showUpdates && (

@@ -23,7 +23,7 @@ function tempoRelativo(iso: string, lang: 'pt' | 'en'): string {
  * anunciar tranquilidade quando o que houve foi silêncio.
  */
 export default function OpenAlertsWidget() {
-  const { lang } = useI18n();
+  const { lang, t } = useI18n();
   const { data: alerts, state } = usePolled<Alert[]>('/api/alerts?unresolved=true');
 
   const lista = (alerts ?? [])
@@ -33,20 +33,20 @@ export default function OpenAlertsWidget() {
 
   return (
     <WidgetCard
-      title="Alertas abertos"
+      title={t('wid.alerts.title')}
       action={
         <Link to="/alerts" className="shrink-0 text-xs text-gray-500 hover:text-gray-300">
-          ver todos
+          {t('wid.view.all')}
         </Link>
       }
     >
-      {state === 'loading' && <WidgetNote>Carregando…</WidgetNote>}
-      {state === 'error' && <WidgetNote>Não foi possível ler os alertas agora.</WidgetNote>}
-      {state === 'ok' && lista.length === 0 && <WidgetNote>Nenhum alerta aberto.</WidgetNote>}
+      {state === 'loading' && <WidgetNote>{t('wid.loading')}</WidgetNote>}
+      {state === 'error' && <WidgetNote>{t('wid.alerts.error')}</WidgetNote>}
+      {state === 'ok' && lista.length === 0 && <WidgetNote>{t('wid.alerts.empty')}</WidgetNote>}
 
       {criticos > 0 && (
         <p className="mb-2 rounded-lg border border-red-500/20 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-300">
-          {criticos} {criticos === 1 ? 'alerta crítico ativo' : 'alertas críticos ativos'}.
+          {t(criticos === 1 ? 'wid.alerts.critical.one' : 'wid.alerts.critical.many', { n: criticos })}
         </p>
       )}
 

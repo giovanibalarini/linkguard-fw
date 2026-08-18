@@ -156,7 +156,7 @@ export default function Layout() {
           <button
             onClick={() => setSidebarOpen(false)}
             className="lg:hidden text-gray-400 hover:text-gray-200"
-            aria-label="Fechar menu"
+            aria-label={t('shell.nav.closeMenu')}
           >
             <X className="w-5 h-5" />
           </button>
@@ -181,7 +181,7 @@ export default function Layout() {
 
         {/* Mode switch + language */}
         <div className="px-3 pt-3 border-t border-gray-800 space-y-2">
-          <div className="flex items-center gap-1 rounded-lg bg-gray-800 p-1" role="group" aria-label="Modo de exibição">
+          <div className="flex items-center gap-1 rounded-lg bg-gray-800 p-1" role="group" aria-label={t('shell.nav.modeGroup')}>
             <button
               onClick={() => setMode('simple')}
               className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
@@ -199,7 +199,7 @@ export default function Layout() {
               <SlidersHorizontal className="w-3.5 h-3.5" /> {t('mode.advanced')}
             </button>
           </div>
-          <div className="flex items-center gap-1 rounded-lg bg-gray-800 p-1" role="group" aria-label="Language">
+          <div className="flex items-center gap-1 rounded-lg bg-gray-800 p-1" role="group" aria-label={t('shell.nav.langGroup')}>
             {(['pt', 'en'] as const).map((l) => (
               <button
                 key={l}
@@ -243,7 +243,7 @@ export default function Layout() {
           <button
             onClick={() => setSidebarOpen(true)}
             className="text-gray-300 hover:text-white"
-            aria-label="Abrir menu"
+            aria-label={t('shell.nav.openMenu')}
           >
             <Menu className="w-6 h-6" />
           </button>
@@ -258,10 +258,10 @@ export default function Layout() {
           <div className="flex items-start gap-3 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-sm shrink-0">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <p className="flex-1">
-              Você está usando a conta padrão <span className="font-semibold">admin</span>. Crie usuários nominais e troque a senha em{' '}
-              <NavLink to="/admin" className="underline font-medium hover:text-amber-200">Administração</NavLink>.
+              {t('shell.defaultAccount.prefix')} <span className="font-semibold">admin</span>{t('shell.defaultAccount.middle')}{' '}
+              <NavLink to="/admin" className="underline font-medium hover:text-amber-200">{t('nav.admin')}</NavLink>.
             </p>
-            <button onClick={() => setShowSecWarn(false)} className="text-amber-400 hover:text-amber-200 shrink-0" aria-label="Dispensar aviso" title="Dispensar">
+            <button onClick={() => setShowSecWarn(false)} className="text-amber-400 hover:text-amber-200 shrink-0" aria-label={t('shell.defaultAccount.dismiss')} title={t('shell.defaultAccount.dismissShort')}>
               <X className="w-4 h-4" />
             </button>
           </div>

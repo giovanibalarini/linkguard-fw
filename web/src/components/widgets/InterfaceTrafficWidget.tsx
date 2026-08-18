@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import client from '../../api/client';
 import TrafficChart from '../TrafficChart';
 import { WidgetNote, usePolled } from './WidgetCard';
+import { useI18n } from '../../i18n';
 import { pointsFromHistory } from '../../lib/series';
 import type { Point, ScaleMode } from '../../lib/series';
 import type { SystemMetrics, TrafficHistoryResponse } from '../../types';
@@ -15,6 +16,7 @@ import type { SystemMetrics, TrafficHistoryResponse } from '../../types';
  * 30 min, na resolução de 1 s do tsdb.
  */
 export default function InterfaceTrafficWidget({ height }: { height: number }) {
+  const { t } = useI18n();
   const { data: sys, state } = usePolled<SystemMetrics>('/api/system/status', 30000);
   const [points, setPoints] = useState<Point[] | null>(null);
   const [mode, setMode] = useState<ScaleMode>('linear');
@@ -55,14 +57,14 @@ export default function InterfaceTrafficWidget({ height }: { height: number }) {
   if (state === 'loading') {
     return (
       <div className="card h-full">
-        <WidgetNote>Carregando…</WidgetNote>
+        <WidgetNote>{t('wid.loading')}</WidgetNote>
       </div>
     );
   }
   if (!iface) {
     return (
       <div className="card h-full">
-        <WidgetNote>Nenhuma interface de rede para medir.</WidgetNote>
+        <WidgetNote>{t('wid.traffic.empty')}</WidgetNote>
       </div>
     );
   }

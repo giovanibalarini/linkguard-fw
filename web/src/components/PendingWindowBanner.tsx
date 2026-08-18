@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { Timer, Check, RotateCcw, HelpCircle, AlertTriangle } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { useI18n } from '../i18n';
 import { anchorFrom, countdownNow, formatCountdown, fullBannerShown, subscribeFullBanner } from '../lib/pendingWindow';
 import type { CountdownAnchor } from '../lib/pendingWindow';
 import type { FirewallPendingChange, FirewallPendingResponse } from '../types';
@@ -35,6 +36,7 @@ import type { FirewallPendingChange, FirewallPendingResponse } from '../types';
  */
 export default function PendingWindowBanner() {
   const { can, permsLoaded } = useAuth();
+  const { t } = useI18n();
   const canRead = can('firewall.read');
   const canWrite = can('firewall.write');
   // Enquanto a faixa COMPLETA estiver montada (aba "Grupos de regras"), quem
@@ -108,7 +110,7 @@ export default function PendingWindowBanner() {
       await refresh();
     } catch (e) {
       const ax = e as { response?: { data?: { error?: string } }; message?: string };
-      setErr(ax?.response?.data?.error || ax?.message || 'falha na operação');
+      setErr(ax?.response?.data?.error || ax?.message || t('shell.pending.opFailed'));
       await refresh();
     } finally {
       setBusy(false);
@@ -125,8 +127,8 @@ export default function PendingWindowBanner() {
       <div className="flex items-start gap-3 px-4 py-2.5 bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-200 text-sm shrink-0">
         <HelpCircle className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
         <p className="flex-1">
-          Não foi possível saber se há uma alteração de firewall aguardando confirmação. Se você acabou de aplicar uma, ela pode estar contando os 90 segundos agora —{' '}
-          <NavLink to="/firewall" className="underline font-medium hover:text-yellow-100">abra os grupos de regras</NavLink>.
+          {t('shell.pending.unknown.text')}{' '}
+          <NavLink to="/firewall" className="underline font-medium hover:text-yellow-100">{t('shell.pending.unknown.link')}</NavLink>.
         </p>
       </div>
     );
@@ -139,8 +141,8 @@ export default function PendingWindowBanner() {
       <div className="flex items-start gap-3 px-4 py-2.5 bg-blue-500/10 border-b border-blue-500/30 text-blue-100 text-sm shrink-0">
         <RotateCcw className="w-4 h-4 mt-0.5 shrink-0 animate-spin" aria-hidden="true" />
         <p className="flex-1">
-          Uma alteração de firewall está sendo revertida ({pending.summary}). Os grupos e as regras já voltaram ao estado anterior; falta o firewall aceitar, e o LinkGuard repete até conseguir.{' '}
-          <NavLink to="/firewall" className="underline font-medium hover:text-blue-50">Ver na tela de firewall</NavLink>.
+          {t('shell.pending.reverting', { summary: pending.summary })}{' '}
+          <NavLink to="/firewall" className="underline font-medium hover:text-blue-50">{t('shell.pending.seeOnFirewall')}</NavLink>.
         </p>
       </div>
     );
@@ -151,15 +153,15 @@ export default function PendingWindowBanner() {
       <div className="flex items-center gap-2 shrink-0">
         <Timer className="w-4 h-4 text-amber-400" aria-hidden="true" />
         {/* "reverte em", nunca "expira em": o relógio diz o que vai acontecer. */}
-        <span className="text-xs text-amber-300/80">reverte em</span>
+        <span className="text-xs text-amber-300/80">{t('shell.pending.revertsIn')}</span>
         <span className="font-mono text-lg font-semibold text-amber-300 tabular-nums">
           {seconds === null ? '—' : formatCountdown(seconds)}
         </span>
       </div>
       <div className="min-w-0 flex-1">
         <p>
-          Uma alteração no tráfego destinado ao próprio firewall aguarda confirmação —{' '}
-          <span className="text-amber-200/80 break-words">{pending.summary}</span>. Teste o acesso que importa (SSH, este painel) antes de confirmar.
+          {t('shell.pending.waiting.text')}{' '}
+          <span className="text-amber-200/80 break-words">{pending.summary}</span>{t('shell.pending.waiting.tail')}
         </p>
         {/* O aviso que torna esta janela honesta (spec §5). Um grupo restrito a
             `ct state new` não derruba a conexão que já está de pé: testar o
@@ -173,14 +175,14 @@ export default function PendingWindowBanner() {
           <p className="mt-1 flex items-start gap-1.5 text-amber-50">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" aria-hidden="true" />
             <span>
-              Este grupo vale só para conexões novas. <strong className="font-semibold">A sua sessão atual não é afetada</strong> — abra uma conexão nova (outro terminal SSH, uma aba anônima) para testar de verdade antes de confirmar.
+              {t('shell.pending.newConnOnly.lead')} <strong className="font-semibold">{t('shell.pending.newConnOnly.strong')}</strong>{t('shell.pending.newConnOnly.tail')}
             </span>
           </p>
         )}
-        {err && <p className="text-xs text-red-300 mt-1">Erro: {err}</p>}
+        {err && <p className="text-xs text-red-300 mt-1">{t('shell.pending.error', { msg: err })}</p>}
         {unknown && (
           <p className="text-xs text-amber-200/70 mt-1">
-            O painel não conseguiu reler o estado desta janela agora — o que está acima é a última leitura boa. Continua tentando.
+            {t('shell.pending.staleRead')}
           </p>
         )}
       </div>
@@ -191,18 +193,18 @@ export default function PendingWindowBanner() {
             disabled={busy}
             className="btn-primary text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
-            <Check className="w-3.5 h-3.5" aria-hidden="true" /> Confirmar acesso
+            <Check className="w-3.5 h-3.5" aria-hidden="true" /> {t('shell.pending.confirm')}
           </button>
           <button
             onClick={() => resolve('/api/nftables/pending/revert')}
             disabled={busy}
             className="btn-secondary text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
-            <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" /> Reverter agora
+            <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" /> {t('shell.pending.revertNow')}
           </button>
         </div>
       ) : (
-        <NavLink to="/firewall" className="underline font-medium hover:text-amber-50 shrink-0">Ver na tela de firewall</NavLink>
+        <NavLink to="/firewall" className="underline font-medium hover:text-amber-50 shrink-0">{t('shell.pending.seeOnFirewall')}</NavLink>
       )}
     </div>
   );

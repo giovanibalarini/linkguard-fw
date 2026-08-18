@@ -60,10 +60,10 @@ export default function GroupList({
     <div className="card p-0 overflow-hidden">
       <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-gray-800">
         <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">
-          {groups.length} grupo{groups.length === 1 ? '' : 's'}
+          {t(groups.length === 1 ? 'fwx.groups.count.one' : 'fwx.groups.count.many', { n: groups.length })}
         </span>
         <div className="flex items-center gap-1">
-          <IconButton icon={RefreshCw} onClick={onRefresh} label="Atualizar grupos" className="min-w-[32px] min-h-[32px]" />
+          <IconButton icon={RefreshCw} onClick={onRefresh} label={t('fwx.groups.refresh')} className="min-w-[32px] min-h-[32px]" />
           {canWrite && (
             <button
               onClick={onNewGroup}
@@ -88,7 +88,7 @@ export default function GroupList({
 
       {groups.length === 0 ? (
         <p className="text-gray-600 text-sm px-3 py-6 text-center">
-          Nenhum grupo ainda.{canWrite && ' Clique em "Novo".'}
+          {t('fwx.groups.none')}{canWrite && t('fwx.groups.none.hint')}
         </p>
       ) : (
         <ul className="divide-y divide-gray-800/70">
@@ -105,7 +105,7 @@ export default function GroupList({
             const n = sys ? membersOf(g, managed).length : rules.length;
             const noun = sys
               ? (n === 1 ? t(sys.member[0]) : t(sys.member[1]))
-              : `regra${n === 1 ? '' : 's'}`;
+              : (n === 1 ? t('fwx.noun.rule.one') : t('fwx.noun.rule.many'));
             // Aviso de ordem (spec §2.2): um bloqueio arrastado para
             // depois de um grupo LIGADO do admin pode nunca ver o pacote,
             // porque aquele grupo pode decidir antes. Grupo desligado não
@@ -160,19 +160,19 @@ export default function GroupList({
                       {sys && (
                         <Lock
                           className="w-3 h-3 shrink-0 text-gray-500"
-                          aria-label="grupo do sistema"
+                          aria-label={t('fwx.aria.systemGroup')}
                         />
                       )}
                       {inputScope && (
                         <AlertTriangle
                           className="w-3 h-3 shrink-0 text-orange-400"
-                          aria-label="grupo de tráfego destinado ao firewall"
+                          aria-label={t('fwx.aria.inputGroup')}
                         />
                       )}
                       {newOnly && (
                         <DoorOpen
                           className="w-3 h-3 shrink-0 text-sky-300"
-                          aria-label="grupo que vale só para conexões novas"
+                          aria-label={t('fwx.aria.newOnlyGroup')}
                         />
                       )}
                     </span>
@@ -184,7 +184,7 @@ export default function GroupList({
                     )}
                     {newOnly && (
                       <span className="block text-[11px] text-sky-300/90">
-                        só conexões novas · <span className="font-mono">ct state new</span>
+                        {t('fwx.label.newOnly')} · <span className="font-mono">ct state new</span>
                       </span>
                     )}
                     {!g.enabled && !staleOff && <span className="block text-[11px] text-gray-500">{t('fw.groups.off')}</span>}

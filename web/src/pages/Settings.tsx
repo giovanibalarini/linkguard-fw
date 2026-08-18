@@ -11,6 +11,7 @@ import HttpsInfo from '../components/HttpsInfo';
 import BackupRestore from '../components/BackupRestore';
 import UpdateChecker from '../components/UpdateChecker';
 import AISettings from '../components/AISettings';
+import { useI18n } from '../i18n';
 import type { TrafficRetentionResponse } from '../types';
 
 type RetentionProfile = '30d' | '1y' | '5y';
@@ -18,7 +19,19 @@ type RetentionProfile = '30d' | '1y' | '5y';
 // Ordem crescente de retenção; índice menor = janela mais curta.
 const PROFILE_ORDER: RetentionProfile[] = ['30d', '1y', '5y'];
 
+const FEATURE_KEYS = [
+  'cfg.about.feature.wan',
+  'cfg.about.feature.failover',
+  'cfg.about.feature.routes',
+  'cfg.about.feature.iptables',
+  'cfg.about.feature.backup',
+  'cfg.about.feature.metrics',
+  'cfg.about.feature.alerts',
+  'cfg.about.feature.audit',
+];
+
 export default function Settings() {
+  const { t } = useI18n();
   const [activeSection, setActiveSection] = useState('about');
   const [version, setVersion] = useState('');
   const [retentionProfile, setRetentionProfile] = useState<RetentionProfile>('30d');
@@ -40,13 +53,13 @@ export default function Settings() {
         }
       } catch (e) {
         console.error(e);
-        setLoadError('Não foi possível carregar o perfil de retenção atual.');
+        setLoadError(t('cfg.retention.loadError'));
       } finally {
         setLoadingRetention(false);
       }
     };
     loadRetention();
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     client.get<{ version: string }>('/api/health')
@@ -65,7 +78,7 @@ export default function Settings() {
       setTimeout(() => setProfileSaved(false), 3000);
     } catch (e) {
       console.error(e);
-      setProfileError('Erro ao salvar perfil de retenção.');
+      setProfileError(t('cfg.retention.saveError'));
     } finally {
       setSavingProfile(false);
     }
@@ -87,21 +100,21 @@ export default function Settings() {
   return (
     <div className="p-6 space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-white">Configurações</h1>
-        <p className="text-gray-500 text-sm">Configurações do sistema</p>
+        <h1 className="text-xl font-bold text-white">{t('cfg.title')}</h1>
+        <p className="text-gray-500 text-sm">{t('cfg.subtitle')}</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <Panel className="space-y-1">
           {[
-            { id: 'about', label: 'Sobre', icon: Info },
-            { id: 'general', label: 'Geral', icon: SettingsIcon },
-            { id: 'security', label: 'Segurança', icon: ShieldCheck },
-            { id: 'notifications', label: 'Notificações', icon: Bell },
-            { id: 'ai', label: 'Assistente de IA', icon: Sparkles },
-            { id: 'backup', label: 'Backup', icon: Download },
-            { id: 'updates', label: 'Atualizações', icon: RefreshCw },
-            { id: 'traffic-retention', label: 'Retenção de tráfego', icon: Database },
+            { id: 'about', label: t('cfg.nav.about'), icon: Info },
+            { id: 'general', label: t('cfg.nav.general'), icon: SettingsIcon },
+            { id: 'security', label: t('cfg.nav.security'), icon: ShieldCheck },
+            { id: 'notifications', label: t('cfg.nav.notifications'), icon: Bell },
+            { id: 'ai', label: t('cfg.nav.ai'), icon: Sparkles },
+            { id: 'backup', label: t('cfg.nav.backup'), icon: Download },
+            { id: 'updates', label: t('cfg.nav.updates'), icon: RefreshCw },
+            { id: 'traffic-retention', label: t('cfg.nav.retention'), icon: Database },
           ].map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -118,29 +131,20 @@ export default function Settings() {
 
         <div className="md:col-span-3">
           {activeSection === 'about' && (
-            <Panel title="Sobre o LinkGuard FW" className="space-y-4">
+            <Panel title={t('cfg.about.title')} className="space-y-4">
               <div className="space-y-3 text-sm">
-                <InfoRow label="Versão" value={version || '—'} />
-                <InfoRow label="Descrição" value="Ferramenta de gestão de firewall Linux para servidores Debian com múltiplos links de internet" />
-                <InfoRow label="Tecnologias" value="Go, React, SQLite, nftables, iproute2" />
-                <InfoRow label="Licença" value="MIT" />
+                <InfoRow label={t('cfg.about.version')} value={version || '—'} />
+                <InfoRow label={t('cfg.about.description')} value={t('cfg.about.description.value')} />
+                <InfoRow label={t('cfg.about.tech')} value="Go, React, SQLite, nftables, iproute2" />
+                <InfoRow label={t('cfg.about.license')} value="MIT" />
               </div>
               <div className="pt-4 border-t border-gray-800">
-                <h3 className="text-white font-medium mb-3">Funcionalidades</h3>
+                <h3 className="text-white font-medium mb-3">{t('cfg.about.features')}</h3>
                 <ul className="space-y-2 text-sm text-gray-400">
-                  {[
-                    'Gestão de links WAN com monitoramento contínuo',
-                    'Failover automático com dry-run mode',
-                    'Visualização de tabelas de roteamento',
-                    'Listagem de regras iptables',
-                    'Backup e restore de regras',
-                    'Métricas Prometheus em /metrics',
-                    'Alertas de sistema',
-                    'Logs de auditoria',
-                  ].map((f, i) => (
+                  {FEATURE_KEYS.map((k, i) => (
                     <li key={i} className="flex items-start gap-2">
                       <span className="text-blue-400 mt-0.5">•</span>
-                      {f}
+                      {t(k)}
                     </li>
                   ))}
                 </ul>
@@ -149,36 +153,34 @@ export default function Settings() {
           )}
 
           {activeSection === 'general' && (
-            <Panel title="Configurações Gerais" className="space-y-4">
+            <Panel title={t('cfg.general.title')} className="space-y-4">
               <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-                Somente leitura — editável via arquivo de configuração.
+                {t('cfg.general.readonly')}
               </div>
               <p className="text-gray-500 text-sm">
-                As configurações são gerenciadas via arquivo de configuração JSON.
-                Reinicie o serviço após alterar as configurações.
+                {t('cfg.general.intro')}
               </p>
               <div className="bg-gray-800 rounded-lg p-4">
                 <p className="text-gray-400 text-sm font-mono">
-                  Caminho padrão: <span className="text-blue-400">/etc/linkguard-fw/config.json</span>
+                  {t('cfg.general.defaultPath')} <span className="text-blue-400">/etc/linkguard-fw/config.json</span>
                 </p>
               </div>
               <div className="space-y-3 text-sm text-gray-400">
-                <p><span className="text-white">listen_addr:</span> Endereço de escuta (padrão: 127.0.0.1)</p>
-                <p><span className="text-white">port:</span> Porta HTTP (padrão: 8080)</p>
-                <p><span className="text-white">dry_run:</span> Modo dry-run para comandos de firewall</p>
-                <p><span className="text-white">monitor_interval_seconds:</span> Intervalo de verificação dos links</p>
-                <p><span className="text-white">failover_enabled:</span> Habilitar failover automático</p>
-                <p><span className="text-white">fail_threshold:</span> Falhas consecutivas para marcar offline</p>
-                <p><span className="text-white">recover_threshold:</span> Sucessos para marcar online</p>
+                <p><span className="text-white">listen_addr:</span> {t('cfg.general.listenAddr')}</p>
+                <p><span className="text-white">port:</span> {t('cfg.general.port')}</p>
+                <p><span className="text-white">dry_run:</span> {t('cfg.general.dryRun')}</p>
+                <p><span className="text-white">monitor_interval_seconds:</span> {t('cfg.general.monitorInterval')}</p>
+                <p><span className="text-white">failover_enabled:</span> {t('cfg.general.failoverEnabled')}</p>
+                <p><span className="text-white">fail_threshold:</span> {t('cfg.general.failThreshold')}</p>
+                <p><span className="text-white">recover_threshold:</span> {t('cfg.general.recoverThreshold')}</p>
               </div>
             </Panel>
           )}
 
           {activeSection === 'traffic-retention' && (
-            <Panel title="Retenção de tráfego (RRD)" className="space-y-4">
+            <Panel title={t('cfg.retention.title')} className="space-y-4">
               <p className="text-gray-500 text-sm">
-                Define por quanto tempo as amostras históricas de tráfego ficam persistidas.
-                Esta configuração afeta as janelas de 30d, 1y e 5y usadas na aba Interfaces.
+                {t('cfg.retention.intro')}
               </p>
 
               {loadError && (
@@ -188,18 +190,18 @@ export default function Settings() {
                 <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{profileError}</div>
               )}
               {profileSaved && (
-                <div className="px-4 py-3 rounded-lg text-sm bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Perfil salvo</div>
+                <div className="px-4 py-3 rounded-lg text-sm bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">{t('cfg.retention.saved')}</div>
               )}
 
               {loadingRetention ? (
-                <div className="text-gray-500 text-sm py-2 animate-pulse">Carregando perfil de retenção...</div>
+                <div className="text-gray-500 text-sm py-2 animate-pulse">{t('cfg.retention.loading')}</div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/50 p-2">
                   {PROFILE_ORDER.map((p) => (
                     <button
                       key={p}
                       disabled={savingProfile}
-                      title={p === '30d' ? '30 dias' : p === '1y' ? '1 ano' : '5 anos'}
+                      title={t(`cfg.retention.profile.${p}`)}
                       onClick={() => updateRetentionProfile(p)}
                       className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
                         retentionProfile === p
@@ -215,16 +217,16 @@ export default function Settings() {
 
               <div className="rounded-lg border border-gray-800 bg-gray-950/70 p-4 space-y-2 text-sm text-gray-400">
                 <p>
-                  Perfil ativo: <span className="text-white font-mono">{retentionProfile}</span>
+                  {t('cfg.retention.active')} <span className="text-white font-mono">{retentionProfile}</span>
                 </p>
                 <p>
-                  Armazenamento dos dados: <span className="text-blue-400 font-mono">/var/lib/linkguard-fw/linkguard.db</span>
+                  {t('cfg.retention.storage')} <span className="text-blue-400 font-mono">/var/lib/linkguard-fw/linkguard.db</span>
                 </p>
                 <p>
-                  Tabela: <span className="text-blue-400 font-mono">traffic_samples</span>
+                  {t('cfg.retention.table')} <span className="text-blue-400 font-mono">traffic_samples</span>
                 </p>
                 <p className="text-xs text-gray-500">
-                  O caminho do banco pode ser alterado pela chave <span className="font-mono">db_path</span> no arquivo de configuração.
+                  {t('cfg.retention.dbPathHint')}<span className="font-mono">db_path</span>{t('cfg.retention.dbPathHint.tail')}
                 </p>
               </div>
             </Panel>
@@ -253,14 +255,14 @@ export default function Settings() {
         </div>
       </div>
 
-      <Modal open={!!pendingShorten} onClose={() => setPendingShorten(null)} title="Reduzir retenção de tráfego" size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
+      <Modal open={!!pendingShorten} onClose={() => setPendingShorten(null)} title={t('cfg.retention.confirm.title')} size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
         <div className="p-6 space-y-4">
           <p className="text-gray-300 text-sm">
-            Reduzir a retenção pode descartar amostras antigas. Continuar?
+            {t('cfg.retention.confirm.body')}
           </p>
           <p className="text-gray-500 text-xs">
-            Perfil atual: <span className="font-mono text-gray-300">{retentionProfile}</span> →{' '}
-            novo perfil: <span className="font-mono text-gray-300">{pendingShorten}</span>
+            {t('cfg.retention.confirm.current')} <span className="font-mono text-gray-300">{retentionProfile}</span> →{' '}
+            {t('cfg.retention.confirm.new')} <span className="font-mono text-gray-300">{pendingShorten}</span>
           </p>
           <div className="flex gap-3 pt-2">
             <button
@@ -273,14 +275,14 @@ export default function Settings() {
               }}
               className="btn-primary flex-1 disabled:opacity-50"
             >
-              Continuar
+              {t('cfg.retention.confirm.continue')}
             </button>
             <button
               type="button"
               onClick={() => setPendingShorten(null)}
               className="btn-secondary flex-1"
             >
-              Cancelar
+              {t('common.cancel')}
             </button>
           </div>
         </div>

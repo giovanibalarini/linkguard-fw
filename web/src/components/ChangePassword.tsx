@@ -4,6 +4,7 @@ import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import HelpTip from './HelpTip';
 import Panel from './ui/Panel';
+import { useI18n } from '../i18n';
 
 const MIN_LENGTH = 8;
 
@@ -18,6 +19,7 @@ const MIN_LENGTH = 8;
  * então a tela manda para o login logo em seguida.
  */
 export default function ChangePassword() {
+  const { t } = useI18n();
   const { logout } = useAuth();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -37,7 +39,7 @@ export default function ChangePassword() {
         current_password: current,
         new_password: next,
       });
-      setMsg('Senha alterada. Entre de novo com a senha nova.');
+      setMsg(t('cfg.pwd.success'));
       setCurrent('');
       setNext('');
       setConfirm('');
@@ -46,7 +48,7 @@ export default function ChangePassword() {
       // não só o localStorage.
       setTimeout(logout, 2000);
     } catch (e) {
-      setMsg('Erro: ' + errMsg(e));
+      setMsg(t('cfg.msg.errorPrefix') + errMsg(e, t('cfg.msg.opFailed')));
       setBusy(false);
     }
   };
@@ -56,11 +58,10 @@ export default function ChangePassword() {
       title={
         <span className="flex items-center gap-2">
           <KeyRound className="w-5 h-5 text-blue-400" />
-          <span className="text-white font-semibold">Trocar a minha senha</span>
-          <HelpTip title="Trocar a senha">
+          <span className="text-white font-semibold">{t('cfg.pwd.title')}</span>
+          <HelpTip title={t('cfg.pwd.help.title')}>
             <>
-              Troca a senha <b>desta</b> conta. Ao confirmar, todas as sessões abertas
-              (inclusive esta) são encerradas e você entra de novo com a senha nova.
+              {t('cfg.pwd.help.body')}<b>{t('cfg.pwd.help.body.strong')}</b>{t('cfg.pwd.help.body.tail')}
             </>
           </HelpTip>
         </span>
@@ -70,7 +71,7 @@ export default function ChangePassword() {
         {msg && (
           <div
             className={`px-3 py-2 rounded-lg text-sm ${
-              msg.startsWith('Erro') ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'
+              msg.startsWith(t('cfg.msg.errorPrefix')) ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'
             }`}
           >
             {msg}
@@ -79,7 +80,7 @@ export default function ChangePassword() {
 
         <div className="space-y-3 max-w-sm">
           <label className="block">
-            <span className="text-gray-400 text-sm">Senha atual</span>
+            <span className="text-gray-400 text-sm">{t('cfg.pwd.current')}</span>
             <input
               type="password"
               autoComplete="current-password"
@@ -90,7 +91,7 @@ export default function ChangePassword() {
           </label>
 
           <label className="block">
-            <span className="text-gray-400 text-sm">Senha nova</span>
+            <span className="text-gray-400 text-sm">{t('cfg.pwd.new')}</span>
             <input
               type="password"
               autoComplete="new-password"
@@ -100,13 +101,13 @@ export default function ChangePassword() {
             />
             {tooShort && (
               <span className="text-amber-400 text-xs mt-1 block">
-                Mínimo de {MIN_LENGTH} caracteres.
+                {t('cfg.pwd.minLength', { n: MIN_LENGTH })}
               </span>
             )}
           </label>
 
           <label className="block">
-            <span className="text-gray-400 text-sm">Repita a senha nova</span>
+            <span className="text-gray-400 text-sm">{t('cfg.pwd.repeat')}</span>
             <input
               type="password"
               autoComplete="new-password"
@@ -115,13 +116,13 @@ export default function ChangePassword() {
               className="input mt-1 w-full"
             />
             {mismatch && (
-              <span className="text-amber-400 text-xs mt-1 block">As duas não conferem.</span>
+              <span className="text-amber-400 text-xs mt-1 block">{t('cfg.pwd.mismatch')}</span>
             )}
           </label>
 
           <button onClick={submit} disabled={!ready} className="btn-primary flex items-center gap-2 disabled:opacity-50">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
-            Trocar senha
+            {t('cfg.pwd.submit')}
           </button>
         </div>
       </div>
@@ -129,7 +130,7 @@ export default function ChangePassword() {
   );
 }
 
-function errMsg(e: unknown): string {
+function errMsg(e: unknown, fallback: string): string {
   const ax = e as { response?: { data?: { error?: string } } };
-  return ax?.response?.data?.error || 'falha na operação';
+  return ax?.response?.data?.error || fallback;
 }

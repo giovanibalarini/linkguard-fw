@@ -1,0 +1,126 @@
+# Área "widgets": os cartões do painel (recursos da máquina, hosts na LAN,
+# quem está consumindo, links WAN, alertas abertos e o gráfico de tráfego).
+#
+# Prefixo obrigatório: wid.*
+# Termos que NÃO são traduzidos e por isso não têm chave: nomes de interface
+# (lo, enp3s0), siglas (CPU, WAN, LAN, IP, MAC), unidades (B/KB/MB/GB, ms,
+# Mb/s), o rótulo `load` do load average e o nome interno do widget que aparece
+# em font-mono quando o painel encontra um widget desconhecido.
+
+# ─── Comum aos cartões ───────────────────────────────────────────────────────
+wid.loading:
+  pt: "Carregando…"
+  en: "Loading…"
+wid.view.all:
+  pt: "ver todos"
+  en: "view all"
+wid.status.online:
+  pt: "online"
+  en: "online"
+wid.status.offline:
+  pt: "offline"
+  en: "offline"
+wid.status.degraded:
+  pt: "degradado"
+  en: "degraded"
+wid.status.unknown:
+  pt: "desconhecido"
+  en: "unknown"
+
+# ─── CPU, memória e disco ────────────────────────────────────────────────────
+wid.sys.title:
+  pt: "CPU, memória e disco"
+  en: "CPU, memory and disk"
+wid.sys.error:
+  pt: "Não foi possível ler o estado da máquina agora."
+  en: "Could not read the machine state right now."
+wid.sys.uptime:
+  pt: "no ar há {tempo}"
+  en: "up for {tempo}"
+wid.sys.mem:
+  pt: "Memória"
+  en: "Memory"
+wid.sys.disk:
+  pt: "Disco"
+  en: "Disk"
+wid.sys.interfaces:
+  pt: "Interfaces"
+  en: "Interfaces"
+wid.sys.except:
+  pt: "exceto"
+  en: "except"
+
+# ─── Hosts na rede ───────────────────────────────────────────────────────────
+wid.hosts.title:
+  pt: "Hosts na rede"
+  en: "Network hosts"
+wid.hosts.error:
+  pt: "Não foi possível ler os hosts agora."
+  en: "Could not read the hosts right now."
+wid.hosts.empty:
+  pt: "Nenhum host visto na rede ainda."
+  en: "No hosts seen on the network yet."
+wid.hosts.count:
+  pt: "{online} online de {total} conhecidos"
+  en: "{online} of {total} known hosts online"
+wid.hosts.blocked:
+  pt: "bloqueado"
+  en: "blocked"
+
+# ─── Quem está consumindo ────────────────────────────────────────────────────
+wid.talkers.title:
+  pt: "Quem está consumindo"
+  en: "Top talkers"
+wid.talkers.error:
+  pt: "Não foi possível ler o consumo agora."
+  en: "Could not read traffic usage right now."
+wid.talkers.empty:
+  pt: "Nenhum fluxo ativo no momento."
+  en: "No active flows right now."
+wid.talkers.note:
+  pt: "Fluxos ativos agora — não é total acumulado."
+  en: "Active flows right now — not a running total."
+
+# ─── Links WAN ───────────────────────────────────────────────────────────────
+wid.wan.title:
+  pt: "Links WAN"
+  en: "WAN Links"
+wid.wan.error:
+  pt: "Não foi possível ler os links agora."
+  en: "Could not read the links right now."
+wid.wan.empty:
+  pt: "Nenhum link WAN configurado ainda."
+  en: "No WAN link configured yet."
+wid.wan.count:
+  pt: "{online}/{total} online"
+  en: "{online}/{total} online"
+wid.wan.latency.loss:
+  pt: "{lat} · {loss}% perda"
+  en: "{lat} · {loss}% loss"
+
+# ─── Alertas abertos ─────────────────────────────────────────────────────────
+wid.alerts.title:
+  pt: "Alertas abertos"
+  en: "Open alerts"
+wid.alerts.error:
+  pt: "Não foi possível ler os alertas agora."
+  en: "Could not read the alerts right now."
+wid.alerts.empty:
+  pt: "Nenhum alerta aberto."
+  en: "No open alerts."
+wid.alerts.critical.one:
+  pt: "{n} alerta crítico ativo."
+  en: "{n} critical alert active."
+wid.alerts.critical.many:
+  pt: "{n} alertas críticos ativos."
+  en: "{n} critical alerts active."
+
+# ─── Gráfico de tráfego da interface ─────────────────────────────────────────
+wid.traffic.empty:
+  pt: "Nenhuma interface de rede para medir."
+  en: "No network interface to measure."
+
+# ─── Widget desconhecido (não deveria acontecer) ─────────────────────────────
+wid.unknown:
+  pt: "Widget desconhecido:"
+  en: "Unknown widget:"
