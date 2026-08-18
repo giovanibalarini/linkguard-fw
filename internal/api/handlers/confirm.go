@@ -296,6 +296,33 @@ func (h *NftablesHandler) ConfirmPendingChange(w http.ResponseWriter, r *http.Re
 		writeInternalError(w, err)
 		return
 	}
+
+	// A PROVA DE ACESSO (issue #86), antes de qualquer escrita.
+	//
+	// Confirmar por uma conexão que já existia quando a janela foi armada não
+	// prova nada: essa conexão responderia mesmo com o acesso cortado, porque
+	// uma chain que aceita `ct state established` a mantém de pé. O operador
+	// testaria, veria tudo funcionando, confirmaria — e descobriria na próxima
+	// reconexão, já sem janela.
+	//
+	// Exigir uma conexão NOVA inverte isso: conseguir chegar aqui já é a prova.
+	//
+	// A checagem vale para a janela que ESTÁ sendo confirmada. Se o pendente
+	// lido não é o que o cliente mandou, não há com o que comparar e a decisão
+	// cai em "não verificável" — o mesmo lado seguro do proxy.
+	var armada time.Time
+	if p != nil && p.ID == id {
+		armada = p.CreatedAt
+	}
+	provaDeAcesso := decideFreshness(factsFromRequest(r, armada))
+	if provaDeAcesso == FreshConexaoAntiga {
+		// 409, e não 403: não é falta de permissão, é o estado da conexão que
+		// não serve como prova. E nada foi tocado — a janela segue de pé, com o
+		// prazo correndo, que é exatamente o que o operador precisa agora.
+		writeError(w, http.StatusConflict, mensagemDeRecusa)
+		return
+	}
+
 	if err := h.fr.ConfirmPending(r.Context(), id); err != nil {
 		// A classificação sai do PRÓPRIO erro (firewallrules.IsWindowConflict),
 		// nunca do `p` lido lá em cima: entre a leitura e a chamada o estado
@@ -322,8 +349,20 @@ func (h *NftablesHandler) ConfirmPendingChange(w http.ResponseWriter, r *http.Re
 	if p != nil && p.ID == id {
 		summary = p.Summary
 	}
+	// A auditoria registra SE a prova foi obtida. Uma confirmação sem prova é
+	// legítima (é o caminho do proxy), mas ela não vale o mesmo que uma com — e
+	// quem for investigar um lockout meses depois precisa conseguir distinguir
+	// as duas no histórico.
+	if provaDeAcesso == FreshNaoVerificavel {
+		summary = strings.TrimSpace(summary + " [confirmado sem prova de conexão nova]")
+	}
 	auditAction(h.db, r, "nft.pending.confirm", "pending:"+id, summary)
-	writeJSON(w, http.StatusOK, okResult(nil))
+
+	resp := map[string]any{"status": "ok"}
+	if provaDeAcesso == FreshNaoVerificavel {
+		resp["warning"] = mensagemNaoVerificavel
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // windowIDFromBody lê o id da janela que o cliente está resolvendo. Ele é
