@@ -18,7 +18,7 @@ import client from '../../api/client';
 import { useI18n } from '../../i18n';
 import Modal from '../ui/Modal';
 import IconButton from '../ui/IconButton';
-import { KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../../lib/blockGroups';
+import { KIND_BLOCKED_HOSTS, KIND_BLOCKLIST , groupDisplayNameKey} from '../../lib/blockGroups';
 import { formatCount, membersOf } from './groupMeta';
 import type { SystemKind, Unit } from './groupMeta';
 import type { ConfirmOrRevert } from '../../lib/useConfirmOrRevert';
@@ -43,6 +43,12 @@ export default function SystemGroupMembers({
   group, sys, managed, hosts, above, unit, canWrite, canBlockHosts, cor, onToggle,
 }: Props) {
   const { t } = useI18n();
+  // O nome dos dois grupos do SISTEMA é traduzido na exibição; o de um grupo
+  // do admin é mostrado como ele digitou. Ver groupDisplayNameKey.
+  const nomeDoGrupo = (g: { name: string; kind?: string }) => {
+    const k = groupDisplayNameKey(g.kind);
+    return k ? t(k) : g.name;
+  };
   const [newCidr, setNewCidr] = useState('');
   const [hostPicker, setHostPicker] = useState({ open: false, filter: '' });
   const { busy, locked, lockReason, editDisabled, run } = cor;
@@ -76,7 +82,7 @@ export default function SystemGroupMembers({
     <div className="card space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-white font-semibold truncate">{group.name}</h3>
+          <h3 className="text-white font-semibold truncate">{nomeDoGrupo(group)}</h3>
           <p className="text-[11px] text-gray-600">{t('fw.sysmembers.managed')}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap">

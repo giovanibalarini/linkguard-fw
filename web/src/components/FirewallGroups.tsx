@@ -8,7 +8,7 @@ import client from '../api/client';
 import { useI18n } from '../i18n';
 import IconButton from './ui/IconButton';
 import { useAuth } from '../context/AuthContext';
-import { adminGroupsAbove, isSystemGroup } from '../lib/blockGroups';
+import { adminGroupsAbove, isSystemGroup , groupDisplayNameKey} from '../lib/blockGroups';
 // As duas contas que erram em silêncio (o corte da chain e a tradução de ordem
 // local → global) moram em lib/groupRules desde que ganharam asserção própria:
 // aqui dentro nada as alcançava sem montar a tela inteira, e é a ordem de
@@ -79,6 +79,12 @@ interface Props {
  */
 export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const { t } = useI18n();
+  // O nome dos dois grupos do SISTEMA é traduzido na exibição; o de um grupo
+  // do admin é mostrado como ele digitou. Ver groupDisplayNameKey.
+  const nomeDoGrupo = (g: { name: string; kind?: string }) => {
+    const k = groupDisplayNameKey(g.kind);
+    return k ? t(k) : g.name;
+  };
   const { can } = useAuth();
   // Bloquear/desbloquear host é permissão da tela de Hosts (hosts.block), não
   // de firewall.write: o bloqueio por MAC mora no inventário, e é de lá que a
@@ -429,7 +435,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
             {/* Cabeçalho: nome e ações do grupo */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="text-white font-semibold truncate">{selected.name}</h3>
+                <h3 className="text-white font-semibold truncate">{nomeDoGrupo(selected)}</h3>
                 <p className="text-[11px] text-gray-600 font-mono truncate">chain {selected.chain_name}</p>
               </div>
               <div className="flex items-center gap-2 shrink-0 flex-wrap">

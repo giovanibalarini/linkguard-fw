@@ -167,3 +167,25 @@ export function blockEnforcement(
 
   return { status: 'ok', reason: '', fix: '', above: [], group };
 }
+
+/**
+ * groupDisplayNameKey devolve a chave de tradução do nome de um grupo, ou null
+ * quando o nome deve ser mostrado como está (issue #106).
+ *
+ * Só os dois grupos do SISTEMA têm chave. Eles são criados pela migração com o
+ * nome em português gravado no banco, são mantidos pelo LinkGuard e o painel
+ * não deixa renomeá-los — ou seja, o nome não é escolha de ninguém, e traduzir
+ * a EXIBIÇÃO não contradiz nada que o admin tenha escrito.
+ *
+ * Um grupo criado pelo admin devolve null e mostra o nome dele, exatamente como
+ * foi digitado. Essa é a linha que este helper existe para não deixar ninguém
+ * cruzar: o casamento é pelo `kind`, NUNCA pelo nome — casar por nome faria um
+ * grupo que o admin batizasse de "Hosts bloqueados" ser renomeado na tela dele.
+ *
+ * E o banco não é tocado. Um UPDATE na migração reescreveria dado de
+ * instalações que já existem por causa de uma troca de idioma.
+ */
+export function groupDisplayNameKey(kind: string | undefined): string | null {
+  if (!kind || !isSystemGroup(kind)) return null;
+  return `fwx.systemGroup.${kind}`;
+}
