@@ -8,7 +8,7 @@
  * kernel.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import client from '../../api/client';
 import Modal from '../ui/Modal';
 import Combo, { type ComboItem } from '../ui/Combo';
@@ -18,6 +18,8 @@ import { SERVICES } from '../../lib/services';
 import NftPreview from './NftPreview';
 import { ACTIONS } from './groupMeta';
 import type { Action, RuleModalState } from './groupMeta';
+import RuleWizard from './RuleWizard';
+import { useUIMode } from '../../context/UIModeContext';
 import type { ConfirmOrRevert } from '../../lib/useConfirmOrRevert';
 import type { FirewallRule } from '../../types';
 
@@ -44,6 +46,14 @@ interface Props {
 export default function RuleModal({ state, setState, ifaces, cor, onClose }: Props) {
   const { busy, locked, lockReason, editDisabled, run } = cor;
   const { targets } = useNetTargets();
+  const { mode } = useUIMode();
+
+  // O assistente é o caminho de entrada no modo Simples, e só para regra NOVA:
+  // editar uma regra existente é sobre os campos dela, não sobre uma intenção —
+  // perguntar "o que você quer fazer?" a quem só quer trocar uma porta seria
+  // refazer uma escolha que ele já fez.
+  const [verFormulario, setVerFormulario] = useState(false);
+  const usarAssistente = mode === 'simple' && !state.id && !verFormulario;
 
   // Os alvos viram itens do seletor aqui, e não em lib/netTargets, porque esta
   // é a única parte que sabe o que é um ComboItem — a lib fica pura e testável.
@@ -93,6 +103,13 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
       className="rounded-xl border border-gray-700 bg-gray-900 shadow-2xl flex flex-col"
     >
       <div className="p-6 space-y-4 overflow-y-auto">
+        {usarAssistente ? (
+          <RuleWizard
+            onAvancado={() => setVerFormulario(true)}
+            onAplicar={(campos) => { setState({ ...state, ...campos }); setVerFormulario(true); }}
+          />
+        ) : (
+        <>
         <div>
           <label className="label mb-2 block">Ação</label>
           <div className="grid grid-cols-3 gap-2">
@@ -199,18 +216,24 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
           </p>
           <NftPreview endpoint="/api/nftables/rules/preview" body={state} />
         </div>
+        </>
+        )}
       </div>
-      <div className="px-6 py-4 border-t border-gray-800 flex gap-3">
-        <button
-          onClick={saveRule}
-          disabled={editDisabled}
-          title={locked ? lockReason : undefined}
-          className="btn-primary flex-1 disabled:opacity-50"
-        >
-          {busy ? 'Salvando...' : 'Salvar'}
-        </button>
-        <button onClick={onClose} className="btn-secondary flex-1">Cancelar</button>
-      </div>
+      {/* O rodapé some no assistente: ele tem o próprio "Continuar", e um
+          "Salvar" ao lado convidaria a gravar uma regra ainda sem alvo. */}
+      {!usarAssistente && (
+        <div className="px-6 py-4 border-t border-gray-800 flex gap-3">
+          <button
+            onClick={saveRule}
+            disabled={editDisabled}
+            title={locked ? lockReason : undefined}
+            className="btn-primary flex-1 disabled:opacity-50"
+          >
+            {busy ? 'Salvando...' : 'Salvar'}
+          </button>
+          <button onClick={onClose} className="btn-secondary flex-1">Cancelar</button>
+        </div>
+      )}
     </Modal>
   );
 }
