@@ -128,11 +128,58 @@ func reload(ctx context.Context, exec firewall.Executor, path string) error {
 // Fase 2 never changes an interface's type, so `networkctl reload` always
 // suffices — `reconfigure` (needed when a .netdev is added/removed) is
 // deferred to Fase 3.
+// safeUnitPath confere que p é o caminho absoluto de um arquivo SOLTO dentro de
+// um diretório, e o devolve. Recusa em vez de normalizar.
+//
+// A distinção importa. Normalizar "/etc/systemd/network/../../passwd" para
+// "/etc/passwd" faria a escrita ACONTECER, num lugar que o chamador não pediu —
+// silenciosamente, e como root. Um caminho produzido por Render nunca tem "..",
+// nunca é relativo e nunca termina em barra: se algum desses aparecer, quem
+// montou o ConfigFile errou, e o certo é parar.
+//
+// A conferência é sobre a FORMA do caminho, e não sobre a origem dele: ela
+// sobrevive a qualquer mudança no validador de nome de interface — inclusive à
+// divergência entre duas cópias da regex, que é como este defeito chegou aqui
+// (ver o comentário de internal/netif/rules.go).
+func safeUnitPath(p string) (string, error) {
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("caminho de unit precisa ser absoluto: %q", p)
+	}
+	if strings.HasSuffix(p, string(filepath.Separator)) {
+		return "", fmt.Errorf("caminho de unit aponta para um diretório: %q", p)
+	}
+	// Qualquer componente "." ou ".." é recusado — não resolvido.
+	for _, part := range strings.Split(p, string(filepath.Separator)) {
+		if part == ".." || part == "." {
+			return "", fmt.Errorf("caminho de unit com travessia: %q", p)
+		}
+	}
+	if base := filepath.Base(p); strings.TrimSpace(base) == "" {
+		return "", fmt.Errorf("caminho de unit sem nome de arquivo: %q", p)
+	}
+	// Clean aqui só remove barras duplicadas; sem "..", ele não muda o destino.
+	return filepath.Clean(p), nil
+}
+
 func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
 	if exec.IsDryRun() {
 		return nil
 	}
-	dir := filepath.Dir(f.Path)
+	// O caminho é conferido contra o diretório de destino ANTES de qualquer
+	// escrita (alerta go/path-injection do CodeQL).
+	//
+	// f.Path é montado por Render interpolando o NOME DA INTERFACE, que vem do
+	// cliente. Hoje netif.ValidateIface já recusa barra e nome feito só de
+	// pontuação — mas essa validação mora noutro pacote, e é chamada por quem
+	// monta o ConfigFile, não por quem escreve o arquivo. Esta função é a que
+	// tem o os.Rename na mão, e ela não pode depender de o chamador ter feito a
+	// coisa certa: até hoje ela dependia, e foi assim que uma cópia divergente
+	// da regex sobreviveu nesta base (ver o comentário de internal/netif/rules.go).
+	dest, err := safeUnitPath(f.Path)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(dest)
 	tmp, err := os.CreateTemp(dir, ".linkguard-networkd-*.tmp")
 	if err != nil {
 		return fmt.Errorf("criar arquivo temporário em %s: %w", dir, err)
@@ -157,12 +204,12 @@ func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("ajustar permissão do arquivo temporário: %w", err)
 	}
-	if err := os.Rename(tmpPath, f.Path); err != nil {
+	if err := os.Rename(tmpPath, dest); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("mover %s para %s: %w", tmpPath, f.Path, err)
+		return fmt.Errorf("mover %s para %s: %w", tmpPath, dest, err)
 	}
 
-	return reload(ctx, exec, f.Path)
+	return reload(ctx, exec, dest)
 }
 
 // Remove deletes path entirely and reloads systemd-networkd — used when

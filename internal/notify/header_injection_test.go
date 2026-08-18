@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"mime"
 	"strings"
 	"testing"
 )
@@ -13,39 +14,69 @@ import (
 // terceiro, ou uma linha em branco que empurra o resto da notificação para o
 // corpo, escondendo-a de quem lê o assunto.
 
-func TestHeaderSafeNeutralizaQuebraDeLinha(t *testing.T) {
-	entrada := "Alerta\r\nBcc: atacante@exemplo.tld"
-	got := headerSafe(entrada)
-
+func TestEncodeSubjectNeutralizaQuebraDeLinha(t *testing.T) {
+	got := encodeSubject("Alerta\r\nBcc: atacante@exemplo.tld")
 	if strings.ContainsAny(got, "\r\n") {
-		t.Fatalf("headerSafe deixou passar quebra de linha: %q", got)
+		t.Fatalf("o assunto codificado ainda tem quebra de linha: %q", got)
 	}
-	// O texto NÃO some — ele fica visível, na mesma linha. Apagar o conteúdo
-	// esconderia do operador o que alguém tentou fazer.
-	if !strings.Contains(got, "Bcc: atacante@exemplo.tld") {
-		t.Errorf("o conteúdo suspeito deveria continuar legível, veio %q", got)
+	// O conteúdo não some — ele vira texto codificado, decodificável por quem
+	// recebe. Apagá-lo esconderia do operador o que alguém tentou fazer.
+	dec, err := new(mime.WordDecoder).DecodeHeader(got)
+	if err != nil {
+		t.Fatalf("o assunto não é RFC 2047 válido: %v", err)
 	}
-	if !strings.Contains(got, "Alerta") {
-		t.Errorf("o texto legítimo foi perdido: %q", got)
+	if !strings.Contains(dec, "Bcc: atacante@exemplo.tld") || !strings.Contains(dec, "Alerta") {
+		t.Errorf("o texto se perdeu na codificação: %q", dec)
 	}
 }
 
-func TestHeaderSafePreservaTextoNormal(t *testing.T) {
-	// Acentuação e pontuação passam intactas: a correção é sobre os três bytes
-	// que terminam um cabeçalho, não sobre o idioma.
-	for _, s := range []string{
-		"WAN1 caiu", "Configuração inválida", "admin@empresa.com.br",
-		"[CRITICAL] disco cheio — 95%",
-	} {
-		if got := headerSafe(s); got != s {
-			t.Errorf("headerSafe(%q) alterou texto legítimo: %q", s, got)
+// TestEncodeSubjectCodificaAcento cobre um defeito que existia desde sempre e
+// não tinha nada a ver com injeção: o assunto ia CRU no cabeçalho, então
+// "Configuração inválida" viajava como UTF-8 puro num campo que a RFC 5322
+// define como US-ASCII.
+func TestEncodeSubjectCodificaAcento(t *testing.T) {
+	got := encodeSubject("Configuração inválida")
+	for _, r := range got {
+		if r > 127 {
+			t.Fatalf("sobrou byte não-ASCII no cabeçalho: %q", got)
 		}
 	}
+	dec, err := new(mime.WordDecoder).DecodeHeader(got)
+	if err != nil {
+		t.Fatalf("não decodifica: %v", err)
+	}
+	if dec != "Configuração inválida" {
+		t.Errorf("ida e volta perdeu o texto: %q", dec)
+	}
 }
 
-func TestHeaderSafeCortaNUL(t *testing.T) {
-	if got := headerSafe("a\x00b"); strings.ContainsRune(got, 0) {
-		t.Errorf("NUL sobreviveu: %q", got)
+func TestEncodeSubjectDeixaASCIIIntacto(t *testing.T) {
+	// Assunto que já é ASCII não é codificado à toa — quem lê o log do servidor
+	// SMTP continua vendo o texto.
+	if got := encodeSubject("WAN1 caiu"); got != "WAN1 caiu" {
+		t.Errorf("assunto ASCII foi codificado sem precisar: %q", got)
+	}
+}
+
+func TestHeaderAddressCanonizaEValida(t *testing.T) {
+	if got := headerAddress("admin@empresa.com.br"); !strings.Contains(got, "admin@empresa.com.br") {
+		t.Errorf("endereço válido foi alterado: %q", got)
+	}
+	// Endereço com tentativa de injeção não parseia; sobra o texto sem os bytes
+	// que quebram cabeçalho.
+	got := headerAddress("a@b.tld\r\nBcc: c@d.tld")
+	if strings.ContainsAny(got, "\r\n") {
+		t.Errorf("quebra de linha sobreviveu no endereço: %q", got)
+	}
+}
+
+func TestHeaderAddressListPreservaVarios(t *testing.T) {
+	got := headerAddressList("a@x.tld, b@y.tld")
+	if !strings.Contains(got, "a@x.tld") || !strings.Contains(got, "b@y.tld") {
+		t.Errorf("a lista perdeu destinatário: %q", got)
+	}
+	if strings.ContainsAny(headerAddressList("a@x.tld\r\nBcc: z@z.tld"), "\r\n") {
+		t.Error("quebra de linha sobreviveu na lista")
 	}
 }
 
@@ -81,8 +112,19 @@ func TestBuildMultipartMessageNaoQuebraComCabecalhoMalicioso(t *testing.T) {
 		t.Errorf("esperava exatamente 1 linha de Content-Type, achei %d:\n%s", linhasCT, cabecalho)
 	}
 	// E o texto malicioso continua visível, absorvido pelo assunto.
-	if !strings.Contains(cabecalho, "Subject: Backup  Content-Type: text/plain") {
-		t.Errorf("o assunto não absorveu a tentativa de injeção:\n%s", cabecalho)
+	// O assunto agora vem codificado; decodificado, ele contém a tentativa
+	// inteira como TEXTO — visível para quem recebe, inofensiva no cabeçalho.
+	for _, l := range strings.Split(cabecalho, "\r\n") {
+		if !strings.HasPrefix(l, "Subject: ") {
+			continue
+		}
+		dec, err := new(mime.WordDecoder).DecodeHeader(strings.TrimPrefix(l, "Subject: "))
+		if err != nil {
+			t.Fatalf("assunto não decodifica: %v", err)
+		}
+		if !strings.Contains(dec, "Content-Type: text/plain") {
+			t.Errorf("o assunto não absorveu a tentativa de injeção: %q", dec)
+		}
 	}
 	if !strings.Contains(cabecalho, "multipart/mixed") {
 		t.Errorf("o Content-Type do multipart se perdeu:\n%s", cabecalho)
@@ -117,7 +159,7 @@ func TestWebhookURLAceitaDestinoInternoDeProposito(t *testing.T) {
 		"https://alertas.empresa.local/webhook",
 		"http://localhost:9000/x",
 	} {
-		if err := checkWebhookURL(u); err != nil {
+		if _, err := checkWebhookURL(u); err != nil {
 			t.Errorf("checkWebhookURL(%q) recusou um destino legítimo: %v", u, err)
 		}
 	}
@@ -136,7 +178,7 @@ func TestWebhookURLRecusaEsquemaQueNaoEHTTP(t *testing.T) {
 		"nao-e-url",
 		"http://",
 	} {
-		if err := checkWebhookURL(u); err == nil {
+		if _, err := checkWebhookURL(u); err == nil {
 			t.Errorf("checkWebhookURL(%q) foi aceito", u)
 		}
 	}
@@ -145,7 +187,7 @@ func TestWebhookURLRecusaEsquemaQueNaoEHTTP(t *testing.T) {
 // A mensagem tem de dizer o que arrumar: quem lê é o admin corrigindo a própria
 // configuração, e "URL inválida" não ajuda.
 func TestWebhookURLDizOEsquemaRecusado(t *testing.T) {
-	err := checkWebhookURL("file:///etc/shadow")
+	_, err := checkWebhookURL("file:///etc/shadow")
 	if err == nil {
 		t.Fatal("esperava recusa")
 	}
