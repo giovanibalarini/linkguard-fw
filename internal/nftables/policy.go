@@ -211,3 +211,34 @@ func (s *Service) rebuildChainAtomic(ctx context.Context, chain, decl string, ru
 	}
 	return nil
 }
+
+// SurvivalPreview devolve, em texto, as linhas que uma política restritiva
+// emitiria em cada chain — a lista que o painel mostra ao operador ANTES de ele
+// bloquear (issue #94).
+//
+// Ela existe porque a alternativa era o painel adivinhar. A porta do painel não
+// é fixa (8080 no binário, 9997 no .deb, outra atrás de um proxy), as redes da
+// LAN vêm da configuração, e a linha do cliente DHCP só sai em quem tem WAN por
+// DHCP. Uma tela que mostrasse `tcp dport { 22, 9997 }` para quem usa outra
+// porta estaria mentindo justamente na frase que o operador vai ler para decidir
+// se continua entrando na máquina depois de apertar o botão.
+//
+// A lista sai das MESMAS funções que a reconciliação usa. Se elas mudarem, a
+// tela muda junto — não há uma segunda cópia para ficar velha.
+//
+// O erro do acesso administrativo NÃO é fatal aqui: esta é uma pré-visualização,
+// e mostrar a lista da forward (que não depende dele) é melhor que não mostrar
+// nada. A input volta vazia, e o painel diz que não conseguiu montá-la.
+func (s *Service) SurvivalPreview() (input, forward []string, err error) {
+	for _, tokens := range ForwardSurvivalRules() {
+		forward = append(forward, strings.Join(tokens, " "))
+	}
+	access, aerr := s.adminAccess()
+	if aerr != nil {
+		return nil, forward, aerr
+	}
+	for _, tokens := range SurvivalRules(access) {
+		input = append(input, strings.Join(tokens, " "))
+	}
+	return input, forward, nil
+}

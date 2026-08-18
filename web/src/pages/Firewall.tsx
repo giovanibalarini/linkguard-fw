@@ -10,6 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import PortForwarding from '../components/PortForwarding';
 import FirewallOverview from '../components/FirewallOverview';
 import FirewallGroups from '../components/FirewallGroups';
+import FirewallPosture from '../components/firewall/FirewallPosture';
 import WanSteering from '../components/WanSteering';
 import type { IptablesBackup, MsgLevel, NftChainInfo, SystemMetrics } from '../types';
 
@@ -18,6 +19,10 @@ import type { IptablesBackup, MsgLevel, NftChainInfo, SystemMetrics } from '../t
 // por WAN ganhou casa própria (spec de 2026-08-12, §3).
 const TABS = [
   ['overview', 'Visão geral'],
+  // A postura vem logo depois da visão geral, e antes dos grupos: ela é a
+  // pergunta de cima ("o que acontece com o tráfego que nenhuma regra
+  // menciona?"), e as regras só fazem sentido depois de respondida.
+  ['posture', 'Postura'],
   ['groups', 'Grupos de regras'],
   ['steering', 'Direcionamento por WAN'],
   ['portforward', 'Encaminhamento'],
@@ -163,6 +168,8 @@ export default function Firewall() {
           onOpenSteeringTab={() => setActiveTab('steering')}
           onOpenPortForwardTab={() => setActiveTab('portforward')}
         />
+      ) : activeTab === 'posture' ? (
+        <FirewallPosture canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'groups' ? (
         <FirewallGroups ifaces={ifaces} canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'steering' ? (
