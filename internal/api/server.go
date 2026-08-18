@@ -386,6 +386,15 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermSystemWrite)).Post("/api/system/update/apply", updateH.Apply)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/token", updateH.TokenStatus)
 		r.With(require(auth.PermSystemWrite)).Put("/api/system/update/token", updateH.SetToken)
+		// As novidades saem das releases publicadas, e não de um arquivo curado
+		// à mão que atrasa (ele parou 28 versões atrás).
+		//
+		// A permissão é dashboard.read, e não system.read, para casar com o
+		// item de menu (Layout.tsx). Com system.read, um operador que enxerga
+		// "Novidades" na barra lateral clicaria e levaria 403 — e negar a quem
+		// opera o firewall a informação do que mudou na versão que ele está
+		// operando não protege coisa nenhuma.
+		r.With(require(auth.PermDashboardRead)).Get("/api/system/changelog", updateH.Changelog)
 
 		// AI advisory layer (BYOK): token, config, report history (admin:
 		// system.write for mutations; reports gated on monitoring.read since
