@@ -501,8 +501,11 @@ func TestReconcileStaysHealthyAfterTheSystemGroupsAreCreated(t *testing.T) {
 // poder afirmar o que foi ANUNCIADO ao operador — que é diferente do que a
 // função devolveu.
 type recordingAlerter struct {
-	missing []string
-	ok      int
+	ghosts        []string
+	ghostBlocking bool
+	ghostsOK      int
+	missing       []string
+	ok            int
 	// reverted guarda os alertas de reversão automática do confirmar-ou-
 	// reverte (Fase C2): o que o operador vai encontrar quando voltar e
 	// descobrir que a alteração dele não está mais valendo.
@@ -518,6 +521,16 @@ func (a *recordingAlerter) FirewallChangeReverted(detail string) error {
 	a.reverted = append(a.reverted, detail)
 	return nil
 }
+
+// Os dois da issue #83. `ghosts` guarda os detalhes para os testes que quiserem
+// afirmar sobre o texto; `ghostsOK` conta os fechamentos.
+func (a *recordingAlerter) GhostIface(detail string, bloqueando bool) error {
+	a.ghosts = append(a.ghosts, detail)
+	a.ghostBlocking = a.ghostBlocking || bloqueando
+	return nil
+}
+
+func (a *recordingAlerter) GhostIfaceOK() { a.ghostsOK++ }
 
 // O alerta de recuperação afirma, no texto que vai para o Telegram e para o
 // webhook, que "a chain forward foi reconstruída com os bloqueios". Só que a

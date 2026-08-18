@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,7 +50,23 @@ type Alerter interface {
 	// dele não está mais valendo e por quê — sem isto a máquina "desfaz
 	// sozinha" em silêncio, que é a pior forma de um firewall se comportar.
 	FirewallChangeReverted(detail string) error
+	// GhostIface avisa que regras citam interfaces que já não existem na
+	// máquina. `bloqueando` separa "uma permissão parou de casar" (chato) de
+	// "um bloqueio parou de casar" (uma proteção que sumiu com o painel
+	// afirmando que ela está lá).
+	GhostIface(detail string, bloqueando bool) error
+	// GhostIfaceOK fecha esse alerta quando nenhuma regra cita mais uma
+	// interface ausente. Sem ele, o alerta ficaria vermelho para sempre depois
+	// de o admin consertar.
+	GhostIfaceOK()
 }
+
+// ifaceLister devolve os nomes das interfaces que EXISTEM na máquina agora.
+//
+// Interface de uma função, pelo mesmo motivo do Alerter: este pacote não pode
+// importar internal/netif (netif já depende do renderizador). Opcional — sem
+// ela, a checagem de interfaces fantasmas simplesmente não roda.
+type ifaceLister func() ([]string, error)
 
 // Service combines the DB (source of truth for the admin's rules) and the
 // nftables service (renders them into the live user_rules chain).
@@ -57,6 +74,9 @@ type Service struct {
 	db      *storage.DB
 	nft     *nftables.Service
 	alerter Alerter
+	// ifaces lista as interfaces vivas, para achar regras que citam interfaces
+	// que já não existem (issue #83). Opcional.
+	ifaces ifaceLister
 	// now é a fonte de tempo do confirmar-ou-reverte (Fase C2), injetável
 	// para os testes de expiração não precisarem dormir 90 segundos — teste
 	// que dorme é teste que ninguém roda, e a expiração ficaria sem
@@ -122,6 +142,90 @@ func NewService(db *storage.DB, nft *nftables.Service) *Service {
 // existir). Opcional: sem alerter, a verificação de invariante continua
 // abortando e gravando o apply status — só não abre alerta.
 func (s *Service) SetAlerter(a Alerter) { s.alerter = a }
+
+// SetIfaceLister liga a fonte das interfaces vivas, usada para achar as
+// citadas por regra e ausentes da máquina (issue #83). Opcional.
+func (s *Service) SetIfaceLister(l ifaceLister) { s.ifaces = l }
+
+// checkGhostIfaces compara o que as regras citam com o que existe, e alerta.
+//
+// Roda DEPOIS de uma reconciliação bem-sucedida, e nunca a derruba: uma
+// interface fantasma não impede o firewall de ser renderizado — ela só torna
+// algumas linhas inúteis. Falhar a reconciliação por causa disso trocaria um
+// problema silencioso por um pior.
+//
+// Sem lister ligado, ou com erro ao listar, não faz nada: acusar fantasma sem
+// saber quais interfaces existem produziria um alerta dizendo que a máquina
+// inteira sumiu — e o alerta que grita por tudo é o que ninguém mais lê.
+func (s *Service) checkGhostIfaces() {
+	if s.alerter == nil || s.ifaces == nil {
+		return
+	}
+	vivas, err := s.ifaces()
+	if err != nil {
+		slog.Warn("não foi possível listar as interfaces para checar regras órfãs", "err", err)
+		return
+	}
+
+	groups, err := s.db.ListFirewallGroups()
+	if err != nil {
+		slog.Warn("não foi possível ler os grupos para checar interfaces fantasmas", "err", err)
+		return
+	}
+	rules, err := s.db.ListFirewallRules()
+	if err != nil {
+		slog.Warn("não foi possível ler as regras para checar interfaces fantasmas", "err", err)
+		return
+	}
+
+	refs := make([]IfaceRef, 0, len(groups)+len(rules))
+	for _, g := range groups {
+		if g.CondIif != "" && g.Enabled {
+			refs = append(refs, IfaceRef{Name: g.CondIif, GroupName: g.Name})
+		}
+	}
+	for _, r := range rules {
+		if !r.Enabled {
+			continue
+		}
+		// Regra desativada não cita nada em vigor: alertar sobre ela seria
+		// pedir ao admin que conserte o que ele já desligou.
+		if r.Iif != "" {
+			refs = append(refs, IfaceRef{Name: r.Iif, Action: r.Action})
+		}
+		if r.Oif != "" {
+			refs = append(refs, IfaceRef{Name: r.Oif, Action: r.Action})
+		}
+	}
+
+	fantasmas := FindGhostIfaces(refs, vivas)
+	if len(fantasmas) == 0 {
+		// Fecha o que estivesse aberto: o admin reapontou, apagou a regra, ou a
+		// interface voltou. Quase sempre não há nada a fechar.
+		s.alerter.GhostIfaceOK()
+		return
+	}
+
+	var b strings.Builder
+	for i, f := range fantasmas {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%q não existe mais", f.Name)
+		if f.Rules > 0 {
+			fmt.Fprintf(&b, " (%d regra(s))", f.Rules)
+		}
+		if len(f.Groups) > 0 {
+			fmt.Fprintf(&b, " (grupos: %s)", strings.Join(f.Groups, ", "))
+		}
+	}
+	detalhe := b.String() + ". Essas linhas continuam no firewall e nunca casam com pacote nenhum — " +
+		"reaponte-as para a interface certa ou apague-as."
+
+	if err := s.alerter.GhostIface(detalhe, AnyBlocking(fantasmas)); err != nil {
+		slog.Warn("não foi possível abrir o alerta de interface fantasma", "err", err)
+	}
+}
 
 // ImportOnce migrates a box upgrading from Phase A: its admin rules exist
 // only inside nft's user_rules chain, identified by a volatile handle, and
@@ -525,6 +629,14 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	// certa para isso.)
 	if s.alerter != nil && (applyErr == nil || onlySkipped) {
 		s.alerter.FirewallSystemGroupsOK()
+	}
+
+	// A checagem de interfaces fantasmas roda DEPOIS de a reconciliação ter
+	// dado certo, e nunca a derruba (issue #83): uma interface que sumiu não
+	// impede o firewall de ser renderizado, ela só torna algumas linhas
+	// inúteis. Falhar aqui trocaria um problema silencioso por um pior.
+	if applyErr == nil || onlySkipped {
+		s.checkGhostIfaces()
 	}
 
 	if onlySkipped {

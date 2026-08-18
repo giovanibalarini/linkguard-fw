@@ -50,6 +50,11 @@ const (
 	TypeFirewallSystemGroupsMissing = "firewall_system_groups_missing"
 	TypeFirewallSystemGroupsOK      = "firewall_system_groups_ok"
 
+	// TypeFirewallGhostIface: alguma regra cita uma interface que não existe
+	// mais na máquina (issue #83). Ela carrega no nft sem erro e nunca casa —
+	// o painel mostra a regra ativa e ela não protege nada.
+	TypeFirewallGhostIface = "firewall_ghost_iface"
+
 	TypeFirewallChangeReverted = "firewall_change_reverted"
 
 	TypeFirewallBootPersistFailed = "firewall_boot_persist_failed"
@@ -110,6 +115,7 @@ var stateAlertTypes = []string{
 	TypeNetsvcDepsMissing,
 	TypeFirewallSystemGroupsMissing,
 	TypeFirewallBootPersistFailed,
+	TypeFirewallGhostIface,
 }
 
 // Service manages alert generation and retrieval.
@@ -326,6 +332,42 @@ func (s *Service) Failover(linkName, direction string) error {
 	return s.Create(TypeFailover, SeverityWarning,
 		"Failover: "+linkName,
 		"Failover triggered for WAN link "+linkName+". Direction: "+direction, "")
+}
+
+// GhostIface avisa que regras citam interfaces que não existem mais.
+//
+// A severidade depende de as regras órfãs BLOQUEAREM ou não, e a distinção não
+// é cosmética: uma regra de accept que deixou de casar só faz o tráfego cair
+// noutra linha; uma de drop que deixou de casar é uma proteção que sumiu, com o
+// painel afirmando que ela continua lá.
+//
+// O texto nomeia as interfaces e diz quantas regras dependem de cada uma,
+// porque a ação que o admin precisa tomar — reapontar ou apagar — exige saber
+// exatamente onde mexer. "Uma interface não existe" mandaria ele procurar.
+func (s *Service) GhostIface(detalhe string, bloqueando bool) error {
+	sev := SeverityWarning
+	titulo := "Regras apontam para uma interface que não existe mais"
+	if bloqueando {
+		sev = SeverityCritical
+		titulo = "Um bloqueio do firewall não está em vigor: a interface não existe mais"
+	}
+	return s.Create(TypeFirewallGhostIface, sev, titulo, detalhe, "")
+}
+
+// GhostIfaceOK fecha o alerta quando nenhuma regra cita mais uma interface
+// ausente — porque o admin reapontou, apagou a regra, ou a interface voltou.
+//
+// Fecha em SILÊNCIO (AutoResolve, sem linha de recuperação e sem notificação),
+// e isso é deliberado: a condição some sozinha em casos banais, como uma
+// interface USB reconectada. Anunciar "resolvido" a cada reconexão treinaria o
+// operador a ignorar o canal — e é o mesmo tratamento que
+// NetsvcDepsMissing já recebe quando o admin conserta por fora.
+//
+// Sem este método, o alerta ficaria vermelho para sempre depois de consertado.
+// TestStateAlertTypesMatchAutoResolveCallSites existe exatamente para não
+// deixar um alerta de estado nascer sem o par que o fecha.
+func (s *Service) GhostIfaceOK() {
+	s.AutoResolve(TypeFirewallGhostIface, "")
 }
 
 // RuleError raises a critical alert when a firewall rule fails.
