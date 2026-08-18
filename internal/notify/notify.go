@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/mail"
 	"net/smtp"
 	"net/textproto"
 	"net/url"
@@ -211,10 +213,15 @@ func (s *Service) sendWebhook(ctx context.Context, c WebhookCfg, severity, title
 	// por um backup restaurado de outra máquina — faria o processo LER UM
 	// ARQUIVO LOCAL como root e mandar o conteúdo no corpo da resposta de teste
 	// que o painel exibe. Exigir http/https elimina a classe.
-	if err := checkWebhookURL(c.URL); err != nil {
+	dest, err := checkWebhookURL(c.URL)
+	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(payload))
+	// A requisição usa a URL RECONSTRUÍDA a partir do que foi parseado, e não a
+	// string que veio do banco. Não é detalhe de estilo: é o que garante que o
+	// que viaja é exatamente o que foi conferido — sem espaço na borda, sem
+	// esquema que o parser leu de um jeito e o cliente HTTP leria de outro.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dest, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -295,8 +302,8 @@ func (s *Service) sendEmail(c EmailCfg, severity, title, message string) error {
 	// injeção. Limpá-lo destruiria a única parte da notificação em que uma
 	// mensagem de erro de várias linhas é legível.
 	body := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: [%s] %s\r\n\r\n%s\r\n",
-		headerSafe(from), headerSafe(c.To), headerSafe(strings.ToUpper(severity)),
-		headerSafe(title), message)
+		headerAddress(from), headerAddressList(c.To),
+		encodeSubject(strings.ToUpper(severity)), encodeSubject(title), message)
 	var auth smtp.Auth
 	if c.Username != "" {
 		auth = smtp.PlainAuth("", c.Username, c.Password, c.Host)
@@ -312,38 +319,75 @@ func (s *Service) sendEmail(c EmailCfg, severity, title, message string) error {
 //
 // A mensagem nomeia o esquema recusado porque quem vai ler é o admin corrigindo
 // a própria configuração, e "URL inválida" não diz o que arrumar.
-func checkWebhookURL(raw string) error {
+func checkWebhookURL(raw string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return fmt.Errorf("webhook: URL inválida: %w", err)
+		return "", fmt.Errorf("webhook: URL inválida: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("webhook: a URL precisa começar com http:// ou https:// (veio %q)", u.Scheme)
+		return "", fmt.Errorf("webhook: a URL precisa começar com http:// ou https:// (veio %q)", u.Scheme)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("webhook: a URL não tem endereço de destino")
+		return "", fmt.Errorf("webhook: a URL não tem endereço de destino")
 	}
-	return nil
+	// Devolve a forma canônica, e é ela que vira requisição.
+	return u.String(), nil
 }
 
-// headerSafe deixa um valor seguro para ir num cabeçalho de e-mail.
+// encodeSubject devolve um assunto pronto para ir num cabeçalho, codificado em
+// RFC 2047 quando precisa.
 //
-// Troca CR, LF e NUL por espaço em vez de recusar a mensagem inteira: a
-// notificação existe para AVISAR que algo deu errado, e é justamente o texto de
-// um erro que tem chance de trazer uma quebra de linha. Recusar aqui faria o
-// aviso não sair — que é o pior desfecho possível para este caminho, e o mesmo
-// raciocínio da issue #60 sobre o --notify-down.
+// Duas coisas de uma vez, e a primeira é um defeito que estava lá desde sempre:
+// o assunto ia CRU no cabeçalho, então "Configuração inválida" viajava como
+// UTF-8 puro num campo que a RFC 5322 define como US-ASCII. Muito servidor
+// tolera, alguns entregam ilegível — e nenhum era obrigado a aceitar.
 //
-// O corte é feito nos três bytes que terminam ou truncam um cabeçalho; o resto
-// do texto passa intacto, inclusive acentuação.
-func headerSafe(v string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\r', '\n', 0:
-			return ' '
+// A segunda é a injeção (go/email-injection): a saída de mime.QEncoding só tem
+// caracteres do alfabeto de codificação, então CR e LF deixam de ser
+// representáveis no resultado. A barreira não é mais uma limpeza que alguém
+// precisa lembrar de aplicar; ela é uma propriedade do que a função devolve.
+func encodeSubject(subject string) string {
+	return mime.QEncoding.Encode("utf-8", strings.Map(dropHeaderBreak, subject))
+}
+
+// headerAddress valida um endereço de e-mail e devolve a forma canônica.
+//
+// mail.ParseAddress recusa qualquer coisa que não seja endereço válido —
+// inclusive, por construção, tudo que contenha CR ou LF. É a diferença entre
+// "limpei os bytes perigosos que me lembrei" e "isto é um endereço".
+//
+// Endereço que não parseia volta com o texto limpo em vez de erro: quem chama
+// está mandando um AVISO de que algo deu errado, e derrubar a notificação por
+// causa de um campo mal preenchido é o pior desfecho deste caminho (issue #60).
+// O SMTP recusa depois, e aí o erro chega ao painel pelo caminho normal.
+func headerAddress(v string) string {
+	if a, err := mail.ParseAddress(strings.TrimSpace(v)); err == nil {
+		return a.String()
+	}
+	return strings.Map(dropHeaderBreak, v)
+}
+
+// headerAddressList faz o mesmo para a lista separada por vírgula do campo To.
+func headerAddressList(v string) string {
+	if as, err := mail.ParseAddressList(strings.TrimSpace(v)); err == nil && len(as) > 0 {
+		out := make([]string, 0, len(as))
+		for _, a := range as {
+			out = append(out, a.String())
 		}
-		return r
-	}, v)
+		return strings.Join(out, ", ")
+	}
+	return strings.Map(dropHeaderBreak, v)
+}
+
+// dropHeaderBreak troca por espaço os três bytes que terminam ou truncam um
+// cabeçalho. É a rede de baixo dos dois acima, para o caminho em que o valor
+// não pôde ser canonizado.
+func dropHeaderBreak(r rune) rune {
+	switch r {
+	case '\r', '\n', 0:
+		return ' '
+	}
+	return r
 }
 
 // buildMultipartMessage assembles a MIME multipart/mixed e-mail (RFC822
@@ -360,7 +404,7 @@ func buildMultipartMessage(from, to, subject, body string, attachment []byte, fi
 	// desmonta o anexo inteiro. O `body` continua cru: ele é uma PARTE MIME,
 	// escrita depois, onde quebra de linha é o formato.
 	if _, err := fmt.Fprintf(&buf, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=%q\r\n\r\n",
-		headerSafe(from), headerSafe(to), headerSafe(subject), w.Boundary()); err != nil {
+		headerAddress(from), headerAddressList(to), encodeSubject(subject), w.Boundary()); err != nil {
 		return nil, err
 	}
 

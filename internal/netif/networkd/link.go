@@ -34,6 +34,7 @@ func RenderLink(mac, name, dir string) ConfigFile {
 	return ConfigFile{
 		Path:    fmt.Sprintf("%s/10-%s.link", dir, name),
 		Content: body.String(),
+		Dir:     dir,
 	}
 }
 
