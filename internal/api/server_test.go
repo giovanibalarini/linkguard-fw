@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"testing/fstest"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // TestMaxBodySizeSkipsBackupRestorePath proves the global maxBodySize
@@ -133,5 +136,46 @@ func TestLegacyIptablesRuleMutationRoutesStayRemoved(t *testing.T) {
 	// por validateTableChain (restrito a mangle/PREROUTING).
 	if !bytes.Contains(src, []byte(`Post("/api/firewall/rules"`)) {
 		t.Error("POST /api/firewall/rules sumiu: é o que o assistente de balanceamento WAN usa para marcar tráfego em mangle/PREROUTING")
+	}
+}
+
+// TestWebUICacheHeaders prova a correção do bug que fez a aba Postura não
+// aparecer em produção depois do upgrade.
+//
+// O index.html não tem hash no nome (é sempre "/"), então ele PRECISA ser
+// revalidado a cada carga — senão o navegador guarda o antigo e continua
+// carregando o bundle antigo depois de um upgrade. Os arquivos sob /assets têm
+// o hash do conteúdo no nome e podem ser cacheados para sempre.
+func TestWebUICacheHeaders(t *testing.T) {
+	// Um FS embutido de mentira com a mesma forma do web/dist: o index e um
+	// asset com nome hasheado.
+	dist := fstest.MapFS{
+		"web/dist/index.html":             {Data: []byte("<!doctype html><div id=root></div>")},
+		"web/dist/assets/index-ABC123.js": {Data: []byte("console.log(1)")},
+	}
+	s := &Server{webFS: dist}
+	r := chi.NewRouter()
+	s.mountWebUI(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	casos := []struct {
+		path      string
+		querCache string
+		porque    string
+	}{
+		{"/", "no-cache", "o index tem de revalidar, senão o upgrade não aparece"},
+		{"/firewall", "no-cache", "uma rota da SPA também cai no index e tem de revalidar"},
+		{"/assets/index-ABC123.js", "public, max-age=31536000, immutable", "o asset hasheado pode ser cacheado para sempre"},
+	}
+	for _, c := range casos {
+		resp, err := http.Get(srv.URL + c.path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", c.path, err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Cache-Control"); got != c.querCache {
+			t.Errorf("Cache-Control de %s = %q, queria %q — %s", c.path, got, c.querCache, c.porque)
+		}
 	}
 }

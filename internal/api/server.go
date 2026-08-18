@@ -2,7 +2,6 @@
 package api
 
 import (
-	"embed"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -70,14 +69,14 @@ type Server struct {
 	sec         secrets.Secrets
 	aiClient    *ai.Client
 	backupSched *backup.Scheduler
-	webFS       embed.FS
+	webFS       fs.FS
 }
 
 // Config holds server configuration.
 type Config struct {
 	Addr    string
 	DryRun  bool
-	WebFS   embed.FS
+	WebFS   fs.FS
 	PromReg *prometheus.Registry
 	Version string
 	// PkgExec is the executor for anything that runs a package manager
@@ -500,17 +499,44 @@ func (s *Server) mountWebUI(r *chi.Mux) {
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if path == "" {
-			r.URL.Path = "/"
-			fileServer.ServeHTTP(w, r)
+			serveIndex(w, r, fileServer)
 			return
 		}
 
 		// If the requested asset is missing (SPA route), serve index.html.
 		if st, err := fs.Stat(webDist, path); err != nil || st.IsDir() {
-			r.URL.Path = "/"
+			serveIndex(w, r, fileServer)
+			return
+		}
+
+		// Os arquivos sob /assets têm o hash do conteúdo no nome
+		// (index-Dbx7412H.js): o nome MUDA quando o conteúdo muda, então o
+		// antigo nunca precisa ser rebaixado. Cachear "para sempre" é o certo
+		// aqui — é o que evita rebaixar o bundle inteiro a cada carga de página.
+		if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// serveIndex entrega o index.html com no-cache, e essa é a metade que faltava.
+//
+// O index.html NÃO tem hash no nome — ele é sempre "/", e é ele que aponta para
+// o bundle da vez. Servido sem cabeçalho de cache (como estava), o navegador o
+// guarda por heurística própria e continua carregando o bundle ANTIGO depois de
+// um upgrade: o servidor já tem a interface nova, e o operador vê a velha até
+// dar um Ctrl+Shift+R. Foi exatamente o que aconteceu ao subir a aba Postura em
+// produção.
+//
+// no-cache não é "não cacheie": é "revalide antes de usar". O navegador guarda
+// o arquivo, mas pergunta ao servidor se mudou antes de servir — barato (462
+// bytes) e sempre correto. Com os assets imutáveis acima, o custo de rede por
+// carga é uma requisição condicional, não o bundle inteiro.
+func serveIndex(w http.ResponseWriter, r *http.Request, fileServer http.Handler) {
+	w.Header().Set("Cache-Control", "no-cache")
+	r.URL.Path = "/"
+	fileServer.ServeHTTP(w, r)
 }
 
 // backupRestorePath is exempt from the global maxBodySize cap: it manages
