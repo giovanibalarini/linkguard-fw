@@ -22,6 +22,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/ai"
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/api"
+	"github.com/giovanibalarini/linkguard-fw/internal/api/handlers"
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
@@ -1008,6 +1009,18 @@ func serveHTTP(ctx context.Context, s *services, writers *sync.WaitGroup) int {
 		Addr:              cfg.Addr(),
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		// Carimba cada conexão com o instante do accept (issue #86).
+		//
+		// Sem esta linha o "Confirmar acesso" volta a aceitar a conexão que já
+		// existia antes da mudança — e essa conexão responde mesmo com o acesso
+		// cortado, porque uma chain que aceita `ct state established` a mantém
+		// de pé. O operador testaria, confirmaria, e descobriria na próxima
+		// reconexão.
+		//
+		// Tirar isto daqui não quebra teste nenhum e não aparece em lugar
+		// nenhum: a decisão degrada para "não verificável", que é o lado seguro
+		// mas silencioso. Por isso o aviso fica no ponto em que alguém mexeria.
+		ConnContext: handlers.ConnContext,
 	}
 
 	go func() {
