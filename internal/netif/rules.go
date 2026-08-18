@@ -6,18 +6,24 @@ package netif
 import (
 	"fmt"
 	"net"
-	"regexp"
+
+	"github.com/giovanibalarini/linkguard-fw/internal/validate"
 )
 
-// validIfaceName matches the Linux interface-name charset LinkGuard accepts
-// for a rendered file — letters, digits, dot, underscore, hyphen — capped at
-// IFNAMSIZ-1 (15) bytes. Deliberately stricter than what the kernel actually
-// allows (which excludes only whitespace/slash/etc.): Name is interpolated
-// unescaped into both a systemd-networkd [Match] body and a file path
-// (internal/netif/networkd.Render), so this is the one place guarding both
-// against a newline injecting directives into the unit file and a "/"
-// escaping the target directory.
-var validIfaceName = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
+// O nome da interface é validado por validate.Iface, e NÃO por uma regex local.
+//
+// Aqui havia uma cópia — `^[a-zA-Z0-9._-]{1,15}$` — idêntica à que morava em
+// internal/validate. O comentário daquele pacote já dizia por que isso é ruim:
+// "uma cópia endurece, a outra não, e o caminho mais perigoso fica com a regra
+// mais frouxa" (ARQ-7). Foi exatamente o que aconteceu. A issue #61 endureceu
+// validate.Iface para recusar nome feito só de pontuação (".", "..", "-"), e
+// esta cópia continuou aceitando — no lugar em que o nome é interpolado sem
+// escape num CAMINHO DE ARQUIVO e no corpo de uma unit do systemd-networkd
+// (networkd.Render), que é o sink que o CodeQL aponta como path-injection.
+//
+// A regra continua deliberadamente mais estrita do que a do kernel: ela guarda
+// contra a quebra de linha injetando diretiva no arquivo da unit e contra a
+// barra escapando do diretório de destino.
 
 // ValidateIface checks the addressing fields are internally consistent.
 // Name is validated unconditionally (every AddrMode renders it into a file
@@ -26,7 +32,7 @@ var validIfaceName = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
 // network. AddrMode="dhcp"/"none" ignore CIDR/Gateway entirely (they're
 // meaningless in those modes).
 func ValidateIface(i Iface) error {
-	if !validIfaceName.MatchString(i.Name) {
+	if !validate.Iface(i.Name) {
 		return fmt.Errorf("nome de interface inválido: %q", i.Name)
 	}
 	if i.AddrMode != AddrModeStatic {
