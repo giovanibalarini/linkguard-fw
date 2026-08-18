@@ -71,9 +71,10 @@ links actually passing traffic.
 
 ## Telas / Screenshots
 
-**🇧🇷** Painel, tráfego e a janela de confirmação que evita você se trancar
-para fora. **🇺🇸** Dashboard, traffic, and the confirmation window that keeps
-you from locking yourself out.
+**🇧🇷** Painel, tráfego, a postura padrão do firewall e a janela de confirmação
+que evita você se trancar para fora. **🇺🇸** Dashboard, traffic, the firewall's
+default posture, and the confirmation window that keeps you from locking
+yourself out.
 
 | Painel / Dashboard | Tráfego / Traffic |
 |---|---|
@@ -82,6 +83,15 @@ you from locking yourself out.
 | Confirmar ou reverter / Confirm or revert | Widgets do painel / Dashboard widgets |
 |---|---|
 | ![Janela de confirmação](docs/images/confirm-window.png) | ![Catálogo de widgets](docs/images/widget-catalog.png) |
+
+**🇧🇷** Bloquear por padrão e liberar só o que você autorizar — com a lista do
+que continua passando lida da própria máquina, não de um exemplo.
+**🇺🇸** Default-deny with an explicit allowlist — and the "what still gets
+through" list read from this very machine, not from an example.
+
+| Postura padrão do firewall / Firewall default posture |
+|---|
+| ![Postura padrão do firewall](docs/images/firewall-posture.png) |
 
 ## Futuro do Projeto
 
