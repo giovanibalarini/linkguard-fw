@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -356,46 +357,6 @@ func validateFirewallRuleBody(b firewallRuleBody) string {
 	return ""
 }
 
-// checkPendingRules is C-1's second layer: before any DB write, it asks nft
-// itself (via a parse-only `nft -c` dry run) whether the firewall that would
-// result from this mutation is actually acceptable. mutate receives the
-// admin's current rules and returns the candidate set the DB would hold
-// right after the in-progress change, without touching anything.
-// Field-level validation (validateFirewallRuleBody/ValidateRuleFields)
-// already catches most bad input, but not everything nft itself would
-// reject — this is the same mechanism the design spec picks for Phase C's
-// own pre-flight, so nft's rejection reaches the admin as a 400 with nft's
-// own message, before the DB (and the live chain) ever changes.
-//
-// Fase C1 — o que se valida aqui são os GRUPOS (CheckPendingGroups), não
-// mais a chain user_rules (CheckPending). Não é preferência de estilo: a
-// migração desta fase apagou a user_rules do ruleset, e o script que
-// CheckUserRules monta começa por `flush chain inet linkguard user_rules`.
-// Verificado ao vivo no nft (Debian 13), dentro de `nft -c -f` um flush de
-// chain inexistente falha com "No such file or directory" — ou seja, todo
-// POST/PUT de regra e todo "reativar" passaria a devolver 400 com a
-// mensagem crua do nft, enquanto apagar e reordenar continuariam
-// funcionando. CheckGroups valida as chains dos grupos (precedidas do `add
-// chain` que salva o grupo ainda não gravado) e a forward, que é
-// exatamente o que Reconcile renderiza logo depois.
-func (h *NftablesHandler) checkPendingRules(w http.ResponseWriter, r *http.Request, mutate func([]storage.FirewallRule) []storage.FirewallRule) bool {
-	current, err := h.db.ListFirewallRules()
-	if err != nil {
-		writeInternalError(w, err)
-		return false
-	}
-	candidate, err := h.fr.StoredGroupsWithRules(mutate(current))
-	if err != nil {
-		writeInternalError(w, err)
-		return false
-	}
-	if err := h.fr.CheckPendingGroups(r.Context(), candidate); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return false
-	}
-	return true
-}
-
 // findRule devolve a linha da regra pelo id, ou 400 se ela não existe — o
 // mesmo status que UpdateFirewallRule já devolvia para um id que não bate
 // com nada, só que antes de qualquer escrita.
@@ -469,11 +430,6 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
 	if !h.requireGroup(w, b.GroupID) {
 		return
 	}
@@ -491,35 +447,38 @@ func (h *NftablesHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	candidateRow := storage.FirewallRule{Enabled: true, GroupID: groupID,
 		Action: f.Action, Iif: f.Iif, Oif: f.Oif,
 		Saddr: f.Saddr, Daddr: f.Daddr, Proto: f.Proto, Dport: f.Dport}
-	ok := h.checkPendingRules(w, r, func(current []storage.FirewallRule) []storage.FirewallRule {
-		return append(append([]storage.FirewallRule{}, current...), candidateRow)
+	// Uma regra dentro de um grupo de escopo input é escrita na chain que
+	// decide sobre o SSH e o painel desta máquina: é ela que exige a rede de
+	// proteção dos 90 segundos (Fase C2, spec §5). A resposta é resolvida no
+	// pré-voo — que pode falhar — e só LIDA no Window(), que não pode.
+	var inGroup bool
+
+	out, ok := h.applyGuarded(w, r, mutation{
+		preflight: func(ctx context.Context) error {
+			if err := h.preflightRules(ctx, func(current []storage.FirewallRule) []storage.FirewallRule {
+				return append(append([]storage.FirewallRule{}, current...), candidateRow)
+			}); err != nil {
+				return err
+			}
+			var err error
+			inGroup, err = h.groupsReachInput(groupID)
+			return err
+		},
+		window: func() (bool, string) {
+			return inGroup, "criação de uma regra em grupo de escopo input"
+		},
+		write: func() error { return h.db.CreateFirewallRule(row) },
+		// I-2: audita a mutação do BANCO, não só um apply bem-sucedido — uma
+		// reconciliação que falhe depois ainda precisa deixar rastro do que
+		// foi escrito.
+		audit: func() (string, string, string) {
+			return "nft.rule.add", "user_rules:" + row.ID, b.Action
+		},
 	})
 	if !ok {
 		return
 	}
-	// Uma regra dentro de um grupo de escopo input é escrita na chain que
-	// decide sobre o SSH e o painel desta máquina: é aqui que a rede de
-	// proteção dos 90 segundos é armada (Fase C2, spec §5).
-	inGroup, ok := h.anyGroupReachesInput(w, groupID)
-	if !ok {
-		return
-	}
-	win, ok := h.openConfirmWindow(w, r, inGroup, "criação de uma regra em grupo de escopo input")
-	if !ok {
-		return
-	}
-	if err := h.db.CreateFirewallRule(row); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	// I-2: audit the DB mutation itself, not just a successful apply — a
-	// reconcile that fails afterwards must still leave an audit trail of
-	// what was written.
-	auditAction(h.db, r, "nft.rule.add", "user_rules:"+row.ID, b.Action)
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, createdRuleResult{FirewallRule: row, Pending: win.view})
+	writeJSON(w, http.StatusOK, createdRuleResult{FirewallRule: row, Pending: h.pendingViewOf(out)})
 }
 
 // UpdateRule edits a rule's content in place, by id — its position and
@@ -545,11 +504,6 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	// Perda silenciosa, sem undo. O grupo é o da linha existente; o corpo só
 	// pode trocá-lo por outro que exista de verdade (é assim que o painel
 	// move uma regra de grupo).
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
 	existing, found := h.findRule(w, b.ID)
 	if !found {
 		return
@@ -570,44 +524,50 @@ func (h *NftablesHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	// C-1 layer 2: candidate = current rules with this one's fields
 	// replaced in place (position/enabled untouched, same as the DB write
 	// UpdateFirewallRule itself performs).
-	ok := h.checkPendingRules(w, r, func(current []storage.FirewallRule) []storage.FirewallRule {
-		out := make([]storage.FirewallRule, len(current))
-		for i, c := range current {
-			if c.ID == b.ID {
-				c.GroupID = groupID
-				c.Action, c.Iif, c.Oif = f.Action, f.Iif, f.Oif
-				c.Saddr, c.Daddr, c.Proto, c.Dport = f.Saddr, f.Daddr, f.Proto, f.Dport
+	var inGroup bool
+
+	out, ok := h.applyGuarded(w, r, mutation{
+		preflight: func(ctx context.Context) error {
+			// C-1 camada 2: o candidato são as regras de hoje com os campos
+			// desta trocados no lugar (posição e ligado/desligado intactos, a
+			// mesma escrita que UpdateFirewallRule faz).
+			if err := h.preflightRules(ctx, func(current []storage.FirewallRule) []storage.FirewallRule {
+				out := make([]storage.FirewallRule, len(current))
+				for i, c := range current {
+					if c.ID == b.ID {
+						c.GroupID = groupID
+						c.Action, c.Iif, c.Oif = f.Action, f.Iif, f.Oif
+						c.Saddr, c.Daddr, c.Proto, c.Dport = f.Saddr, f.Daddr, f.Proto, f.Dport
+					}
+					out[i] = c
+				}
+				return out
+			}); err != nil {
+				return err
 			}
-			out[i] = c
-		}
-		return out
+			// Os dois grupos contam: o de onde a regra sai e o para onde ela
+			// vai. Mover uma regra PARA um grupo de input é ganhar poder sobre
+			// o acesso ao firewall; tirá-la de lá muda a chain input do mesmo
+			// jeito.
+			var err error
+			inGroup, err = h.groupsReachInput(existing.GroupID, groupID)
+			return err
+		},
+		window: func() (bool, string) {
+			return inGroup, "edição de uma regra em grupo de escopo input"
+		},
+		// Erro de banco é 500: o id já foi resolvido por findRule e os campos
+		// já passaram por ValidateRuleFields, então o que sobra é pane do
+		// servidor. StageWrite responde sem levar o texto cru do SQLite à tela.
+		write: func() error { return h.db.UpdateFirewallRule(row) },
+		audit: func() (string, string, string) {
+			return "nft.rule.update", "user_rules:" + b.ID, b.Action
+		},
 	})
 	if !ok {
 		return
 	}
-	// Os dois grupos contam: o de onde a regra sai e o para onde ela vai. Mover
-	// uma regra PARA um grupo de input é ganhar poder sobre o acesso ao
-	// firewall; tirá-la de lá muda a chain input do mesmo jeito.
-	inGroup, ok := h.anyGroupReachesInput(w, existing.GroupID, groupID)
-	if !ok {
-		return
-	}
-	win, ok := h.openConfirmWindow(w, r, inGroup, "edição de uma regra em grupo de escopo input")
-	if !ok {
-		return
-	}
-	// Erro de banco é 500: o id já foi resolvido por findRule e os campos já
-	// passaram por ValidateRuleFields, então o que sobra é pane do servidor — e
-	// o 400 com o texto cru levava a mensagem interna do SQLite para a tela.
-	if err := h.db.UpdateFirewallRule(row); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	auditAction(h.db, r, "nft.rule.update", "user_rules:"+b.ID, b.Action)
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(win.view))
+	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
 
 // DeleteRule removes a rule permanently, by id.
@@ -623,11 +583,6 @@ func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
 	// A linha é resolvida ANTES de ser apagada porque é ela que diz em qual
 	// grupo a regra mora — depois do DELETE não há mais como saber se o que
 	// acabou de sair do firewall era da chain input. Id inexistente continua
@@ -636,25 +591,32 @@ func (h *NftablesHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	inGroup, ok := h.anyGroupReachesInput(w, existing.GroupID)
+
+	// Sem pré-voo: apagar uma regra só tira linha da chain, e remover linha o
+	// nft não recusa. O passo de pré-voo aqui existe só para resolver, com
+	// direito a falhar, se o grupo dela alcança a input.
+	var inGroup bool
+
+	out, ok := h.applyGuarded(w, r, mutation{
+		preflight: func(context.Context) error {
+			var err error
+			inGroup, err = h.groupsReachInput(existing.GroupID)
+			return err
+		},
+		window: func() (bool, string) {
+			return inGroup, "remoção de uma regra em grupo de escopo input"
+		},
+		// Id inexistente já morreu em findRule; o que chega aqui é pane do
+		// banco, que é 500 e não 400 com o texto cru dele.
+		write: func() error { return h.db.DeleteFirewallRule(b.ID) },
+		audit: func() (string, string, string) {
+			return "nft.rule.del", "user_rules:" + b.ID, ""
+		},
+	})
 	if !ok {
 		return
 	}
-	win, ok := h.openConfirmWindow(w, r, inGroup, "remoção de uma regra em grupo de escopo input")
-	if !ok {
-		return
-	}
-	// Id inexistente já morreu em findRule; o que chega aqui é pane do banco,
-	// que é 500 e não 400 com o texto cru dele.
-	if err := h.db.DeleteFirewallRule(b.ID); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	auditAction(h.db, r, "nft.rule.del", "user_rules:"+b.ID, "")
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(win.view))
+	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
 
 // ToggleRule enables or disables a rule without deleting it — the
@@ -674,11 +636,6 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
 	// Mesma resolução do DeleteRule, e pela mesma razão: só a linha existente
 	// diz em qual grupo a regra mora. Vem ANTES do pré-voo porque um id que não
 	// existe não merece um dry run inteiro de `nft -c` para ser recusado.
@@ -692,46 +649,52 @@ func (h *NftablesHandler) ToggleRule(w http.ResponseWriter, r *http.Request) {
 	// caught anything invalid, but a stale or hand-edited row must not
 	// reach nft unchecked). Disabling never needs a check: removing a rule
 	// from the chain cannot make nft reject it.
-	if b.Enabled {
-		ok := h.checkPendingRules(w, r, func(current []storage.FirewallRule) []storage.FirewallRule {
-			out := make([]storage.FirewallRule, len(current))
-			for i, c := range current {
-				if c.ID == b.ID {
-					c.Enabled = true
+	var inGroup bool
+
+	out, ok := h.applyGuarded(w, r, mutation{
+		preflight: func(ctx context.Context) error {
+			// C-1 camada 2: religar pode introduzir a regra na chain
+			// renderizada (uma regra desligada nunca é conferida enquanto
+			// desligada). Desligar nunca precisa de checagem: tirar uma regra
+			// da chain não é algo que o nft possa recusar.
+			if b.Enabled {
+				if err := h.preflightRules(ctx, func(current []storage.FirewallRule) []storage.FirewallRule {
+					out := make([]storage.FirewallRule, len(current))
+					for i, c := range current {
+						if c.ID == b.ID {
+							c.Enabled = true
+						}
+						out[i] = c
+					}
+					return out
+				}); err != nil {
+					return err
 				}
-				out[i] = c
 			}
-			return out
-		})
-		if !ok {
-			return
-		}
-	}
-	inGroup, ok := h.anyGroupReachesInput(w, existing.GroupID)
+			var err error
+			inGroup, err = h.groupsReachInput(existing.GroupID)
+			return err
+		},
+		window: func() (bool, string) {
+			summary := "desativação de uma regra em grupo de escopo input"
+			if b.Enabled {
+				summary = "ativação de uma regra em grupo de escopo input"
+			}
+			return inGroup, summary
+		},
+		write: func() error { return h.db.SetFirewallRuleEnabled(b.ID, b.Enabled) },
+		audit: func() (string, string, string) {
+			action := "nft.rule.disable"
+			if b.Enabled {
+				action = "nft.rule.enable"
+			}
+			return action, "user_rules:" + b.ID, ""
+		},
+	})
 	if !ok {
 		return
 	}
-	summary := "desativação de uma regra em grupo de escopo input"
-	if b.Enabled {
-		summary = "ativação de uma regra em grupo de escopo input"
-	}
-	win, ok := h.openConfirmWindow(w, r, inGroup, summary)
-	if !ok {
-		return
-	}
-	if err := h.db.SetFirewallRuleEnabled(b.ID, b.Enabled); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	action := "nft.rule.disable"
-	if b.Enabled {
-		action = "nft.rule.enable"
-	}
-	auditAction(h.db, r, action, "user_rules:"+b.ID, "")
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(win.view))
+	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
 
 // ReorderRules sets the evaluation order for every one of the admin's rules
@@ -748,11 +711,9 @@ func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// Trava do confirmar-ou-reverte, depois da validação dos campos e antes
-	// de tocar no banco — ver confirmWindowBlocks (spec §5.3).
-	if h.confirmWindowBlocks(w, r) {
-		return
-	}
+	// A trava mora em ApplyGuarded (issue #20). A conferência da lista fica
+	// aqui porque compara o corpo contra o conjunto ATUAL de regras — precisa
+	// do banco, e Validate é o passo que roda antes de qualquer leitura.
 	current, err := h.db.ListFirewallRules()
 	if err != nil {
 		writeInternalError(w, err)
@@ -799,20 +760,20 @@ func (h *NftablesHandler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 		currentIDs[i] = row.ID
 		isInput[row.ID] = inputGroup[row.GroupID]
 	}
-	win, ok := h.openConfirmWindow(w, r, inputOrderChanged(currentIDs, b.IDs, isInput),
-		"reordenação das regras (há regra em grupo de escopo input)")
+	out, ok := h.applyGuarded(w, r, mutation{
+		window: func() (bool, string) {
+			return inputOrderChanged(currentIDs, b.IDs, isInput),
+				"reordenação das regras (há regra em grupo de escopo input)"
+		},
+		write: func() error { return h.db.ReorderFirewallRules(b.IDs) },
+		audit: func() (string, string, string) {
+			return "nft.rule.reorder", "user_rules", fmt.Sprintf("%d regras", len(b.IDs))
+		},
+	})
 	if !ok {
 		return
 	}
-	if err := h.db.ReorderFirewallRules(b.IDs); err != nil {
-		h.discardArmedWindow(w, r, win, err)
-		return
-	}
-	auditAction(h.db, r, "nft.rule.reorder", "user_rules", fmt.Sprintf("%d regras", len(b.IDs)))
-	if !h.reconcileArmed(w, r, win) {
-		return
-	}
-	writeJSON(w, http.StatusOK, okResult(win.view))
+	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
 
 func validCIDRorIP(s string) bool {
