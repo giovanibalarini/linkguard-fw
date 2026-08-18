@@ -353,9 +353,25 @@ func TestPendingCarriesTheServerSideCountdown(t *testing.T) {
 	if first.SecondsLeft <= 0 || first.SecondsLeft > 90 {
 		t.Fatalf("seconds_left fora da janela de 90 s: %d", first.SecondsLeft)
 	}
-	// Coerente com a verdade persistida: os dois descrevem o mesmo instante,
-	// medidos com o mesmo relógio. A folga de 2 s é o tempo do próprio teste.
-	if d := time.Until(first.ExpiresAt).Seconds() - float64(first.SecondsLeft); d < 0 || d > 2 {
+	// Coerente com a verdade persistida: os dois descrevem o mesmo instante.
+	//
+	// A tolerância é assimétrica de propósito, e o lado negativo não é folga
+	// para erro — é uma diferença REAL entre as duas grandezas:
+	//
+	//   - expires_at faz ida e volta pelo banco como segundos INTEIROS
+	//     (SavePendingChange grava ExpiresAt.Unix()), então perde a fração e
+	//     sempre encolhe, em até 1 s;
+	//   - seconds_left sai do relógio MONOTÔNICO, que não passou pelo banco e
+	//     mantém a precisão (SecondsLeft trunca, mas sobre o valor cheio).
+	//
+	// Com a janela armada em T+0,8 s, expires_at guarda T e seconds_left
+	// responde 89 enquanto time.Until devolve 88,8 — diferença de -0,2 s, com
+	// os dois campos corretos. Exigir d >= 0 fazia isto quebrar por sorte do
+	// relógio: aconteceu numa execução de release (run 32082502722), derrubando
+	// a publicação de um commit que não tinha defeito nenhum.
+	//
+	// O limite de 2 s do outro lado é o tempo do próprio teste.
+	if d := time.Until(first.ExpiresAt).Seconds() - float64(first.SecondsLeft); d < -1 || d > 2 {
 		t.Errorf("seconds_left (%d) não bate com expires_at (%v): diferença de %.1f s",
 			first.SecondsLeft, first.ExpiresAt, d)
 	}
