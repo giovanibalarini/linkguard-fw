@@ -488,6 +488,22 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)
 	netifSvc := netif.NewService(exec, db, linkSvc)
 	netifSvc.SetAlertService(alertSvc)
+	// Regra que cita uma interface inexistente carrega no nft SEM ERRO e nunca
+	// casa — o painel mostra a regra ativa e ela não protege nada. Aconteceu em
+	// produção (reshuffle de PCI, enp4s0 → enp5s0). Esta ligação é o que permite
+	// ao produto AVISAR; corrigir sozinho seria adivinhar qual interface o admin
+	// queria, e desativar a regra em silêncio é o mesmo defeito com outro nome.
+	frSvc.SetIfaceLister(func() ([]string, error) {
+		views, err := netifSvc.List(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		nomes := make([]string, 0, len(views))
+		for _, v := range views {
+			nomes = append(nomes, v.Name)
+		}
+		return nomes, nil
+	})
 	sysCollector := system.NewCollector()
 	rrdSvc := tsdb.NewService(db)
 
