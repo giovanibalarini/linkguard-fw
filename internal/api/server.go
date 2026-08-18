@@ -315,7 +315,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/pending/revert", nftH.RevertPendingChange)
 
 		// Port forwarding (DNAT)
-		pfH := handlers.NewPortForwardHandler(s.db, s.nftSvc)
+		// WithReconciler: sem ele, o encaminhamento escreve o DNAT e nunca
+		// reconcilia as chains construídas do banco (issue #82).
+		pfH := handlers.NewPortForwardHandler(s.db, s.nftSvc).WithReconciler(s.frSvc)
 		r.With(require(auth.PermFirewallRead)).Get("/api/portforward", pfH.List)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/portforward", pfH.Upsert)
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/portforward", pfH.Delete)
