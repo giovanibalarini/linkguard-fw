@@ -294,7 +294,39 @@ func (s *Service) reconcileGroups(ctx context.Context, groups []StoredGroup) err
 		slog.Error("a chain forward foi reconciliada sem grupo do sistema na lista e sem nenhum bloqueio administrativo (nenhuma linha `drop`); a defesa esperada é internal/firewallrules.ensureSystemGroupsPresent — isto é o alarme para o caso de algum chamador tê-la contornado",
 			"kinds_ausentes", missing, "grupos_recebidos", len(groups), "grupos_aplicados", len(valid))
 	}
-	forwardErr := s.rebuildChain(ctx, ForwardChain, forwardRules)
+	// A política da forward (issue #92). Erro de leitura aborta a chain inteira,
+	// o mesmo contrato dos grupos e do NTP: não saber qual é a política não pode
+	// virar "então é accept" numa chain que talvez esteja bloqueando de
+	// propósito.
+	fwPolicy, fwErr := s.forwardPolicy()
+	if fwErr != nil {
+		return fmt.Errorf("reconciliar a chain %s: %w", ForwardChain, fwErr)
+	}
+
+	var forwardErr error
+	if fwPolicy == PolicyDrop {
+		// As regras de sobrevivência da forward vêm ANTES de tudo: sem o
+		// `established,related`, "bloquear tudo" derruba cada conexão que a rede
+		// já tinha, no instante em que é aplicado.
+		comSobrevivencia := append(ForwardSurvivalRules(), forwardRules...)
+
+		// Caminho ATÔMICO, e só aqui. Com `flush` + N × `add`, a chain fica
+		// vazia com política drop por alguns milissegundos — todo o tráfego da
+		// rede cortado a cada reconciliação. Ver rebuildChainAtomic para por que
+		// este caminho não é o padrão de todas as máquinas.
+		decl := fmt.Sprintf("add chain %s %s %s { type filter hook forward priority filter ; policy %s ; }",
+			Family, Table, ForwardChain, string(PolicyDrop))
+		forwardErr = s.rebuildChainAtomic(ctx, ForwardChain, decl, comSobrevivencia)
+	} else {
+		// Política permissiva: o caminho de sempre, byte a byte. A declaração é
+		// reafirmada para que voltar de `drop` para `accept` funcione — sem ela,
+		// uma máquina que já foi bloqueada nunca mais seria liberada.
+		if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, ForwardChain,
+			"{", "type", "filter", "hook", "forward", "priority", "filter", ";", "policy", "accept", ";", "}"); err != nil {
+			return fmt.Errorf("declarar a chain %s: %w", ForwardChain, err)
+		}
+		forwardErr = s.rebuildChain(ctx, ForwardChain, forwardRules)
+	}
 	if forwardErr != nil {
 		failures = append(failures, forwardErr.Error())
 	}

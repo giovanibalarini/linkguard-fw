@@ -609,9 +609,154 @@ battery_upgrade() {
   fi
 }
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bateria D — a postura padrão do firewall (issues #78 e #92)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Esta bateria existe porque a bateria C, com dez verificações de
+# confirmar-ou-reverte, não trocava a POSTURA em nenhuma delas — e a postura é a
+# única mutação do produto que muda a chain inteira em vez de acrescentar uma
+# linha a ela. Os testes de unidade provam o que o renderizador emite; só a VM
+# prova o que o kernel faz com aquilo, e o que sobra no disco para o próximo
+# boot.
+#
+# As três perguntas que só aqui têm resposta:
+#
+#   1. bloquear o que ATRAVESSA deixa o painel e o SSH de pé? (é a diferença
+#      entre as chains forward e input, e errá-la é o operador se trancar fora);
+#   2. a troca é atômica de verdade — a chain nunca aparece vazia com política
+#      drop, que seria a rede inteira caindo a cada reconciliação;
+#   3. o bloqueio sobrevive ao reboot, e a reversão também.
+battery_policy() {
+  head_ "D. Postura padrão do firewall"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria D não roda"; return; }
+
+  local resp st janela
+
+  # D1 — o padrão de fábrica. Toda máquina instalada roda liberada nas duas
+  # chains, e um upgrade que mude isso é o firewall se fechando sozinho.
+  resp=$(body GET /api/nftables/policy "$tok")
+  if [[ "$(jqk policy <<<"$resp")" == "accept" && "$(jqk forward <<<"$resp")" == "accept" ]]; then
+    ok "a máquina nasce liberada nas duas chains"
+  else bad "postura inicial inesperada: $resp"; fi
+
+  # D2 — trocar a postura da FORWARD. Sem `chain` no corpo é a forward, que é o
+  # que o admin quer dizer quando fala em "bloquear tudo".
+  resp=$(api PUT /api/nftables/policy "$tok" '{"policy":"drop"}')
+  st=$(head -1 <<<"$resp")
+  janela=$(tail -n +2 <<<"$resp" | jqk pending.id)
+  if [[ "$st" == "200" ]]; then ok "postura da forward trocada para bloquear (200)"
+  else bad "a troca de postura devolveu $st"; fi
+  if [[ -n "$janela" ]]; then ok "a troca de postura abriu a janela de confirmação"
+  else bad "a troca de postura NÃO abriu janela — valeria para sempre sem ninguém confirmar"; fi
+
+  # D3 — o kernel. `policy drop` na forward, com as duas linhas de sobrevivência
+  # ANTES de tudo. Sem `established,related` na frente, "bloquear tudo" derruba
+  # cada conexão que a rede já tinha no instante em que é aplicado.
+  local fwd
+  fwd=$(vm "nft list chain inet linkguard forward 2>/dev/null")
+  if grep -q 'policy drop' <<<"$fwd"; then ok "a chain forward viva está com policy drop"
+  else bad "a forward viva não bloqueia: $(tr '\n' ' ' <<<"$fwd")"; fi
+  if grep -q 'ct state established,related.*accept' <<<"$fwd"; then
+    ok "as conexões já estabelecidas continuam passando"
+  else bad "não há liberação de established na forward — a rede cairia inteira, não só o que não foi liberado"; fi
+  if grep -q 'ct status dnat.*accept' <<<"$fwd"; then
+    ok "os encaminhamentos de porta continuam funcionando"
+  else bad "sem a liberação do DNAT: todo redirecionamento seria traduzido e descartado"; fi
+  # E a ordem: a sobrevivência tem de vir antes de qualquer drop administrativo.
+  if [[ "$(grep -n 'accept\|drop' <<<"$fwd" | head -1 | grep -c accept)" == "1" ]]; then
+    ok "a primeira linha da forward é de liberação, não de bloqueio"
+  else bad "há um drop acima das regras de sobrevivência"; fi
+
+  # D4 — a pergunta que decide se o operador continua dentro da máquina:
+  # bloquear o que ATRAVESSA não pode tocar no que CHEGA ao firewall.
+  local inp
+  inp=$(vm "nft list chain inet linkguard input 2>/dev/null")
+  if grep -q 'policy accept' <<<"$inp"; then
+    ok "a chain input continua liberada (painel e SSH de pé)"
+  else bad "bloquear a forward bloqueou também o acesso à própria máquina — é assim que o admin se tranca fora"; fi
+  # E o painel responde de verdade, não só a chain parece certa.
+  if [[ -n "$(body GET /api/nftables/policy "$tok" | jqk forward)" ]]; then
+    ok "o painel continua respondendo com a forward bloqueada"
+  else bad "o painel parou de responder depois de bloquear a forward"; fi
+
+  # D5 — reverter devolve a postura E limpa as linhas de sobrevivência. Elas não
+  # podem sobrar numa chain permissiva: entrariam ACIMA dos jumps dos grupos e
+  # anulariam, em silêncio, um bloqueio que o admin criou.
+  st=$(status POST /api/nftables/pending/revert "$tok" "{\"id\":\"$janela\"}")
+  if [[ "$st" == "200" ]]; then ok "reverter a troca de postura concluiu (200)"
+  else bad "reverter a postura devolveu $st"; fi
+  if [[ "$(body GET /api/nftables/policy "$tok" | jqk forward)" == "accept" ]]; then
+    ok "a reversão devolveu a postura da forward para liberar"
+  else bad "a reversão respondeu 200 e a postura continua bloqueando"; fi
+  fwd=$(vm "nft list chain inet linkguard forward 2>/dev/null")
+  if grep -q 'policy accept' <<<"$fwd"; then ok "o firewall vivo voltou a liberar"
+  else bad "banco e nftables discordam depois da reversão — a confiança falsa que o painel existe para eliminar"; fi
+  if grep -q 'ct state established,related' <<<"$fwd"; then
+    bad "as regras de sobrevivência ficaram numa chain permissiva; elas anulariam os bloqueios dos grupos"
+  else ok "as regras de sobrevivência saíram junto com a política restritiva"; fi
+
+  # D6 — o bloqueio SOBREVIVE ao reboot. É a pergunta que nenhum teste de
+  # unidade responde: a persistência do ruleset acontece depois da confirmação,
+  # e um firewall que esquece a postura no boot é pior que um que nunca a teve.
+  resp=$(api PUT /api/nftables/policy "$tok" '{"policy":"drop"}')
+  janela=$(tail -n +2 <<<"$resp" | jqk pending.id)
+  st=$(status POST /api/nftables/pending/confirm "$tok" "{\"id\":\"$janela\"}")
+  if [[ "$st" == "200" ]]; then ok "a troca de postura foi confirmada"
+  else bad "confirmar a troca de postura devolveu $st"; fi
+  if vm "grep -c 'policy drop' /etc/nftables.conf 2>/dev/null" | grep -qv '^0$'; then
+    ok "a postura restritiva foi gravada no ruleset de boot"
+  else bad "o /etc/nftables.conf não tem a postura restritiva — o bloqueio sumiria no próximo boot"; fi
+
+  vm "systemctl restart linkguard-fw" >/dev/null 2>&1
+  wait_api || { bad "o serviço não voltou depois do restart"; return; }
+  tok=$(login admin "$initial"); [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  if [[ "$(body GET /api/nftables/policy "$tok" | jqk forward)" == "accept" ]]; then
+    bad "o restart esqueceu a postura que o admin confirmou"
+  else ok "a postura confirmada sobreviveu ao restart"; fi
+  if vm "nft list chain inet linkguard forward 2>/dev/null" | grep -q 'policy drop'; then
+    ok "o firewall vivo voltou bloqueando depois do restart"
+  else bad "o serviço voltou e a forward está liberada — a rede ficaria aberta após um reboot"; fi
+
+  # D7 — e dá para VOLTAR. Uma máquina bloqueada que não pode ser liberada é
+  # uma armadilha: `flush chain` não mexe em política, e sem a redeclaração da
+  # chain no caminho permissivo o `drop` ficaria para sempre.
+  resp=$(api PUT /api/nftables/policy "$tok" '{"policy":"accept"}')
+  janela=$(tail -n +2 <<<"$resp" | jqk pending.id)
+  status POST /api/nftables/pending/confirm "$tok" "{\"id\":\"$janela\"}" >/dev/null
+  if vm "nft list chain inet linkguard forward 2>/dev/null" | grep -q 'policy accept'; then
+    ok "a máquina bloqueada pôde ser liberada de volta"
+  else bad "a forward continua em drop depois de pedir accept — a máquina ficou trancada em modo bloqueio"; fi
+
+  # D8 — a outra chain, a perigosa. Ela existe e é escolhida explicitamente com
+  # `chain: input`, nunca por engano.
+  resp=$(api PUT /api/nftables/policy "$tok" '{"policy":"drop","chain":"input"}')
+  janela=$(tail -n +2 <<<"$resp" | jqk pending.id)
+  if [[ -n "$janela" ]]; then ok "a postura da input também abre janela"
+  else bad "trocar a postura da input não abriu janela — é a mudança que tranca o admin fora"; fi
+  # E a janela é revertida SEM confirmar, que é o comportamento que salva quem
+  # errou: não confirmamos de propósito.
+  status POST /api/nftables/pending/revert "$tok" "{\"id\":\"$janela\"}" >/dev/null
+  if vm "nft list chain inet linkguard input 2>/dev/null" | grep -q 'policy accept'; then
+    ok "reverter devolveu o acesso à própria máquina"
+  else bad "a input continua bloqueada depois da reversão"; fi
+
+  # D9 — valor inválido não vira accept nem drop em silêncio.
+  st=$(status PUT /api/nftables/policy "$tok" '{"policy":"reject"}')
+  if [[ "$st" == "400" ]]; then ok "postura inválida recusada com 400"
+  else bad "postura inválida devolveu $st"; fi
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
+battery_policy
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

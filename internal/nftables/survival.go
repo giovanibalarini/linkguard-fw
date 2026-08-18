@@ -149,3 +149,38 @@ func networkSet(nets []string) string {
 	}
 	return out + " }"
 }
+
+// ForwardSurvivalRules é o equivalente da lista acima para a chain FORWARD —
+// o tráfego que ATRAVESSA o firewall (issue #92).
+//
+// A lista é curta porque a pergunta é outra. A input protege o acesso À
+// máquina; a forward protege as conexões que a rede já tem. Nada de SSH, painel
+// ou DHCP servido aqui: nenhum deles atravessa o firewall.
+//
+// E `established` ENTRA, ao contrário da input.
+//
+// Isso não contradiz a issue #86 — contradiria se fosse a mesma chain. O
+// problema de lá é a sessão SSH do OPERADOR sobrevivendo ao próprio bloqueio e
+// fazendo o teste dos 90 segundos mentir; essa sessão vai para o firewall, ou
+// seja, é `input`. Na forward, `established` é o que impede toda conexão de
+// saída da LAN de morrer no meio: sem ela, "bloquear tudo" derruba cada
+// download, cada chamada e cada página aberta no instante em que é aplicado,
+// inclusive os que já estavam em curso.
+func ForwardSurvivalRules() [][]string {
+	return [][]string{
+		// O retorno do que saiu. Sem esta linha, uma política restritiva na
+		// forward não bloqueia "o que não foi liberado": bloqueia tudo, porque
+		// nenhuma resposta de servidor casa com regra de saída.
+		{"ct", "state", "established,related", "counter", "accept"},
+
+		// Os encaminhamentos de porta. `ct status dnat` casa com o que a chain
+		// de DNAT já traduziu — uma linha só, em vez de uma por encaminhamento,
+		// porque a lista deles muda por um caminho que não passa por aqui.
+		//
+		// A #82 é o que faz esta linha bastar: sem ela, criar um encaminhamento
+		// não reconciliava, e o DNAT ficava gravado com o pacote morrendo na
+		// política. Com ela, o par (DNAT traduzido + esta liberação) existe
+		// sempre junto.
+		{"ct", "status", "dnat", "counter", "accept"},
+	}
+}

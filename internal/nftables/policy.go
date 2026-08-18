@@ -19,8 +19,11 @@ package nftables
 // caminho travado dos dois — e não em quem chama.
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 )
 
 // Policy é a política padrão de uma chain.
@@ -124,4 +127,87 @@ func (s *Service) adminAccess() (AdminAccess, error) {
 				"renderizar a chain assim cortaria SSH e painel (ver SetAdminAccessSource)")
 	}
 	return s.adminAccessSource()
+}
+
+// SetForwardPolicySource liga a fonte da política da chain forward (#92).
+//
+// Separada da input de propósito: as duas posturas são independentes. Bloquear
+// o que atravessa e liberar o que chega ao próprio firewall é uma combinação
+// legítima e comum — e amarrá-las num valor só tiraria do admin exatamente a
+// escolha que ele veio fazer.
+func (s *Service) SetForwardPolicySource(src func() (Policy, error)) {
+	s.forwardPolicySource = src
+}
+
+// forwardPolicy resolve a política da chain forward. Mesmo contrato da input:
+// fonte ausente é accept (o estado de sempre), erro de leitura aborta.
+func (s *Service) forwardPolicy() (Policy, error) {
+	if s.forwardPolicySource == nil {
+		return PolicyAccept, nil
+	}
+	p, err := s.forwardPolicySource()
+	if err != nil {
+		return "", fmt.Errorf("ler a política padrão da chain %s: %w", ForwardChain, err)
+	}
+	if !p.Valid() {
+		return "", fmt.Errorf("política padrão inválida para a chain %s: %q", ForwardChain, p)
+	}
+	if p == PolicyDrop {
+		slog.Info("chain forward reconciliada com política restritiva", "chain", ForwardChain, "policy", p)
+	}
+	return p, nil
+}
+
+// rebuildChainAtomic reconstrói uma chain INTEIRA — declaração, flush e regras —
+// num único script aplicado com `nft -f`, que o nft trata como transação.
+//
+// POR QUE ELE EXISTE, E POR QUE NÃO É O PADRÃO.
+//
+// rebuildChain é `flush chain` seguido de N × `add rule`, cada um um comando
+// separado. Com política PERMISSIVA isso é inofensivo: entre o flush e a
+// primeira regra a chain está vazia, e chain vazia com `policy accept` deixa
+// tudo passar — que é o que ela ia fazer mesmo.
+//
+// Com política RESTRITIVA a mesma janela inverte de sinal: a chain fica vazia
+// com `policy drop`, e por alguns milissegundos TODO o tráfego da rede é
+// cortado — inclusive o que as regras de sobrevivência existem para preservar.
+// Num firewall de produção isso é uma queda, curta e real, a cada reconciliação.
+//
+// E ele NÃO substitui o rebuildChain de sempre, de propósito: com `nft -f`, uma
+// regra ruim aborta o script INTEIRO, enquanto o caminho de hoje aplica as
+// demais e reporta a rejeitada (C-1). Trocar isso para toda a base instalada
+// seria uma mudança de comportamento que ninguém pediu, num caminho onde o
+// comportamento atual está documentado e testado.
+//
+// Então: atômico só onde a atomicidade é necessária.
+func (s *Service) rebuildChainAtomic(ctx context.Context, chain, decl string, rules [][]string) error {
+	var b strings.Builder
+	// A declaração vem primeiro: ela cria a chain se não existir e ALTERA a
+	// política se existir, sem tocar nas regras. Dentro do mesmo script, o
+	// flush logo abaixo é quem esvazia.
+	b.WriteString(decl + "\n")
+	fmt.Fprintf(&b, "flush chain %s %s %s\n", Family, Table, chain)
+	for _, tokens := range rules {
+		fmt.Fprintf(&b, "add rule %s %s %s %s\n", Family, Table, chain, strings.Join(tokens, " "))
+	}
+
+	f, err := os.CreateTemp("", "linkguard-chain-*.nft")
+	if err != nil {
+		return fmt.Errorf("criar o script da chain %s: %w", chain, err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(b.String()); err != nil {
+		f.Close() //nolint:errcheck // já estamos devolvendo erro
+		return fmt.Errorf("escrever o script da chain %s: %w", chain, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("fechar o script da chain %s: %w", chain, err)
+	}
+
+	if out, err := s.exec.Execute(ctx, "nft", "-f", f.Name()); err != nil {
+		// O script inteiro foi recusado, então a chain continua EXATAMENTE como
+		// estava — que é a propriedade que justifica este caminho.
+		return fmt.Errorf("aplicar a chain %s: %w (saída: %s)", chain, err, out)
+	}
+	return nil
 }

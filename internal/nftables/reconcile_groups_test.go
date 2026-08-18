@@ -241,10 +241,17 @@ func TestReconcileGroupsCreatesNoChainForSystemGroups(t *testing.T) {
 		t.Fatalf("erro inesperado: %v", err)
 	}
 	for _, cmd := range exec.executed {
-		// A chain input é criada de forma idempotente em toda passada desde a
-		// Fase C2 (ela pode não existir numa máquina provisionada antes de
-		// 2026-08-11) — não é chain de grupo e não é o que este teste guarda.
-		if strings.HasPrefix(cmd, "nft add chain") && !strings.Contains(cmd, "hook input") {
+		// As BASE CHAINS são declaradas de forma idempotente em toda passada, e
+		// nenhuma delas é chain de grupo:
+		//
+		//   input   — desde a Fase C2, porque pode não existir numa máquina
+		//             provisionada antes de 2026-08-11;
+		//   forward — desde a issue #92, que tornou a política dela
+		//             configurável: sem redeclarar, uma máquina que já foi
+		//             posta em `drop` nunca mais voltaria para `accept`.
+		//
+		// A distinção é o `hook`: chain de grupo não tem nenhum.
+		if strings.HasPrefix(cmd, "nft add chain") && !strings.Contains(cmd, "hook ") {
 			t.Errorf("grupo do sistema não pode ganhar chain: %q", cmd)
 		}
 	}

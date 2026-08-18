@@ -95,6 +95,10 @@ type stateSnapshot struct {
 	// sabe fazer sem desfazê-la: o pendente sumiria, o prazo venceria, e a
 	// política restritiva continuaria de pé sem nada apontando para ela.
 	Policy *nftables.Policy `json:"policy,omitempty"`
+	// ForwardPolicy é a política da chain forward (issue #92), pelo mesmo
+	// motivo e com a mesma forma: sem ela, reverter devolveria os grupos e
+	// deixaria o tráfego da rede bloqueado.
+	ForwardPolicy *nftables.Policy `json:"forward_policy,omitempty"`
 }
 
 // SnapshotState serializa o estado ATUAL dos grupos e regras — o que o
@@ -138,7 +142,11 @@ func (s *Service) readState() (stateSnapshot, error) {
 	if err != nil {
 		return stateSnapshot{}, fmt.Errorf("ler a política para o snapshot: %w", err)
 	}
-	return stateSnapshot{Groups: groups, Rules: rules, Policy: &policy}, nil
+	fwPolicy, err := s.ForwardPolicy()
+	if err != nil {
+		return stateSnapshot{}, fmt.Errorf("ler a política da forward para o snapshot: %w", err)
+	}
+	return stateSnapshot{Groups: groups, Rules: rules, Policy: &policy, ForwardPolicy: &fwPolicy}, nil
 }
 
 // canonicalState serializa um estado numa forma COMPARÁVEL byte a byte.
@@ -1002,6 +1010,12 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 		if err := s.SetInputPolicy(*snap.Policy); err != nil {
 			slog.Error("o estado anterior dos grupos e regras voltou, mas a política padrão não pôde ser restaurada",
 				"err", err, "politica", *snap.Policy)
+		}
+	}
+	if snap.ForwardPolicy != nil {
+		if err := s.SetForwardPolicy(*snap.ForwardPolicy); err != nil {
+			slog.Error("o estado anterior voltou, mas a política da forward não pôde ser restaurada",
+				"err", err, "politica", *snap.ForwardPolicy)
 		}
 	}
 
