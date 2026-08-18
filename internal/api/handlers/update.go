@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/updater"
@@ -19,11 +20,38 @@ type UpdateHandler struct {
 	db  *storage.DB
 	sec secrets.Secrets
 	svc *updater.Service
+	// alertSvc é como uma falha da atualização chega ao operador. Sem ele o
+	// erro morre num slog e a tela fica dizendo "aguarde e recarregue" para
+	// sempre (issue #101). Pode ser nil em teste.
+	alertSvc *alerts.Service
 }
 
 // NewUpdateHandler creates an UpdateHandler.
-func NewUpdateHandler(db *storage.DB, sec secrets.Secrets, svc *updater.Service) *UpdateHandler {
-	return &UpdateHandler{db: db, sec: sec, svc: svc}
+func NewUpdateHandler(db *storage.DB, sec secrets.Secrets, svc *updater.Service, alertSvc *alerts.Service) *UpdateHandler {
+	return &UpdateHandler{db: db, sec: sec, svc: svc, alertSvc: alertSvc}
+}
+
+// falhouAtualizar leva a falha para onde o operador olha.
+//
+// O canal é o de alertas, e não uma linha de log, porque a resposta do POST já
+// saiu ("atualizando, aguarde e recarregue") e não existe mais caminho de volta
+// pelo HTTP. Vale para qualquer causa: rede fora, GitHub com rate limit,
+// checksum divergente — esta última é falha de INTEGRIDADE, a que mais precisa
+// chegar à tela.
+func (h *UpdateHandler) falhouAtualizar(para string, err error) {
+	slog.Error("self-update failed", "err", err)
+	if h.alertSvc == nil {
+		return
+	}
+	if aerr := h.alertSvc.Create(
+		alerts.TypeSelfUpdateFailed,
+		alerts.SeverityWarning,
+		"A atualização para "+para+" não concluiu",
+		"O LinkGuard continua rodando na versão anterior, e nada foi alterado. Causa: "+err.Error(),
+		"",
+	); aerr != nil {
+		slog.Error("não consegui registrar o alerta da falha de atualização", "err", aerr)
+	}
 }
 
 // TokenStatus reports whether a GitHub token is configured (never returns it).
@@ -83,7 +111,7 @@ func (h *UpdateHandler) Apply(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		slog.Info("self-update starting", "to", res.Latest)
 		if err := h.svc.Apply(ctx); err != nil {
-			slog.Error("self-update failed", "err", err)
+			h.falhouAtualizar(res.Latest, err)
 		}
 	}()
 
