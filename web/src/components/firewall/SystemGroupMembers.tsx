@@ -15,6 +15,7 @@
 import { useState } from 'react';
 import { Plus, Power, PowerOff, Lock, X, AlertTriangle, Ban } from 'lucide-react';
 import client from '../../api/client';
+import { useI18n } from '../../i18n';
 import Modal from '../ui/Modal';
 import IconButton from '../ui/IconButton';
 import { KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../../lib/blockGroups';
@@ -41,6 +42,7 @@ interface Props {
 export default function SystemGroupMembers({
   group, sys, managed, hosts, above, unit, canWrite, canBlockHosts, cor, onToggle,
 }: Props) {
+  const { t } = useI18n();
   const [newCidr, setNewCidr] = useState('');
   const [hostPicker, setHostPicker] = useState({ open: false, filter: '' });
   const { busy, locked, lockReason, editDisabled, run } = cor;
@@ -51,23 +53,23 @@ export default function SystemGroupMembers({
   const addCidr = () => {
     const cidr = newCidr.trim();
     if (!cidr) return;
-    run(() => client.post('/api/nftables/blocklist', { cidr }), 'Destino bloqueado.')
+    run(() => client.post('/api/nftables/blocklist', { cidr }), t('fw.toast.blocklist.added'))
       .then((ok) => { if (ok) setNewCidr(''); });
   };
   const delCidr = (cidr: string) => {
     if (!confirm(`Desbloquear o destino ${cidr}?`)) return;
-    run(() => client.delete('/api/nftables/blocklist', { data: { cidr } }), 'Destino desbloqueado.');
+    run(() => client.delete('/api/nftables/blocklist', { data: { cidr } }), t('fw.toast.blocklist.removed'));
   };
   // Host bloqueado é identificado pelo MAC (o inventário é a fonte de
   // verdade; o IP é o que vai para o set) — daí a ida ao endpoint de hosts em
   // vez de mexer no set direto, que deixaria o inventário mentindo.
   const blockHost = (h: NetHost) => {
-    run(() => client.post('/api/hosts/block', { mac: h.mac, blocked: true }), 'Host bloqueado.')
+    run(() => client.post('/api/hosts/block', { mac: h.mac, blocked: true }), t('fw.toast.host.blocked'))
       .then((ok) => { if (ok) setHostPicker({ open: false, filter: '' }); });
   };
   const unblockHost = (h: NetHost) => {
     if (!confirm(`Desbloquear o host ${h.alias || h.hostname || h.ip}?`)) return;
-    run(() => client.post('/api/hosts/block', { mac: h.mac, blocked: false }), 'Host desbloqueado.');
+    run(() => client.post('/api/hosts/block', { mac: h.mac, blocked: false }), t('fw.toast.host.unblocked'));
   };
 
   return (
@@ -75,7 +77,7 @@ export default function SystemGroupMembers({
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-white font-semibold truncate">{group.name}</h3>
-          <p className="text-[11px] text-gray-600">Mantido pelo LinkGuard: não pode ser apagado nem renomeado. Pode ser ligado, desligado e reordenado.</p>
+          <p className="text-[11px] text-gray-600">{t('fw.sysmembers.managed')}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-300">
@@ -89,7 +91,7 @@ export default function SystemGroupMembers({
           {group.enabled && !group.applied && (
             <span
               className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border border-yellow-500/40 bg-yellow-500/10 text-yellow-400"
-              title="O bloqueio está ligado aqui, mas o firewall não confirma as linhas dele na chain forward — pode ser um erro ao aplicar; confira o aviso no topo."
+              title={t('fw.sysmembers.driftTitle')}
             >
               Configurado, não aplicado
             </span>
@@ -101,7 +103,7 @@ export default function SystemGroupMembers({
               title={locked ? lockReason : undefined}
               className="btn-secondary flex items-center gap-1.5 text-xs px-2.5 py-1.5 disabled:opacity-50"
             >
-              {group.enabled ? <><PowerOff className="w-3.5 h-3.5" /> Desligar</> : <><Power className="w-3.5 h-3.5" /> Ligar</>}
+              {group.enabled ? <><PowerOff className="w-3.5 h-3.5" />{t('fw.groups.disable')}</> : <><Power className="w-3.5 h-3.5" />{t('fw.groups.enable')}</>}
             </button>
           )}
         </div>
@@ -118,11 +120,11 @@ export default function SystemGroupMembers({
           quanto elas descartaram. */}
       <div className="rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2.5 space-y-1.5">
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
-          <p className="text-sm text-gray-300 min-w-0">{sys.what}</p>
+          <p className="text-sm text-gray-300 min-w-0">{t(sys.what)}</p>
           <div className="text-xs font-mono text-gray-400 shrink-0">
             {group.has_counter
               ? <>descartou {group.packets.toLocaleString('pt-BR')} pct · {formatCount(group.bytes, unit)}</>
-              : <span className="text-gray-600">sem contador · —</span>}
+              : <span className="text-gray-600">{t('fw.groups.noCounter')}</span>}
           </div>
         </div>
         <div>
@@ -133,8 +135,8 @@ export default function SystemGroupMembers({
         {!group.applied && (
           <p className={`text-[11px] ${group.enabled ? 'text-yellow-500' : 'text-gray-500'}`}>
             {group.enabled
-              ? 'O firewall não confirma estas linhas na chain forward: neste momento nenhum membro abaixo está sendo bloqueado.'
-              : 'Grupo desligado: nenhum membro abaixo está sendo bloqueado. Eles continuam guardados para quando ele voltar.'}
+              ? t('fw.sysmembers.driftBanner')
+              : t('fw.sysmembers.offBanner')}
           </p>
         )}
         {/* Aviso de ordem (spec §2.2): a flexibilidade de arrastar um
@@ -158,10 +160,10 @@ export default function SystemGroupMembers({
           seria dado falso. */}
       <div>
         <h4 className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">
-          {members.length} {members.length === 1 ? sys.member[0] : sys.member[1]}
+          {members.length} {members.length === 1 ? t(sys.member[0]) : t(sys.member[1])}
         </h4>
         {members.length === 0 ? (
-          <p className="text-gray-600 text-sm py-2">{sys.empty}</p>
+          <p className="text-gray-600 text-sm py-2">{t(sys.empty)}</p>
         ) : (
           <ul className="rounded-lg border border-gray-800 divide-y divide-gray-800/70">
             {members.map((m) => {
@@ -177,7 +179,7 @@ export default function SystemGroupMembers({
                           <span className="font-mono text-gray-600">{h.mac}</span>
                         </>
                       ) : hosts === null ? '' : (
-                        <span className="text-gray-600">sem host correspondente no inventário</span>
+                        <span className="text-gray-600">{t('fw.sysmembers.noHostMatch')}</span>
                       )}
                     </span>
                   )}
@@ -189,7 +191,7 @@ export default function SystemGroupMembers({
                     h ? (
                       <IconButton icon={X} onClick={() => unblockHost(h)} disabled={busy} label="Desbloquear host" variant="danger" className="min-w-[32px] min-h-[32px]" />
                     ) : (
-                      <span className="text-[10px] text-gray-600 text-right" title="O bloqueio de host é feito pelo MAC, no inventário. Este IP está no set sem host correspondente — desbloqueie pela página Hosts quando ele reaparecer.">
+                      <span className="text-[10px] text-gray-600 text-right" title={t('fw.sysmembers.macBlockTitle')}>
                         só pela página Hosts
                       </span>
                     )
@@ -205,7 +207,7 @@ export default function SystemGroupMembers({
           <div className="flex flex-col sm:flex-row gap-2 mt-3">
             <input
               className="input flex-1"
-              placeholder="CIDR ou IP (ex.: 163.116.128.0/17)"
+              placeholder={t('fw.sysmembers.cidrPlaceholder')}
               value={newCidr}
               onChange={(e) => setNewCidr(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addCidr()}
@@ -222,7 +224,7 @@ export default function SystemGroupMembers({
             </button>
           ) : (
             <p className="text-[11px] text-gray-600 mt-3">
-              O bloqueio de host é feito pelo MAC, na página <span className="text-gray-400">Hosts</span> — é lá que a máquina é reconhecida pelo nome.
+              O bloqueio de host é feito pelo MAC, na página <span className="text-gray-400">{t('fw.sysmembers.hosts')}</span> — é lá que a máquina é reconhecida pelo nome.
             </p>
           )
         )}
@@ -235,14 +237,14 @@ export default function SystemGroupMembers({
       <Modal
         open={hostPicker.open}
         onClose={() => setHostPicker({ open: false, filter: '' })}
-        title="Bloquear host"
+        title={t('fw.sysmembers.blockHost')}
         size="md"
         className="rounded-xl border border-gray-700 bg-gray-900 shadow-2xl flex flex-col"
       >
         <div className="p-6 space-y-3 overflow-y-auto">
           <input
             className="input w-full"
-            placeholder="Filtrar por IP, MAC, apelido..."
+            placeholder={t('fw.sysmembers.filterPlaceholder')}
             value={hostPicker.filter}
             onChange={(e) => setHostPicker({ ...hostPicker, filter: e.target.value })}
           />
@@ -279,7 +281,7 @@ export default function SystemGroupMembers({
           </p>
         </div>
         <div className="px-6 py-4 border-t border-gray-800">
-          <button onClick={() => setHostPicker({ open: false, filter: '' })} className="btn-secondary w-full">Fechar</button>
+          <button onClick={() => setHostPicker({ open: false, filter: '' })} className="btn-secondary w-full">{t('common.close')}</button>
         </div>
       </Modal>
     </div>

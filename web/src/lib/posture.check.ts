@@ -1,7 +1,7 @@
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
 import {
-  POSTURE_COPY, POSTURE_ORDER, confirmPrompt, explainAll, explainSurvival,
-  policyLine, postureRequest,
+  POSTURE_ORDER, policyLine, postureRequest, survivalLine, survivalLines,
 } from './posture.ts';
 
 let n = 0;
@@ -41,28 +41,6 @@ const FORWARD_REAL = [
 }
 
 {
-  // As duas chains NÃO podem ser apresentadas com o mesmo peso. A da input é a
-  // que tranca o admin fora, e o texto de risco dela tem de dizer isso.
-  const inp = POSTURE_COPY.input.risco.toLowerCase();
-  check(inp.includes('painel') && inp.includes('ssh'), 'o risco da input nomeia o que se perde');
-  const fwd = POSTURE_COPY.forward.risco.toLowerCase();
-  check(fwd.includes('não é afetado') || fwd.includes('nao e afetado'),
-    'o risco da forward diz que o painel continua de pé — senão o operador não bloqueia nada por medo');
-  check(POSTURE_COPY.forward.risco !== POSTURE_COPY.input.risco, 'os dois riscos são diferentes');
-}
-
-{
-  // Nenhum dos textos pode ser "policy drop" disfarçado: a tela existe para
-  // quem não escreve nftables.
-  for (const c of Object.values(POSTURE_COPY)) {
-    for (const t of [c.titulo, c.subtitulo, c.liberar, c.bloquear, c.risco]) {
-      check(!/policy (accept|drop)/.test(t), `texto vazando jargão de nftables: ${t}`);
-      check(t.length > 0, 'texto vazio');
-    }
-  }
-}
-
-{
   eq(policyLine('forward', 'drop'),
     'chain forward { type filter hook forward priority filter ; policy drop ; }',
     'a linha do modo avançado é a declaração real da chain');
@@ -74,63 +52,69 @@ const FORWARD_REAL = [
 {
   // O `counter` sai: ele é detalhe de contabilidade e ocupa a largura que a
   // explicação precisa.
-  const l = explainSurvival('ct state established,related counter accept');
+  const l = survivalLine('ct state established,related counter accept');
   eq(l.nft, 'ct state established,related accept', 'o counter é removido da exibição');
-  check(l.oque.length > 0, 'a linha de established tem explicação');
-  check(l.porque.includes('derruba tudo'), 'e ela diz por que a ausência dói');
+  eq(l.key, 'established', 'e a linha casa com a chave certa');
 }
 
 {
-  // Toda linha que o backend de verdade emite tem de estar explicada. Uma
-  // lista com metade das linhas mudas seria pior que nenhuma.
-  for (const l of explainAll([...INPUT_REAL, ...FORWARD_REAL])) {
-    check(l.oque.length > 0, `linha sem explicação: ${l.nft}`);
-    check(l.porque.length > 0, `linha sem o porquê: ${l.nft}`);
+  // `established,related` e `related` sozinho são coisas diferentes e não podem
+  // cair na mesma chave: a primeira é da forward, a segunda é a que a input já
+  // tem hoje. A ordem dos matchers é o que garante isso.
+  eq(survivalLine('ct state established,related counter accept').key, 'established', 'established primeiro');
+  eq(survivalLine('ct state related counter accept').key, 'related', 'related sozinho é outra coisa');
+}
+
+{
+  // Toda linha que o backend de verdade emite tem de casar com alguma chave.
+  // Uma lista com metade das linhas mudas seria pior que nenhuma.
+  for (const l of survivalLines([...INPUT_REAL, ...FORWARD_REAL])) {
+    check(l.key !== null, `linha sem chave de explicação: ${l.nft}`);
   }
 }
 
 {
-  // `established,related` e `related` sozinho são coisas diferentes e não
-  // podem cair na mesma explicação: a primeira é da forward, a segunda é a que
-  // a input já tem hoje.
-  const est = explainSurvival('ct state established,related counter accept');
-  const rel = explainSurvival('ct state related counter accept');
-  check(est.oque !== rel.oque, 'established,related não é confundido com related');
-}
-
-{
-  // Linha desconhecida aparece MESMO ASSIM, sem explicação. Escondê-la faria a
+  // Linha desconhecida aparece MESMO ASSIM, com key null. Escondê-la faria a
   // tela afirmar que o firewall preserva menos do que preserva — o erro na
   // direção que assusta o operador à toa.
-  const desconhecida = explainSurvival('meta l4proto 132 counter accept');
+  const desconhecida = survivalLine('meta l4proto 132 counter accept');
   eq(desconhecida.nft, 'meta l4proto 132 accept', 'a linha desconhecida sobrevive');
-  eq(desconhecida.oque, '', 'e vem sem explicação, em vez de sumir');
-  eq(explainAll(['a', 'b']).length, 2, 'nenhuma linha é filtrada');
+  eq(desconhecida.key, null, 'e vem sem chave, em vez de sumir');
+  eq(survivalLines(['a', 'b']).length, 2, 'nenhuma linha é filtrada');
 }
 
 {
-  eq(explainAll(null).length, 0, 'lista ausente não quebra a tela');
-  eq(explainAll(undefined).length, 0, 'nem indefinida');
+  eq(survivalLines(null).length, 0, 'lista ausente não quebra a tela');
+  eq(survivalLines(undefined).length, 0, 'nem indefinida');
 }
 
+// ─── O contrato com o dicionário (issue #105) ────────────────────────────────
+//
+// Estas asserções são a razão de as chaves serem estáveis. Elas ligam ESTE
+// arquivo ao strings.yaml: uma chave nova aqui sem texto lá vira uma tela que
+// mostra "fw.posture.survival.xyz.what" cru para o operador, e isso passaria
+// despercebido — o gerador só sabe checar que uma chave EXISTENTE tem os dois
+// idiomas, não que toda chave usada pelo código existe.
 {
-  // A confirmação diz o que vai acontecer e nomeia o tráfego — é a última
-  // coisa que o operador lê antes de a rede mudar.
-  const bloq = confirmPrompt('forward', 'drop');
-  check(bloq.includes('ATRAVESSA'), 'a frase da forward nomeia o tráfego');
-  check(bloq.includes('90 segundos'), 'e avisa da janela de reversão');
-  check(!/tem certeza/i.test(bloq), 'não é um "tem certeza?"');
+  const yaml = readFileSync(new URL('../i18n/strings.yaml', import.meta.url), 'utf8');
+  const temChave = (k: string) => yaml.includes(`\n${k}:`);
 
-  const inp = confirmPrompt('input', 'drop');
-  check(inp.includes('próprio LinkGuard'), 'a frase da input nomeia a máquina');
-  check(inp !== bloq, 'as duas chains não compartilham a mesma frase');
+  const TODAS_AS_KEYS = [
+    'established', 'related', 'dnat', 'loopback', 'icmpv6',
+    'admin', 'dhcpServed', 'dnsServed', 'dhcpClient',
+  ];
+  for (const k of TODAS_AS_KEYS) {
+    check(temChave(`fw.posture.survival.${k}.what`), `falta fw.posture.survival.${k}.what no strings.yaml`);
+    check(temChave(`fw.posture.survival.${k}.why`), `falta fw.posture.survival.${k}.why no strings.yaml`);
+  }
 
-  // Liberar não promete os 90 segundos de teste de acesso do mesmo jeito: o
-  // risco é oposto, e prometer que "o LinkGuard desfaz" seria dizer que
-  // liberar pode trancar alguém fora.
-  const lib = confirmPrompt('forward', 'accept');
-  check(!lib.includes('90 segundos'), 'liberar não copia o aviso de bloquear');
-  check(lib.includes('continuam valendo'), 'e explica que os bloqueios existentes ficam');
+  // E as chaves das duas chains, que a tela monta por interpolação do nome.
+  for (const chain of POSTURE_ORDER) {
+    for (const sufixo of ['title', 'subtitle', 'accept', 'drop', 'risk']) {
+      check(temChave(`fw.posture.${chain}.${sufixo}`), `falta fw.posture.${chain}.${sufixo} no strings.yaml`);
+    }
+    check(temChave(`fw.posture.target.${chain}`), `falta fw.posture.target.${chain} no strings.yaml`);
+  }
 }
 
 console.log(`posture.check.ts: ${n} asserções OK`);

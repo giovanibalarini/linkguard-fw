@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useI18n } from '../i18n';
 import { Link } from 'react-router-dom';
 import {
   ChevronDown, ChevronRight, ExternalLink, Pencil, Check, Ban, Slash,
@@ -29,11 +30,11 @@ interface Props {
 // apresentada como anomalia. Elas são previstíssimas: a forward pula
 // para elas, e é aí que o pacote passa.
 const STAGE_DEFS: { key: string; label: string; hint: string; chainNames: string[]; chainPrefix?: string }[] = [
-  { key: 'input', label: 'Entrada', hint: 'tráfego destinado ao próprio firewall (ex.: proteção de NTP)', chainNames: ['input'] },
-  { key: 'mark_hosts', label: 'Marcação', hint: 'direciona um host para uma WAN específica', chainNames: ['mark_hosts'] },
-  { key: 'forward', label: 'Encaminhamento', hint: 'tráfego atravessando: bloqueios e grupos de regras, na ordem da aba "Grupos de regras"', chainNames: ['forward'], chainPrefix: 'grp_' },
-  { key: 'postrouting', label: 'NAT de saída', hint: 'mascaramento de origem para as WANs', chainNames: ['postrouting'] },
-  { key: 'prerouting_dnat', label: 'Redirecionamento de porta', hint: 'encaminhamento de porta (DNAT)', chainNames: ['prerouting_dnat'] },
+  { key: 'input', label: 'fw.stage.input.label', hint: 'fw.stage.input.hint', chainNames: ['input'] },
+  { key: 'mark_hosts', label: 'fw.stage.mark.label', hint: 'fw.stage.mark.hint', chainNames: ['mark_hosts'] },
+  { key: 'forward', label: 'fw.stage.forward.label', hint: 'fw.stage.forward.hint', chainNames: ['forward'], chainPrefix: 'grp_' },
+  { key: 'postrouting', label: 'fw.stage.postrouting.label', hint: 'fw.stage.postrouting.hint', chainNames: ['postrouting'] },
+  { key: 'prerouting_dnat', label: 'fw.stage.dnat.label', hint: 'fw.stage.dnat.hint', chainNames: ['prerouting_dnat'] },
 ];
 
 const CHAIN_LABELS: Record<string, string> = {
@@ -95,7 +96,7 @@ function ruleVerb(expr: string): { label: string; color: string; ring: string; I
   if (/\bdnat\b/.test(expr)) return { label: 'dnat', color: 'text-blue-400', ring: 'border-blue-500 bg-blue-500/10', Icon: ArrowRightLeft };
   if (/^(counter )?jump /.test(expr)) return { label: 'jump', color: 'text-purple-400', ring: 'border-purple-500 bg-purple-500/10', Icon: CornerDownRight };
   if (/meta mark set/.test(expr)) return { label: 'mark', color: 'text-yellow-400', ring: 'border-yellow-500 bg-yellow-500/10', Icon: Tag };
-  return { label: 'regra', color: 'text-gray-400', ring: 'border-gray-600 bg-gray-700/30', Icon: HelpCircle };
+  return { label: 'fw.overview.rule', color: 'text-gray-400', ring: 'border-gray-600 bg-gray-700/30', Icon: HelpCircle };
 }
 
 function RuleRow({
@@ -104,6 +105,7 @@ function RuleRow({
   rule: NftChainRule; unit: Unit; expanded: boolean; onToggle: () => void;
   isUserRule: boolean; onOpenGroupsTab: () => void; onOpenSteeringTab: () => void; onOpenPortForwardTab: () => void;
 }) {
+  const { t } = useI18n();
   const v = ruleVerb(rule.expression);
   // Which control owns a managed rule decides where "abrir" takes the admin
   // — not the chain it lives in (the forward chain alone mixes blocklist
@@ -127,7 +129,7 @@ function RuleRow({
   return (
     <div className={`rounded-lg bg-gray-800/60 px-3 py-2 ${disabled ? 'opacity-50' : ''} ${configuredNotApplied ? 'ring-1 ring-yellow-500/40' : ''}`}>
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={onToggle} className="text-gray-500 hover:text-gray-300 shrink-0" aria-label="Mostrar/ocultar expressão nft" title="Mostrar/ocultar expressão nft">
+        <button onClick={onToggle} className="text-gray-500 hover:text-gray-300 shrink-0" aria-label={t('fw.overview.toggleExpr')} title={t('fw.overview.toggleExpr')}>
           {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         </button>
         <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium border shrink-0 ${v.ring} ${v.color}`}>
@@ -142,7 +144,7 @@ function RuleRow({
         {configuredNotApplied && (
           <span
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-yellow-500/40 bg-yellow-500/10 text-yellow-400 shrink-0"
-            title="Está ativada aqui, mas o firewall não confirma que ela está em vigor — pode ser um erro ao aplicar; confira o aviso no topo da aba Regras."
+            title={t('fw.overview.driftTitle')}
           >
             Configurada, não aplicada
           </span>
@@ -164,9 +166,9 @@ function RuleRow({
           </span>
         ) : (
           <span className="inline-flex items-center gap-2 shrink-0 text-xs">
-            <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/30">Sua regra</span>
+            <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/30">{t('fw.overview.yourRule')}</span>
             {isUserRule && (
-              <button onClick={onOpenGroupsTab} className="inline-flex items-center gap-1 text-gray-400 hover:text-gray-200" title="Editar na aba Grupos de regras">
+              <button onClick={onOpenGroupsTab} className="inline-flex items-center gap-1 text-gray-400 hover:text-gray-200" title={t('fw.overview.editInGroups')}>
                 <Pencil className="w-3.5 h-3.5" />
               </button>
             )}
@@ -204,6 +206,7 @@ function RuleRow({
  * are not duplicated or regressed).
  */
 export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenSteeringTab, onOpenPortForwardTab }: Props) {
+  const { t } = useI18n();
   const [unit, setUnit] = useState<Unit>('bytes');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const toggle = (key: string) => setExpanded((e) => ({ ...e, [key]: !e[key] }));
@@ -236,16 +239,16 @@ export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenSteeri
           {totalRules} regra{totalRules === 1 ? '' : 's'} em {chains.length} chain{chains.length === 1 ? '' : 's'}, na ordem em que o firewall avalia o tráfego.
         </p>
         <div className="flex items-center gap-2 text-xs">
-          <span className="text-gray-500">Contadores em:</span>
+          <span className="text-gray-500">{t('fw.groups.countersIn')}</span>
           <div className="inline-flex rounded-lg border border-gray-700 overflow-hidden">
             <button
               onClick={() => setUnit('bytes')}
               className={`px-3 py-1.5 ${unit === 'bytes' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
-            >bytes (KB/MB/GB)</button>
+            >{t('fw.overview.bytesUnit')}</button>
             <button
               onClick={() => setUnit('bits')}
               className={`px-3 py-1.5 border-l border-gray-700 ${unit === 'bits' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
-            >bits (Kb/Mb/Gb)</button>
+            >{t('fw.overview.bitsUnit')}</button>
           </div>
         </div>
       </div>
@@ -253,8 +256,8 @@ export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenSteeri
       {groups.map((g) => (
         <div key={g.key} className="card">
           <div className="mb-3">
-            <h3 className="text-white font-semibold">{g.label}</h3>
-            <p className="text-gray-500 text-xs">{g.hint}</p>
+            <h3 className="text-white font-semibold">{t(g.label)}</h3>
+            <p className="text-gray-500 text-xs">{t(g.hint)}</p>
           </div>
           <div className="space-y-4">
             {g.stageChains.map((chain) => (
@@ -263,7 +266,7 @@ export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenSteeri
                   <span className="text-xs font-mono text-gray-500">
                     {CHAIN_LABELS[chain.name] ?? chain.name}
                     {chain.name.startsWith('grp_') && (
-                      <span className="ml-2 font-sans text-gray-600">um dos seus grupos de regras</span>
+                      <span className="ml-2 font-sans text-gray-600">{t('fw.overview.oneOfYourGroups')}</span>
                     )}
                   </span>
                   {chain.policy && (
@@ -278,8 +281,8 @@ export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenSteeri
                 {chain.rules.length === 0 ? (
                   <p className="text-gray-600 text-sm py-1.5 pl-1">
                     {chain.name === 'user_rules' ? (
-                      <>Nenhuma regra personalizada. <button onClick={onOpenGroupsTab} className="text-blue-400 hover:text-blue-300 underline">Criar uma</button>.</>
-                    ) : 'Nenhuma regra.'}
+                      <>{t('fw.overview.noCustomRules')} <button onClick={onOpenGroupsTab} className="text-blue-400 hover:text-blue-300 underline">{t('fw.overview.createOne')}</button>.</>
+                    ) : t('fw.overview.noRules')}
                   </p>
                 ) : (
                   <div className="space-y-1.5">
@@ -312,8 +315,8 @@ export default function FirewallOverview({ chains, onOpenGroupsTab, onOpenSteeri
 
       {others.length > 0 && (
         <div className="card border-yellow-500/30">
-          <h3 className="text-white font-semibold mb-1">Outras chains</h3>
-          <p className="text-gray-500 text-xs mb-3">Não previstas no agrupamento acima — exibidas mesmo assim, para não esconder nada.</p>
+          <h3 className="text-white font-semibold mb-1">{t('fw.overview.otherChains')}</h3>
+          <p className="text-gray-500 text-xs mb-3">{t('fw.overview.otherChains.hint')}</p>
           <div className="space-y-4">
             {others.map((chain) => (
               <div key={chain.name}>

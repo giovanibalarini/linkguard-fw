@@ -12,6 +12,7 @@ import type { DragEvent } from 'react';
 import { Plus, RefreshCw, GripVertical, Lock, AlertTriangle, DoorOpen } from 'lucide-react';
 import IconButton from '../ui/IconButton';
 import { adminGroupsAbove } from '../../lib/blockGroups';
+import { useI18n } from '../../i18n';
 import { moveItem, splitGroupRules } from '../../lib/groupRules';
 import { SYSTEM_KINDS, formatCount, groupConnState, groupScope, membersOf } from './groupMeta';
 import type { Unit } from './groupMeta';
@@ -35,6 +36,7 @@ interface Props {
 export default function GroupList({
   groups, managed, selectedId, unit, canWrite, cor, onSelect, onNewGroup, onRefresh, onReorder,
 }: Props) {
+  const { t } = useI18n();
   const [dragGroup, setDragGroup] = useState<number | null>(null);
   const { busy, locked, lockReason, editDisabled } = cor;
 
@@ -69,7 +71,7 @@ export default function GroupList({
               title={locked ? lockReason : undefined}
               className="btn-primary flex items-center gap-1.5 text-xs px-2.5 py-1.5 disabled:opacity-50"
             >
-              <Plus className="w-3.5 h-3.5" /> Novo
+              <Plus className="w-3.5 h-3.5" /> {t('fw.groups.new')}
             </button>
           )}
         </div>
@@ -102,7 +104,7 @@ export default function GroupList({
             const sys = SYSTEM_KINDS[g.kind];
             const n = sys ? membersOf(g, managed).length : rules.length;
             const noun = sys
-              ? (n === 1 ? sys.member[0] : sys.member[1])
+              ? (n === 1 ? t(sys.member[0]) : t(sys.member[1]))
               : `regra${n === 1 ? '' : 's'}`;
             // Aviso de ordem (spec §2.2): um bloqueio arrastado para
             // depois de um grupo LIGADO do admin pode nunca ver o pacote,
@@ -178,20 +180,20 @@ export default function GroupList({
                       {n} {noun} · {g.has_counter ? formatCount(g.bytes, unit) : '—'}
                     </span>
                     {inputScope && (
-                      <span className="block text-[11px] text-orange-400/90">destinado ao firewall · alterar pede confirmação</span>
+                      <span className="block text-[11px] text-orange-400/90">{t('fw.groups.inputBadge')}</span>
                     )}
                     {newOnly && (
                       <span className="block text-[11px] text-sky-300/90">
                         só conexões novas · <span className="font-mono">ct state new</span>
                       </span>
                     )}
-                    {!g.enabled && !staleOff && <span className="block text-[11px] text-gray-500">desligado</span>}
-                    {staleOff && <span className="block text-[11px] text-yellow-500">desligado, ainda no firewall</span>}
-                    {notApplied && <span className="block text-[11px] text-yellow-500">configurado, não aplicado</span>}
+                    {!g.enabled && !staleOff && <span className="block text-[11px] text-gray-500">{t('fw.groups.off')}</span>}
+                    {staleOff && <span className="block text-[11px] text-yellow-500">{t('fw.groups.offStillInFirewall')}</span>}
+                    {notApplied && <span className="block text-[11px] text-yellow-500">{t('fw.groups.configuredNotApplied')}</span>}
                     {above.length > 0 && g.enabled && (
                       <span className="mt-0.5 flex items-start gap-1 text-[11px] text-orange-400">
                         <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" aria-hidden="true" />
-                        <span>regras acima deste bloqueio podem liberar tráfego que ele descartaria</span>
+                        <span>{t('fw.group.dropAbove')}</span>
                       </span>
                     )}
                   </span>

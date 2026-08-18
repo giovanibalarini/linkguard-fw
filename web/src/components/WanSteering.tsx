@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useI18n } from '../i18n';
 import { Plus, X, Network } from 'lucide-react';
 import client from '../api/client';
 import Panel from './ui/Panel';
@@ -31,6 +32,7 @@ function errMsg(e: unknown): string {
  * os dois bloqueios viraram grupos do sistema, na lista de grupos.
  */
 export default function WanSteering({ canWrite, onMsg }: Props) {
+  const { t } = useI18n();
   const [managed, setManaged] = useState<NftManaged>({ wan_hosts: [], blocklist: [], blocked_hosts: [] });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -63,16 +65,16 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
     }
   };
 
-  const addWan = () => newWan.trim() && run(() => client.post('/api/nftables/wan-host', { ip: newWan.trim() }), 'Host direcionado para a WAN2.').then(() => setNewWan(''));
-  const delWan = (ip: string) => run(() => client.delete('/api/nftables/wan-host', { data: { ip } }), 'Host revertido para a WAN1.');
+  const addWan = () => newWan.trim() && run(() => client.post('/api/nftables/wan-host', { ip: newWan.trim() }), t('fw.toast.steering.toWan2')).then(() => setNewWan(''));
+  const delWan = (ip: string) => run(() => client.delete('/api/nftables/wan-host', { data: { ip } }), t('fw.toast.steering.toWan1'));
 
   if (loading) {
-    return <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando...</div>;
+    return <div className="card text-center py-8 text-gray-500 animate-pulse">{t('common.loading')}</div>;
   }
 
   return (
     <div className="space-y-4">
-      <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Direcionamento por WAN</span></span>}>
+      <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('fw.steering.title')}</span></span>}>
         {/* A explicação da spec §3, palavra por palavra: este controle é o
             único do firewall que não filtra, e sem essa frase ele parece
             mais um bloqueio. */}
@@ -86,7 +88,7 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
           <div className="flex flex-col sm:flex-row gap-2 mb-3">
             <input
               className="input flex-1"
-              placeholder="IP do host (ex.: 192.168.3.50)"
+              placeholder={t('fw.steering.hostIp.placeholder')}
               value={newWan}
               onChange={(e) => setNewWan(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addWan()}
@@ -97,7 +99,7 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
           </div>
         )}
         <div className="flex flex-wrap gap-2">
-          {managed.wan_hosts.length === 0 && <span className="text-gray-600 text-sm">Nenhum host direcionado.</span>}
+          {managed.wan_hosts.length === 0 && <span className="text-gray-600 text-sm">{t('fw.steering.empty')}</span>}
           {managed.wan_hosts.map((h) => (
             <span key={h.ip} className="inline-flex items-center gap-2 px-2.5 py-1 rounded bg-gray-800 text-sm text-gray-200 font-mono">
               {h.ip}
@@ -113,7 +115,7 @@ export default function WanSteering({ canWrite, onMsg }: Props) {
           ))}
         </div>
         <p className="text-[11px] text-gray-600 mt-3">
-          A tela de <span className="text-gray-400">Hosts</span> é onde a máquina é reconhecida pelo nome e MAC; a edição do direcionamento mora aqui, no Firewall.
+          A tela de <span className="text-gray-400">{t('fw.steering.hosts')}</span> é onde a máquina é reconhecida pelo nome e MAC; a edição do direcionamento mora aqui, no Firewall.
         </p>
       </Panel>
     </div>
