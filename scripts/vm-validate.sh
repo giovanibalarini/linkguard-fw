@@ -670,9 +670,20 @@ battery_policy() {
     ok "os encaminhamentos de porta continuam funcionando"
   else bad "sem a liberação do DNAT: todo redirecionamento seria traduzido e descartado"; fi
   # E a ordem: a sobrevivência tem de vir antes de qualquer drop administrativo.
-  if [[ "$(grep -n 'accept\|drop' <<<"$fwd" | head -1 | grep -c accept)" == "1" ]]; then
-    ok "a primeira linha da forward é de liberação, não de bloqueio"
-  else bad "há um drop acima das regras de sobrevivência"; fi
+  #
+  # A linha da DECLARAÇÃO sai antes da conta, e é essa a correção da #98: ela
+  # contém `policy drop`, e a primeira versão desta asserção a tomava como se
+  # fosse a primeira regra. O resultado não era só um falso positivo — era um
+  # falso positivo PERMANENTE justamente no caso que importa. Com a postura em
+  # `accept` a declaração diz `policy accept` e a asserção passava; com a
+  # postura em `drop`, o único estado em que a ordem das regras de sobrevivência
+  # decide se a rede fica de pé, ela sempre falhava. Nunca chegou a olhar para
+  # uma regra.
+  local primeira
+  primeira=$(grep -v 'type filter hook' <<<"$fwd" | grep -E 'accept|drop' | head -1)
+  if grep -q 'accept' <<<"$primeira"; then
+    ok "a primeira regra da forward é de liberação, não de bloqueio"
+  else bad "há um drop acima das regras de sobrevivência" "primeira regra: $(echo "$primeira" | tr -s ' ')"; fi
 
   # D4 — a pergunta que decide se o operador continua dentro da máquina:
   # bloquear o que ATRAVESSA não pode tocar no que CHEGA ao firewall.
