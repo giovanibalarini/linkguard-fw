@@ -33,6 +33,19 @@ func ResolveNetworkDir(dir string) string {
 type ConfigFile struct {
 	Path    string
 	Content string
+	// Dir é o diretório em que este arquivo DEVE ficar — o mesmo que foi
+	// passado a Render/RenderLink.
+	//
+	// Ele existe para que Apply possa provar a contenção em vez de confiar na
+	// forma do Path. Sem ele, o ponto que executa o os.Rename como root só
+	// consegue inspecionar a string que recebeu; com ele, consegue perguntar
+	// "isto está dentro de onde eu mandei escrever?" — que é a pergunta certa,
+	// e a única que sobrevive a uma mudança no validador de nome de interface.
+	//
+	// Vazio é aceito e cai na conferência de forma, para não quebrar chamador
+	// antigo (o rollback em netif/service.go monta um ConfigFile a partir de um
+	// Path já gravado).
+	Dir string
 }
 
 // IfaceSpec is the minimal addressing info Render needs to produce a
@@ -88,6 +101,7 @@ func Render(i IfaceSpec, dir string) ConfigFile {
 	return ConfigFile{
 		Path:    fmt.Sprintf("%s/10-%s.network", dir, i.Name),
 		Content: body.String(),
+		Dir:     dir,
 	}
 }
 
@@ -128,37 +142,51 @@ func reload(ctx context.Context, exec firewall.Executor, path string) error {
 // Fase 2 never changes an interface's type, so `networkctl reload` always
 // suffices — `reconfigure` (needed when a .netdev is added/removed) is
 // deferred to Fase 3.
-// safeUnitPath confere que p é o caminho absoluto de um arquivo SOLTO dentro de
-// um diretório, e o devolve. Recusa em vez de normalizar.
+// safeUnitPath confere que p é o caminho absoluto de um arquivo solto DENTRO de
+// root, e o devolve. Recusa em vez de normalizar.
 //
-// A distinção importa. Normalizar "/etc/systemd/network/../../passwd" para
-// "/etc/passwd" faria a escrita ACONTECER, num lugar que o chamador não pediu —
-// silenciosamente, e como root. Um caminho produzido por Render nunca tem "..",
-// nunca é relativo e nunca termina em barra: se algum desses aparecer, quem
-// montou o ConfigFile errou, e o certo é parar.
+// A conferência contra root é a que vale: ela pergunta "isto está onde eu mandei
+// escrever?", que é a única pergunta que sobrevive a uma mudança no validador de
+// nome de interface — e foi a distância entre o validador e o os.Rename que
+// deixou uma cópia divergente da regex sobreviver nesta base (ver o comentário
+// de internal/netif/rules.go).
 //
-// A conferência é sobre a FORMA do caminho, e não sobre a origem dele: ela
-// sobrevive a qualquer mudança no validador de nome de interface — inclusive à
-// divergência entre duas cópias da regex, que é como este defeito chegou aqui
-// (ver o comentário de internal/netif/rules.go).
-func safeUnitPath(p string) (string, error) {
+// Recusar travessia em vez de resolvê-la é deliberado: normalizar
+// "/etc/systemd/network/../../passwd" para "/etc/passwd" faria a escrita
+// ACONTECER, num lugar que o chamador não pediu, em silêncio e como root. Um
+// caminho produzido por Render nunca tem ".."; se aparecer, quem montou errou.
+//
+// root vazio cai só na conferência de forma, para não quebrar o chamador que
+// monta um ConfigFile a partir de um Path já gravado (o rollback de
+// netif/service.go).
+func safeUnitPath(p, root string) (string, error) {
 	if !filepath.IsAbs(p) {
 		return "", fmt.Errorf("caminho de unit precisa ser absoluto: %q", p)
 	}
 	if strings.HasSuffix(p, string(filepath.Separator)) {
 		return "", fmt.Errorf("caminho de unit aponta para um diretório: %q", p)
 	}
-	// Qualquer componente "." ou ".." é recusado — não resolvido.
 	for _, part := range strings.Split(p, string(filepath.Separator)) {
 		if part == ".." || part == "." {
 			return "", fmt.Errorf("caminho de unit com travessia: %q", p)
 		}
 	}
-	if base := filepath.Base(p); strings.TrimSpace(base) == "" {
+	clean := filepath.Clean(p)
+	if strings.TrimSpace(filepath.Base(clean)) == "" {
 		return "", fmt.Errorf("caminho de unit sem nome de arquivo: %q", p)
 	}
-	// Clean aqui só remove barras duplicadas; sem "..", ele não muda o destino.
-	return filepath.Clean(p), nil
+
+	if root == "" {
+		return clean, nil
+	}
+	cleanRoot := filepath.Clean(root)
+	// O arquivo tem de ser filho DIRETO da raiz. Comparar o diretório-pai, em
+	// vez de usar HasPrefix na string inteira, evita o clássico "/etc/systemd/
+	// network-do-atacante" passar por começar igual a "/etc/systemd/network".
+	if filepath.Dir(clean) != cleanRoot {
+		return "", fmt.Errorf("caminho de unit fora de %s: %q", cleanRoot, p)
+	}
+	return clean, nil
 }
 
 func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
@@ -175,7 +203,7 @@ func Apply(ctx context.Context, exec firewall.Executor, f ConfigFile) error {
 	// tem o os.Rename na mão, e ela não pode depender de o chamador ter feito a
 	// coisa certa: até hoje ela dependia, e foi assim que uma cópia divergente
 	// da regex sobreviveu nesta base (ver o comentário de internal/netif/rules.go).
-	dest, err := safeUnitPath(f.Path)
+	dest, err := safeUnitPath(f.Path, f.Dir)
 	if err != nil {
 		return err
 	}
