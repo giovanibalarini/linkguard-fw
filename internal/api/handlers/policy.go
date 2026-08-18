@@ -23,8 +23,22 @@ type policyResponse struct {
 	// Forward é a postura do tráfego que ATRAVESSA o firewall — a que responde
 	// "esse aparelho não sai para a internet" (issue #92).
 	Forward string `json:"forward"`
+	// Survival é o que continua passando quando a postura é restritiva, por
+	// chain. Vem do renderizador, não de uma lista escrita à mão na tela: a
+	// porta do painel, as redes da LAN e a linha do cliente DHCP dependem
+	// desta máquina, e uma tela que as adivinhe mente exatamente na frase que
+	// o operador lê para decidir se continua entrando (issue #94).
+	Survival *survivalView `json:"survival,omitempty"`
 	// Pending descreve a janela aberta, quando a troca acabou de ser aplicada.
 	Pending *pendingView `json:"pending,omitempty"`
+}
+
+type survivalView struct {
+	Input   []string `json:"input"`
+	Forward []string `json:"forward"`
+	// Error explica por que uma das listas veio vazia. O painel mostra o
+	// aviso em vez de desenhar uma lista curta como se fosse a verdade.
+	Error string `json:"error,omitempty"`
 }
 
 // GetInputPolicy devolve a postura atual.
@@ -39,7 +53,13 @@ func (h *NftablesHandler) GetInputPolicy(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, policyResponse{Policy: string(p), Forward: string(fw)})
+	sv := &survivalView{}
+	inp, fwd, serr := h.svc.SurvivalPreview()
+	sv.Input, sv.Forward = inp, fwd
+	if serr != nil {
+		sv.Error = serr.Error()
+	}
+	writeJSON(w, http.StatusOK, policyResponse{Policy: string(p), Forward: string(fw), Survival: sv})
 }
 
 // SetInputPolicy troca a postura, sob a janela de confirmação.

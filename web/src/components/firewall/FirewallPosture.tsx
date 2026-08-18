@@ -1,0 +1,234 @@
+/**
+ * A tela da postura padrão do firewall (issue #94).
+ *
+ * O que ela entrega: a capacidade que a #78 e a #92 puseram na API — bloquear
+ * por padrão e liberar só o que foi autorizado — para quem entra pelo painel e
+ * nunca vai chamar um PUT à mão.
+ *
+ * DUAS DECISÕES QUE NÃO SÃO ESTILO.
+ *
+ * A lista de "o que continua passando" vem do SERVIDOR, não daqui. A porta do
+ * painel não é fixa (8080 no binário, 9997 no .deb, outra atrás de um proxy),
+ * as redes da LAN vêm da configuração, e a linha do cliente DHCP só existe em
+ * quem tem WAN por DHCP. Uma tela que adivinhasse estaria mentindo exatamente
+ * na frase que o operador lê para decidir se continua entrando na máquina
+ * depois de apertar o botão.
+ *
+ * E as duas chains NÃO são apresentadas com o mesmo peso. Bloquear o que
+ * atravessa é a operação comum, que não toca no painel; bloquear o que chega ao
+ * próprio LinkGuard é a que tranca o administrador do lado de fora. A segunda
+ * fica atrás de um "mostrar", com o risco escrito antes dos botões.
+ */
+
+import { useEffect, useState } from 'react';
+import { ShieldCheck, ShieldOff, ChevronDown, ChevronRight, AlertTriangle, Check } from 'lucide-react';
+import client from '../../api/client';
+import Panel from '../ui/Panel';
+import ConfirmOrRevertBanner from './ConfirmOrRevertBanner';
+import { useConfirmOrRevert } from '../../lib/useConfirmOrRevert';
+import { claimFullBanner } from '../../lib/pendingWindow';
+import { useUIMode } from '../../context/UIModeContext';
+import {
+  POSTURE_COPY, POSTURE_ORDER, confirmPrompt, explainAll, policyLine, postureRequest,
+} from '../../lib/posture';
+import type { Policy, PostureChain } from '../../lib/posture';
+import type { MsgLevel } from '../../types';
+
+interface PolicyResponse {
+  policy: Policy;
+  forward: Policy;
+  survival?: { input: string[] | null; forward: string[] | null; error?: string };
+}
+
+interface Props {
+  canWrite: boolean;
+  onMsg: (m: string, level?: MsgLevel) => void;
+}
+
+export default function FirewallPosture({ canWrite, onMsg }: Props) {
+  const { mode } = useUIMode();
+  const [data, setData] = useState<PolicyResponse | null>(null);
+  const [erro, setErro] = useState('');
+  // A input começa recolhida. Ela é a decisão rara e perigosa, e não pode ser a
+  // primeira que a mão alcança.
+  const [aberta, setAberta] = useState<Record<PostureChain, boolean>>({ forward: true, input: false });
+
+  const load = async () => {
+    try {
+      const res = await client.get<PolicyResponse>('/api/nftables/policy');
+      setData(res.data);
+      setErro('');
+    } catch {
+      // A postura desconhecida NÃO vira "liberado" na tela: desenhar accept
+      // porque o GET falhou seria a tela afirmando que o firewall está aberto
+      // no minuto em que ele talvez esteja bloqueando tudo.
+      setData(null);
+      setErro('Não consegui ler a postura atual do firewall.');
+    }
+  };
+
+  const cor = useConfirmOrRevert(load, onMsg);
+  const { busy, locked, lockReason, run } = cor;
+
+  useEffect(() => { load(); cor.refreshPending(); }, []);
+  useEffect(() => claimFullBanner(), []);
+
+  const trocar = (chain: PostureChain, policy: Policy) => {
+    if (!window.confirm(confirmPrompt(chain, policy))) return;
+    run(
+      () => client.put('/api/nftables/policy', postureRequest(chain, policy)),
+      policy === 'drop'
+        ? 'Postura alterada para bloquear. Teste o seu acesso e confirme na faixa acima.'
+        : 'Postura alterada para liberar por padrão.',
+    );
+  };
+
+  const atual = (chain: PostureChain): Policy | null => {
+    if (!data) return null;
+    return chain === 'forward' ? data.forward : data.policy;
+  };
+
+  const linhas = (chain: PostureChain) =>
+    explainAll(chain === 'forward' ? data?.survival?.forward : data?.survival?.input);
+
+  return (
+    <div className="space-y-4">
+      <ConfirmOrRevertBanner cor={cor} canWrite={canWrite} />
+
+      {erro && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+          {erro} A postura não é mostrada como “liberada” por causa disso — o firewall pode estar bloqueando.
+        </div>
+      )}
+
+      {POSTURE_ORDER.map((chain) => {
+        const copy = POSTURE_COPY[chain];
+        const p = atual(chain);
+        const perigosa = chain === 'input';
+        const expandida = aberta[chain];
+        return (
+          <Panel key={chain}>
+            <button
+              type="button"
+              className="w-full flex items-start gap-3 text-left"
+              onClick={() => setAberta((a) => ({ ...a, [chain]: !a[chain] }))}
+              aria-expanded={expandida}
+            >
+              {expandida
+                ? <ChevronDown className="w-5 h-5 text-gray-400 mt-0.5 shrink-0" aria-hidden="true" />
+                : <ChevronRight className="w-5 h-5 text-gray-400 mt-0.5 shrink-0" aria-hidden="true" />}
+              <div className="min-w-0 flex-1">
+                <h2 className="text-white font-semibold">{copy.titulo}</h2>
+                <p className="text-sm text-gray-400 mt-0.5">{copy.subtitulo}</p>
+              </div>
+              {/* O selo da postura atual fica visível mesmo com o cartão
+                  recolhido: "está bloqueando?" é a pergunta que se responde de
+                  relance, e abrir um cartão para descobri-la seria esconder o
+                  estado do firewall atrás de um clique. */}
+              <span
+                className={`shrink-0 text-xs px-2.5 py-1 rounded-full border font-medium ${
+                  p === null ? 'border-gray-600 text-gray-400'
+                    : p === 'drop' ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                      : 'border-green-500/30 bg-green-500/10 text-green-400'
+                }`}
+              >
+                {p === null ? 'desconhecida' : p === 'drop' ? 'Bloqueando por padrão' : 'Liberando por padrão'}
+              </span>
+            </button>
+
+            {expandida && (
+              <div className="mt-4 space-y-4">
+                {perigosa && (
+                  <div className="flex gap-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" aria-hidden="true" />
+                    <p>{copy.risco}</p>
+                  </div>
+                )}
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {(['accept', 'drop'] as Policy[]).map((op) => {
+                    const escolhida = p === op;
+                    const Icone = op === 'drop' ? ShieldOff : ShieldCheck;
+                    return (
+                      <button
+                        key={op}
+                        type="button"
+                        disabled={!canWrite || busy || locked || escolhida || p === null}
+                        title={locked ? lockReason : undefined}
+                        onClick={() => trocar(chain, op)}
+                        className={`text-left rounded-xl border p-4 transition ${
+                          escolhida
+                            ? op === 'drop'
+                              ? 'border-amber-500/50 bg-amber-500/10'
+                              : 'border-green-500/40 bg-green-500/10'
+                            : 'border-gray-700 bg-gray-800/40 hover:border-gray-500 disabled:hover:border-gray-700'
+                        } disabled:opacity-60 disabled:cursor-not-allowed`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <Icone
+                            className={`w-4 h-4 ${op === 'drop' ? 'text-amber-400' : 'text-green-400'}`}
+                            aria-hidden="true"
+                          />
+                          <strong className="text-white text-sm">
+                            {op === 'drop' ? 'Bloquear por padrão' : 'Liberar por padrão'}
+                          </strong>
+                          {escolhida && <Check className="w-4 h-4 text-gray-400 ml-auto" aria-hidden="true" />}
+                        </span>
+                        <p className="text-sm text-gray-400 mt-2">
+                          {op === 'drop' ? copy.bloquear : copy.liberar}
+                        </p>
+                        {mode === 'advanced' && (
+                          <code className="block mt-2 text-[11px] font-mono text-gray-500 break-all">
+                            {policyLine(chain, op)}
+                          </code>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {!perigosa && (
+                  <p className="text-sm text-gray-400">{copy.risco}</p>
+                )}
+
+                <div>
+                  <h3 className="text-sm font-medium text-white">O que continua passando, sempre</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Com a postura em bloquear, estas linhas entram acima de tudo — senão “bloquear tudo”
+                    significaria bloquear você também. Elas vêm desta máquina, não de uma lista de exemplo.
+                  </p>
+                  {data?.survival?.error && (
+                    <p className="text-xs text-amber-300 mt-2">
+                      Não consegui montar a lista desta chain: {data.survival.error}
+                    </p>
+                  )}
+                  <ul className="mt-3 space-y-2">
+                    {linhas(chain).map((l) => (
+                      <li key={l.nft} className="flex gap-2.5 text-sm">
+                        <Check className="w-4 h-4 text-green-400 mt-0.5 shrink-0" aria-hidden="true" />
+                        <div className="min-w-0 flex-1">
+                          {/* Linha que a tabela de explicações não conhece
+                              aparece assim mesmo, crua. Escondê-la faria a tela
+                              afirmar que o firewall preserva MENOS do que
+                              preserva — o erro na direção que assusta à toa. */}
+                          <span className="text-gray-200">{l.oque || l.nft}</span>
+                          {l.porque && <p className="text-xs text-gray-500 mt-0.5">{l.porque}</p>}
+                          {mode === 'advanced' && l.oque && (
+                            <code className="block text-[11px] font-mono text-gray-600 mt-1 break-all">{l.nft}</code>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                    {linhas(chain).length === 0 && !data?.survival?.error && (
+                      <li className="text-sm text-gray-500">—</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+            )}
+          </Panel>
+        );
+      })}
+    </div>
+  );
+}
