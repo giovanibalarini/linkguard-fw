@@ -513,11 +513,27 @@ func (s *Service) CheckChainEnsuring(ctx context.Context, chain string, tokenSet
 //
 // Grupo do sistema nunca entra aqui: o conteúdo dele é um named set de
 // bloqueio de tráfego atravessando, e o lugar dele é a forward.
-func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool) [][]string {
+func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool, policy Policy, access AdminAccess) [][]string {
 	// Incondicional: sem toggle, sem depender de grupo nenhum. Um firewall
 	// que só quebra PMTUD depois que o admin cria o grupo errado é um
 	// firewall que guarda a armadilha armada esperando.
 	rules := [][]string{{"ct", "state", "related", "counter", "accept"}}
+
+	// AS REGRAS DE SOBREVIVÊNCIA SÓ ENTRAM COM POLÍTICA RESTRITIVA, e a
+	// condição é a parte importante desta função.
+	//
+	// Com `policy accept` elas seriam inócuas em teoria e nocivas na prática:
+	// entram ACIMA dos jumps dos grupos, então um admin com um grupo de escopo
+	// input bloqueando DNS de uma VLAN teria esse bloqueio anulado em silêncio
+	// por um accept nosso. Seria o produto afrouxando o firewall de quem já o
+	// usa, para preparar um recurso que ele talvez nunca ligue.
+	//
+	// Com `policy drop` elas são o que separa "bloquear tudo" de "eu me tranquei
+	// fora": sem elas, a política corta SSH e painel no instante em que é
+	// aplicada. Ver internal/nftables/survival.go.
+	if policy == PolicyDrop {
+		rules = append(rules, SurvivalRules(access)[1:]...) // [1:]: o `related` já está acima
+	}
 
 	networks := sanitizeNetworks(ntpNetworks)
 	if ntpServing {
@@ -595,11 +611,21 @@ func (s *Service) reconcileInputChain(ctx context.Context, groups []StoredGroup,
 		// saber qual é a política não pode virar "então é accept".
 		return err
 	}
+	// O acesso administrativo só é consultado quando ele importa: com política
+	// permissiva as regras de sobrevivência não são emitidas, e uma leitura a
+	// mais aqui seria mais uma forma de a chain deixar de ser reconciliada.
+	var access AdminAccess
+	if policy == PolicyDrop {
+		access, err = s.adminAccess()
+		if err != nil {
+			return err
+		}
+	}
 	if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, InputChain,
 		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", string(policy), ";", "}"); err != nil {
 		return fmt.Errorf("criar chain %s: %w", InputChain, err)
 	}
-	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing))
+	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access))
 }
 
 // ReconcileNTPInput reconcilia a chain input a partir do toggle "servir NTP

@@ -310,6 +310,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// como toda outra leitura de firewall. Ler não pode ser mais restrito
 		// que isso: um operador que enxerga o painel precisa enxergar a faixa
 		// que explica por que a edição está travada.
+		// A postura do firewall. Ler é leitura de firewall; trocar exige escrita
+		// E passa pela janela de 90 segundos, como toda mutação que alcança a
+		// chain input (issue #78).
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/policy", nftH.GetInputPolicy)
+		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/policy", nftH.SetInputPolicy)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/pending", nftH.PendingChange)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/pending/confirm", nftH.ConfirmPendingChange)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/pending/revert", nftH.RevertPendingChange)

@@ -42,6 +42,9 @@ type Service struct {
 	// policy.go para a razão de ela não abortar quando ausente, ao contrário
 	// das duas acima.
 	inputPolicySource func() (Policy, error)
+	// adminAccessSource alimenta as regras de sobrevivência. Só consultada com
+	// política restritiva; ausente nesse caso é ERRO (ver adminAccess).
+	adminAccessSource func() (AdminAccess, error)
 
 	// confPath é o arquivo que Persist grava — o ruleset de BOOT da máquina
 	// (ver ConfPath e SetConfPath). Injetável no Service, e não só na variável

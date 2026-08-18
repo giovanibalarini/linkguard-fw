@@ -86,12 +86,78 @@ func TestPoliticaRestritivaChegaNaDeclaracao(t *testing.T) {
 	e := &execGravador{}
 	s := servicoComExec(e)
 	s.SetInputPolicySource(func() (Policy, error) { return PolicyDrop, nil })
+	s.SetAdminAccessSource(func() (AdminAccess, error) {
+		return AdminAccess{PanelPort: 9997, LANNetworks: []string{"192.168.3.0/24"}}, nil
+	})
 
 	if err := s.reconcileInputChain(context.Background(), nil, nil, false); err != nil {
 		t.Fatalf("reconcileInputChain: %v", err)
 	}
 	if got := e.declaracaoDaChain(t); !strings.Contains(got, "policy drop ;") {
 		t.Errorf("a política restritiva não chegou à declaração: %q", got)
+	}
+
+	// E as regras de sobrevivência entram junto: é a política sem elas que
+	// tranca o admin fora.
+	tudo := ""
+	for _, c := range e.comandos {
+		tudo += strings.Join(c, " ") + "\n"
+	}
+	for _, esperada := range []string{"iif lo counter accept", "tcp dport", "icmpv6"} {
+		if !strings.Contains(tudo, esperada) {
+			t.Errorf("com política restritiva, faltou a linha de sobrevivência %q", esperada)
+		}
+	}
+}
+
+// TestPoliticaRestritivaSemAcessoAdministrativoAborta é a proteção que a
+// política trouxe junto.
+//
+// Renderizar `drop` sem saber quais portas manter abertas é exatamente como o
+// admin se tranca fora. A fonte ausente aqui é ERRO — ao contrário da fonte de
+// política ausente, que resolve para accept —, e a assimetria tem motivo:
+// política ausente significa "o recurso não está em uso"; chegar aqui significa
+// que a política JÁ é restritiva.
+func TestPoliticaRestritivaSemAcessoAdministrativoAborta(t *testing.T) {
+	e := &execGravador{}
+	s := servicoComExec(e)
+	s.SetInputPolicySource(func() (Policy, error) { return PolicyDrop, nil })
+	// sem SetAdminAccessSource
+
+	if err := s.reconcileInputChain(context.Background(), nil, nil, false); err == nil {
+		t.Fatal("renderizou política restritiva sem saber o que manter aberto")
+	}
+	if len(e.comandos) != 0 {
+		t.Errorf("tocou na chain antes de abortar: %v", e.comandos)
+	}
+}
+
+// TestPoliticaPermissivaNaoEmiteSobrevivencia é o contraponto, e o mais
+// importante para a base instalada.
+//
+// Com `accept`, as regras de sobrevivência entrariam ACIMA dos jumps dos grupos
+// — e um admin com um grupo de escopo input bloqueando DNS de uma VLAN teria
+// esse bloqueio anulado em silêncio por um accept nosso. Seria o produto
+// afrouxando o firewall de quem já o usa.
+func TestPoliticaPermissivaNaoEmiteSobrevivencia(t *testing.T) {
+	e := &execGravador{}
+	s := servicoComExec(e)
+	s.SetInputPolicySource(func() (Policy, error) { return PolicyAccept, nil })
+	s.SetAdminAccessSource(func() (AdminAccess, error) {
+		return AdminAccess{PanelPort: 9997, LANNetworks: []string{"192.168.3.0/24"}}, nil
+	})
+
+	if err := s.reconcileInputChain(context.Background(), nil, nil, false); err != nil {
+		t.Fatalf("reconcileInputChain: %v", err)
+	}
+	tudo := ""
+	for _, c := range e.comandos {
+		tudo += strings.Join(c, " ") + "\n"
+	}
+	for _, proibida := range []string{"iif lo counter accept", "icmpv6", "dport 68"} {
+		if strings.Contains(tudo, proibida) {
+			t.Errorf("com política permissiva, a linha %q foi emitida e anularia regras do admin", proibida)
+		}
 	}
 }
 
