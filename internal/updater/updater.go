@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -49,6 +50,18 @@ type CheckResult struct {
 	DebURL          string `json:"deb_url"`
 }
 
+// spoolDir é onde o .deb baixado é gravado, e NÃO é /tmp de propósito.
+//
+// O unit tem PrivateTmp=yes: o /tmp do serviço é um namespace só dele. O dpkg
+// roda numa unidade transiente (ver Apply), que enxerga OUTRO /tmp — um caminho
+// em /tmp seria entregue a ela e simplesmente não existiria. Medido na VM, não
+// deduzido: com PrivateTmp, a unidade transiente não vê o arquivo; em
+// /var/lib/linkguard-fw, vê.
+//
+// E este caminho já está em ReadWritePaths=, então o serviço pode escrever nele
+// sem afrouxar nada.
+const spoolDir = "/var/lib/linkguard-fw"
+
 // Service performs update checks and installs.
 type Service struct {
 	exec    firewall.Executor
@@ -56,6 +69,8 @@ type Service struct {
 	current string
 	apiBase string
 	tokenFn func() string // returns the configured GitHub token (may be empty)
+	// spool é injetável só para teste; em produção é spoolDir.
+	spool string
 }
 
 // NewService creates an updater Service. tokenFn supplies a GitHub token (for
@@ -67,8 +82,13 @@ func NewService(exec firewall.Executor, currentVersion string, tokenFn func() st
 		current: currentVersion,
 		apiBase: defaultAPIBase,
 		tokenFn: tokenFn,
+		spool:   spoolDir,
 	}
 }
+
+// SetSpoolDir troca o diretório onde o .deb é gravado. Existe para teste: em
+// produção o padrão é o único caminho que serve (ver spoolDir).
+func (s *Service) SetSpoolDir(dir string) { s.spool = dir }
 
 // authReq builds a GET request with the given Accept header and, when a token is
 // configured, an Authorization header — required so a PRIVATE repo's API doesn't
@@ -133,6 +153,7 @@ func (s *Service) Apply(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	want := normalize(rel.TagName)
 	debAsset, ok := findAsset(rel, debArch()+".deb")
 	if !ok {
 		return fmt.Errorf("nenhum pacote .deb para a arquitetura %s na última release", debArch())
@@ -149,11 +170,71 @@ func (s *Service) Apply(ctx context.Context) error {
 		return err
 	}
 
-	out, err := s.exec.Execute(ctx, "dpkg", "-i", path)
-	if err != nil {
-		return fmt.Errorf("dpkg: %v (%s)", err, strings.TrimSpace(out))
+	// O dpkg roda numa UNIDADE TRANSIENTE, fora do sandbox deste serviço.
+	//
+	// Por que: o unit tem ProtectSystem=strict e ReadWritePaths= não lista
+	// /var/lib/dpkg nem /usr/local/bin. O serviço é root, mas dentro de um
+	// sandbox onde o banco do dpkg é somente-leitura — e o `dpkg -i` direto
+	// morria com "unable to access the dpkg database directory /var/lib/dpkg:
+	// Read-only file system". Não era regressão: a auto-atualização nunca
+	// funcionou em máquina nenhuma (#100).
+	//
+	// A alternativa seria listar /var/lib/dpkg, /usr, /etc, /var/log e
+	// /usr/share/doc em ReadWritePaths=. Isso é desmontar o ProtectSystem que
+	// protege os outros 99,99% do tempo, para um caminho que roda uma vez por
+	// upgrade. A unidade transiente paga o custo só no instante em que ele
+	// acontece.
+	//
+	// --wait é de propósito, e a assimetria é o ponto: quando o dpkg FALHA não
+	// há reinício, então o erro chega aqui e vira alerta (#101). Quando dá
+	// certo, o postinst reinicia o serviço e este processo morre no meio do
+	// wait — o que não é problema nenhum, porque `--collect` deixa a unidade
+	// terminar sozinha, e a prova do sucesso é a versão nova respondendo.
+	out, err := s.exec.Execute(ctx, "systemd-run",
+		"--collect", "--wait", "--quiet",
+		"--unit", "linkguard-selfupdate",
+		"--description", "LinkGuard FW self-update",
+		"dpkg", "-i", path)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// ERRO AQUI NÃO SIGNIFICA FALHA, e ignorar isso era o defeito que a
+	// primeira versão desta correção introduziu.
+	//
+	// O caminho de SUCESSO passa por aqui: o postinst reinicia o
+	// linkguard-fw.service, e o cliente do `systemd-run --wait` é filho DESTE
+	// processo, no MESMO cgroup — ele morre junto, com "signal: terminated". O
+	// dpkg em si não morre: a unidade transiente tem cgroup próprio e conclui
+	// sozinha (medido na VM: `Unpacking 1.0.125 over 1.0.100` e
+	// `Deactivated successfully` no journal da unidade, com o serviço já
+	// reiniciado).
+	//
+	// Ou seja: toda atualização bem-sucedida devolveria erro daqui. Com o
+	// alerta da #101 ligado, isso seria um aviso de falha em cima de cada
+	// atualização que deu certo — mais barulhento e mais enganoso que o
+	// silêncio que estamos corrigindo.
+	//
+	// A pergunta certa não é "o comando devolveu erro?", é "o pacote está
+	// instalado?". Quem responde é o dpkg.
+	if inst, qerr := s.installedVersion(ctx); qerr == nil && inst == want {
+		slog.Info("o pacote foi instalado; o wait foi interrompido pelo reinício do próprio serviço",
+			"versao", inst)
+		return nil
+	}
+	return fmt.Errorf("instalar o pacote: %v (%s)", err, strings.TrimSpace(out))
+}
+
+// installedVersion pergunta ao dpkg qual versão está instalada AGORA.
+//
+// É a fonte da verdade sobre o resultado da instalação, e a única que não
+// depende de o nosso processo continuar vivo para observar o desfecho.
+func (s *Service) installedVersion(ctx context.Context) (string, error) {
+	out, err := s.exec.ExecuteRead(ctx, "dpkg-query", "-W", "-f=${Version}", "linkguard-fw")
+	if err != nil {
+		return "", err
+	}
+	return normalize(strings.TrimSpace(out)), nil
 }
 
 // verifyChecksum computes the downloaded file's SHA-256 and compares it to the
@@ -228,7 +309,10 @@ func (s *Service) downloadAsset(ctx context.Context, id int) (string, error) {
 		return "", err
 	}
 	defer body.Close()
-	f, err := os.CreateTemp("", "linkguard-update-*.deb")
+	if err := os.MkdirAll(s.spool, 0o755); err != nil {
+		return "", fmt.Errorf("preparar o diretório do pacote: %w", err)
+	}
+	f, err := os.CreateTemp(s.spool, "linkguard-update-*.deb")
 	if err != nil {
 		return "", err
 	}

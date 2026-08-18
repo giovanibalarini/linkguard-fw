@@ -23,6 +23,12 @@ const (
 	TypeDiskFull       = "disk_full"
 	TypeAppDown        = "app_down"
 	TypeBackupFailed   = "backup_failed"
+	// TypeSelfUpdateFailed: a atualização pedida pelo painel não concluiu
+	// (issue #101). Evento, não estado — como o backup_failed logo acima: não
+	// existe "voltou ao normal" para uma tentativa que falhou, existe uma
+	// próxima tentativa. Por isso não entra em stateAlertTypes nem tem par de
+	// auto-resolve.
+	TypeSelfUpdateFailed = "self_update_failed"
 
 	TypeNTPUnsynced       = "ntp_unsynced"
 	TypeNTPSynced         = "ntp_synced"

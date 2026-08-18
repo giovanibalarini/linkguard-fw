@@ -388,7 +388,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 					slog.Warn("update: failed to read GitHub token from secrets vault", "err", err)
 				}
 				return tok
-			}))
+			}), s.alertSvc)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/check", updateH.Check)
 		r.With(require(auth.PermSystemWrite)).Post("/api/system/update/apply", updateH.Apply)
 		r.With(require(auth.PermSystemRead)).Get("/api/system/update/token", updateH.TokenStatus)
