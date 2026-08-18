@@ -66,13 +66,24 @@ func TestMainNaoLigaPoliticaRestritiva(t *testing.T) {
 	}
 }
 
-// TestMainNaoLigaFonteDePolitica: o mesmo, um degrau antes. Ligar a fonte já
-// permite que um valor gravado no banco vire política — e o caminho que grava
-// esse valor é justamente o que ainda não existe.
-func TestMainNaoLigaFonteDePolitica(t *testing.T) {
+// TestMainLigaAsDuasFontesJuntas substitui a guarda anterior, que proibia ligar
+// a fonte de política enquanto o recurso não estivesse pronto (issue #81).
+//
+// Ela cumpriu o papel e foi removida DE PROPÓSITO na issue #78, que é quando o
+// recurso ficou pronto — era exatamente esse o combinado: quem ligasse teria de
+// apagar um teste, e a escolha seria deliberada em vez de acidental.
+//
+// O que fica no lugar é a invariante que passou a importar: as DUAS fontes
+// andam juntas. Uma política restritiva renderizada sem saber quais portas
+// manter abertas corta SSH e painel no instante em que é aplicada. O
+// renderizador aborta nesse caso (TestPoliticaRestritivaSemAcessoAdministrativoAborta),
+// mas abortar significa a chain input parar de ser reconciliada — e é melhor
+// que este teste quebre no CI do que a máquina descobrir isso em produção.
+func TestMainLigaAsDuasFontesJuntas(t *testing.T) {
 	fset := token.NewFileSet()
 	entradas, _ := os.ReadDir(".")
 
+	var temPolitica, temAcesso bool
 	for _, e := range entradas {
 		nome := e.Name()
 		if e.IsDir() || !strings.HasSuffix(nome, ".go") || strings.HasSuffix(nome, "_test.go") {
@@ -84,14 +95,25 @@ func TestMainNaoLigaFonteDePolitica(t *testing.T) {
 		}
 		ast.Inspect(arq, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "SetInputPolicySource" {
+			if !ok {
 				return true
 			}
-			t.Errorf("%s:%d chama SetInputPolicySource.\n\n"+
-				"A fonte da política só deve ser ligada quando o caminho que a grava\n"+
-				"existir e as regras de sobrevivência estiverem em vigor (issue #78).",
-				nome, fset.Position(sel.Pos()).Line)
+			switch sel.Sel.Name {
+			case "SetInputPolicySource":
+				temPolitica = true
+			case "SetAdminAccessSource":
+				temAcesso = true
+			}
 			return true
 		})
+	}
+
+	if temPolitica != temAcesso {
+		t.Errorf("as duas fontes da política precisam andar juntas: SetInputPolicySource=%v, SetAdminAccessSource=%v.\n\n"+
+			"Política restritiva sem acesso administrativo corta SSH e painel no instante em que é aplicada.",
+			temPolitica, temAcesso)
+	}
+	if !temPolitica {
+		t.Error("nenhuma das duas está ligada: a postura do firewall não chega ao renderizador (issue #78)")
 	}
 }

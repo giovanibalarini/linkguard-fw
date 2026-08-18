@@ -98,3 +98,30 @@ func (s *Service) inputPolicy() (Policy, error) {
 	}
 	return p, nil
 }
+
+// SetAdminAccessSource liga a fonte do acesso administrativo — as portas, as
+// redes da LAN e se alguma WAN é por DHCP.
+//
+// Só é consultada quando a política é restritiva: com `accept` as regras de
+// sobrevivência não são emitidas, e uma leitura a mais seria só mais uma forma
+// de a chain input deixar de ser reconciliada.
+func (s *Service) SetAdminAccessSource(src func() (AdminAccess, error)) {
+	s.adminAccessSource = src
+}
+
+// adminAccess resolve o acesso administrativo para as regras de sobrevivência.
+//
+// Fonte ausente é ERRO aqui, ao contrário da política. A assimetria tem motivo:
+// política ausente significa "o recurso não está em uso", e responder `accept`
+// é o comportamento de sempre. Já chegar neste ponto significa que a política
+// JÁ é restritiva — e renderizar `drop` sem saber quais portas manter abertas é
+// exatamente como o admin se tranca fora. Abortar deixa a chain como estava,
+// que é o único lado seguro.
+func (s *Service) adminAccess() (AdminAccess, error) {
+	if s.adminAccessSource == nil {
+		return AdminAccess{}, fmt.Errorf(
+			"política restritiva pedida sem fonte de acesso administrativo ligada: " +
+				"renderizar a chain assim cortaria SSH e painel (ver SetAdminAccessSource)")
+	}
+	return s.adminAccessSource()
+}

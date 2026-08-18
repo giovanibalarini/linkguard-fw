@@ -578,5 +578,28 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 	ensureInput := make([]string, 0, len(ensure)+1)
 	ensureInput = append(ensureInput, ensure...)
 	ensureInput = append(ensureInput, InputChain)
-	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing), ensureInput)
+	// A política entra no pré-voo pelo mesmo princípio da linha acima: validar
+	// uma forma diferente da que vai ser aplicada é validar outra coisa. Com
+	// política restritiva, as regras de sobrevivência fazem parte da chain, e
+	// um pré-voo sem elas aprovaria um conjunto que o nft depois recusa.
+	//
+	// Erro aqui NÃO reprova a mutação do admin, pela mesma razão do NTP: este
+	// caminho não escreve nada, e devolver 400 para toda mutação por causa de um
+	// SELECT que falhou seria trancá-lo fora do painel. Na hora de APLICAR o
+	// mesmo erro tem o efeito oposto e obrigatório — reconcileInputChain aborta.
+	policy, err := s.inputPolicy()
+	if err != nil {
+		slog.Warn("não foi possível ler a política padrão para o pré-voo da chain input; os jumps continuam sendo validados", "err", err)
+		policy = PolicyAccept
+	}
+	var access AdminAccess
+	if policy == PolicyDrop {
+		if a, aerr := s.adminAccess(); aerr == nil {
+			access = a
+		} else {
+			slog.Warn("não foi possível ler o acesso administrativo para o pré-voo", "err", aerr)
+			policy = PolicyAccept
+		}
+	}
+	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access), ensureInput)
 }

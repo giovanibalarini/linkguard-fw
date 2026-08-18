@@ -82,6 +82,19 @@ const revertLogInterval = time.Minute
 type stateSnapshot struct {
 	Groups []storage.FirewallGroup `json:"groups"`
 	Rules  []storage.FirewallRule  `json:"rules"`
+	// Policy é a política padrão da chain input no instante do snapshot
+	// (issue #78).
+	//
+	// PONTEIRO COM omitempty, e isso é o que dispensa migração: uma linha de
+	// pendente gravada por uma versão anterior não tem o campo, e o Unmarshal
+	// deixa o ponteiro nil. Nil significa "esta janela é anterior à política" —
+	// reverter não mexe nela, que é a resposta certa. Mesma propriedade que o
+	// applied_state já explora.
+	//
+	// Sem este campo, a janela desarmaria a mudança MAIS PERIGOSA que o produto
+	// sabe fazer sem desfazê-la: o pendente sumiria, o prazo venceria, e a
+	// política restritiva continuaria de pé sem nada apontando para ela.
+	Policy *nftables.Policy `json:"policy,omitempty"`
 }
 
 // SnapshotState serializa o estado ATUAL dos grupos e regras — o que o
@@ -117,7 +130,15 @@ func (s *Service) readState() (stateSnapshot, error) {
 	if err != nil {
 		return stateSnapshot{}, fmt.Errorf("ler as regras para o snapshot: %w", err)
 	}
-	return stateSnapshot{Groups: groups, Rules: rules}, nil
+	// A política entra pelo mesmo contrato dos outros dois: erro de leitura
+	// vira erro e aborta o snapshot. Um snapshot sem a política, tirado por
+	// engano, produziria uma reversão que devolve grupos e regras e deixa a
+	// política restritiva no lugar — o pior dos dois mundos.
+	policy, err := s.InputPolicy()
+	if err != nil {
+		return stateSnapshot{}, fmt.Errorf("ler a política para o snapshot: %w", err)
+	}
+	return stateSnapshot{Groups: groups, Rules: rules, Policy: &policy}, nil
 }
 
 // canonicalState serializa um estado numa forma COMPARÁVEL byte a byte.
@@ -965,6 +986,25 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 	if err := s.db.ReplaceFirewallGroupsAndRules(snap.Groups, snap.Rules); err != nil {
 		return revertFailed(fmt.Errorf("restaurar o estado anterior dos grupos e regras: %w", err))
 	}
+
+	// A política volta junto (issue #78), e ANTES da reconciliação: é ela que
+	// vai renderizar a chain, e restaurar a política depois deixaria a passada
+	// escrever a política nova sobre o estado antigo.
+	//
+	// Nil é uma janela ANTERIOR à política existir — não mexer nela é a resposta
+	// certa, e é o que dispensa migração das linhas de pendente já gravadas.
+	//
+	// Falha aqui NÃO derruba a reversão: os grupos e as regras já voltaram, e
+	// abortar agora deixaria o banco pela metade. Vira erro registrado, e a
+	// política é reconciliada de novo na passada seguinte — o oposto do que
+	// aconteceria se este erro cancelasse tudo.
+	if snap.Policy != nil {
+		if err := s.SetInputPolicy(*snap.Policy); err != nil {
+			slog.Error("o estado anterior dos grupos e regras voltou, mas a política padrão não pôde ser restaurada",
+				"err", err, "politica", *snap.Policy)
+		}
+	}
+
 	s.recordPreserved(p, merge)
 
 	// A marca de "reversão em andamento" vem DEPOIS do commit acima, nunca

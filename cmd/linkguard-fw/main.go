@@ -102,6 +102,29 @@ func ntpInputStateFrom(getSetting func(string) (string, error)) ([]string, bool,
 	return c.AllowedNetworks, c.ServeLAN, nil
 }
 
+// anyWANIsDHCP diz se alguma interface gerenciada pega endereço por DHCP.
+//
+// Decide se a chain input precisa aceitar udp/68: a renovação unicast em T1
+// passa por conntrack, mas o REBIND sai de 0.0.0.0:68 para broadcast e não casa
+// a tupla de retorno. Sem a linha, a WAN nunca mais renova depois de um flap de
+// link — e o sintoma aparece dias depois, como "a internet caiu sozinha".
+//
+// Erro de leitura devolve TRUE: emitir a linha à toa numa máquina estática não
+// abre nada (ninguém manda DHCP para ela), enquanto omiti-la numa máquina que
+// precisa dela derruba a internet. O lado seguro é o permissivo aqui, e só aqui.
+func anyWANIsDHCP(db *storage.DB) bool {
+	ifaces, err := db.ListManagedInterfaces()
+	if err != nil {
+		return true
+	}
+	for _, i := range ifaces {
+		if i.AddrMode == "dhcp" {
+			return true
+		}
+	}
+	return false
+}
+
 func run() int {
 	configPath := flag.String("config", "/etc/linkguard-fw/config.json", "Path to config file")
 	addr := flag.String("addr", "", "Listen address override")
@@ -493,6 +516,30 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// produção (reshuffle de PCI, enp4s0 → enp5s0). Esta ligação é o que permite
 	// ao produto AVISAR; corrigir sozinho seria adivinhar qual interface o admin
 	// queria, e desativar a regra em silêncio é o mesmo defeito com outro nome.
+	// A postura do firewall (issue #78). As duas fontes andam juntas: sem a de
+	// acesso administrativo, uma política restritiva renderiza sem saber o que
+	// manter aberto — e é assim que o admin se tranca fora. O renderizador
+	// aborta nesse caso, e esta ligação é o que faz o caso não acontecer.
+	nftSvc.SetInputPolicySource(frSvc.InputPolicy)
+	nftSvc.SetAdminAccessSource(func() (nftables.AdminAccess, error) {
+		netCfg := netsvc.DefaultConfig()
+		if raw, _ := db.GetSetting("netsvc_config"); raw != "" {
+			_ = json.Unmarshal([]byte(raw), &netCfg)
+		}
+		var redes []string
+		if netCfg.SubnetCIDR != "" {
+			redes = append(redes, netCfg.SubnetCIDR)
+		}
+		// A porta do painel NÃO é fixa: 8080 é o default do binário, 9997 o do
+		// .deb, e quem põe proxy usa outra. Fixá-la aqui deixaria o anti-lockout
+		// mudo justamente em quem não usa o padrão.
+		return nftables.AdminAccess{
+			PanelPort:   cfg.Port,
+			LANNetworks: redes,
+			WANIsDHCP:   anyWANIsDHCP(db),
+		}, nil
+	})
+
 	frSvc.SetIfaceLister(func() ([]string, error) {
 		views, err := netifSvc.List(context.Background())
 		if err != nil {
