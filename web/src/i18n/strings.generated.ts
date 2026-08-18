@@ -1,7 +1,7 @@
 // GERADO POR scripts/gen-i18n.mjs — NÃO EDITE À MÃO.
 //
-// A fonte é src/i18n/strings.yaml. Para mudar ou acrescentar texto, edite o
-// YAML e rode `npm run i18n:gen` (o build já roda sozinho).
+// A fonte são os YAML em src/i18n/strings/. Para mudar ou acrescentar texto,
+// edite o fragmento da sua área e rode `npm run i18n:gen` (o build já roda).
 //
 // Este arquivo é commitado de propósito: assim a mudança de texto aparece no
 // diff da PR, revisável por quem fala os dois idiomas.
