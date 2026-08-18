@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Search, RefreshCw, Ban, ScrollText, Info } from 'lucide-react';
 import client from '../api/client';
+import { useI18n } from '../i18n';
 import Panel from './ui/Panel';
 import IconButton from './ui/IconButton';
 
@@ -18,6 +19,7 @@ interface Props {
  * Only meaningful when DNS query logging is enabled.
  */
 export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props) {
+  const { t } = useI18n();
   const [queries, setQueries] = useState<DNSQuery[]>([]);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
@@ -40,7 +42,7 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
 
   return (
     <Panel
-      title={<span className="flex items-center gap-2"><ScrollText className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Consultas recentes</span></span>}
+      title={<span className="flex items-center gap-2"><ScrollText className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('svc.dnslog.title')}</span></span>}
       action={
         <div className="flex gap-2">
           <div className="relative">
@@ -49,12 +51,12 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && fetchQueries(q)}
-              placeholder="Filtrar por domínio ou IP"
+              placeholder={t('svc.dnslog.filter.placeholder')}
               className="input pl-8 text-sm"
             />
           </div>
           <button onClick={() => fetchQueries(q)} className="btn-secondary flex items-center gap-1.5 text-sm">
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> {t('svc.common.refresh')}
           </button>
         </div>
       }
@@ -62,12 +64,12 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
       {!loggingEnabled && (
         <div className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-amber-300 text-sm mb-3">
           <Info className="w-4 h-4 mt-0.5 shrink-0" />
-          <span>O registro de consultas está <b>desligado</b>. Ative "Registrar consultas" acima e clique em Aplicar para começar a ver os acessos. (Tem custo de I/O em redes grandes.)</span>
+          <span>{t('svc.dnslog.off.prefix')} <b>{t('svc.dnslog.off.word')}</b>{t('svc.dnslog.off.tail')}</span>
         </div>
       )}
 
       {queries.length === 0 ? (
-        <p className="text-gray-600 text-sm py-2">{loggingEnabled ? 'Nenhuma consulta encontrada ainda.' : 'Sem dados.'}</p>
+        <p className="text-gray-600 text-sm py-2">{loggingEnabled ? t('svc.dnslog.empty') : t('svc.dnslog.noData')}</p>
       ) : (
         <>
           {/* Mobile: stacked cards (< sm) */}
@@ -81,14 +83,14 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
                   </div>
                   {canBlock && (
                     <div className="flex shrink-0 gap-1">
-                      <IconButton icon={Ban} onClick={() => onBlock(row.name)} label="Bloquear este domínio" variant="danger" />
+                      <IconButton icon={Ban} onClick={() => onBlock(row.name)} label={t('svc.dnslog.blockDomain')} variant="danger" />
                     </div>
                   )}
                 </div>
                 <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                  <dt className="text-gray-500">Origem</dt>
+                  <dt className="text-gray-500">{t('svc.dnslog.col.source')}</dt>
                   <dd className="text-gray-400 font-mono">{row.client}</dd>
-                  <dt className="text-gray-500">Tipo</dt>
+                  <dt className="text-gray-500">{t('svc.dnslog.col.type')}</dt>
                   <dd className="text-gray-400">{row.type}</dd>
                 </dl>
               </div>
@@ -100,10 +102,10 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-gray-900">
                 <tr className="text-left text-gray-500 border-b border-gray-800">
-                  <th className="pb-2 pr-4 font-medium">Hora</th>
-                  <th className="pb-2 pr-4 font-medium">Origem</th>
-                  <th className="pb-2 pr-4 font-medium">Domínio</th>
-                  <th className="pb-2 pr-4 font-medium">Tipo</th>
+                  <th className="pb-2 pr-4 font-medium">{t('svc.dnslog.col.time')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('svc.dnslog.col.source')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('svc.dnslog.col.domain')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('svc.dnslog.col.type')}</th>
                   {canBlock && <th className="pb-2 font-medium"></th>}
                 </tr>
               </thead>
@@ -116,7 +118,7 @@ export default function DnsQueryLog({ loggingEnabled, canBlock, onBlock }: Props
                     <td className="py-1.5 pr-4 text-gray-500 text-xs">{row.type}</td>
                     {canBlock && (
                       <td className="py-1.5">
-                        <IconButton icon={Ban} onClick={() => onBlock(row.name)} label="Bloquear este domínio" variant="danger" />
+                        <IconButton icon={Ban} onClick={() => onBlock(row.name)} label={t('svc.dnslog.blockDomain')} variant="danger" />
                       </td>
                     )}
                   </tr>

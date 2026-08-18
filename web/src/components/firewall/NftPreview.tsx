@@ -7,12 +7,14 @@
 // useNftPreview e internal/nftables.RenderRule.
 
 import { useNftPreview } from '../../lib/useNftPreview';
+import { useI18n } from '../../i18n';
 import type { GroupConnState, GroupScope } from '../../types';
 
 export default function NftPreview({ endpoint, body, className }: { endpoint: string; body: unknown; className?: string }) {
+  const { t } = useI18n();
   const { rendered, erro } = useNftPreview(endpoint, body);
   if (erro) return <p className={`font-mono text-[11px] text-amber-400/90 break-all ${className ?? ''}`}>{erro}</p>;
-  if (!rendered) return <p className={`font-mono text-[11px] text-gray-700 break-all ${className ?? ''}`}>renderizando…</p>;
+  if (!rendered) return <p className={`font-mono text-[11px] text-gray-700 break-all ${className ?? ''}`}>{t('fwx.preview.rendering')}</p>;
   return <p className={`font-mono text-[11px] text-gray-500 break-all ${className ?? ''}`}>{rendered}</p>;
 }
 

@@ -1,4 +1,7 @@
 import { Component } from 'react';
+// tStatic e não useI18n: esta é uma class component, e ela é justamente a tela
+// que aparece quando o resto quebrou — o pior lugar para deixar só em português.
+import { tStatic } from '../i18n';
 import type { ErrorInfo, ReactNode } from 'react';
 
 /**
@@ -187,55 +190,50 @@ export default class ErrorBoundary extends Component<Props, State> {
       <div style={S.wrap} role="alert">
         <div style={S.card}>
           <h1 style={S.h1}>
-            {isPage ? 'Esta tela do painel travou.' : 'O painel travou.'}
+            {tStatic(isPage ? 'err.title.screen' : 'err.title.panel')}
           </h1>
 
           <p style={S.p}>
-            Um erro de programação interrompeu o desenho{isPage ? ' desta tela' : ' da interface'}.
-            Não é uma falha de rede nem de configuração — e não foi causado pelo que você acabou de clicar.
+            {tStatic('err.cause')}{tStatic(isPage ? 'err.cause.thisScreen' : 'err.cause.theUI')}.{' '}
+            {tStatic('err.notYourFault')}
           </p>
 
           <div style={S.calm}>
-            <strong>O firewall continua rodando.</strong> Regras, NAT, roteamento e failover são
-            aplicados pelo serviço <code>linkguard-fw</code>, não por esta tela. Nada foi desfeito e
-            nada parou de valer por causa deste erro.
+            <strong>{tStatic('err.firewallStillRunning')}</strong>
             <br />
             <br />
-            <strong>Se você tinha uma mudança aguardando confirmação, ela não ficou presa:</strong> o
-            serviço reverte sozinho ao fim dos 90 segundos quando ninguém confirma. Não fazer nada é
-            o caminho seguro — a rede volta ao estado anterior por conta própria.
+            <strong>{tStatic('err.pendingSafe')}</strong>
           </div>
 
           <div style={S.row}>
             <button style={S.btnPrimary} onClick={() => this.setState({ error: null, stack: '' })}>
-              Tentar desenhar de novo
+              {tStatic('err.btn.retry')}
             </button>
             <button style={S.btn} onClick={() => window.location.reload()}>
-              Recarregar o painel
+              {tStatic('err.btn.reload')}
             </button>
             {isPage && (
               <button style={S.btn} onClick={() => window.location.assign('/')}>
-                Ir para o Painel
+                {tStatic('err.btn.dashboard')}
               </button>
             )}
             <button style={S.btn} onClick={this.copy}>
-              {copied ? 'Copiado!' : 'Copiar detalhes do erro'}
+              {tStatic(copied ? 'err.btn.copied' : 'err.btn.copy')}
             </button>
           </div>
 
           {isPage && (
             <p style={S.p}>
-              O menu lateral e a faixa de confirmar-ou-reverter continuam funcionando: dá para ir
-              para outra tela por ali sem recarregar nada.
+              {tStatic('err.navStillWorks')}
             </p>
           )}
 
-          <h2 style={S.h2}>Se o painel não voltar</h2>
+          <h2 style={S.h2}>{tStatic('err.ifItDoesNotComeBack')}</h2>
           <pre style={S.pre}>{SSH_STEPS}</pre>
 
-          <h2 style={S.h2}>Detalhes técnicos</h2>
+          <h2 style={S.h2}>{tStatic('err.technicalDetails')}</h2>
           <p style={{ ...S.p, margin: 0 }}>
-            Leve isto para o relatório do problema — sozinho, ele costuma bastar para achar a causa.
+            {tStatic('err.takeToReport')}
           </p>
           <pre style={S.detailPre}>{this.details()}</pre>
         </div>

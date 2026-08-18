@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { RefreshCw, Pencil, Ban, ShieldCheck, Circle, TrendingUp, ArrowDown, ArrowUp, AlertTriangle } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { useI18n } from '../i18n';
 import { blockEnforcement, KIND_BLOCKED_HOSTS } from '../lib/blockGroups';
 import type { NetHost, HostTraffic, FirewallGroup, FirewallGroupsData } from '../types';
 import Panel from '../components/ui/Panel';
@@ -18,6 +19,7 @@ function fmtBytes(n: number): string {
 
 export default function Hosts() {
   const { can } = useAuth();
+  const { t } = useI18n();
   const canManage = can('hosts.block');
   const canReadFirewall = can('firewall.read');
   const [hosts, setHosts] = useState<NetHost[]>([]);
@@ -121,7 +123,7 @@ export default function Hosts() {
       setAliasFor(null);
       await fetchHosts();
     } catch (err: any) {
-      setAliasError(err.response?.data?.error || 'Erro ao salvar apelido');
+      setAliasError(err.response?.data?.error || t('svc.hosts.alias.saveError'));
     } finally {
       setSaving(false);
     }
@@ -135,7 +137,7 @@ export default function Hosts() {
   const confirmToggleBlock = async () => {
     const h = confirmFor;
     if (!h) return;
-    const verb = h.blocked ? 'desbloquear' : 'bloquear';
+    const failMsg = h.blocked ? t('svc.hosts.err.unblock') : t('svc.hosts.err.block');
     setConfirming(true);
     setConfirmError('');
     try {
@@ -143,7 +145,7 @@ export default function Hosts() {
       setConfirmFor(null);
       await fetchHosts();
     } catch (err: any) {
-      setConfirmError(err.response?.data?.error || `Erro ao ${verb} host`);
+      setConfirmError(err.response?.data?.error || failMsg);
     } finally {
       setConfirming(false);
     }
@@ -153,26 +155,26 @@ export default function Hosts() {
     <div className="p-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-white">Hosts da rede</h1>
+          <h1 className="text-xl font-bold text-white">{t('svc.hosts.title')}</h1>
           <p className="text-gray-500 text-sm">
-            {onlineCount} online de {hosts.length} conhecidos
+            {t('svc.hosts.subtitle', { online: onlineCount, total: hosts.length })}
           </p>
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
           <input
             className="input flex-1 sm:w-64"
-            placeholder="Filtrar por IP, MAC, apelido..."
-            aria-label="Filtrar hosts"
+            placeholder={t('svc.hosts.filter.placeholder')}
+            aria-label={t('svc.hosts.filter.aria')}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
           <button onClick={fetchHosts} disabled={loading} className="btn-secondary flex items-center gap-2 whitespace-nowrap disabled:opacity-50">
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> {t('svc.common.refresh')}
           </button>
         </div>
       </div>
 
-      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">Falha ao carregar. <button onClick={fetchHosts} className="underline">Tentar novamente</button></div>}
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">{t('svc.common.loadFailed')} <button onClick={fetchHosts} className="underline">{t('svc.common.tryAgain')}</button></div>}
 
       {/* "Bloqueado" no inventário não é mais garantia de bloqueio em vigor:
           o grupo do sistema que descarta esses hosts pode estar desligado,
@@ -186,12 +188,12 @@ export default function Hosts() {
             <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" aria-hidden="true" />
             <div className="min-w-0">
               <p className="text-orange-300">
-                {blockedCount === 1 ? 'O host bloqueado abaixo pode não estar sendo bloqueado de verdade.' : `Os ${blockedCount} hosts bloqueados abaixo podem não estar sendo bloqueados de verdade.`}
+                {blockedCount === 1 ? t('svc.hosts.notEnforced.one') : t('svc.hosts.notEnforced.many', { n: blockedCount })}
               </p>
               <p className="text-gray-300 text-xs mt-1">{enforcement.reason}</p>
               <p className="text-gray-400 text-xs mt-1">
                 {enforcement.fix}{' '}
-                <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">Abrir os grupos de regras</Link>
+                <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">{t('svc.hosts.openGroups')}</Link>
               </p>
             </div>
           </div>
@@ -205,11 +207,11 @@ export default function Hosts() {
           <div className="flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" aria-hidden="true" />
             <div className="min-w-0">
-              <p className="text-yellow-300">O bloqueio de hosts aparece desligado, mas ainda está valendo no firewall.</p>
+              <p className="text-yellow-300">{t('svc.hosts.offButLive')}</p>
               <p className="text-gray-300 text-xs mt-1">{enforcement.reason}</p>
               <p className="text-gray-400 text-xs mt-1">
                 {enforcement.fix}{' '}
-                <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">Abrir os grupos de regras</Link>
+                <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">{t('svc.hosts.openGroups')}</Link>
               </p>
             </div>
           </div>
@@ -218,30 +220,30 @@ export default function Hosts() {
       {blockedCount > 0 && enforcement.status === 'unknown' && enforcement.reason && (
         <div className="card border border-gray-700 text-sm text-gray-400">
           <span className="text-gray-300">{enforcement.reason}</span>{' '}
-          Não dá para confirmar aqui se os bloqueios abaixo estão em vigor. {enforcement.fix}
+          {t('svc.hosts.unknownEnforcement')} {enforcement.fix}
         </div>
       )}
 
       {talkers.length > 0 && (
-        <Panel title={<span className="flex items-center gap-2"><TrendingUp className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Top consumidores</span><span className="text-xs text-gray-600 font-normal">— quem está usando a banda agora (fluxos ativos)</span></span>}>
+        <Panel title={<span className="flex items-center gap-2"><TrendingUp className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('svc.hosts.talkers.title')}</span><span className="text-xs text-gray-600 font-normal">{t('svc.hosts.talkers.hint')}</span></span>}>
           <div className="space-y-2.5">
-            {talkers.slice(0, 8).map((t) => {
-              const total = t.rx_bytes + t.tx_bytes;
+            {talkers.slice(0, 8).map((tk) => {
+              const total = tk.rx_bytes + tk.tx_bytes;
               const max = (talkers[0].rx_bytes + talkers[0].tx_bytes) || 1;
-              const host = hosts.find((h) => h.ip === t.ip);
-              const name = host?.alias || host?.hostname || t.ip;
+              const host = hosts.find((h) => h.ip === tk.ip);
+              const name = host?.alias || host?.hostname || tk.ip;
               return (
-                <div key={t.ip} className="flex items-center gap-3">
+                <div key={tk.ip} className="flex items-center gap-3">
                   <div className="w-36 sm:w-44 shrink-0 min-w-0">
                     <div className="text-white text-sm truncate">{name}</div>
-                    <div className="text-gray-600 text-xs font-mono truncate">{t.ip}</div>
+                    <div className="text-gray-600 text-xs font-mono truncate">{tk.ip}</div>
                   </div>
                   <div className="flex-1 h-2 rounded-full bg-gray-800 overflow-hidden">
                     <div className="h-full bg-blue-500" style={{ width: `${(total / max) * 100}%` }} />
                   </div>
                   <div className="shrink-0 text-xs text-gray-400 flex items-center justify-end gap-3 w-32 sm:w-40">
-                    <span className="inline-flex items-center gap-1" title="Download"><ArrowDown className="w-3 h-3 text-green-400" />{fmtBytes(t.rx_bytes)}</span>
-                    <span className="inline-flex items-center gap-1" title="Upload"><ArrowUp className="w-3 h-3 text-orange-400" />{fmtBytes(t.tx_bytes)}</span>
+                    <span className="inline-flex items-center gap-1" title={t('svc.hosts.talkers.down')}><ArrowDown className="w-3 h-3 text-green-400" />{fmtBytes(tk.rx_bytes)}</span>
+                    <span className="inline-flex items-center gap-1" title={t('svc.hosts.talkers.up')}><ArrowUp className="w-3 h-3 text-orange-400" />{fmtBytes(tk.tx_bytes)}</span>
                   </div>
                 </div>
               );
@@ -252,12 +254,12 @@ export default function Hosts() {
 
       <Panel>
         {loading && hosts.length === 0 ? (
-          <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
+          <div className="text-gray-500 text-center py-8 animate-pulse">{t('common.loading')}</div>
         ) : error && hosts.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">Não foi possível carregar os hosts.</div>
+          <div className="text-center py-12 text-gray-500">{t('svc.hosts.loadError')}</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12 text-gray-500">
-            {hosts.length === 0 ? 'Nenhum host encontrado' : 'Nenhum host corresponde ao filtro'}
+            {hosts.length === 0 ? t('svc.hosts.empty') : t('svc.hosts.noMatch')}
           </div>
         ) : (
           <>
@@ -280,14 +282,14 @@ export default function Hosts() {
                       <div className="flex shrink-0 gap-3">
                         <button
                           onClick={() => openAlias(h)}
-                          aria-label="Apelido"
+                          aria-label={t('svc.hosts.alias')}
                           className="text-gray-400 hover:text-blue-400 transition-colors"
                         >
                           <Pencil className="w-5 h-5" />
                         </button>
                         <button
                           onClick={() => openConfirm(h)}
-                          aria-label={h.blocked ? 'Desbloquear' : 'Bloquear'}
+                          aria-label={h.blocked ? t('svc.hosts.unblock') : t('svc.hosts.block')}
                           className={`transition-colors ${h.blocked ? 'text-red-400 hover:text-green-400' : 'text-gray-400 hover:text-red-400'}`}
                         >
                           {h.blocked ? <ShieldCheck className="w-5 h-5" /> : <Ban className="w-5 h-5" />}
@@ -296,11 +298,11 @@ export default function Hosts() {
                     )}
                   </div>
                   <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                    <dt className="text-gray-500">IP</dt>
+                    <dt className="text-gray-500">{t('svc.hosts.col.ip')}</dt>
                     <dd className="text-gray-400 font-mono">{h.ip || '—'}</dd>
-                    <dt className="text-gray-500">MAC</dt>
+                    <dt className="text-gray-500">{t('svc.hosts.col.mac')}</dt>
                     <dd className="text-gray-500 font-mono">{h.mac}</dd>
-                    <dt className="text-gray-500">Interface</dt>
+                    <dt className="text-gray-500">{t('svc.hosts.col.interface')}</dt>
                     <dd className="text-gray-400 font-mono">{h.interface || '—'}</dd>
                   </dl>
                   {h.blocked && (
@@ -308,7 +310,7 @@ export default function Hosts() {
                       className={`mt-2 inline-flex items-center gap-1 text-xs ${notEnforced ? 'text-orange-400' : 'text-red-400'}`}
                       title={notEnforced ? enforcement.reason : undefined}
                     >
-                      <Ban className="w-3 h-3" /> {notEnforced ? 'bloqueado — não em vigor' : 'bloqueado'}
+                      <Ban className="w-3 h-3" /> {notEnforced ? t('svc.hosts.badge.notEnforced') : t('svc.hosts.badge.blocked')}
                     </span>
                   )}
                 </div>
@@ -320,12 +322,12 @@ export default function Hosts() {
               <table className="hidden sm:table w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-500 border-b border-gray-800">
-                    <th className="pb-3 pr-4 font-medium">Host</th>
-                    <th className="pb-3 pr-4 font-medium">IP</th>
-                    <th className="pb-3 pr-4 font-medium">MAC</th>
-                    <th className="pb-3 pr-4 font-medium">Interface</th>
-                    <th className="pb-3 pr-4 font-medium">Estado</th>
-                    {canManage && <th className="pb-3 font-medium">Ações</th>}
+                    <th className="pb-3 pr-4 font-medium">{t('svc.hosts.col.host')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('svc.hosts.col.ip')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('svc.hosts.col.mac')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('svc.hosts.col.interface')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('svc.hosts.col.state')}</th>
+                    {canManage && <th className="pb-3 font-medium">{t('svc.hosts.col.actions')}</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -338,7 +340,7 @@ export default function Hosts() {
                             className={`inline-flex items-center gap-1 text-xs ${notEnforced ? 'text-orange-400' : 'text-red-400'}`}
                             title={notEnforced ? enforcement.reason : undefined}
                           >
-                            <Ban className="w-3 h-3" /> {notEnforced ? 'bloqueado — não em vigor' : 'bloqueado'}
+                            <Ban className="w-3 h-3" /> {notEnforced ? t('svc.hosts.badge.notEnforced') : t('svc.hosts.badge.blocked')}
                           </span>
                         )}
                       </td>
@@ -356,16 +358,16 @@ export default function Hosts() {
                           <div className="flex gap-2">
                             <button
                               onClick={() => openAlias(h)}
-                              title="Apelido"
-                              aria-label="Apelido"
+                              title={t('svc.hosts.alias')}
+                              aria-label={t('svc.hosts.alias')}
                               className="text-gray-400 hover:text-blue-400 transition-colors"
                             >
                               <Pencil className="w-4 h-4" />
                             </button>
                             <button
                               onClick={() => openConfirm(h)}
-                              title={h.blocked ? 'Desbloquear' : 'Bloquear'}
-                              aria-label={h.blocked ? 'Desbloquear' : 'Bloquear'}
+                              title={h.blocked ? t('svc.hosts.unblock') : t('svc.hosts.block')}
+                              aria-label={h.blocked ? t('svc.hosts.unblock') : t('svc.hosts.block')}
                               className={`transition-colors ${h.blocked ? 'text-red-400 hover:text-green-400' : 'text-gray-400 hover:text-red-400'}`}
                             >
                               {h.blocked ? <ShieldCheck className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
@@ -385,7 +387,7 @@ export default function Hosts() {
       <Modal
         open={aliasFor !== null}
         onClose={() => setAliasFor(null)}
-        title={<div><span className="text-white font-semibold">Apelido do host</span>{aliasFor && <p className="text-gray-500 text-xs mt-1 font-mono font-normal">{aliasFor.mac}</p>}</div>}
+        title={<div><span className="text-white font-semibold">{t('svc.hosts.aliasModal.title')}</span>{aliasFor && <p className="text-gray-500 text-xs mt-1 font-mono font-normal">{aliasFor.mac}</p>}</div>}
         size="xs"
         className="bg-gray-900 border border-gray-800 rounded-xl"
       >
@@ -393,7 +395,7 @@ export default function Hosts() {
         <div className="p-6 space-y-4">
               <input
                 className="input w-full"
-                placeholder="Ex.: PC do João, TV da sala"
+                placeholder={t('svc.hosts.aliasModal.placeholder')}
                 value={aliasValue}
                 onChange={(e) => setAliasValue(e.target.value)}
                 autoFocus
@@ -403,9 +405,9 @@ export default function Hosts() {
               )}
               <div className="flex gap-3">
                 <button onClick={saveAlias} disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
-                  {saving ? 'Salvando...' : 'Salvar'}
+                  {saving ? t('common.saving') : t('common.save')}
                 </button>
-                <button onClick={() => setAliasFor(null)} className="btn-secondary flex-1">Cancelar</button>
+                <button onClick={() => setAliasFor(null)} className="btn-secondary flex-1">{t('common.cancel')}</button>
               </div>
         </div>
         )}
@@ -414,14 +416,14 @@ export default function Hosts() {
       <Modal
         open={confirmFor !== null}
         onClose={() => setConfirmFor(null)}
-        title={<div><span className="text-white font-semibold">{confirmFor ? (confirmFor.blocked ? 'Desbloquear host' : 'Bloquear host') : ''}</span>{confirmFor && <p className="text-gray-500 text-xs mt-1 font-mono font-normal">{confirmFor.mac}</p>}</div>}
+        title={<div><span className="text-white font-semibold">{confirmFor ? (confirmFor.blocked ? t('svc.hosts.unblockModal.title') : t('svc.hosts.blockModal.title')) : ''}</span>{confirmFor && <p className="text-gray-500 text-xs mt-1 font-mono font-normal">{confirmFor.mac}</p>}</div>}
         size="xs"
         className="bg-gray-900 border border-gray-800 rounded-xl"
       >
         {confirmFor && (
         <div className="p-6 space-y-4">
               <p className="text-sm text-gray-300">
-                Deseja {confirmFor.blocked ? 'desbloquear' : 'bloquear'} o host{' '}
+                {confirmFor.blocked ? t('svc.hosts.confirm.unblock') : t('svc.hosts.confirm.block')}{' '}
                 <span className="text-white font-medium">{confirmFor.alias || confirmFor.ip || confirmFor.mac}</span>?
               </p>
               {/* Bloquear com o grupo desligado, não aplicado ou embaixo de um
@@ -432,12 +434,12 @@ export default function Hosts() {
                 <div className="rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 py-2 text-xs">
                   <p className="text-orange-300 flex items-start gap-1.5">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" aria-hidden="true" />
-                    <span>Este bloqueio não vai entrar em vigor agora.</span>
+                    <span>{t('svc.hosts.confirm.wontApply')}</span>
                   </p>
                   <p className="text-gray-300 mt-1">{enforcement.reason}</p>
                   <p className="text-gray-400 mt-1">
                     {enforcement.fix}{' '}
-                    <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">Abrir os grupos de regras</Link>
+                    <Link to="/firewall?tab=groups" className="text-blue-400 hover:text-blue-300 underline">{t('svc.hosts.openGroups')}</Link>
                   </p>
                 </div>
               )}
@@ -450,10 +452,10 @@ export default function Hosts() {
                   disabled={confirming}
                   className={`flex-1 disabled:opacity-50 ${confirmFor.blocked ? 'btn-primary' : 'btn-primary bg-red-600 hover:bg-red-500'}`}
                 >
-                  {confirming ? 'Processando...' : confirmFor.blocked ? 'Desbloquear' : 'Bloquear'}
+                  {confirming ? t('svc.hosts.processing') : confirmFor.blocked ? t('svc.hosts.unblock') : t('svc.hosts.block')}
                 </button>
                 <button onClick={() => setConfirmFor(null)} disabled={confirming} className="btn-secondary flex-1 disabled:opacity-50">
-                  Cancelar
+                  {t('common.cancel')}
                 </button>
               </div>
         </div>

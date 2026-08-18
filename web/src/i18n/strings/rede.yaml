@@ -1,0 +1,505 @@
+# Área "rede": Rotas, Interfaces, edição/revisão de interface e Tráfego por
+# interface. Todas as chaves começam com `net.` (ver scripts/gen-i18n.mjs:
+# chave repetida entre áreas é erro de build, não "o último ganha").
+#
+# NÃO traduzido de propósito, aqui e nos componentes: nomes de interface
+# (eth0, enp3s0, lo), keywords de ip route/ip rule (default, all, main),
+# siglas (RRD, MAC, CIDR, DHCP, WAN, LAN, RX, TX, FWMark), unidades
+# (B/KB/MB/GB, 5m/30m/12h/30d/1y/5y) e caminhos (/proc). São o que o admin
+# digita e o que ele acha no sistema.
+
+# ─── Mensagens e rótulos compartilhados na área ─────────────────────────────
+# net.msg.errorPrefix precisa ser o começo EXATO de net.msg.error nos dois
+# idiomas: o banner de Rotas decide a cor vermelha por esse prefixo.
+net.msg.errorPrefix:
+  pt: "Erro"
+  en: "Error"
+net.msg.error:
+  pt: "Erro: {e}"
+  en: "Error: {e}"
+net.action.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
+net.action.back:
+  pt: "Voltar"
+  en: "Back"
+net.col.actions:
+  pt: "Ações"
+  en: "Actions"
+
+# ─── Rotas ──────────────────────────────────────────────────────────────────
+net.routes.title:
+  pt: "Rotas"
+  en: "Routes"
+net.routes.subtitle:
+  pt: "Tabelas de roteamento e regras ip rule"
+  en: "Routing tables and ip rule entries"
+net.routes.new:
+  pt: "Nova Rota"
+  en: "New route"
+net.routes.modal.edit:
+  pt: "Editar Rota"
+  en: "Edit route"
+net.routes.tab.routes:
+  pt: "Rotas ({n})"
+  en: "Routes ({n})"
+net.routes.tab.rules:
+  pt: "Regras ip rule ({n})"
+  en: "ip rule entries ({n})"
+net.routes.empty:
+  pt: "Nenhuma rota disponível"
+  en: "No routes available"
+net.routes.action.edit:
+  pt: "Editar rota"
+  en: "Edit route"
+net.routes.action.delete:
+  pt: "Remover rota"
+  en: "Delete route"
+net.routes.confirm.delete:
+  pt: "Remover rota {d}?"
+  en: "Delete route {d}?"
+net.routes.col.destination:
+  pt: "Destino"
+  en: "Destination"
+net.routes.col.gateway:
+  pt: "Gateway"
+  en: "Gateway"
+net.routes.col.interface:
+  pt: "Interface"
+  en: "Interface"
+net.routes.col.protocol:
+  pt: "Protocolo"
+  en: "Protocol"
+net.routes.col.metric:
+  pt: "Métrica"
+  en: "Metric"
+net.routes.col.scope:
+  pt: "Escopo"
+  en: "Scope"
+net.routes.field.destination:
+  pt: "Destino *"
+  en: "Destination *"
+net.routes.ph.destination:
+  pt: "default ou 10.0.0.0/24"
+  en: "default or 10.0.0.0/24"
+net.routes.field.gateway:
+  pt: "Gateway"
+  en: "Gateway"
+net.routes.field.interface:
+  pt: "Interface"
+  en: "Interface"
+net.routes.field.table:
+  pt: "Tabela"
+  en: "Table"
+net.routes.ph.table:
+  pt: "main ou 100"
+  en: "main or 100"
+net.routes.hint.table:
+  pt: "Deixe vazio para usar a tabela principal (main)."
+  en: "Leave empty to use the main routing table (main)."
+net.routes.form.destRequired:
+  pt: "Informe o destino da rota."
+  en: "Enter the route destination."
+net.routes.form.saveFailed:
+  pt: "Erro ao salvar rota."
+  en: "Could not save the route."
+net.routes.toast.added:
+  pt: "Rota adicionada com sucesso!"
+  en: "Route added."
+net.routes.toast.updated:
+  pt: "Rota atualizada com sucesso!"
+  en: "Route updated."
+net.routes.toast.removed:
+  pt: "Rota removida com sucesso!"
+  en: "Route deleted."
+
+# ─── Regras ip rule ─────────────────────────────────────────────────────────
+net.rules.new:
+  pt: "Nova Regra"
+  en: "New rule"
+net.rules.modal.new:
+  pt: "Nova Regra ip rule"
+  en: "New ip rule entry"
+net.rules.modal.edit:
+  pt: "Editar Regra ip rule"
+  en: "Edit ip rule entry"
+net.rules.empty:
+  pt: "Nenhuma regra ip rule disponível"
+  en: "No ip rule entries available"
+net.rules.action.edit:
+  pt: "Editar regra"
+  en: "Edit rule"
+net.rules.action.delete:
+  pt: "Remover regra"
+  en: "Delete rule"
+net.rules.confirm.delete:
+  pt: "Remover regra {p}: {s}?"
+  en: "Delete rule {p}: {s}?"
+net.rules.priorityInline:
+  pt: "prioridade {p}"
+  en: "priority {p}"
+net.rules.col.priority:
+  pt: "Prioridade"
+  en: "Priority"
+net.rules.col.selector:
+  pt: "Seletor"
+  en: "Selector"
+net.rules.col.fwmark:
+  pt: "FWMark"
+  en: "FWMark"
+net.rules.col.action:
+  pt: "Ação"
+  en: "Action"
+net.rules.col.table:
+  pt: "Tabela"
+  en: "Table"
+net.rules.field.from:
+  pt: "Origem (from)"
+  en: "Source (from)"
+net.rules.ph.from:
+  pt: "192.168.1.0/24 ou all"
+  en: "192.168.1.0/24 or all"
+net.rules.field.fwmark:
+  pt: "FWMark"
+  en: "FWMark"
+net.rules.field.table:
+  pt: "Tabela lookup *"
+  en: "Lookup table *"
+net.rules.field.priority:
+  pt: "Prioridade"
+  en: "Priority"
+net.rules.form.tableRequired:
+  pt: "Informe a tabela lookup (ex.: main ou 100)."
+  en: "Enter the lookup table (e.g. main or 100)."
+net.rules.form.saveFailed:
+  pt: "Erro ao salvar regra."
+  en: "Could not save the rule."
+net.rules.toast.added:
+  pt: "Regra adicionada com sucesso!"
+  en: "Rule added."
+net.rules.toast.updated:
+  pt: "Regra atualizada com sucesso!"
+  en: "Rule updated."
+net.rules.toast.removed:
+  pt: "Regra removida com sucesso!"
+  en: "Rule deleted."
+
+# ─── Interfaces ─────────────────────────────────────────────────────────────
+net.if.title:
+  pt: "Interfaces"
+  en: "Interfaces"
+net.if.subtitle:
+  pt: "Estado físico e topologia da rede."
+  en: "Physical state and network topology."
+net.if.loadFailed:
+  pt: "Falha ao carregar interfaces."
+  en: "Could not load the interfaces."
+net.if.tab.overview:
+  pt: "Visão geral"
+  en: "Overview"
+net.if.tab.list:
+  pt: "Interfaces"
+  en: "Interfaces"
+net.if.tab.vlans:
+  pt: "VLANs"
+  en: "VLANs"
+net.if.tab.bridges:
+  pt: "Bridges"
+  en: "Bridges"
+net.if.tab.traffic:
+  pt: "Tráfego"
+  en: "Traffic"
+net.if.kind.physical:
+  pt: "física"
+  en: "physical"
+net.if.role.unassigned:
+  pt: "não atribuída"
+  en: "unassigned"
+net.if.pending.body:
+  pt: "foi alterada e aguarda confirmação. Verifique se o acesso continua funcionando antes de confirmar. Em caso de dúvida, reverta."
+  en: "was changed and is waiting for confirmation. Check that your access still works before you confirm. If in doubt, roll it back."
+net.if.pending.confirm:
+  pt: "Confirmar"
+  en: "Confirm"
+net.if.pending.rollback:
+  pt: "Reverter"
+  en: "Roll back"
+net.if.backPanel:
+  pt: "Painel traseiro"
+  en: "Back panel"
+net.if.link.up:
+  pt: "link ativo"
+  en: "link up"
+net.if.link.down:
+  pt: "sem link"
+  en: "no link"
+net.if.blinking:
+  pt: "piscando…"
+  en: "blinking…"
+net.if.identify:
+  pt: "identificar"
+  en: "identify"
+net.if.edit:
+  pt: "editar"
+  en: "edit"
+net.if.group.unassigned:
+  pt: "Não atribuídas"
+  en: "Unassigned"
+net.if.none:
+  pt: "Nenhuma interface detectada."
+  en: "No interfaces detected."
+net.if.systemHidden:
+  pt: "{n} interfaces de sistema ocultas · mostrar"
+  en: "{n} system interfaces hidden · show"
+net.if.stable.title:
+  pt: "Nomes estáveis por MAC"
+  en: "Stable names by MAC"
+net.if.stable.body:
+  pt: "Fixa o nome de cada interface WAN pelo endereço MAC da placa, não pela posição física no computador — troca de hardware não muda mais o nome."
+  en: "Pins each WAN interface name to the card's MAC address instead of its physical slot in the machine, so swapping hardware no longer changes the name."
+net.if.stable.reboot:
+  pt: "Só tem efeito depois de um "
+  en: "Only takes effect after a "
+net.if.stable.reboot.strong:
+  pt: "reboot"
+  en: "reboot"
+net.if.stable.reboot.tail:
+  pt: "."
+  en: "."
+net.if.stable.applied:
+  pt: "Aplicado — reinicie a máquina para os nomes valerem."
+  en: "Applied — reboot the machine for the names to take effect."
+net.if.stable.applying:
+  pt: "Aplicando…"
+  en: "Applying…"
+net.if.stable.apply:
+  pt: "Aplicar (requer reboot)"
+  en: "Apply (requires reboot)"
+net.if.search.ph:
+  pt: "buscar por nome, apelido ou descrição"
+  en: "search by name, alias or description"
+net.if.toggle.show:
+  pt: "mostrar {n} interfaces de sistema"
+  en: "show {n} system interfaces"
+net.if.toggle.hide:
+  pt: "ocultar {n} interfaces de sistema"
+  en: "hide {n} system interfaces"
+net.if.action.edit:
+  pt: "Editar interface"
+  en: "Edit interface"
+net.if.noneFound:
+  pt: "Nenhuma interface encontrada."
+  en: "No interfaces found."
+net.if.col.interface:
+  pt: "Interface"
+  en: "Interface"
+net.if.col.name:
+  pt: "Nome"
+  en: "Name"
+net.if.col.kind:
+  pt: "Tipo"
+  en: "Type"
+net.if.col.address:
+  pt: "Endereço"
+  en: "Address"
+net.if.col.physical:
+  pt: "Físico"
+  en: "Physical"
+net.if.col.role:
+  pt: "Papel"
+  en: "Role"
+net.if.col.parent:
+  pt: "Pai"
+  en: "Parent"
+net.if.col.tag:
+  pt: "Tag"
+  en: "Tag"
+net.if.col.members:
+  pt: "Membros"
+  en: "Members"
+net.if.vlans.none:
+  pt: "Nenhuma VLAN detectada."
+  en: "No VLANs detected."
+net.if.bridges.none:
+  pt: "Nenhuma bridge detectada."
+  en: "No bridges detected."
+
+# ─── Edição de interface ────────────────────────────────────────────────────
+net.ifedit.title:
+  pt: "Editar {name}"
+  en: "Edit {name}"
+net.ifedit.notFound:
+  pt: "Interface não encontrada."
+  en: "Interface not found."
+net.ifedit.physicalOnly:
+  pt: "Só é possível editar interfaces físicas nesta fase."
+  en: "Only physical interfaces can be edited at this stage."
+net.ifedit.loadFailed:
+  pt: "Falha ao carregar a interface."
+  en: "Could not load the interface."
+net.ifedit.previewFailed:
+  pt: "Falha ao gerar a prévia."
+  en: "Could not generate the preview."
+net.ifedit.addressing:
+  pt: "Endereçamento"
+  en: "Addressing"
+net.ifedit.mode:
+  pt: "Modo"
+  en: "Mode"
+net.ifedit.mode.static:
+  pt: "Estático"
+  en: "Static"
+net.ifedit.mode.none:
+  pt: "Nenhum"
+  en: "None"
+net.ifedit.cidr:
+  pt: "Endereço (CIDR)"
+  en: "Address (CIDR)"
+net.ifedit.gateway:
+  pt: "Gateway (opcional)"
+  en: "Gateway (optional)"
+net.ifedit.description:
+  pt: "Descrição"
+  en: "Description"
+net.ifedit.description.ph:
+  pt: "ex: patch painel P02, sala dos servidores"
+  en: "e.g. patch panel P02, server room"
+net.ifedit.generating:
+  pt: "Gerando prévia..."
+  en: "Generating preview..."
+net.ifedit.review:
+  pt: "Revisar mudanças"
+  en: "Review changes"
+
+# ─── Revisão da mudança de interface ────────────────────────────────────────
+net.ifreview.nothing:
+  pt: "Nada para revisar. "
+  en: "Nothing to review. "
+net.ifreview.nothing.link:
+  pt: "Volte pro formulário"
+  en: "Go back to the form"
+net.ifreview.nothing.tail:
+  pt: "."
+  en: "."
+net.ifreview.back:
+  pt: "Voltar pro formulário"
+  en: "Back to the form"
+net.ifreview.title:
+  pt: "Revisar mudanças — {name}"
+  en: "Review changes — {name}"
+net.ifreview.subtitle:
+  pt: "Confira o que vai ser escrito antes de aplicar."
+  en: "Check what will be written before applying."
+net.ifreview.before:
+  pt: "Antes"
+  en: "Before"
+net.ifreview.after:
+  pt: "Depois"
+  en: "After"
+net.ifreview.fileMissing:
+  pt: "(arquivo não existe ainda)"
+  en: "(file does not exist yet)"
+net.ifreview.apply:
+  pt: "Aplicar"
+  en: "Apply"
+net.ifreview.applying:
+  pt: "Aplicando..."
+  en: "Applying..."
+net.ifreview.applyFailed:
+  pt: "Falha ao aplicar."
+  en: "Could not apply the change."
+net.ifreview.deadline:
+  pt: "Vai pedir confirmação em até 90s ou reverte sozinho"
+  en: "Asks for confirmation within 90s or rolls itself back"
+
+# ─── Tráfego por interface ──────────────────────────────────────────────────
+net.traffic.subtitle:
+  pt: "Métricas vêm de /proc com histórico RRD persistente"
+  en: "Metrics come from /proc, with persistent RRD history"
+net.traffic.hostUptime:
+  pt: "uptime do host"
+  en: "host uptime"
+net.traffic.range.5m.title:
+  pt: "Janela de 5 minutos, amostra a cada 1s"
+  en: "5-minute window, sampled every 1s"
+net.traffic.range.30m.title:
+  pt: "Janela de 30 minutos, amostra a cada 5s"
+  en: "30-minute window, sampled every 5s"
+net.traffic.range.12h.title:
+  pt: "Janela de 12 horas, amostra a cada 1m"
+  en: "12-hour window, sampled every 1m"
+net.traffic.range.30d.title:
+  pt: "Histórico de 30 dias (RRD persistente)"
+  en: "30-day history (persistent RRD)"
+net.traffic.range.1y.title:
+  pt: "Histórico de 1 ano (RRD persistente)"
+  en: "1-year history (persistent RRD)"
+net.traffic.range.5y.title:
+  pt: "Histórico de 5 anos (RRD persistente)"
+  en: "5-year history (persistent RRD)"
+net.traffic.paused:
+  pt: "Pausado"
+  en: "Paused"
+net.traffic.updatedAt:
+  pt: "Atualizado às {time}"
+  en: "Updated at {time}"
+net.traffic.resume.title:
+  pt: "Retomar atualização automática (1s)"
+  en: "Resume auto-refresh (1s)"
+net.traffic.pause.title:
+  pt: "Pausar atualização automática (1s)"
+  en: "Pause auto-refresh (1s)"
+net.traffic.resume:
+  pt: "Retomar"
+  en: "Resume"
+net.traffic.pause:
+  pt: "Pausar"
+  en: "Pause"
+net.traffic.loadFailed:
+  pt: "Falha ao carregar."
+  en: "Failed to load."
+net.traffic.retry:
+  pt: "Tentar novamente"
+  en: "Try again"
+net.traffic.loadingIfaces:
+  pt: "Carregando interfaces..."
+  en: "Loading interfaces..."
+net.traffic.noIfaces:
+  pt: "Nenhuma interface detectada"
+  en: "No interfaces detected"
+net.traffic.alias.edit:
+  pt: "Editar apelido"
+  en: "Edit alias"
+net.traffic.alias.add:
+  pt: "Adicionar apelido"
+  en: "Add alias"
+net.traffic.packets:
+  pt: "{n} pacotes"
+  en: "{n} packets"
+net.traffic.errDrops:
+  pt: "· {e} erros, {d} descartes"
+  en: "· {e} errors, {d} drops"
+net.traffic.usage:
+  pt: "Consumo ({r})"
+  en: "Usage ({r})"
+net.traffic.dragZoom:
+  pt: "arraste pra dar zoom"
+  en: "drag to zoom"
+net.traffic.loadingHistory:
+  pt: "Carregando histórico..."
+  en: "Loading history..."
+net.traffic.waitingSamples:
+  pt: "Aguardando amostras..."
+  en: "Waiting for samples..."
+net.traffic.alias.title:
+  pt: "Apelido da interface"
+  en: "Interface alias"
+net.traffic.alias.ph:
+  pt: "Ex.: WAN, LAN, Fibra"
+  en: "e.g. WAN, LAN, Fiber"
+net.traffic.alias.hint:
+  pt: "Deixe vazio para remover o apelido."
+  en: "Leave empty to remove the alias."
+net.traffic.aliasSaveFailed:
+  pt: "Erro ao salvar apelido da interface"
+  en: "Could not save the interface alias"

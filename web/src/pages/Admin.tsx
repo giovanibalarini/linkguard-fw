@@ -5,11 +5,13 @@ import { useAuth } from '../context/AuthContext';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
 import IconButton from '../components/ui/IconButton';
+import { useI18n } from '../i18n';
 import type { AppUser, AppRole, PermissionCatalogEntry } from '../types';
 
 type Tab = 'users' | 'roles';
 
 export default function Admin() {
+  const { t } = useI18n();
   const { can } = useAuth();
   const canUsers = can('users.manage');
   const canRoles = can('roles.manage');
@@ -18,23 +20,23 @@ export default function Admin() {
   return (
     <div className="p-6 space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-white">Administração</h1>
-        <p className="text-gray-500 text-sm">Usuários, papéis e permissões de acesso</p>
+        <h1 className="text-xl font-bold text-white">{t('cfg.admin.title')}</h1>
+        <p className="text-gray-500 text-sm">{t('cfg.admin.subtitle')}</p>
       </div>
 
       <div className="flex gap-2 border-b border-gray-800">
         {canUsers && (
-          <TabButton active={tab === 'users'} onClick={() => setTab('users')} icon={Users} label="Usuários" />
+          <TabButton active={tab === 'users'} onClick={() => setTab('users')} icon={Users} label={t('cfg.admin.tab.users')} />
         )}
         {canRoles && (
-          <TabButton active={tab === 'roles'} onClick={() => setTab('roles')} icon={ShieldCheck} label="Papéis" />
+          <TabButton active={tab === 'roles'} onClick={() => setTab('roles')} icon={ShieldCheck} label={t('cfg.admin.tab.roles')} />
         )}
       </div>
 
       {!canUsers && !canRoles && (
         <div className="card flex flex-col items-center text-center py-12 gap-3">
           <Lock className="w-8 h-8 text-gray-600" />
-          <p className="text-gray-400 text-sm">Você não tem permissão para administrar usuários ou papéis.</p>
+          <p className="text-gray-400 text-sm">{t('cfg.admin.noPermission')}</p>
         </div>
       )}
 
@@ -65,6 +67,7 @@ function TabButton({ active, onClick, icon: Icon, label }: {
 const emptyUser = { username: '', password: '', role_ids: [] as string[] };
 
 function UsersTab() {
+  const { t } = useI18n();
   const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<AppUser[]>([]);
   const [roles, setRoles] = useState<AppRole[]>([]);
@@ -91,7 +94,7 @@ function UsersTab() {
       setUsers(u.data ?? []);
       setRoles(r.data ?? []);
     } catch (err: any) {
-      setFetchError(err.response?.data?.error || 'Erro ao carregar usuários e papéis');
+      setFetchError(err.response?.data?.error || t('cfg.admin.users.loadError'));
     } finally {
       setLoading(false);
     }
@@ -143,7 +146,7 @@ function UsersTab() {
       setShowModal(false);
       await fetchAll();
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Erro ao salvar usuário');
+      setError(err.response?.data?.error || t('cfg.admin.users.saveError'));
     } finally {
       setSaving(false);
     }
@@ -163,7 +166,7 @@ function UsersTab() {
       setDeleteTarget(null);
       await fetchAll();
     } catch (err: any) {
-      setDeleteError(err.response?.data?.error || 'Erro ao excluir usuário');
+      setDeleteError(err.response?.data?.error || t('cfg.admin.users.deleteError'));
     } finally {
       setDeleting(false);
     }
@@ -173,10 +176,10 @@ function UsersTab() {
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:justify-end gap-2">
         <button onClick={fetchAll} className="btn-secondary flex items-center justify-center gap-2">
-          <RefreshCw className="w-4 h-4" /> Atualizar
+          <RefreshCw className="w-4 h-4" /> {t('cfg.admin.refresh')}
         </button>
         <button onClick={openCreate} className="btn-primary flex items-center justify-center gap-2">
-          <Plus className="w-4 h-4" /> Novo Usuário
+          <Plus className="w-4 h-4" /> {t('cfg.admin.users.new')}
         </button>
       </div>
 
@@ -184,11 +187,11 @@ function UsersTab() {
 
       <Panel>
         {loading ? (
-          <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
+          <div className="text-gray-500 text-center py-8 animate-pulse">{t('common.loading')}</div>
         ) : fetchError ? (
-          <div className="text-center py-12 text-gray-600 text-sm">Não foi possível carregar os dados.</div>
+          <div className="text-center py-12 text-gray-600 text-sm">{t('cfg.admin.loadFailed')}</div>
         ) : users.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">Nenhum usuário</div>
+          <div className="text-center py-12 text-gray-500">{t('cfg.admin.users.empty')}</div>
         ) : (
           <>
             {/* Mobile: stacked cards (< sm) */}
@@ -199,19 +202,19 @@ function UsersTab() {
                     <div className="min-w-0">
                       <div className="text-white font-medium truncate">
                         {u.username}
-                        {currentUser?.id === u.id && <span className="text-gray-600 text-xs ml-2">(você)</span>}
+                        {currentUser?.id === u.id && <span className="text-gray-600 text-xs ml-2">{t('cfg.admin.users.you')}</span>}
                       </div>
                     </div>
                     <div className="flex shrink-0 gap-1">
-                      <IconButton icon={Pencil} onClick={() => openEdit(u)} label={`Editar usuário ${u.username}`} />
-                      <IconButton icon={Trash2} onClick={() => openDelete(u)} label={`Excluir usuário ${u.username}`} variant="danger" />
+                      <IconButton icon={Pencil} onClick={() => openEdit(u)} label={t('cfg.admin.users.editAria', { name: u.username })} />
+                      <IconButton icon={Trash2} onClick={() => openDelete(u)} label={t('cfg.admin.users.deleteAria', { name: u.username })} variant="danger" />
                     </div>
                   </div>
                   <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                    <dt className="text-gray-500">Papéis</dt>
+                    <dt className="text-gray-500">{t('cfg.admin.users.col.roles')}</dt>
                     <dd className="text-gray-400">
                       <div className="flex flex-wrap gap-1">
-                        {u.role_ids.length === 0 && <span className="text-gray-600 text-xs">sem papel</span>}
+                        {u.role_ids.length === 0 && <span className="text-gray-600 text-xs">{t('cfg.admin.users.noRole')}</span>}
                         {u.role_ids.map((rid) => (
                           <span key={rid} className="px-2 py-0.5 rounded bg-blue-600/20 text-blue-300 text-xs">
                             {roleName.get(rid) ?? rid}
@@ -219,7 +222,7 @@ function UsersTab() {
                         ))}
                       </div>
                     </dd>
-                    <dt className="text-gray-500">Criado em</dt>
+                    <dt className="text-gray-500">{t('cfg.admin.users.col.createdAt')}</dt>
                     <dd className="text-gray-400 font-mono">{new Date(u.created_at).toLocaleString()}</dd>
                   </dl>
                 </div>
@@ -231,10 +234,10 @@ function UsersTab() {
               <table className="hidden sm:table w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-500 border-b border-gray-800">
-                    <th className="pb-3 pr-4 font-medium">Usuário</th>
-                    <th className="pb-3 pr-4 font-medium">Papéis</th>
-                    <th className="pb-3 pr-4 font-medium">Criado em</th>
-                    <th className="pb-3 font-medium">Ações</th>
+                    <th className="pb-3 pr-4 font-medium">{t('cfg.admin.users.col.user')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('cfg.admin.users.col.roles')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('cfg.admin.users.col.createdAt')}</th>
+                    <th className="pb-3 font-medium">{t('cfg.admin.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -242,11 +245,11 @@ function UsersTab() {
                     <tr key={u.id} className="table-row">
                       <td className="py-3 pr-4">
                         <span className="text-white font-medium">{u.username}</span>
-                        {currentUser?.id === u.id && <span className="text-gray-600 text-xs ml-2">(você)</span>}
+                        {currentUser?.id === u.id && <span className="text-gray-600 text-xs ml-2">{t('cfg.admin.users.you')}</span>}
                       </td>
                       <td className="py-3 pr-4">
                         <div className="flex flex-wrap gap-1">
-                          {u.role_ids.length === 0 && <span className="text-gray-600 text-xs">sem papel</span>}
+                          {u.role_ids.length === 0 && <span className="text-gray-600 text-xs">{t('cfg.admin.users.noRole')}</span>}
                           {u.role_ids.map((rid) => (
                             <span key={rid} className="px-2 py-0.5 rounded bg-blue-600/20 text-blue-300 text-xs">
                               {roleName.get(rid) ?? rid}
@@ -257,8 +260,8 @@ function UsersTab() {
                       <td className="py-3 pr-4 text-gray-500 text-xs">{new Date(u.created_at).toLocaleString()}</td>
                       <td className="py-3">
                         <div className="flex gap-2">
-                          <IconButton icon={Pencil} onClick={() => openEdit(u)} label={`Editar usuário ${u.username}`} />
-                          <IconButton icon={Trash2} onClick={() => openDelete(u)} label={`Excluir usuário ${u.username}`} variant="danger" />
+                          <IconButton icon={Pencil} onClick={() => openEdit(u)} label={t('cfg.admin.users.editAria', { name: u.username })} />
+                          <IconButton icon={Trash2} onClick={() => openDelete(u)} label={t('cfg.admin.users.deleteAria', { name: u.username })} variant="danger" />
                         </div>
                       </td>
                     </tr>
@@ -270,10 +273,10 @@ function UsersTab() {
         )}
       </Panel>
 
-      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? 'Editar Usuário' : 'Novo Usuário'} size="md" className="bg-gray-900 border border-gray-800 rounded-xl">
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? t('cfg.admin.users.modal.edit') : t('cfg.admin.users.modal.new')} size="md" className="bg-gray-900 border border-gray-800 rounded-xl">
         <form onSubmit={handleSave} className="p-6 space-y-4">
           <div>
-            <label className="label">Nome de usuário *</label>
+            <label className="label">{t('cfg.admin.users.username')}</label>
             <input
               className="input w-full disabled:opacity-50"
               value={form.username}
@@ -283,19 +286,19 @@ function UsersTab() {
             />
           </div>
           <div>
-            <label className="label">{isEditing ? 'Nova senha (deixe vazio para manter)' : 'Senha *'}</label>
+            <label className="label">{isEditing ? t('cfg.admin.users.newPassword') : t('cfg.admin.users.password')}</label>
             <input
               type="password"
               className="input w-full"
               value={form.password}
-              placeholder={isEditing ? '••••••••' : 'mínimo 8 caracteres'}
+              placeholder={isEditing ? '••••••••' : t('cfg.admin.users.passwordPlaceholder')}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
               required={!isEditing}
               minLength={!isEditing || form.password ? 8 : undefined}
             />
           </div>
           <div>
-            <label className="label">Papéis</label>
+            <label className="label">{t('cfg.admin.users.roles')}</label>
             <div className="space-y-2 mt-1 max-h-48 overflow-y-auto">
               {roles.map((r) => (
                 <label key={r.id} className="flex items-start gap-2 cursor-pointer">
@@ -316,19 +319,19 @@ function UsersTab() {
           {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
           <div className="flex gap-3 pt-2">
             <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
-              {saving ? 'Salvando...' : 'Salvar'}
+              {saving ? t('common.saving') : t('common.save')}
             </button>
             <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
-              Cancelar
+              {t('common.cancel')}
             </button>
           </div>
         </form>
       </Modal>
 
-      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Excluir usuário" size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
+      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title={t('cfg.admin.users.delete.title')} size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
         <div className="p-6 space-y-4">
           <p className="text-gray-300 text-sm">
-            Tem certeza que deseja excluir o usuário <span className="font-medium text-white">"{deleteTarget?.username}"</span>? Esta ação não pode ser desfeita.
+            {t('cfg.admin.users.delete.body')}<span className="font-medium text-white">"{deleteTarget?.username}"</span>{t('cfg.admin.users.delete.body.tail')}
           </p>
           {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
           <div className="flex gap-3 pt-2">
@@ -338,10 +341,10 @@ function UsersTab() {
               onClick={handleDelete}
               className="btn-primary flex-1 bg-red-600 hover:bg-red-500 border-red-600 disabled:opacity-50"
             >
-              {deleting ? 'Excluindo...' : 'Excluir'}
+              {deleting ? t('cfg.admin.deleting') : t('cfg.admin.delete')}
             </button>
             <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">
-              Cancelar
+              {t('common.cancel')}
             </button>
           </div>
         </div>
@@ -355,6 +358,7 @@ function UsersTab() {
 const emptyRole = { name: '', description: '', permissions: [] as string[] };
 
 function RolesTab() {
+  const { t } = useI18n();
   const [roles, setRoles] = useState<AppRole[]>([]);
   const [catalog, setCatalog] = useState<PermissionCatalogEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -380,7 +384,7 @@ function RolesTab() {
       setRoles(r.data ?? []);
       setCatalog(c.data ?? []);
     } catch (err: any) {
-      setFetchError(err.response?.data?.error || 'Erro ao carregar papéis e permissões');
+      setFetchError(err.response?.data?.error || t('cfg.admin.roles.loadError'));
     } finally {
       setLoading(false);
     }
@@ -447,7 +451,7 @@ function RolesTab() {
       setShowModal(false);
       await fetchAll();
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Erro ao salvar papel');
+      setError(err.response?.data?.error || t('cfg.admin.roles.saveError'));
     } finally {
       setSaving(false);
     }
@@ -467,7 +471,7 @@ function RolesTab() {
       setDeleteTarget(null);
       await fetchAll();
     } catch (err: any) {
-      setDeleteError(err.response?.data?.error || 'Erro ao excluir papel');
+      setDeleteError(err.response?.data?.error || t('cfg.admin.roles.deleteError'));
     } finally {
       setDeleting(false);
     }
@@ -477,10 +481,10 @@ function RolesTab() {
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:justify-end gap-2">
         <button onClick={fetchAll} className="btn-secondary flex items-center justify-center gap-2">
-          <RefreshCw className="w-4 h-4" /> Atualizar
+          <RefreshCw className="w-4 h-4" /> {t('cfg.admin.refresh')}
         </button>
         <button onClick={openCreate} className="btn-primary flex items-center justify-center gap-2">
-          <Plus className="w-4 h-4" /> Novo Papel
+          <Plus className="w-4 h-4" /> {t('cfg.admin.roles.new')}
         </button>
       </div>
 
@@ -488,11 +492,11 @@ function RolesTab() {
 
       <Panel>
         {loading ? (
-          <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
+          <div className="text-gray-500 text-center py-8 animate-pulse">{t('common.loading')}</div>
         ) : fetchError ? (
-          <div className="text-center py-12 text-gray-600 text-sm">Não foi possível carregar os dados.</div>
+          <div className="text-center py-12 text-gray-600 text-sm">{t('cfg.admin.loadFailed')}</div>
         ) : roles.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">Nenhum papel</div>
+          <div className="text-center py-12 text-gray-500">{t('cfg.admin.roles.empty')}</div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {roles.map((r) => (
@@ -502,7 +506,7 @@ function RolesTab() {
                     <p className="text-white font-medium flex items-center gap-2">
                       {r.name}
                       {r.builtin && (
-                        <span className="inline-flex items-center gap-1 text-xs text-gray-500" title="Papel embutido">
+                        <span className="inline-flex items-center gap-1 text-xs text-gray-500" title={t('cfg.admin.roles.builtin')}>
                           <Lock className="w-3 h-3" />
                         </span>
                       )}
@@ -510,24 +514,24 @@ function RolesTab() {
                     <p className="text-gray-500 text-xs mt-0.5">{r.description || '—'}</p>
                   </div>
                   <div className="flex gap-2">
-                    <IconButton icon={Pencil} onClick={() => openEdit(r)} label={`Editar papel ${r.name}`} />
+                    <IconButton icon={Pencil} onClick={() => openEdit(r)} label={t('cfg.admin.roles.editAria', { name: r.name })} />
                     {!r.builtin && (
-                      <IconButton icon={Trash2} onClick={() => openDelete(r)} label={`Excluir papel ${r.name}`} variant="danger" />
+                      <IconButton icon={Trash2} onClick={() => openDelete(r)} label={t('cfg.admin.roles.deleteAria', { name: r.name })} variant="danger" />
                     )}
                   </div>
                 </div>
-                <p className="text-gray-600 text-xs mt-3">{r.permissions.length} permissões</p>
+                <p className="text-gray-600 text-xs mt-3">{t('cfg.admin.roles.permCount', { n: r.permissions.length })}</p>
               </div>
             ))}
           </div>
         )}
       </Panel>
 
-      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? 'Editar Papel' : 'Novo Papel'} size="lg" className="bg-gray-900 border border-gray-800 rounded-xl">
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={isEditing ? t('cfg.admin.roles.modal.edit') : t('cfg.admin.roles.modal.new')} size="lg" className="bg-gray-900 border border-gray-800 rounded-xl">
         <form onSubmit={handleSave} className="p-6 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="label">Nome *</label>
+              <label className="label">{t('cfg.admin.roles.name')}</label>
               <input
                 className="input w-full"
                 value={form.name}
@@ -536,7 +540,7 @@ function RolesTab() {
               />
             </div>
             <div>
-              <label className="label">Descrição</label>
+              <label className="label">{t('cfg.admin.roles.description')}</label>
               <input
                 className="input w-full"
                 value={form.description}
@@ -546,7 +550,7 @@ function RolesTab() {
           </div>
 
           <div>
-            <label className="label">Permissões por funcionalidade</label>
+            <label className="label">{t('cfg.admin.roles.permsByFeature')}</label>
             <div className="space-y-4 mt-2">
               {areas.map(({ area, entries }) => {
                 const keys = entries.map((e) => e.key);
@@ -564,12 +568,12 @@ function RolesTab() {
                             if (el) el.indeterminate = selectedCount > 0 && !allSelected;
                           }}
                           onChange={() => toggleArea(keys, !allSelected)}
-                          aria-label={`${allSelected ? 'Limpar' : 'Marcar tudo'} em ${area}`}
-                          title={allSelected ? 'Limpar' : 'Marcar tudo'}
+                          aria-label={allSelected ? t('cfg.admin.roles.clearAria', { area }) : t('cfg.admin.roles.selectAllAria', { area })}
+                          title={allSelected ? t('cfg.admin.roles.clear') : t('cfg.admin.roles.selectAll')}
                         />
                         <span className="text-gray-400 text-xs font-semibold uppercase tracking-wide">{area}</span>
                       </label>
-                      <span className="text-gray-600 text-xs whitespace-nowrap">{selectedCount}/{keys.length} selecionadas</span>
+                      <span className="text-gray-600 text-xs whitespace-nowrap">{t('cfg.admin.roles.selected', { n: selectedCount, total: keys.length })}</span>
                     </div>
                     <div className="grid sm:grid-cols-2 gap-2">
                       {entries.map((e) => (
@@ -593,19 +597,19 @@ function RolesTab() {
           {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
           <div className="flex gap-3 pt-2">
             <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
-              {saving ? 'Salvando...' : 'Salvar'}
+              {saving ? t('common.saving') : t('common.save')}
             </button>
             <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
-              Cancelar
+              {t('common.cancel')}
             </button>
           </div>
         </form>
       </Modal>
 
-      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Excluir papel" size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
+      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title={t('cfg.admin.roles.delete.title')} size="sm" className="bg-gray-900 border border-gray-800 rounded-xl">
         <div className="p-6 space-y-4">
           <p className="text-gray-300 text-sm">
-            Tem certeza que deseja excluir o papel <span className="font-medium text-white">"{deleteTarget?.name}"</span>? Esta ação não pode ser desfeita.
+            {t('cfg.admin.roles.delete.body')}<span className="font-medium text-white">"{deleteTarget?.name}"</span>{t('cfg.admin.roles.delete.body.tail')}
           </p>
           {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
           <div className="flex gap-3 pt-2">
@@ -615,10 +619,10 @@ function RolesTab() {
               onClick={handleDelete}
               className="btn-primary flex-1 bg-red-600 hover:bg-red-500 border-red-600 disabled:opacity-50"
             >
-              {deleting ? 'Excluindo...' : 'Excluir'}
+              {deleting ? t('cfg.admin.deleting') : t('cfg.admin.delete')}
             </button>
             <button type="button" onClick={() => setDeleteTarget(null)} className="btn-secondary flex-1">
-              Cancelar
+              {t('common.cancel')}
             </button>
           </div>
         </div>

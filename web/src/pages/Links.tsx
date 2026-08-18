@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
 import client from '../api/client';
+import { useI18n } from '../i18n';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
 import IconButton from '../components/ui/IconButton';
@@ -23,6 +24,7 @@ const emptyLink: Partial<WanLink> = {
 
 export default function Links() {
   const { can } = useAuth();
+  const { t } = useI18n();
   const [links, setLinks] = useState<WanLink[]>([]);
   const [interfaces, setInterfaces] = useState<InterfaceMetrics[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,7 +113,7 @@ export default function Links() {
       setShowModal(false);
       await fetchLinks();
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Erro ao salvar link');
+      setError(err.response?.data?.error || t('links.error.save'));
     } finally {
       setSaving(false);
     }
@@ -129,10 +131,10 @@ export default function Links() {
     try {
       await client.delete(`/api/links/${deleteTarget.id}`);
       setDeleteTarget(null);
-      setSuccess(`Link "${deleteTarget.name}" excluído com sucesso.`);
+      setSuccess(t('links.success.deleted', { name: deleteTarget.name }));
       await fetchLinks();
     } catch (err: any) {
-      setDeleteError(err.response?.data?.error || 'Erro ao excluir link');
+      setDeleteError(err.response?.data?.error || t('links.error.delete'));
     } finally {
       setDeleting(false);
     }
@@ -174,20 +176,20 @@ export default function Links() {
 
   const validateWizard = () => {
     if (!wizardPrimary || !wizardSecondary || wizardPrimary === wizardSecondary) {
-      setWizardError('Selecione duas interfaces WAN diferentes.');
+      setWizardError(t('links.wizard.err.twoIfaces'));
       return false;
     }
     if (wizardMode === 'balance') {
       if (!wizardLan.trim()) {
-        setWizardError('Informe a sub-rede LAN para balanceamento (ex.: 192.168.0.0/24).');
+        setWizardError(t('links.wizard.err.lanRequired'));
         return false;
       }
       if (!/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(wizardLan.trim())) {
-        setWizardError('Sub-rede inválida — use o formato CIDR, ex.: 192.168.1.0/24.');
+        setWizardError(t('links.wizard.err.lanInvalid'));
         return false;
       }
       if (wizardPrimaryWeight + wizardSecondaryWeight !== 100) {
-        setWizardError('A soma dos pesos das WANs deve ser 100%.');
+        setWizardError(t('links.wizard.err.weightSum'));
         return false;
       }
     }
@@ -216,11 +218,11 @@ export default function Links() {
       await fetchLinks();
 
       const primary = await ensureLink(wizardPrimary, {
-        name: `WAN Primária (${wizardPrimary})`,
+        name: t('links.wizard.primaryLinkName', { iface: wizardPrimary }),
         weight: wizardMode === 'balance' ? wizardPrimaryWeight : 100,
       });
       const secondary = await ensureLink(wizardSecondary, {
-        name: `WAN Secundária (${wizardSecondary})`,
+        name: t('links.wizard.secondaryLinkName', { iface: wizardSecondary }),
         weight: wizardMode === 'balance' ? wizardSecondaryWeight : 10,
       });
 
@@ -255,7 +257,7 @@ export default function Links() {
           table: secondaryTable,
           priority: 200,
         });
-        setSuccess('Assistente aplicado: failover configurado (primária > secundária).');
+        setSuccess(t('links.wizard.success.failover'));
       } else {
         await client.post('/api/firewall/rules', {
           table: 'mangle',
@@ -277,14 +279,14 @@ export default function Links() {
           table: secondaryTable,
           priority: 120,
         });
-        setSuccess('Assistente aplicado: balanceamento por marca (mangle + ip rule fwmark).');
+        setSuccess(t('links.wizard.success.balance'));
       }
 
       await fetchLinks();
       setWizardConfirm(false);
       setShowWizard(false);
     } catch (err: any) {
-      setWizardError(err.response?.data?.error || 'Falha ao aplicar assistente de 2 WAN.');
+      setWizardError(err.response?.data?.error || t('links.wizard.err.apply'));
       setWizardConfirm(false);
     } finally {
       setWizardLoading(false);
@@ -316,21 +318,21 @@ export default function Links() {
     <div className="p-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-white">Links WAN</h1>
-          <p className="text-gray-500 text-sm">Gerencie os links de internet</p>
+          <h1 className="text-xl font-bold text-white">{t('links.title')}</h1>
+          <p className="text-gray-500 text-sm">{t('links.subtitle')}</p>
         </div>
         <div className="flex gap-2">
           <button onClick={openWizard} className="btn-secondary flex items-center gap-2">
             <Wand2 className="w-4 h-4" />
-            Assistente 2 WAN
+            {t('links.btn.wizard')}
           </button>
           <button onClick={fetchLinks} className="btn-secondary flex items-center gap-2">
             <RefreshCw className="w-4 h-4" />
-            Atualizar
+            {t('links.btn.refresh')}
           </button>
           <button onClick={openCreate} className="btn-primary flex items-center gap-2">
             <Plus className="w-4 h-4" />
-            Novo Link
+            {t('links.btn.new')}
           </button>
         </div>
       </div>
@@ -343,14 +345,14 @@ export default function Links() {
 
       {!loading && links.length >= 2 && <LinkStressTest links={links} canRun={can('routes.write')} />}
 
-      <Panel title="Links WAN">
+      <Panel title={t('links.title')}>
         {loading ? (
-          <div className="text-gray-500 text-center py-8 animate-pulse">Carregando...</div>
+          <div className="text-gray-500 text-center py-8 animate-pulse">{t('links.loading')}</div>
         ) : links.length === 0 ? (
           <div className="text-center py-12">
             <Wifi className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-            <p className="text-gray-400 font-medium">Nenhum link configurado</p>
-            <p className="text-gray-600 text-sm mt-1">Clique em "Novo Link" para começar</p>
+            <p className="text-gray-400 font-medium">{t('links.empty.title')}</p>
+            <p className="text-gray-600 text-sm mt-1">{t('links.empty.hint')}</p>
           </div>
         ) : (
           <>
@@ -361,26 +363,26 @@ export default function Links() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-white font-medium truncate">{link.name}</div>
-                      {!link.enabled && <span className="text-gray-600 text-xs">desativado</span>}
+                      {!link.enabled && <span className="text-gray-600 text-xs">{t('links.disabled')}</span>}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <StatusBadge status={link.status} />
-                      <IconButton icon={Pencil} onClick={() => openEdit(link)} label="Editar link" />
-                      <IconButton icon={Trash2} onClick={() => requestDelete(link.id, link.name)} label="Excluir link" variant="danger" />
+                      <IconButton icon={Pencil} onClick={() => openEdit(link)} label={t('links.action.edit')} />
+                      <IconButton icon={Trash2} onClick={() => requestDelete(link.id, link.name)} label={t('links.action.delete')} variant="danger" />
                     </div>
                   </div>
                   <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                    <dt className="text-gray-500">Interface</dt>
+                    <dt className="text-gray-500">{t('links.field.interface')}</dt>
                     <dd className="text-gray-400 font-mono">{formatInterfaceLabel(link.interface)}</dd>
-                    <dt className="text-gray-500">IP</dt>
+                    <dt className="text-gray-500">{t('links.field.ip')}</dt>
                     <dd className="text-gray-400 font-mono">{link.ip_address || '—'}</dd>
-                    <dt className="text-gray-500">Gateway</dt>
+                    <dt className="text-gray-500">{t('links.field.gateway')}</dt>
                     <dd className="text-gray-400 font-mono">{link.gateway || '—'}</dd>
-                    <dt className="text-gray-500">Peso</dt>
+                    <dt className="text-gray-500">{t('links.field.weight')}</dt>
                     <dd className="text-gray-400">{link.weight}</dd>
-                    <dt className="text-gray-500">Latência</dt>
+                    <dt className="text-gray-500">{t('links.field.latency')}</dt>
                     <dd className="text-gray-400">{link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'}</dd>
-                    <dt className="text-gray-500">Perda</dt>
+                    <dt className="text-gray-500">{t('links.field.loss')}</dt>
                     <dd className="text-gray-400">{link.packet_loss.toFixed(1)}%</dd>
                   </dl>
                 </div>
@@ -392,14 +394,14 @@ export default function Links() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-500 border-b border-gray-800">
-                    <th className="pb-3 pr-4 font-medium">Nome</th>
-                    <th className="pb-3 pr-4 font-medium">Interface</th>
-                    <th className="pb-3 pr-4 font-medium">IP / Gateway</th>
-                    <th className="pb-3 pr-4 font-medium">Peso</th>
-                    <th className="pb-3 pr-4 font-medium">Latência</th>
-                    <th className="pb-3 pr-4 font-medium">Perda</th>
-                    <th className="pb-3 pr-4 font-medium">Status</th>
-                    <th className="pb-3 font-medium">Ações</th>
+                    <th className="pb-3 pr-4 font-medium">{t('links.field.name')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('links.field.interface')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('links.field.ipGateway')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('links.field.weight')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('links.field.latency')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('links.field.loss')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('links.field.status')}</th>
+                    <th className="pb-3 font-medium">{t('links.field.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -407,7 +409,7 @@ export default function Links() {
                     <tr key={link.id} className="table-row">
                       <td className="py-3 pr-4">
                         <div className="text-white font-medium">{link.name}</div>
-                        {!link.enabled && <span className="text-gray-600 text-xs">desativado</span>}
+                        {!link.enabled && <span className="text-gray-600 text-xs">{t('links.disabled')}</span>}
                       </td>
                       <td className="py-3 pr-4 text-gray-400 font-mono">{formatInterfaceLabel(link.interface)}</td>
                       <td className="py-3 pr-4">
@@ -424,8 +426,8 @@ export default function Links() {
                       <td className="py-3 pr-4"><StatusBadge status={link.status} /></td>
                       <td className="py-3">
                         <div className="flex gap-2">
-                          <IconButton icon={Pencil} onClick={() => openEdit(link)} label="Editar link" />
-                          <IconButton icon={Trash2} onClick={() => requestDelete(link.id, link.name)} label="Excluir link" variant="danger" />
+                          <IconButton icon={Pencil} onClick={() => openEdit(link)} label={t('links.action.edit')} />
+                          <IconButton icon={Trash2} onClick={() => requestDelete(link.id, link.name)} label={t('links.action.delete')} variant="danger" />
                         </div>
                       </td>
                     </tr>
@@ -441,65 +443,65 @@ export default function Links() {
       <Modal
         open={showModal}
         onClose={() => setShowModal(false)}
-        title={isEditing ? 'Editar Link WAN' : 'Novo Link WAN'}
+        title={isEditing ? t('links.modal.edit') : t('links.modal.new')}
         size="md"
         className="bg-gray-900 border border-gray-800 rounded-xl"
       >
         <form onSubmit={handleSave} className="p-6 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="label">Nome *</label>
+                  <label className="label">{t('links.form.name')}</label>
                   <input className="input w-full" value={editLink.name || ''} onChange={e => setEditLink({...editLink, name: e.target.value})} required />
                 </div>
                 <div>
-                  <label className="label">Interface *</label>
+                  <label className="label">{t('links.form.interface')}</label>
                   <select
                     className="input w-full"
                     value={editLink.interface || ''}
                     onChange={e => setEditLink({...editLink, interface: e.target.value})}
                     required
                   >
-                    <option value="">Selecione interface</option>
+                    <option value="">{t('links.form.selectInterface')}</option>
                     {interfaceOptions.map((name) => (
                       <option key={name} value={name}>{formatInterfaceLabel(name)}</option>
                     ))}
                   </select>
                   {interfaceOptions.length === 0 && (
-                    <p className="text-xs text-gray-500 mt-1">Nenhuma interface detectada. Verifique permissões do host e atualize.</p>
+                    <p className="text-xs text-gray-500 mt-1">{t('links.form.noInterfaces')}</p>
                   )}
                 </div>
                 <div>
-                  <label className="label">Endereço IP</label>
+                  <label className="label">{t('links.form.ip')}</label>
                   <input className="input w-full" placeholder="192.168.1.1" value={editLink.ip_address || ''} onChange={e => setEditLink({...editLink, ip_address: e.target.value})} />
                 </div>
                 <div>
-                  <label className="label">Gateway</label>
+                  <label className="label">{t('links.form.gateway')}</label>
                   <input className="input w-full" placeholder="192.168.1.254" value={editLink.gateway || ''} onChange={e => setEditLink({...editLink, gateway: e.target.value})} />
                 </div>
                 <div>
-                  <label className="label">Peso (prioridade)</label>
+                  <label className="label">{t('links.form.weight')}</label>
                   <input type="number" className="input w-full" min={1} max={1000} value={editLink.weight || 100} onChange={e => setEditLink({...editLink, weight: +e.target.value})} />
                 </div>
                 <div>
-                  <label className="label">DNS de teste</label>
+                  <label className="label">{t('links.form.dnsTest')}</label>
                   <input className="input w-full" placeholder="8.8.8.8" value={editLink.dns_test || ''} onChange={e => setEditLink({...editLink, dns_test: e.target.value})} />
                 </div>
               </div>
               <div>
-                <label className="label">Hosts de monitoramento (separados por vírgula)</label>
+                <label className="label">{t('links.form.monitorHosts')}</label>
                 <input className="input w-full" placeholder="1.1.1.1,8.8.8.8" value={editLink.monitor_hosts || ''} onChange={e => setEditLink({...editLink, monitor_hosts: e.target.value})} />
               </div>
               <div className="flex items-center gap-2">
                 <input type="checkbox" id="enabled" checked={editLink.enabled ?? true} onChange={e => setEditLink({...editLink, enabled: e.target.checked})} className="w-4 h-4" />
-                <label htmlFor="enabled" className="text-gray-400 text-sm">Link habilitado</label>
+                <label htmlFor="enabled" className="text-gray-400 text-sm">{t('links.form.enabled')}</label>
               </div>
               {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{error}</div>}
               <div className="flex gap-3 pt-2">
                 <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50">
-                  {saving ? 'Salvando...' : 'Salvar'}
+                  {saving ? t('links.btn.saving') : t('links.btn.save')}
                 </button>
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
-                  Cancelar
+                  {t('links.btn.cancel')}
                 </button>
               </div>
         </form>
@@ -514,9 +516,9 @@ export default function Links() {
           <div>
             <span className="text-white font-semibold flex items-center gap-2">
               <Network className="w-5 h-5 text-blue-400" />
-              Assistente Mágico de 2 WAN
+              {t('links.wizard.title')}
             </span>
-            <p className="text-xs text-gray-400 mt-1">Configura failover rápido ou balanceamento por marcação de pacotes.</p>
+            <p className="text-xs text-gray-400 mt-1">{t('links.wizard.subtitle')}</p>
           </div>
         }
       >
@@ -528,30 +530,30 @@ export default function Links() {
                   onClick={() => setWizardMode('failover')}
                   className={`rounded-xl border p-4 text-left transition ${wizardMode === 'failover' ? 'border-blue-400 bg-blue-500/10' : 'border-gray-700 bg-gray-900/60 hover:border-gray-500'}`}
                 >
-                  <p className="text-white font-medium">Failover inteligente</p>
-                  <p className="text-xs text-gray-400 mt-1">Todo tráfego usa a WAN principal e troca para a secundária em falha.</p>
+                  <p className="text-white font-medium">{t('links.wizard.mode.failover')}</p>
+                  <p className="text-xs text-gray-400 mt-1">{t('links.wizard.mode.failoverDesc')}</p>
                 </button>
                 <button
                   onClick={() => setWizardMode('balance')}
                   className={`rounded-xl border p-4 text-left transition ${wizardMode === 'balance' ? 'border-blue-400 bg-blue-500/10' : 'border-gray-700 bg-gray-900/60 hover:border-gray-500'}`}
                 >
-                  <p className="text-white font-medium">Balanceamento por marca</p>
-                  <p className="text-xs text-gray-400 mt-1">Mangle + fwmark + ip rule para dividir clientes entre 2 links.</p>
+                  <p className="text-white font-medium">{t('links.wizard.mode.balance')}</p>
+                  <p className="text-xs text-gray-400 mt-1">{t('links.wizard.mode.balanceDesc')}</p>
                 </button>
               </div>
 
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="label">WAN primária *</label>
+                  <label className="label">{t('links.wizard.primary')}</label>
                   <select className="input w-full" value={wizardPrimary} onChange={(e) => setWizardPrimary(e.target.value)}>
-                    <option value="">Selecione</option>
+                    <option value="">{t('links.wizard.select')}</option>
                     {interfaceOptions.map((name) => <option key={`p-${name}`} value={name}>{formatInterfaceLabel(name)}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="label">WAN secundária *</label>
+                  <label className="label">{t('links.wizard.secondary')}</label>
                   <select className="input w-full" value={wizardSecondary} onChange={(e) => setWizardSecondary(e.target.value)}>
-                    <option value="">Selecione</option>
+                    <option value="">{t('links.wizard.select')}</option>
                     {interfaceOptions.map((name) => <option key={`s-${name}`} value={name}>{formatInterfaceLabel(name)}</option>)}
                   </select>
                 </div>
@@ -560,7 +562,7 @@ export default function Links() {
               {wizardMode === 'balance' && (
                 <>
                   <div>
-                    <label className="label">Sub-rede LAN dos clientes *</label>
+                    <label className="label">{t('links.wizard.lan')}</label>
                     <input
                       className="input w-full"
                       placeholder="192.168.0.0/24"
@@ -570,7 +572,7 @@ export default function Links() {
                   </div>
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="label">Peso WAN primária (%)</label>
+                      <label className="label">{t('links.wizard.primaryWeight')}</label>
                       <input
                         type="number"
                         min={1}
@@ -585,7 +587,7 @@ export default function Links() {
                       />
                     </div>
                     <div>
-                      <label className="label">Peso WAN secundária (%)</label>
+                      <label className="label">{t('links.wizard.secondaryWeight')}</label>
                       <input
                         type="number"
                         min={1}
@@ -600,7 +602,7 @@ export default function Links() {
                       />
                     </div>
                   </div>
-                  <p className="text-xs text-gray-500 -mt-1">Os pesos são complementares e devem somar 100%.</p>
+                  <p className="text-xs text-gray-500 -mt-1">{t('links.wizard.weightsNote')}</p>
                 </>
               )}
               </div>
@@ -609,52 +611,52 @@ export default function Links() {
               {wizardConfirm && (
                 <div className="space-y-4">
                   <div className="px-4 py-3 rounded-lg text-sm bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                    <p className="font-medium">Revise antes de aplicar</p>
+                    <p className="font-medium">{t('links.wizard.review.title')}</p>
                     <p className="mt-1 text-amber-300/90">
-                      As alterações abaixo serão aplicadas ao roteamento e firewall do host. A conectividade pode cair por alguns instantes durante a aplicação.
+                      {t('links.wizard.review.warn')}
                     </p>
                   </div>
 
                   <div className="rounded-xl border border-gray-700 bg-gray-900/60 p-4 space-y-3 text-sm">
                     <p className="text-gray-400">
-                      Modo: <span className="text-white font-medium">{wizardMode === 'failover' ? 'Failover inteligente' : 'Balanceamento por marca'}</span>
+                      {t('links.wizard.review.mode')} <span className="text-white font-medium">{wizardMode === 'failover' ? t('links.wizard.mode.failover') : t('links.wizard.mode.balance')}</span>
                     </p>
                     <div>
-                      <p className="text-gray-500 mb-1 font-medium">Links WAN que serão criados/atualizados:</p>
+                      <p className="text-gray-500 mb-1 font-medium">{t('links.wizard.review.linksTitle')}</p>
                       <ul className="list-disc list-inside text-gray-300 space-y-0.5">
-                        <li>WAN Primária em <span className="font-mono text-white">{formatInterfaceLabel(wizardPrimary)}</span>{wizardMode === 'balance' && ` (peso ${wizardPrimaryWeight}%)`}</li>
-                        <li>WAN Secundária em <span className="font-mono text-white">{formatInterfaceLabel(wizardSecondary)}</span>{wizardMode === 'balance' && ` (peso ${wizardSecondaryWeight}%)`}</li>
+                        <li>{t('links.wizard.review.primaryOn')} <span className="font-mono text-white">{formatInterfaceLabel(wizardPrimary)}</span>{wizardMode === 'balance' && t('links.wizard.review.weightSuffix', { w: wizardPrimaryWeight })}</li>
+                        <li>{t('links.wizard.review.secondaryOn')} <span className="font-mono text-white">{formatInterfaceLabel(wizardSecondary)}</span>{wizardMode === 'balance' && t('links.wizard.review.weightSuffix', { w: wizardSecondaryWeight })}</li>
                       </ul>
                     </div>
                     <div>
-                      <p className="text-gray-500 mb-1 font-medium">Rotas padrão por tabela:</p>
+                      <p className="text-gray-500 mb-1 font-medium">{t('links.wizard.review.routesTitle')}</p>
                       <ul className="list-disc list-inside text-gray-300 space-y-0.5">
-                        <li>Rota <span className="font-mono">default</span> via gateway da primária na tabela própria do link.</li>
-                        <li>Rota <span className="font-mono">default</span> via gateway da secundária na tabela própria do link.</li>
+                        <li>{t('links.wizard.review.routePre')} <span className="font-mono">default</span> {t('links.wizard.review.routePrimaryPost')}</li>
+                        <li>{t('links.wizard.review.routePre')} <span className="font-mono">default</span> {t('links.wizard.review.routeSecondaryPost')}</li>
                       </ul>
                     </div>
                     {wizardMode === 'failover' ? (
                       <div>
-                        <p className="text-gray-500 mb-1 font-medium">Regras ip rule:</p>
+                        <p className="text-gray-500 mb-1 font-medium">{t('links.wizard.review.ipRuleTitle')}</p>
                         <ul className="list-disc list-inside text-gray-300 space-y-0.5">
-                          <li><span className="font-mono">from all</span> → tabela da primária (prioridade 100).</li>
-                          <li><span className="font-mono">from all</span> → tabela da secundária (prioridade 200).</li>
+                          <li><span className="font-mono">from all</span> {t('links.wizard.review.fromAllPrimary')}</li>
+                          <li><span className="font-mono">from all</span> {t('links.wizard.review.fromAllSecondary')}</li>
                         </ul>
                       </div>
                     ) : (
                       <>
                         <div>
-                          <p className="text-gray-500 mb-1 font-medium">Regras mangle MARK (PREROUTING) para a LAN <span className="font-mono">{wizardLan.trim()}</span>:</p>
+                          <p className="text-gray-500 mb-1 font-medium">{t('links.wizard.review.mangleTitle')} <span className="font-mono">{wizardLan.trim()}</span>:</p>
                           <ul className="list-disc list-inside text-gray-300 space-y-0.5">
-                            <li>MARK <span className="font-mono">0x1</span> aleatório com probabilidade {(wizardPrimaryWeight / 100).toFixed(2)}.</li>
-                            <li>MARK <span className="font-mono">0x2</span> para o tráfego restante.</li>
+                            <li>MARK <span className="font-mono">0x1</span> {t('links.wizard.review.markRandom', { p: (wizardPrimaryWeight / 100).toFixed(2) })}</li>
+                            <li>MARK <span className="font-mono">0x2</span> {t('links.wizard.review.markRest')}</li>
                           </ul>
                         </div>
                         <div>
-                          <p className="text-gray-500 mb-1 font-medium">Regras ip rule por fwmark:</p>
+                          <p className="text-gray-500 mb-1 font-medium">{t('links.wizard.review.fwmarkTitle')}</p>
                           <ul className="list-disc list-inside text-gray-300 space-y-0.5">
-                            <li><span className="font-mono">fwmark 0x1</span> → tabela da primária (prioridade 110).</li>
-                            <li><span className="font-mono">fwmark 0x2</span> → tabela da secundária (prioridade 120).</li>
+                            <li><span className="font-mono">fwmark 0x1</span> {t('links.wizard.review.fwmarkPrimary')}</li>
+                            <li><span className="font-mono">fwmark 0x2</span> {t('links.wizard.review.fwmarkSecondary')}</li>
                           </ul>
                         </div>
                       </>
@@ -669,19 +671,19 @@ export default function Links() {
                 {!wizardConfirm ? (
                   <>
                     <button onClick={reviewWizard} disabled={wizardLoading} className="btn-primary flex-1 disabled:opacity-50">
-                      Revisar alterações
+                      {t('links.wizard.btn.review')}
                     </button>
                     <button onClick={() => setShowWizard(false)} type="button" className="btn-secondary flex-1">
-                      Fechar
+                      {t('links.wizard.btn.close')}
                     </button>
                   </>
                 ) : (
                   <>
                     <button onClick={applyDualWanWizard} disabled={wizardLoading} className="btn-primary flex-1 disabled:opacity-50">
-                      {wizardLoading ? 'Aplicando...' : 'Confirmar e aplicar'}
+                      {wizardLoading ? t('links.wizard.btn.applying') : t('links.wizard.btn.apply')}
                     </button>
                     <button onClick={() => setWizardConfirm(false)} disabled={wizardLoading} type="button" className="btn-secondary flex-1 disabled:opacity-50">
-                      Voltar
+                      {t('links.wizard.btn.back')}
                     </button>
                   </>
                 )}
@@ -693,22 +695,22 @@ export default function Links() {
       <Modal
         open={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
-        title="Excluir Link WAN"
+        title={t('links.delete.title')}
         size="sm"
         className="bg-gray-900 border border-gray-800 rounded-xl"
       >
         {deleteTarget && (
         <div className="p-6 space-y-4">
               <p className="text-gray-400 text-sm">
-                Tem certeza que deseja excluir o link <span className="text-white font-medium">"{deleteTarget.name}"</span>? Esta ação não pode ser desfeita.
+                {t('links.delete.confirmPre')} <span className="text-white font-medium">"{deleteTarget.name}"</span>{t('links.delete.confirmPost')}
               </p>
               {deleteError && <div className="px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">{deleteError}</div>}
               <div className="flex gap-3 pt-2">
                 <button onClick={confirmDelete} disabled={deleting} className="btn-primary flex-1 disabled:opacity-50 bg-red-600 hover:bg-red-500">
-                  {deleting ? 'Excluindo...' : 'Excluir'}
+                  {deleting ? t('links.delete.deleting') : t('links.delete.confirm')}
                 </button>
                 <button onClick={() => setDeleteTarget(null)} disabled={deleting} type="button" className="btn-secondary flex-1 disabled:opacity-50">
-                  Cancelar
+                  {t('links.btn.cancel')}
                 </button>
               </div>
         </div>

@@ -1,4 +1,5 @@
 import WidgetCard, { WidgetNote, usePolled } from './WidgetCard';
+import { useI18n } from '../../i18n';
 import type { HostTraffic, NetHost } from '../../types';
 
 function formatBytes(bytes: number): string {
@@ -18,6 +19,7 @@ function formatBytes(bytes: number): string {
  * parece um contador do dia e não é.
  */
 export default function TopTalkersWidget() {
+  const { t: traduz } = useI18n();
   const { data: talkers, state } = usePolled<HostTraffic[]>('/api/hosts/traffic');
   const { data: hosts } = usePolled<NetHost[]>('/api/hosts', 60000);
 
@@ -25,14 +27,14 @@ export default function TopTalkersWidget() {
   const maior = lista.length > 0 ? lista[0].rx_bytes + lista[0].tx_bytes || 1 : 1;
 
   return (
-    <WidgetCard title="Quem está consumindo">
-      {state === 'loading' && <WidgetNote>Carregando…</WidgetNote>}
-      {state === 'error' && <WidgetNote>Não foi possível ler o consumo agora.</WidgetNote>}
-      {state === 'ok' && lista.length === 0 && <WidgetNote>Nenhum fluxo ativo no momento.</WidgetNote>}
+    <WidgetCard title={traduz('wid.talkers.title')}>
+      {state === 'loading' && <WidgetNote>{traduz('wid.loading')}</WidgetNote>}
+      {state === 'error' && <WidgetNote>{traduz('wid.talkers.error')}</WidgetNote>}
+      {state === 'ok' && lista.length === 0 && <WidgetNote>{traduz('wid.talkers.empty')}</WidgetNote>}
 
       {lista.length > 0 && (
         <>
-          <p className="mb-2 text-xs text-gray-500">Fluxos ativos agora — não é total acumulado.</p>
+          <p className="mb-2 text-xs text-gray-500">{traduz('wid.talkers.note')}</p>
           <div className="space-y-2">
             {lista.map((t) => {
               const host = (hosts ?? []).find((h) => h.ip === t.ip);

@@ -1,0 +1,408 @@
+# Área: monitoramento (Monitoring, Alertas, Logs, Tráfego, saúde do sistema).
+#
+# Todas as chaves desta área começam com "mon.". Termos que o admin encontra no
+# sistema — RX, TX, SMART, CIDR, systemctl, /etc/nftables.conf, nomes de
+# interface — não são traduzidos de propósito.
+
+# ─── Monitoring (página) ──────────────────────────────────────────────────────
+mon.title:
+  pt: "Monitoramento"
+  en: "Monitoring"
+mon.subtitle:
+  pt: "Métricas em tempo real"
+  en: "Real-time metrics"
+mon.autoRefresh.10s:
+  pt: "Atualização automática a cada 10s"
+  en: "Auto-refresh every 10s"
+mon.updatedAgo:
+  pt: " · atualizado há {s}s"
+  en: " · updated {s}s ago"
+mon.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
+mon.error.load:
+  pt: "Falha ao carregar dados do firewall. Exibindo últimos dados conhecidos."
+  en: "Failed to load data from the firewall. Showing the last known values."
+mon.error.retry:
+  pt: "Tentar novamente"
+  en: "Try again"
+mon.loading:
+  pt: "Carregando..."
+  en: "Loading..."
+
+mon.link.interface:
+  pt: "Interface"
+  en: "Interface"
+mon.link.latency:
+  pt: "Latência"
+  en: "Latency"
+mon.link.packetLoss:
+  pt: "Perda de pacotes"
+  en: "Packet loss"
+mon.link.lastCheck:
+  pt: "Última verificação"
+  en: "Last check"
+
+mon.chart.latency.title:
+  pt: "Latência por Link (ms)"
+  en: "Latency per Link (ms)"
+mon.chart.cpuMem.title:
+  pt: "CPU e Memória (%)"
+  en: "CPU and Memory (%)"
+mon.chart.series.memory:
+  pt: "Memória"
+  en: "Memory"
+mon.chart.collecting:
+  pt: "Coletando dados…"
+  en: "Collecting data…"
+
+mon.timeline.title:
+  pt: "Linha do tempo"
+  en: "Timeline"
+mon.timeline.loading:
+  pt: "Carregando linha do tempo…"
+  en: "Loading timeline…"
+mon.timeline.empty:
+  pt: "Sem dados no período selecionado."
+  en: "No data in the selected period."
+mon.timeline.linkCaption:
+  pt: "{link} — latência (ms), faixa min–max · arraste na régua abaixo do gráfico pra dar zoom"
+  en: "{link} — latency (ms), min–max band · drag the slider below the chart to zoom in"
+mon.timeline.episodes:
+  pt: "Episódios no período"
+  en: "Episodes in the period"
+mon.timeline.ongoing:
+  pt: " (em curso)"
+  en: " (ongoing)"
+mon.tooltip.avg:
+  pt: "média"
+  en: "avg"
+mon.tooltip.range:
+  pt: "faixa {min}–{max} ms"
+  en: "range {min}–{max} ms"
+
+mon.iface.panel.title:
+  pt: "Tráfego por Interface"
+  en: "Traffic per Interface"
+mon.iface.rxTotal:
+  pt: "RX total"
+  en: "RX total"
+mon.iface.txTotal:
+  pt: "TX total"
+  en: "TX total"
+mon.iface.rxPackets:
+  pt: "RX Pacotes"
+  en: "RX Packets"
+mon.iface.txPackets:
+  pt: "TX Pacotes"
+  en: "TX Packets"
+mon.iface.errors:
+  pt: "Erros"
+  en: "Errors"
+
+# ─── Alertas ──────────────────────────────────────────────────────────────────
+mon.alerts.title:
+  pt: "Alertas"
+  en: "Alerts"
+mon.alerts.count.unresolved.one:
+  pt: "{n} não resolvido"
+  en: "{n} unresolved"
+mon.alerts.count.unresolved.many:
+  pt: "{n} não resolvidos"
+  en: "{n} unresolved"
+mon.alerts.count.all.one:
+  pt: "{n} alerta"
+  en: "{n} alert"
+mon.alerts.count.all.many:
+  pt: "{n} alertas"
+  en: "{n} alerts"
+mon.alerts.autoRefresh.30s:
+  pt: "Atualização automática a cada 30s"
+  en: "Auto-refresh every 30s"
+mon.alerts.filter.unresolved:
+  pt: "Não resolvidos"
+  en: "Unresolved"
+mon.alerts.filter.all:
+  pt: "Todos"
+  en: "All"
+mon.alerts.loadFail.title:
+  pt: "Não foi possível carregar os alertas"
+  en: "Could not load the alerts"
+mon.alerts.loadFail.hint:
+  pt: "Verifique a conexão com o firewall e tente novamente"
+  en: "Check the connection to the firewall and try again"
+mon.alerts.empty.title:
+  pt: "Sem alertas"
+  en: "No alerts"
+mon.alerts.empty.hint:
+  pt: "O sistema está operando normalmente"
+  en: "The system is operating normally"
+mon.alerts.resolvedAt:
+  pt: "Resolvido em {when}"
+  en: "Resolved at {when}"
+mon.alerts.timeline.title:
+  pt: "Ver linha do tempo"
+  en: "View timeline"
+mon.alerts.timeline.aria:
+  pt: "Ver linha do tempo no momento do alerta"
+  en: "View the timeline at the moment of the alert"
+mon.alerts.resolve.title:
+  pt: "Marcar como resolvido"
+  en: "Mark as resolved"
+mon.alerts.resolve.aria:
+  pt: "Marcar alerta como resolvido"
+  en: "Mark alert as resolved"
+
+# ─── Logs de auditoria ────────────────────────────────────────────────────────
+mon.logs.title:
+  pt: "Logs de Auditoria"
+  en: "Audit Logs"
+mon.logs.count.one:
+  pt: "{n} entrada"
+  en: "{n} entry"
+mon.logs.count.many:
+  pt: "{n} entradas"
+  en: "{n} entries"
+mon.logs.count.one.filtered:
+  pt: "{n} entrada (filtrada)"
+  en: "{n} entry (filtered)"
+mon.logs.count.many.filtered:
+  pt: "{n} entradas (filtradas)"
+  en: "{n} entries (filtered)"
+mon.logs.action.all:
+  pt: "Todas as ações"
+  en: "All actions"
+mon.logs.search.placeholder:
+  pt: "Buscar (usuário, recurso, detalhes)…"
+  en: "Search (user, resource, details)…"
+mon.logs.search.clear:
+  pt: "Limpar busca"
+  en: "Clear search"
+mon.logs.search.submit:
+  pt: "Buscar"
+  en: "Search"
+mon.logs.loadFail.title:
+  pt: "Não foi possível carregar os logs"
+  en: "Could not load the logs"
+mon.logs.loadFail.hint:
+  pt: "Verifique a conexão com o firewall e tente novamente"
+  en: "Check the connection to the firewall and try again"
+mon.logs.empty:
+  pt: "Nenhum log disponível"
+  en: "No logs available"
+mon.logs.col.datetime:
+  pt: "Data/Hora"
+  en: "Date/Time"
+mon.logs.col.user:
+  pt: "Usuário"
+  en: "User"
+mon.logs.col.action:
+  pt: "Ação"
+  en: "Action"
+mon.logs.col.resource:
+  pt: "Recurso"
+  en: "Resource"
+mon.logs.col.details:
+  pt: "Detalhes"
+  en: "Details"
+mon.logs.limit:
+  pt: "Mostrando as {n} entradas mais recentes"
+  en: "Showing the {n} most recent entries"
+
+# ─── Tráfego (página) ─────────────────────────────────────────────────────────
+mon.traffic.title:
+  pt: "Tráfego"
+  en: "Traffic"
+mon.traffic.unit.prefix:
+  pt: "Taxa em "
+  en: "Rate in "
+mon.traffic.unit.rest:
+  pt: " — bits, a unidade do link, para bater com o plano contratado. O volume acumulado continua em bytes."
+  en: " — bits, the unit links are sold in, so it matches the contracted plan. Accumulated volume stays in bytes."
+mon.traffic.window.aria:
+  pt: "Janela de tempo"
+  en: "Time window"
+mon.traffic.window.title:
+  pt: "Últimos {label}, em passo de {step}"
+  en: "Last {label}, at a {step} step"
+# Os rótulos das janelas moram em lib/series.ts como dado, junto do range e do
+# passo; a tradução tem de acontecer na tela, porque "30 dias"/"1 ano" são texto
+# e "30m"/"12h" são id. As unidades curtas ficam iguais nos dois idiomas de
+# propósito — min/h são as mesmas abreviações em inglês.
+mon.traffic.window.label.30m:
+  pt: "30 min"
+  en: "30 min"
+mon.traffic.window.label.12h:
+  pt: "12 h"
+  en: "12 h"
+mon.traffic.window.label.30d:
+  pt: "30 dias"
+  en: "30 days"
+mon.traffic.window.label.1y:
+  pt: "1 ano"
+  en: "1 year"
+mon.traffic.step.prefix:
+  pt: "passo de "
+  en: "step of "
+mon.traffic.error:
+  pt: "Falha ao ler o estado do sistema. Os números podem estar desatualizados."
+  en: "Failed to read the system state. The numbers may be out of date."
+mon.traffic.noIfaces:
+  pt: "Nenhuma interface detectada."
+  en: "No interface detected."
+mon.traffic.peak:
+  pt: "pico"
+  en: "peak"
+mon.traffic.total:
+  pt: "total"
+  en: "total"
+mon.traffic.noSample.prefix:
+  pt: "Sem amostra nesta janela — "
+  en: "No sample in this window — "
+mon.traffic.noSample.suffix:
+  pt: " é não medido, não zero."
+  en: " means not measured, not zero."
+
+# ─── Gráfico de tráfego ───────────────────────────────────────────────────────
+mon.chart.traffic.titlePrefix:
+  pt: "Tráfego · "
+  en: "Traffic · "
+mon.chart.traffic.hint:
+  pt: "Descendo para cima, subindo para baixo. Cada coluna guarda o pico do intervalo, não a média."
+  en: "Download above the axis, upload below. Each column holds the interval's peak, not its average."
+mon.chart.peak:
+  pt: "pico"
+  en: "peak"
+mon.chart.scale.aria:
+  pt: "Escala do eixo"
+  en: "Axis scale"
+mon.chart.scale.linear:
+  pt: "Linear"
+  en: "Linear"
+mon.chart.scale.linear.title:
+  pt: "Escala linear: diz a verdade sobre magnitude"
+  en: "Linear scale: tells the truth about magnitude"
+mon.chart.scale.log:
+  pt: "Log"
+  en: "Log"
+mon.chart.scale.log.title:
+  pt: "Escala log: revela a forma do tráfego pequeno sem esconder o pico"
+  en: "Log scale: reveals the shape of small traffic without hiding the peak"
+mon.chart.aria.linear:
+  pt: "Gráfico de tráfego de {iface}, escala linear"
+  en: "Traffic chart for {iface}, linear scale"
+mon.chart.aria.log:
+  pt: "Gráfico de tráfego de {iface}, escala logarítmica"
+  en: "Traffic chart for {iface}, logarithmic scale"
+mon.chart.loadingHistory:
+  pt: "Carregando histórico..."
+  en: "Loading history..."
+mon.chart.noSamples:
+  pt: "Sem amostras nesta janela"
+  en: "No samples in this window"
+mon.chart.noSamples.suffix:
+  pt: " quer dizer não medido. Zero seria uma medição."
+  en: " means not measured. Zero would be a measurement."
+mon.chart.legend.rx:
+  pt: "RX (descendo)"
+  en: "RX (download)"
+mon.chart.legend.tx:
+  pt: "TX (subindo)"
+  en: "TX (upload)"
+mon.chart.coverage:
+  pt: "{n} de {total} colunas com amostra"
+  en: "{n} of {total} columns with a sample"
+
+# ─── Saúde do sistema ─────────────────────────────────────────────────────────
+mon.health.title:
+  pt: "Saúde do sistema"
+  en: "System health"
+mon.health.empty:
+  pt: "Nenhum vigia configurado ainda."
+  en: "No watcher configured yet."
+mon.health.label.nftables:
+  pt: "Firewall"
+  en: "Firewall"
+mon.health.label.dhcp:
+  pt: "DHCP"
+  en: "DHCP"
+mon.health.label.dns:
+  pt: "DNS"
+  en: "DNS"
+mon.health.label.ntpSync:
+  pt: "Sincronização de horário"
+  en: "Time sync"
+mon.health.label.smart:
+  pt: "Disco (SMART)"
+  en: "Disk (SMART)"
+mon.health.label.bootTime:
+  pt: "Tempo de boot"
+  en: "Boot time"
+mon.health.label.journalIntegrity:
+  pt: "Integridade dos logs"
+  en: "Log integrity"
+mon.health.label.firewallNat:
+  pt: "Regra de NAT"
+  en: "NAT rule"
+mon.health.label.firewallBootPersist:
+  pt: "Regras no próximo boot"
+  en: "Rules on next boot"
+mon.health.label.wanInterface:
+  pt: "Interfaces WAN"
+  en: "WAN interfaces"
+mon.health.label.dnsResolver:
+  pt: "Resolver DNS"
+  en: "DNS resolver"
+mon.health.label.systemUpdates:
+  pt: "Atualizações do sistema"
+  en: "System updates"
+mon.health.up:
+  pt: "no ar"
+  en: "up"
+mon.health.down:
+  pt: "fora do ar"
+  en: "down"
+mon.health.hint.firewallBootPersist:
+  pt: "Devolva a permissão de escrita em /etc/nftables.conf e reinicie o serviço: systemctl restart linkguard-fw. Aplicar outra regra não resolve."
+  en: "Restore write permission on /etc/nftables.conf and restart the service: systemctl restart linkguard-fw. Applying another rule will not clear this."
+mon.health.updates.pending:
+  pt: "{n} atualização(ões) pendente(s)"
+  en: "{n} pending update(s)"
+mon.health.updates.security:
+  pt: " — {n} de segurança"
+  en: " — {n} security"
+
+# ─── Configuração da vigilância ───────────────────────────────────────────────
+mon.watch.title:
+  pt: "Vigilância"
+  en: "Watchdog"
+mon.watch.subtitle:
+  pt: "Avisa no seu canal de notificação quando algo cai (e quando volta)."
+  en: "Notifies your notification channel when something goes down (and when it comes back)."
+mon.watch.enabled:
+  pt: "Me avise de qualquer queda"
+  en: "Notify me of any outage"
+mon.watch.services:
+  pt: "Serviços vigiados (separados por vírgula)"
+  en: "Watched services (comma-separated)"
+mon.watch.diskThreshold:
+  pt: "Alerta de disco acima de (%)"
+  en: "Alert when disk usage is above (%)"
+mon.watch.smartRealloc:
+  pt: "Alerta de setores realocados (SMART) acima de"
+  en: "Alert when reallocated sectors (SMART) are above"
+mon.watch.smartTemp:
+  pt: "Alerta de temperatura do disco acima de (°C)"
+  en: "Alert when disk temperature is above (°C)"
+mon.watch.bootTime:
+  pt: "Alerta de boot lento acima de (segundos)"
+  en: "Alert when boot time is above (seconds)"
+mon.watch.journalInterval:
+  pt: "Verificar integridade dos logs a cada (dias)"
+  en: "Check log integrity every (days)"
+mon.watch.saved:
+  pt: "Salvo."
+  en: "Saved."
+mon.watch.saveError:
+  pt: "Erro ao salvar."
+  en: "Could not save."

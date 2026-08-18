@@ -11,6 +11,7 @@ import {
   seriesMax,
 } from '../lib/series';
 import type { Point, ScaleMode } from '../lib/series';
+import { useI18n } from '../i18n';
 
 // SVG à mão, de propósito: nenhuma dependência nova de gráfico. Num appliance
 // de segurança uma biblioteca é superfície de cadeia de suprimentos por
@@ -83,6 +84,7 @@ export default function TrafficChart({
   height = 300,
   loading = false,
 }: TrafficChartProps) {
+  const { t } = useI18n();
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
   const [hover, setHover] = useState<Hover | null>(null);
@@ -162,49 +164,49 @@ export default function TrafficChart({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-white font-semibold truncate" title={iface}>
-            Tráfego · <span className="font-mono">{iface}</span>
+            {t('mon.chart.traffic.titlePrefix')}<span className="font-mono">{iface}</span>
           </h2>
           <p className="text-gray-500 text-xs mt-0.5">
-            Descendo para cima, subindo para baixo. Cada coluna guarda o pico do intervalo, não a média.
+            {t('mon.chart.traffic.hint')}
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           <div className="hidden sm:flex items-center gap-3 font-mono text-[11px]">
             <span className="text-cyan-300 inline-flex items-center gap-1">
-              <ArrowDownToLine className="w-3 h-3" /> pico {formatBps(picoRx)}
+              <ArrowDownToLine className="w-3 h-3" /> {t('mon.chart.peak')} {formatBps(picoRx)}
             </span>
             <span className="text-emerald-300 inline-flex items-center gap-1">
-              <ArrowUpToLine className="w-3 h-3" /> pico {formatBps(picoTx)}
+              <ArrowUpToLine className="w-3 h-3" /> {t('mon.chart.peak')} {formatBps(picoTx)}
             </span>
           </div>
 
           <div
             className="flex items-center rounded-lg border border-gray-700 bg-gray-900/70 p-1 text-xs"
             role="group"
-            aria-label="Escala do eixo"
+            aria-label={t('mon.chart.scale.aria')}
           >
             <button
               type="button"
               onClick={() => onModeChange('linear')}
               aria-pressed={mode === 'linear'}
-              title="Escala linear: diz a verdade sobre magnitude"
+              title={t('mon.chart.scale.linear.title')}
               className={`px-2 py-1 rounded ${
                 mode === 'linear' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'
               }`}
             >
-              Linear
+              {t('mon.chart.scale.linear')}
             </button>
             <button
               type="button"
               onClick={() => onModeChange('log')}
               aria-pressed={mode === 'log'}
-              title="Escala log: revela a forma do tráfego pequeno sem esconder o pico"
+              title={t('mon.chart.scale.log.title')}
               className={`px-2 py-1 rounded ${
                 mode === 'log' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'
               }`}
             >
-              Log
+              {t('mon.chart.scale.log')}
             </button>
           </div>
         </div>
@@ -219,7 +221,7 @@ export default function TrafficChart({
             width={width}
             height={height}
             role="img"
-            aria-label={`Gráfico de tráfego de ${iface}, escala ${mode === 'log' ? 'logarítmica' : 'linear'}`}
+            aria-label={t(mode === 'log' ? 'mon.chart.aria.log' : 'mon.chart.aria.linear', { iface })}
             onMouseMove={onMove}
             onMouseLeave={() => setHover(null)}
             className="block"
@@ -294,12 +296,12 @@ export default function TrafficChart({
         {vazio && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
             {loading ? (
-              <p className="text-gray-500 text-sm animate-pulse">Carregando histórico...</p>
+              <p className="text-gray-500 text-sm animate-pulse">{t('mon.chart.loadingHistory')}</p>
             ) : (
               <>
-                <p className="text-gray-500 text-sm">Sem amostras nesta janela</p>
+                <p className="text-gray-500 text-sm">{t('mon.chart.noSamples')}</p>
                 <p className="text-gray-600 text-xs mt-1">
-                  <span className="font-mono">—</span> quer dizer não medido. Zero seria uma medição.
+                  <span className="font-mono">—</span>{t('mon.chart.noSamples.suffix')}
                 </p>
               </>
             )}
@@ -322,16 +324,19 @@ export default function TrafficChart({
 
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500">
         <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 rounded" style={{ background: RX_COLOR }} /> RX (descendo)
+          <span className="inline-block w-3 h-0.5 rounded" style={{ background: RX_COLOR }} /> {t('mon.chart.legend.rx')}
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 rounded" style={{ background: TX_COLOR }} /> TX (subindo)
+          <span className="inline-block w-3 h-0.5 rounded" style={{ background: TX_COLOR }} /> {t('mon.chart.legend.tx')}
         </span>
-        <span className="sm:hidden font-mono text-cyan-300">pico ↓ {formatBps(picoRx)}</span>
-        <span className="sm:hidden font-mono text-emerald-300">pico ↑ {formatBps(picoTx)}</span>
+        <span className="sm:hidden font-mono text-cyan-300">{t('mon.chart.peak')} ↓ {formatBps(picoRx)}</span>
+        <span className="sm:hidden font-mono text-emerald-300">{t('mon.chart.peak')} ↑ {formatBps(picoTx)}</span>
         {!vazio && reduced.length > 0 && (
           <span className="ml-auto">
-            {reduced.filter((p) => p.rx !== null || p.tx !== null).length} de {reduced.length} colunas com amostra
+            {t('mon.chart.coverage', {
+              n: reduced.filter((p) => p.rx !== null || p.tx !== null).length,
+              total: reduced.length,
+            })}
           </span>
         )}
       </div>

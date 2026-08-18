@@ -1,0 +1,284 @@
+# Área "casca": o que envolve todas as telas — menu lateral, painel de widgets,
+# faixa do confirmar-ou-reverte, login, novidades, atualização do sistema e as
+# duas peças de UI compartilhadas (HelpTip, Combo).
+#
+# Prefixo obrigatório: shell.*
+# Termos que NÃO são traduzidos e por isso não têm chave: nomes próprios
+# (LinkGuard, GitHub, admin), siglas (SSH, PAT, DHCP), nomes de comando e de
+# serviço (linkguard-fw), o prefixo do token (ghp_) e os nomes dos idiomas no
+# seletor (Português/English), que precisam ser legíveis nos dois idiomas.
+
+# ─── Menu lateral / barra de topo ────────────────────────────────────────────
+shell.nav.openMenu:
+  pt: "Abrir menu"
+  en: "Open menu"
+shell.nav.closeMenu:
+  pt: "Fechar menu"
+  en: "Close menu"
+shell.nav.modeGroup:
+  pt: "Modo de exibição"
+  en: "Display mode"
+shell.nav.langGroup:
+  pt: "Idioma"
+  en: "Language"
+
+# ─── Aviso da conta padrão ───────────────────────────────────────────────────
+shell.defaultAccount.prefix:
+  pt: "Você está usando a conta padrão"
+  en: "You are still signed in as the default account"
+shell.defaultAccount.middle:
+  pt: ". Crie usuários nominais e troque a senha em"
+  en: ". Create named users and change the password in"
+shell.defaultAccount.dismiss:
+  pt: "Dispensar aviso"
+  en: "Dismiss warning"
+shell.defaultAccount.dismissShort:
+  pt: "Dispensar"
+  en: "Dismiss"
+
+# ─── Painel (Dashboard) ──────────────────────────────────────────────────────
+shell.dashboard.editHint:
+  pt: "Arraste para mover, use o canto para redimensionar."
+  en: "Drag to move, use the corner to resize."
+shell.dashboard.saving:
+  pt: "salvando…"
+  en: "saving…"
+shell.dashboard.saved:
+  pt: "painel salvo"
+  en: "dashboard saved"
+shell.dashboard.saveError:
+  pt: "não consegui salvar o painel"
+  en: "could not save the dashboard"
+shell.dashboard.addWidget:
+  pt: "Adicionar widget"
+  en: "Add widget"
+shell.dashboard.restoreDefault:
+  pt: "Restaurar padrão"
+  en: "Restore default"
+shell.dashboard.restoreDefault.title:
+  pt: "Volta ao painel de fábrica"
+  en: "Goes back to the factory dashboard"
+shell.dashboard.done:
+  pt: "Concluir"
+  en: "Done"
+shell.dashboard.customize:
+  pt: "Personalizar"
+  en: "Customize"
+shell.dashboard.loadFailed:
+  pt: "Não consegui ler o seu painel salvo. Isto aqui é o layout de fábrica — nada do que você montou foi perdido."
+  en: "Could not read your saved dashboard. What you see is the factory layout — nothing you built was lost."
+shell.dashboard.empty.title:
+  pt: "Seu painel está vazio."
+  en: "Your dashboard is empty."
+shell.dashboard.empty.hint:
+  pt: "Escolha os widgets que te interessam — ou volte ao painel de fábrica."
+  en: "Pick the widgets you care about — or go back to the factory dashboard."
+shell.dashboard.catalog.empty:
+  pt: "Todos os widgets disponíveis para você já estão no painel."
+  en: "Every widget available to you is already on the dashboard."
+
+# ─── Grade de widgets ────────────────────────────────────────────────────────
+shell.grid.remove:
+  pt: "Remover {widget}"
+  en: "Remove {widget}"
+shell.grid.resize:
+  pt: "Redimensionar {widget}"
+  en: "Resize {widget}"
+shell.grid.resize.title:
+  pt: "Redimensionar"
+  en: "Resize"
+
+# ─── Atualizações do sistema ─────────────────────────────────────────────────
+shell.update.title:
+  pt: "Atualizações"
+  en: "Updates"
+shell.update.check:
+  pt: "Verificar"
+  en: "Check"
+shell.update.errorPrefix:
+  pt: "Erro"
+  en: "Error"
+shell.update.error:
+  pt: "Erro: {msg}"
+  en: "Error: {msg}"
+shell.update.opFailed:
+  pt: "falha na operação"
+  en: "the operation failed"
+shell.update.token.label:
+  pt: "Token do GitHub (repositório privado):"
+  en: "GitHub token (private repository):"
+shell.update.token.configured:
+  pt: "configurado"
+  en: "configured"
+shell.update.token.missing:
+  pt: "não configurado"
+  en: "not configured"
+shell.update.token.close:
+  pt: "Fechar"
+  en: "Close"
+shell.update.token.change:
+  pt: "Alterar"
+  en: "Change"
+shell.update.token.set:
+  pt: "Configurar"
+  en: "Set up"
+shell.update.token.why:
+  pt: "O repositório é privado; sem um token de acesso (PAT read-only), a verificação retorna 404."
+  en: "The repository is private; without an access token (read-only PAT), the check comes back as a 404."
+shell.update.token.placeholder:
+  pt: "ghp_… (vazio remove)"
+  en: "ghp_… (empty removes it)"
+shell.update.token.save:
+  pt: "Salvar token"
+  en: "Save token"
+shell.update.token.saved:
+  pt: "Token salvo."
+  en: "Token saved."
+shell.update.current:
+  pt: "Versão atual: "
+  en: "Current version: "
+shell.update.latest:
+  pt: "Última: "
+  en: "Latest: "
+shell.update.available:
+  pt: "Nova versão disponível: "
+  en: "New version available: "
+shell.update.apply:
+  pt: "Atualizar agora"
+  en: "Update now"
+shell.update.notes:
+  pt: "Ver novidades"
+  en: "Release notes"
+shell.update.upToDate:
+  pt: "Você está na versão mais recente."
+  en: "You are running the latest version."
+shell.update.confirmApply:
+  pt: "Atualizar para {version}? O serviço vai reiniciar (alguns segundos de indisponibilidade)."
+  en: "Update to {version}? The service restarts, so the panel is unavailable for a few seconds."
+shell.update.restartSlow:
+  pt: "A atualização foi disparada, mas o serviço demorou a responder. Recarregue a página manualmente."
+  en: "The update was triggered, but the service took too long to answer. Reload the page by hand."
+
+# ─── Faixa do confirmar-ou-reverte (em qualquer tela) ────────────────────────
+shell.pending.unknown.text:
+  pt: "Não foi possível saber se há uma alteração de firewall aguardando confirmação. Se você acabou de aplicar uma, ela pode estar contando os 90 segundos agora —"
+  en: "Could not tell whether a firewall change is waiting for confirmation. If you have just applied one, its 90 seconds may be running right now —"
+shell.pending.unknown.link:
+  pt: "abra os grupos de regras"
+  en: "open the rule groups"
+shell.pending.reverting:
+  pt: "Uma alteração de firewall está sendo revertida ({summary}). Os grupos e as regras já voltaram ao estado anterior; falta o firewall aceitar, e o LinkGuard repete até conseguir."
+  en: "A firewall change is being reverted ({summary}). The groups and rules are already back to their previous state; the firewall still has to accept them, and LinkGuard keeps retrying until it does."
+shell.pending.seeOnFirewall:
+  pt: "Ver na tela de firewall"
+  en: "See it on the firewall screen"
+shell.pending.revertsIn:
+  pt: "reverte em"
+  en: "reverts in"
+shell.pending.waiting.text:
+  pt: "Uma alteração no tráfego destinado ao próprio firewall aguarda confirmação —"
+  en: "A change to the traffic addressed to the firewall itself is waiting for confirmation —"
+shell.pending.waiting.tail:
+  pt: ". Teste o acesso que importa (SSH, este painel) antes de confirmar."
+  en: ". Test the access that matters (SSH, this panel) before you confirm."
+shell.pending.newConnOnly.lead:
+  pt: "Este grupo vale só para conexões novas."
+  en: "This group applies to new connections only."
+shell.pending.newConnOnly.strong:
+  pt: "A sua sessão atual não é afetada"
+  en: "Your current session is not affected"
+shell.pending.newConnOnly.tail:
+  pt: " — abra uma conexão nova (outro terminal SSH, uma aba anônima) para testar de verdade antes de confirmar."
+  en: " — open a fresh connection (another SSH terminal, a private browser tab) to really test it before you confirm."
+shell.pending.error:
+  pt: "Erro: {msg}"
+  en: "Error: {msg}"
+shell.pending.opFailed:
+  pt: "falha na operação"
+  en: "the operation failed"
+shell.pending.staleRead:
+  pt: "O painel não conseguiu reler o estado desta janela agora — o que está acima é a última leitura boa. Continua tentando."
+  en: "The panel could not re-read the state of this window just now — what you see above is the last good read. It keeps retrying."
+shell.pending.confirm:
+  pt: "Confirmar acesso"
+  en: "Confirm access"
+shell.pending.revertNow:
+  pt: "Reverter agora"
+  en: "Revert now"
+
+# ─── Novidades (changelog) ───────────────────────────────────────────────────
+shell.changelog.title:
+  pt: "Novidades"
+  en: "What's new"
+shell.changelog.subtitle:
+  pt: "O que mudou em cada versão do LinkGuard."
+  en: "What changed in each LinkGuard version."
+shell.changelog.type.feat:
+  pt: "Novo"
+  en: "New"
+shell.changelog.type.fix:
+  pt: "Correção"
+  en: "Fix"
+shell.changelog.type.security:
+  pt: "Segurança"
+  en: "Security"
+shell.changelog.type.chore:
+  pt: "Interno"
+  en: "Internal"
+shell.changelog.hideInternal:
+  pt: "ocultar mudanças internas"
+  en: "hide internal changes"
+shell.changelog.showInternal:
+  pt: "mostrar {n} mudanças internas"
+  en: "show {n} internal changes"
+shell.changelog.stale:
+  pt: "Não foi possível falar com o GitHub agora; esta lista é a última que o firewall conseguiu buscar"
+  en: "Could not reach GitHub just now; this list is the last one the firewall managed to fetch"
+shell.changelog.loading:
+  pt: "Buscando as novidades…"
+  en: "Fetching the release notes…"
+shell.changelog.loadError:
+  pt: "não foi possível carregar as novidades"
+  en: "could not load the release notes"
+shell.changelog.empty:
+  pt: "Nenhuma versão publicada ainda."
+  en: "No version published yet."
+shell.changelog.viewOnGitHub:
+  pt: "ver no GitHub"
+  en: "view on GitHub"
+shell.changelog.onlyInternal:
+  pt: "Só mudanças internas nesta versão."
+  en: "Internal changes only in this version."
+shell.changelog.unparsed:
+  pt: "Esta versão não traz uma lista de mudanças no formato do painel — abra a nota no GitHub."
+  en: "This version carries no change list in the format the panel reads — open the release note on GitHub."
+
+# ─── Login ───────────────────────────────────────────────────────────────────
+shell.login.showPassword:
+  pt: "Mostrar senha"
+  en: "Show password"
+shell.login.hidePassword:
+  pt: "Ocultar senha"
+  en: "Hide password"
+shell.login.defaults:
+  pt: "Usuário padrão: admin / Senha inicial definida no setup"
+  en: "Default user: admin / Initial password set during setup"
+
+# ─── HelpTip ─────────────────────────────────────────────────────────────────
+shell.help.aria:
+  pt: "Ajuda: {title}"
+  en: "Help: {title}"
+shell.help.what:
+  pt: "O que é isso?"
+  en: "What is this?"
+
+# ─── Combo (seletor com busca) ───────────────────────────────────────────────
+shell.combo.search:
+  pt: "Buscar…"
+  en: "Search…"
+shell.combo.useFreeText:
+  pt: "usar “{text}”"
+  en: "use “{text}”"
+shell.combo.noMatch:
+  pt: "Nada encontrado."
+  en: "Nothing found."

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { HelpCircle } from 'lucide-react';
+import { useI18n } from '../i18n';
 
 /**
  * HelpTip is the in-context teaching primitive: a small "?" that opens a plain
@@ -8,6 +9,7 @@ import { HelpCircle } from 'lucide-react';
  * screen, while advanced users simply ignore it.
  */
 export default function HelpTip({ title, children }: { title: string; children: React.ReactNode }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
 
@@ -26,8 +28,8 @@ export default function HelpTip({ title, children }: { title: string; children: 
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="text-gray-500 hover:text-blue-400 transition-colors"
-        aria-label={`Ajuda: ${title}`}
-        title="O que é isso?"
+        aria-label={t('shell.help.aria', { title })}
+        title={t('shell.help.what')}
       >
         <HelpCircle className="w-4 h-4" />
       </button>

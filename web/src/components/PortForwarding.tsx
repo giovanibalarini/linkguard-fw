@@ -4,12 +4,15 @@ import { Plus, Trash2, ArrowRight, Loader2, Network, Power } from 'lucide-react'
 import client from '../api/client';
 import HelpTip from './HelpTip';
 import Panel from './ui/Panel';
-import type { PortForward } from '../types';
+import type { MsgLevel, PortForward } from '../types';
 
 interface Props {
   ifaces: string[];
   canWrite: boolean;
-  onMsg: (m: string) => void;
+  // O tom é explícito nas falhas: a faixa do pai só adivinha "vermelho" quando o
+  // texto começa com "Erro", e essa palavra deixou de ser constante quando a
+  // mensagem passou a vir do dicionário.
+  onMsg: (m: string, level?: MsgLevel) => void;
 }
 
 const emptyForm: Omit<PortForward, 'id'> = {
@@ -50,7 +53,7 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
       setForm(emptyForm);
       onMsg(t('fw.toast.pf.saved'));
     } catch (e) {
-      onMsg('Erro: ' + errMsg(e));
+      onMsg(t('fwx.error', { msg: errMsg(e, t('fwx.err.generic')) }), 'error');
     } finally { setBusy(false); }
   };
 
@@ -59,7 +62,7 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
     try {
       const { data } = await client.post<PortForward[]>('/api/portforward', { ...pf, enabled: !pf.enabled });
       setList(data ?? []);
-    } catch (e) { onMsg('Erro: ' + errMsg(e)); }
+    } catch (e) { onMsg(t('fwx.error', { msg: errMsg(e, t('fwx.err.generic')) }), 'error'); }
     finally { setBusy(false); }
   };
 
@@ -69,15 +72,13 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
       const { data } = await client.delete<PortForward[]>(`/api/portforward?id=${encodeURIComponent(id)}`);
       setList(data ?? []);
       onMsg(t('fw.toast.pf.removed'));
-    } catch (e) { onMsg('Erro: ' + errMsg(e)); }
+    } catch (e) { onMsg(t('fwx.error', { msg: errMsg(e, t('fwx.err.generic')) }), 'error'); }
     finally { setBusy(false); }
   };
 
   return (
     <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('fw.pf.title')}</span><HelpTip title={t('fw.pf.whatIs')}>
-          <>Permite que algo de <b>{t('fw.pf.outside')}</b> (internet) alcance um <b>{t('fw.pf.reachService')}</b> —
-          como um servidor, câmera ou jogo. Você diz: "conexões que chegam na porta X da minha internet
-          devem ir para o aparelho Y na porta Z". Abra só o necessário.</>
+          <>{t('fwx.pf.help.1')}<b>{t('fw.pf.outside')}</b>{t('fwx.pf.help.2')}<b>{t('fw.pf.reachService')}</b>{t('fwx.pf.help.3')}</>
         </HelpTip></span>}>
       <p className="text-gray-500 text-xs mb-4">{t('fw.pf.explain')}</p>
 
@@ -88,13 +89,13 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
           {list.map((pf) => (
             <div key={pf.id} className={`flex items-center gap-3 rounded-lg px-3 py-2 ${pf.enabled ? 'bg-gray-800/60' : 'bg-gray-800/30 opacity-60'}`}>
               {canWrite && (
-                <button onClick={() => toggle(pf)} disabled={busy} title={pf.enabled ? 'Ativo — clique para desativar' : 'Inativo — clique para ativar'}>
+                <button onClick={() => toggle(pf)} disabled={busy} title={pf.enabled ? t('fwx.pf.toggle.on') : t('fwx.pf.toggle.off')}>
                   <Power className={`w-4 h-4 ${pf.enabled ? 'text-green-400' : 'text-gray-600'}`} />
                 </button>
               )}
               <span className="text-white text-sm font-medium min-w-0 truncate">{pf.name}</span>
               <span className="inline-flex items-center gap-2 text-sm text-gray-300 font-mono ml-auto whitespace-nowrap">
-                <span className="text-gray-500">{pf.interface || 'qualquer'}</span>
+                <span className="text-gray-500">{pf.interface || t('fwx.pf.anyIface')}</span>
                 <span className="uppercase text-xs text-blue-400">{pf.proto}</span>
                 <span>:{pf.ext_port}</span>
                 <ArrowRight className="w-3.5 h-3.5 text-gray-600" />
@@ -149,11 +150,11 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
             />
             <button onClick={submit} disabled={!valid || busy}
               className="col-span-2 btn-primary text-sm flex items-center justify-center gap-1.5 disabled:opacity-50">
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Adicionar
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} {t('fwx.btn.add')}
             </button>
           </div>
           <p className="text-gray-600 text-xs">
-            Dica: reserve um IP fixo para o aparelho no DHCP antes, para o encaminhamento não "mudar de dono".
+            {t('fwx.pf.tip')}
           </p>
         </div>
       )}
@@ -161,7 +162,7 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
   );
 }
 
-function errMsg(e: unknown): string {
+function errMsg(e: unknown, generico: string): string {
   const ax = e as { response?: { data?: { error?: string } } };
-  return ax?.response?.data?.error || 'falha na operação';
+  return ax?.response?.data?.error || generico;
 }

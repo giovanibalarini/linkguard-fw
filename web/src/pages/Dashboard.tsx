@@ -204,7 +204,7 @@ export default function Dashboard() {
   if (layout === null) {
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="animate-pulse text-gray-500">Carregando…</div>
+        <div className="animate-pulse text-gray-500">{t('common.loading')}</div>
       </div>
     );
   }
@@ -215,7 +215,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-xl font-bold text-white">{t('dashboard.title')}</h1>
           <p className="mt-0.5 text-sm text-gray-500">
-            {editing ? 'Arraste para mover, use o canto para redimensionar.' : t('dashboard.subtitle')}
+            {editing ? t('shell.dashboard.editHint') : t('dashboard.subtitle')}
           </p>
         </div>
 
@@ -225,9 +225,9 @@ export default function Dashboard() {
             não muda nada. */}
         {!narrow && (
           <div className="flex flex-wrap items-center gap-2">
-            {saveState === 'saving' && <span className="text-xs text-gray-500">salvando…</span>}
-            {saveState === 'saved' && <span className="text-xs text-gray-600">painel salvo</span>}
-            {saveState === 'error' && <span className="text-xs text-crit">não consegui salvar o painel</span>}
+            {saveState === 'saving' && <span className="text-xs text-gray-500">{t('shell.dashboard.saving')}</span>}
+            {saveState === 'saved' && <span className="text-xs text-gray-600">{t('shell.dashboard.saved')}</span>}
+            {saveState === 'error' && <span className="text-xs text-crit">{t('shell.dashboard.saveError')}</span>}
 
             {editing && (
               <>
@@ -237,16 +237,16 @@ export default function Dashboard() {
                   onClick={() => setCatalogOpen(true)}
                   className="btn-secondary inline-flex items-center gap-1.5 py-1.5 text-sm"
                 >
-                  <Plus className="h-4 w-4" /> Adicionar widget
+                  <Plus className="h-4 w-4" /> {t('shell.dashboard.addWidget')}
                 </button>
                 <button
                   type="button"
                   data-testid="restore-default"
                   onClick={restaurarPadrao}
-                  title="Volta ao painel de fábrica"
+                  title={t('shell.dashboard.restoreDefault.title')}
                   className="btn-secondary inline-flex items-center gap-1.5 py-1.5 text-sm"
                 >
-                  <RotateCcw className="h-4 w-4" /> Restaurar padrão
+                  <RotateCcw className="h-4 w-4" /> {t('shell.dashboard.restoreDefault')}
                 </button>
               </>
             )}
@@ -259,11 +259,11 @@ export default function Dashboard() {
             >
               {editing ? (
                 <>
-                  <Check className="h-4 w-4" /> Concluir
+                  <Check className="h-4 w-4" /> {t('shell.dashboard.done')}
                 </>
               ) : (
                 <>
-                  <Sliders className="h-4 w-4" /> Personalizar
+                  <Sliders className="h-4 w-4" /> {t('shell.dashboard.customize')}
                 </>
               )}
             </button>
@@ -273,7 +273,7 @@ export default function Dashboard() {
 
       {loadFailed && (
         <div className="rounded-xl border border-warn-border bg-warn-bg px-4 py-2.5 text-sm text-warn">
-          Não consegui ler o seu painel salvo. Isto aqui é o layout de fábrica — nada do que você montou foi perdido.
+          {t('shell.dashboard.loadFailed')}
         </div>
       )}
 
@@ -281,9 +281,9 @@ export default function Dashboard() {
         <div className="card flex flex-col items-center gap-3 py-10 text-center">
           <LayoutGrid className="h-8 w-8 text-gray-600" />
           <div>
-            <p className="text-white">Seu painel está vazio.</p>
+            <p className="text-white">{t('shell.dashboard.empty.title')}</p>
             <p className="mt-0.5 text-sm text-gray-500">
-              Escolha os widgets que te interessam — ou volte ao painel de fábrica.
+              {t('shell.dashboard.empty.hint')}
             </p>
           </div>
           {!narrow && (
@@ -297,10 +297,10 @@ export default function Dashboard() {
                 }}
                 className="btn-primary inline-flex items-center gap-1.5 py-1.5 text-sm"
               >
-                <Plus className="h-4 w-4" /> Adicionar widget
+                <Plus className="h-4 w-4" /> {t('shell.dashboard.addWidget')}
               </button>
               <button type="button" onClick={restaurarPadrao} className="btn-secondary py-1.5 text-sm">
-                Restaurar padrão
+                {t('shell.dashboard.restoreDefault')}
               </button>
             </div>
           )}
@@ -321,13 +321,13 @@ export default function Dashboard() {
         open={catalogOpen}
         onClose={() => setCatalogOpen(false)}
         closeOnBackdropClick
-        title="Adicionar widget"
+        title={t('shell.dashboard.addWidget')}
         className="rounded-xl border border-gray-800 bg-gray-900"
       >
         <div className="space-y-2 p-4">
           {paraAdicionar.length === 0 ? (
             <p className="py-2 text-sm text-gray-500">
-              Todos os widgets disponíveis para você já estão no painel.
+              {t('shell.dashboard.catalog.empty')}
             </p>
           ) : (
             paraAdicionar.map((w) => (

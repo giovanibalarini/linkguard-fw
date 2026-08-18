@@ -1,0 +1,81 @@
+# Textos que moram em hooks e utilitários de src/lib/, e no ErrorBoundary.
+#
+# Este arquivo existe porque estes textos escaparam da primeira passada da
+# tradução: não são nós de JSX nem atributos, são valores exportados e
+# argumentos de função dentro de hooks. A revisão independente os encontrou —
+# eram os toasts de TODA mutação da tela de grupos, a frase da trava que
+# aparece em ~10 controles desabilitados, e a tela que o painel mostra quando
+# quebra.
+fw.lock.reason:
+  pt: "Há uma alteração aguardando confirmação. Confirme o acesso ou reverta agora, na faixa no topo, para voltar a editar."
+  en: "A change is awaiting confirmation. Confirm your access or revert now, in the banner at the top, to go back to editing."
+fw.toast.window.expired:
+  pt: "O prazo acabou sem confirmação: a alteração foi revertida e os grupos e as regras voltaram ao estado anterior."
+  en: "The deadline passed without confirmation: the change was reverted and the groups and rules are back to their previous state."
+fw.toast.window.confirmed:
+  pt: "Acesso confirmado: a alteração passa a valer e não será mais revertida."
+  en: "Access confirmed: the change now stands and will no longer be reverted."
+fw.toast.window.reverted:
+  pt: "Alteração revertida: os grupos e as regras voltaram ao estado anterior."
+  en: "Change reverted: the groups and rules are back to their previous state."
+fw.preview.failed:
+  pt: "não foi possível renderizar"
+  en: "could not be rendered"
+common.errorPrefix:
+  pt: "Erro: "
+  en: "Error: "
+
+# A tela que aparece quando o painel quebra. Ela é class component e não pode
+# chamar hook — usa tStatic(). Deixá-la só em português seria o pior lugar para
+# economizar: é a tela de quem já está com problema.
+err.title.screen:
+  pt: "Esta tela do painel travou."
+  en: "This panel screen crashed."
+err.title.panel:
+  pt: "O painel travou."
+  en: "The panel crashed."
+err.cause:
+  pt: "Um erro de programação interrompeu o desenho"
+  en: "A programming error interrupted the rendering"
+err.cause.thisScreen:
+  pt: " desta tela"
+  en: " of this screen"
+err.cause.theUI:
+  pt: " da interface"
+  en: " of the interface"
+err.notYourFault:
+  pt: "Não é uma falha de rede nem de configuração — e não foi causado pelo que você acabou de clicar."
+  en: "This is not a network or configuration failure — and it was not caused by what you just clicked."
+err.firewallStillRunning:
+  pt: "O firewall continua rodando. Regras, NAT, roteamento e failover são aplicados pelo serviço linkguard-fw, que não depende desta tela."
+  en: "The firewall keeps running. Rules, NAT, routing and failover are applied by the linkguard-fw service, which does not depend on this screen."
+err.pendingSafe:
+  pt: "Se você tinha uma mudança aguardando confirmação, ela não ficou presa: o serviço reverte sozinho ao fim dos 90 segundos."
+  en: "If you had a change awaiting confirmation, it is not stuck: the service reverts by itself when the 90 seconds run out."
+err.btn.retry:
+  pt: "Tentar desenhar de novo"
+  en: "Try rendering again"
+err.btn.reload:
+  pt: "Recarregar o painel"
+  en: "Reload the panel"
+err.btn.dashboard:
+  pt: "Ir para o Painel"
+  en: "Go to the Dashboard"
+err.btn.copy:
+  pt: "Copiar detalhes do erro"
+  en: "Copy error details"
+err.btn.copied:
+  pt: "Copiado!"
+  en: "Copied!"
+err.navStillWorks:
+  pt: "O menu lateral e a faixa de confirmar-ou-reverter continuam funcionando: dá para ir para outra tela por ali sem recarregar nada."
+  en: "The sidebar and the confirm-or-revert banner still work: you can move to another screen from there without reloading anything."
+err.ifItDoesNotComeBack:
+  pt: "Se o painel não voltar"
+  en: "If the panel does not come back"
+err.technicalDetails:
+  pt: "Detalhes técnicos"
+  en: "Technical details"
+err.takeToReport:
+  pt: "Leve isto para o relatório do problema — sozinho, ele costuma bastar para achar a causa."
+  en: "Take this to the bug report — on its own, it is usually enough to find the cause."

@@ -18,6 +18,7 @@ import {
 } from '../lib/series';
 import type { Point, ScaleMode } from '../lib/series';
 import type { SystemMetrics, TrafficHistoryResponse } from '../types';
+import { useI18n } from '../i18n';
 
 // Tudo que vem da API passa por `lib/series.ts` — `pointsFromHistory` para o
 // histórico, `bitsFromBytes` (dentro de `deriveRate`) para os contadores de
@@ -26,6 +27,18 @@ import type { SystemMetrics, TrafficHistoryResponse } from '../types';
 // campos são `rx_bps`/`tx_bps`, não `rx`/`tx`; e, apesar do nome `_bps`, o
 // backend grava BYTES por segundo) nasceram todos de mapear campo dentro de
 // uma tela.
+
+// O rótulo da janela é texto de tela, mas a lista TRAFFIC_WINDOWS é dado
+// compartilhado (lib/series.ts, também lido pelos widgets): traduzi-la lá
+// obrigaria a biblioteca a conhecer o idioma. Então o range — que é id — vira
+// chave aqui, e o rótulo cru fica de reserva caso alguém acrescente uma janela
+// sem passar por esta tabela.
+const WINDOW_LABEL_KEY: Record<string, string> = {
+  '30m': 'mon.traffic.window.label.30m',
+  '12h': 'mon.traffic.window.label.12h',
+  '30d': 'mon.traffic.window.label.30d',
+  '1y': 'mon.traffic.window.label.1y',
+};
 
 /** De quanto em quanto tempo se relê o histórico, por janela. */
 function refreshMs(range: string): number {
@@ -95,6 +108,7 @@ function Mini({ points, mode }: { points: Point[]; mode: ScaleMode }) {
 }
 
 export default function Traffic() {
+  const { t } = useI18n();
   const [range, setRange] = useState<string>(TRAFFIC_WINDOWS[0].range);
   const [mode, setMode] = useState<ScaleMode>('linear');
   const [selected, setSelected] = useState<string | null>(null);
@@ -198,10 +212,9 @@ export default function Traffic() {
     <div className="p-6 space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold text-white">Tráfego</h1>
+          <h1 className="text-xl font-bold text-white">{t('mon.traffic.title')}</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            Taxa em <span className="font-mono">Mb/s</span> — bits, a unidade do link, para bater com o plano contratado.
-            O volume acumulado continua em bytes.
+            {t('mon.traffic.unit.prefix')}<span className="font-mono">Mb/s</span>{t('mon.traffic.unit.rest')}
           </p>
         </div>
 
@@ -209,25 +222,29 @@ export default function Traffic() {
           <div
             className="flex items-center rounded-lg border border-gray-700 bg-gray-900/70 p-1 text-xs"
             role="group"
-            aria-label="Janela de tempo"
+            aria-label={t('mon.traffic.window.aria')}
           >
-            {TRAFFIC_WINDOWS.map((w) => (
+            {TRAFFIC_WINDOWS.map((w) => {
+              const labelKey = WINDOW_LABEL_KEY[w.range];
+              const label = labelKey ? t(labelKey) : w.label;
+              return (
               <button
                 key={w.range}
                 type="button"
                 onClick={() => setRange(w.range)}
                 aria-pressed={range === w.range}
-                title={`Últimos ${w.label}, em passo de ${w.stepLabel}`}
+                title={t('mon.traffic.window.title', { label, step: w.stepLabel })}
                 className={`px-2 py-1 rounded whitespace-nowrap ${
                   range === w.range ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'
                 }`}
               >
-                {w.label}
+                {label}
               </button>
-            ))}
+              );
+            })}
           </div>
           <span className="text-xs text-gray-600">
-            passo de <span className="font-mono">{win.stepLabel}</span>
+            {t('mon.traffic.step.prefix')}<span className="font-mono">{win.stepLabel}</span>
             {lastUpdated && <> · {lastUpdated.toLocaleTimeString()}</>}
           </span>
         </div>
@@ -235,7 +252,7 @@ export default function Traffic() {
 
       {error && (
         <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
-          Falha ao ler o estado do sistema. Os números podem estar desatualizados.
+          {t('mon.traffic.error')}
         </div>
       )}
 
@@ -243,7 +260,7 @@ export default function Traffic() {
       {interfaces.length === 0 ? (
         <div className="card text-center py-10">
           <Network className="w-10 h-10 text-gray-700 mx-auto mb-3" />
-          <p className="text-gray-400 text-sm">Nenhuma interface detectada.</p>
+          <p className="text-gray-400 text-sm">{t('mon.traffic.noIfaces')}</p>
         </div>
       ) : (
         <div className="card p-0 overflow-hidden">
@@ -303,10 +320,10 @@ export default function Traffic() {
 
                       <div className="flex items-center gap-4 text-[11px] whitespace-nowrap sm:ml-auto">
                         <span className="text-gray-500">
-                          pico <span className="font-mono text-gray-300">{f.loading ? '…' : formatBps(pico)}</span>
+                          {t('mon.traffic.peak')} <span className="font-mono text-gray-300">{f.loading ? '…' : formatBps(pico)}</span>
                         </span>
                         <span className="text-gray-500">
-                          total <span className="font-mono text-gray-300">{f.loading ? '…' : formatVolume(total)}</span>
+                          {t('mon.traffic.total')} <span className="font-mono text-gray-300">{f.loading ? '…' : formatVolume(total)}</span>
                         </span>
                       </div>
                     </div>
@@ -316,7 +333,7 @@ export default function Traffic() {
                         link ocioso só porque a coluna mostraria zero. */}
                     {!f.loading && semAmostra && (
                       <p className="mt-1 text-[11px] text-gray-600">
-                        Sem amostra nesta janela — <span className="font-mono">—</span> é não medido, não zero.
+                        {t('mon.traffic.noSample.prefix')}<span className="font-mono">—</span>{t('mon.traffic.noSample.suffix')}
                       </p>
                     )}
                   </button>

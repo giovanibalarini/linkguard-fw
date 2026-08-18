@@ -330,28 +330,58 @@ func TestBootPersistAlertTellsTheOperatorToRestartTheService(t *testing.T) {
 	}
 }
 
-// TestBootPersistScreensTellTheOperatorToRestartTheService lê os dois
-// componentes do painel. É um teste de TEXTO de propósito: a instrução só vale
-// se estiver onde o operador olha, e as duas telas não têm outra cobertura
-// automática — a validação em VM as conferiu com Playwright, à mão.
+// TestBootPersistScreensTellTheOperatorToRestartTheService confere que a
+// instrução que destrava o operador está no painel — e agora nos DOIS idiomas.
+//
+// É um teste de TEXTO de propósito: a instrução só vale se estiver onde o
+// operador olha, e estas telas não têm outra cobertura automática.
+//
+// ATUALIZADO na #105. Antes ele lia os .tsx, porque era lá que o texto morava.
+// Com a tradução, o texto passou a morar nos YAML de src/i18n/strings/, e o
+// teste ficou vermelho — corretamente: ele detectou que a frase saiu de onde
+// ele sabia procurar. Seguir lendo os .tsx passaria a ser uma guarda que não
+// guarda nada.
+//
+// A mudança de lugar veio com uma exigência a mais, e ela é o ponto: a
+// instrução tem de existir em PORTUGUÊS E EM INGLÊS. Um operador que usa o
+// painel em inglês precisa da mesma frase — e é exatamente o tipo de coisa que
+// se perde numa tradução feita às pressas, porque a tela "parece" traduzida.
 func TestBootPersistScreensTellTheOperatorToRestartTheService(t *testing.T) {
-	for _, tc := range []struct {
-		path string
-		why  string
-	}{
-		{"../../web/src/components/FirewallGroups.tsx", "a faixa âmbar do apply_status fala com quem ACABOU de aplicar uma regra"},
-		{"../../web/src/components/SystemHealth.tsx", "o item \"Regras no próximo boot\" fala com quem chega depois e não clicou em nada"},
-	} {
-		b, err := os.ReadFile(tc.path)
+	dir := "../../web/src/i18n/strings"
+	entradas, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
+
+	// Junta os fragmentos: a instrução pode estar em qualquer área (hoje está
+	// em monitoramento.yaml e firewall-resto.yaml), e fixar o arquivo aqui
+	// quebraria o teste a cada refatoração de fronteira entre áreas.
+	var todos string
+	for _, e := range entradas {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			t.Fatalf("ReadFile %s: %v", tc.path, err)
+			t.Fatalf("ReadFile %s: %v", e.Name(), err)
 		}
-		src := string(b)
-		if !strings.Contains(src, "systemctl restart linkguard-fw") {
-			t.Errorf("%s não manda reiniciar o serviço (%s). Sem isso o operador tenta a mutação, vê que não resolve e conclui que o produto está quebrado.", tc.path, tc.why)
-		}
-		if !strings.Contains(strings.ToLower(src), "aplicar outra regra") {
-			t.Errorf("%s não desmente a saída errada (\"aplicar outra regra\"), que é a primeira que o operador tenta (%s)", tc.path, tc.why)
-		}
+		todos += string(b)
+	}
+
+	// O comando é literal e NÃO se traduz — é o que o operador digita.
+	if strings.Count(todos, "systemctl restart linkguard-fw") < 2 {
+		t.Errorf("o painel não manda reiniciar o serviço nos dois idiomas.\n" +
+			"Sem isso o operador tenta a mutação, vê que não resolve e conclui que o produto está quebrado.")
+	}
+
+	// E a saída errada tem de ser desmentida explicitamente, nos dois idiomas:
+	// "aplicar outra regra" é a primeira coisa que o operador tenta.
+	baixo := strings.ToLower(todos)
+	if !strings.Contains(baixo, "aplicar outra regra") {
+		t.Error("falta desmentir em português a saída errada (\"aplicar outra regra\"), que é a primeira que o operador tenta")
+	}
+	if !strings.Contains(baixo, "applying another rule") {
+		t.Error("falta desmentir em INGLÊS a saída errada (\"applying another rule\").\n" +
+			"A tela parece traduzida e o operador que usa o painel em inglês fica sem a única instrução que resolve.")
 	}
 }

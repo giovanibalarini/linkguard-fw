@@ -96,7 +96,7 @@ const FORWARD_REAL = [
 // despercebido — o gerador só sabe checar que uma chave EXISTENTE tem os dois
 // idiomas, não que toda chave usada pelo código existe.
 {
-  const yaml = readFileSync(new URL('../i18n/strings.yaml', import.meta.url), 'utf8');
+  const yaml = readFileSync(new URL('../i18n/strings/common.yaml', import.meta.url), 'utf8');
   const temChave = (k: string) => yaml.includes(`\n${k}:`);
 
   const TODAS_AS_KEYS = [

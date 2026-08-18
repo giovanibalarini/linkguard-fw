@@ -1,0 +1,443 @@
+# Área "servicos": DHCP, DNS (+ log de consultas), NTP e Hosts da rede.
+#
+# Todas as chaves daqui começam com "svc.". Chaves genéricas de botão
+# (Salvar/Cancelar/Carregando) NÃO são redefinidas aqui — vêm de common.yaml.
+#
+# Não traduzir: nomes próprios (LinkGuard, Kea, unbound, chrony, Debian,
+# Pi-hole), siglas técnicas (DHCP, DNS, NTP, MAC, CIDR, LAN, VLAN, NXDOMAIN,
+# I/O), termos do protocolo (lease, stratum, offset, upstream/forwarder) e
+# valores de exemplo (aa:bb:cc:dd:ee:ff, 1.1.1.1).
+
+# ─── comuns às três telas de serviço ───────────────────────────────────────
+svc.common.applyNow:
+  pt: "Aplicar agora"
+  en: "Apply now"
+svc.common.applyNow.title:
+  pt: "Salvar já aplica sozinho; use para forçar agora"
+  en: "Saving already applies on its own; use this to force it now"
+svc.common.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
+svc.common.saveConfig:
+  pt: "Salvar config"
+  en: "Save config"
+svc.common.applied:
+  pt: "Aplicado com sucesso."
+  en: "Applied successfully."
+svc.common.errorPrefix:
+  pt: "Erro"
+  en: "Error"
+svc.common.unknownError:
+  pt: "erro desconhecido"
+  en: "unknown error"
+svc.common.lastApplyFailed:
+  pt: "Última aplicação automática falhou: {error}. Corrija e use \"Aplicar agora\"."
+  en: "The last automatic apply failed: {error}. Fix it and use \"Apply now\"."
+svc.common.appliedWithWarnings:
+  pt: "Aplicado, com ressalvas: {warning}"
+  en: "Applied, with caveats: {warning}"
+svc.common.loadFailed:
+  pt: "Falha ao carregar."
+  en: "Failed to load."
+svc.common.tryAgain:
+  pt: "Tentar novamente"
+  en: "Try again"
+
+# ─── DHCP e DNS compartilham o mesmo apply (instala kea/unbound) ───────────
+svc.netsvc.applyTimeout:
+  pt: "A aplicação está demorando mais que o normal — provavelmente o LinkGuard está instalando os pacotes de DHCP/DNS. Ela continua em segundo plano: atualize a página em alguns minutos para ver o resultado."
+  en: "The apply is taking longer than usual — LinkGuard is probably installing the DHCP/DNS packages. It keeps running in the background: reload the page in a few minutes to see the result."
+svc.netsvc.applying:
+  pt: "Aplicando… Se os pacotes de DHCP/DNS (kea, unbound) ainda não estiverem instalados, o LinkGuard os instala agora — isso pode levar alguns minutos na primeira vez."
+  en: "Applying… If the DHCP/DNS packages (kea, unbound) are not installed yet, LinkGuard installs them now — that can take a few minutes the first time."
+
+# ─── DHCP ──────────────────────────────────────────────────────────────────
+svc.dhcp.subtitle:
+  pt: "Servidor DHCP {backend} — config, reservas e leases"
+  en: "DHCP server {backend} — config, reservations and leases"
+svc.dhcp.autoApplyHint:
+  pt: "Salvar reservas ou config já aplica automaticamente (sem reiniciar o serviço)."
+  en: "Saving reservations or config applies automatically (without restarting the service)."
+svc.dhcp.msg.configSaved:
+  pt: "Config DHCP salva — aplicando automaticamente."
+  en: "DHCP config saved — applying automatically."
+svc.dhcp.msg.resSaved:
+  pt: "Reserva salva — aplicando automaticamente."
+  en: "Reservation saved — applying automatically."
+svc.dhcp.msg.resRemoved:
+  pt: "Reserva removida — aplicando automaticamente."
+  en: "Reservation removed — applying automatically."
+svc.dhcp.confirmDelRes:
+  pt: "Remover a reserva de {ip} ({mac})?"
+  en: "Remove the reservation for {ip} ({mac})?"
+svc.dhcp.expired:
+  pt: "expirado"
+  en: "expired"
+svc.dhcp.section.config:
+  pt: "Configuração"
+  en: "Configuration"
+svc.dhcp.field.interface:
+  pt: "Interface (LAN)"
+  en: "Interface (LAN)"
+svc.dhcp.field.subnet:
+  pt: "Sub-rede (CIDR)"
+  en: "Subnet (CIDR)"
+svc.dhcp.field.gateway:
+  pt: "Gateway"
+  en: "Gateway"
+svc.dhcp.field.rangeStart:
+  pt: "Início do range"
+  en: "Range start"
+svc.dhcp.field.rangeEnd:
+  pt: "Fim do range"
+  en: "Range end"
+svc.dhcp.field.leaseHours:
+  pt: "Lease (horas)"
+  en: "Lease (hours)"
+svc.dhcp.field.dnsToClients:
+  pt: "DNS para os clientes (separados por vírgula)"
+  en: "DNS handed to clients (comma-separated)"
+svc.dhcp.section.reservations:
+  pt: "Reservas (IP fixo por MAC)"
+  en: "Reservations (fixed IP per MAC)"
+svc.dhcp.res.new:
+  pt: "Nova reserva"
+  en: "New reservation"
+svc.dhcp.res.edit:
+  pt: "Editar reserva"
+  en: "Edit reservation"
+svc.dhcp.res.remove:
+  pt: "Remover reserva"
+  en: "Remove reservation"
+svc.dhcp.res.empty:
+  pt: "Nenhuma reserva. Reservas dão IP estável por MAC (conserta o pin de WAN)."
+  en: "No reservations. A reservation gives a device a stable IP by MAC, which is what keeps WAN pinning from breaking."
+svc.dhcp.col.hostname:
+  pt: "Hostname"
+  en: "Hostname"
+svc.dhcp.col.ip:
+  pt: "IP"
+  en: "IP"
+svc.dhcp.col.mac:
+  pt: "MAC"
+  en: "MAC"
+svc.dhcp.col.actions:
+  pt: "Ações"
+  en: "Actions"
+svc.dhcp.col.expiresIn:
+  pt: "Expira em"
+  en: "Expires in"
+svc.dhcp.section.leases:
+  pt: "Leases ativos ({n})"
+  en: "Active leases ({n})"
+svc.dhcp.leases.empty:
+  pt: "Nenhum lease ativo (o servidor DHCP pode ainda não estar ativo)."
+  en: "No active leases (the DHCP server may not be running yet)."
+svc.dhcp.field.mac:
+  pt: "MAC *"
+  en: "MAC *"
+svc.dhcp.field.ip:
+  pt: "IP *"
+  en: "IP *"
+svc.dhcp.field.hostname:
+  pt: "Hostname"
+  en: "Hostname"
+svc.dhcp.placeholder.hostname:
+  pt: "opcional"
+  en: "optional"
+
+# ─── DNS ───────────────────────────────────────────────────────────────────
+svc.dns.subtitle:
+  pt: "Resolver {backend} — upstreams, log e filtro"
+  en: "Resolver {backend} — upstreams, logging and filtering"
+svc.dns.autoApplyHint:
+  pt: "Salvar config ou filtro já aplica automaticamente (sem reiniciar o serviço)."
+  en: "Saving the config or the filter applies automatically (without restarting the service)."
+svc.dns.msg.configSaved:
+  pt: "Config DNS salva — aplicando automaticamente."
+  en: "DNS config saved — applying automatically."
+svc.dns.msg.domainBlocked:
+  pt: "Domínio bloqueado — aplicando automaticamente."
+  en: "Domain blocked — applying automatically."
+svc.dns.msg.domainUnblocked:
+  pt: "Domínio desbloqueado — aplicando automaticamente."
+  en: "Domain unblocked — applying automatically."
+svc.dns.msg.domainBlockedNamed:
+  pt: "Domínio {domain} bloqueado."
+  en: "Domain {domain} blocked."
+svc.dns.section.resolution:
+  pt: "Resolução"
+  en: "Resolution"
+svc.dns.field.upstreams:
+  pt: "Upstreams / forwarders (separados por vírgula)"
+  en: "Upstreams / forwarders (comma-separated)"
+svc.dns.placeholder.upstreams:
+  pt: "1.1.1.1, 8.8.8.8 (vazio = recursivo)"
+  en: "1.1.1.1, 8.8.8.8 (empty = recursive)"
+svc.dns.hint.upstreams:
+  pt: "Vazio = unbound resolve recursivamente da raiz."
+  en: "Empty = unbound resolves recursively from the root."
+svc.dns.field.queryLog:
+  pt: "Log de queries"
+  en: "Query log"
+svc.dns.check.logQueries:
+  pt: "Registrar cada consulta (visibilidade por host — custo de I/O)"
+  en: "Log every query (per-host visibility — costs I/O)"
+svc.dns.section.blocklist:
+  pt: "Filtro / blocklist"
+  en: "Filter / blocklist"
+svc.dns.blocklist.hint:
+  pt: "Domínios bloqueados resolvem para NXDOMAIN (estilo Pi-hole). Lembre: DNS é visibilidade/filtro, não enforcement — o bloqueio real é no firewall."
+  en: "Blocked domains resolve to NXDOMAIN (Pi-hole style). Remember: DNS is visibility and filtering, not enforcement — the real block happens in the firewall."
+svc.dns.placeholder.domain:
+  pt: "dominio.com"
+  en: "domain.com"
+svc.dns.block:
+  pt: "Bloquear"
+  en: "Block"
+svc.dns.blocklist.empty:
+  pt: "Nenhum domínio bloqueado."
+  en: "No blocked domains."
+
+# ─── DNS: log de consultas ─────────────────────────────────────────────────
+svc.dnslog.title:
+  pt: "Consultas recentes"
+  en: "Recent queries"
+svc.dnslog.filter.placeholder:
+  pt: "Filtrar por domínio ou IP"
+  en: "Filter by domain or IP"
+svc.dnslog.off.prefix:
+  pt: "O registro de consultas está"
+  en: "Query logging is"
+svc.dnslog.off.word:
+  pt: "desligado"
+  en: "off"
+svc.dnslog.off.tail:
+  pt: ". Ative \"Registrar cada consulta\" acima e clique em Aplicar para começar a ver os acessos. (Tem custo de I/O em redes grandes.)"
+  en: ". Turn on \"Log every query\" above and click Apply to start seeing what the devices are reaching. (It costs I/O on large networks.)"
+svc.dnslog.empty:
+  pt: "Nenhuma consulta encontrada ainda."
+  en: "No queries found yet."
+svc.dnslog.noData:
+  pt: "Sem dados."
+  en: "No data."
+svc.dnslog.blockDomain:
+  pt: "Bloquear este domínio"
+  en: "Block this domain"
+svc.dnslog.col.time:
+  pt: "Hora"
+  en: "Time"
+svc.dnslog.col.source:
+  pt: "Origem"
+  en: "Source"
+svc.dnslog.col.domain:
+  pt: "Domínio"
+  en: "Domain"
+svc.dnslog.col.type:
+  pt: "Tipo"
+  en: "Type"
+
+# ─── NTP ───────────────────────────────────────────────────────────────────
+svc.ntp.subtitle:
+  pt: "Sincronização de horário — servidores, fuso horário e status"
+  en: "Time synchronization — servers, time zone and status"
+svc.ntp.installTimeout:
+  pt: "A instalação está demorando mais que o normal e continua em segundo plano. Atualize a página em alguns minutos para ver o resultado."
+  en: "The install is taking longer than usual and keeps running in the background. Reload the page in a few minutes to see the result."
+svc.ntp.msg.configSaved:
+  pt: "Config de NTP salva — aplicando automaticamente."
+  en: "NTP config saved — applying automatically."
+svc.ntp.msg.chronyInstalled:
+  pt: "chrony instalado."
+  en: "chrony installed."
+svc.ntp.firewallApplyFailed:
+  pt: "Última aplicação da proteção de firewall (nftables) falhou: {error}. O NTP pode estar exposto além das redes autorizadas. Corrija e use \"Aplicar agora\"."
+  en: "The last apply of the firewall protection (nftables) failed: {error}. NTP may be exposed beyond the allowed networks. Fix it and use \"Apply now\"."
+svc.ntp.section.status:
+  pt: "Status"
+  en: "Status"
+svc.ntp.notInstalled:
+  pt: "O chrony (serviço de sincronização NTP) não está instalado nesta máquina."
+  en: "chrony (the NTP synchronization service) is not installed on this machine."
+svc.ntp.installChrony:
+  pt: "Instalar chrony"
+  en: "Install chrony"
+svc.ntp.status.synced:
+  pt: "Sincronizado"
+  en: "Synced"
+svc.ntp.status.yes:
+  pt: "Sim"
+  en: "Yes"
+svc.ntp.status.no:
+  pt: "Não"
+  en: "No"
+svc.ntp.status.stratum:
+  pt: "Stratum"
+  en: "Stratum"
+svc.ntp.status.offset:
+  pt: "Offset"
+  en: "Offset"
+svc.ntp.status.source:
+  pt: "Fonte"
+  en: "Source"
+svc.ntp.section.config:
+  pt: "Configuração"
+  en: "Configuration"
+svc.ntp.field.servers:
+  pt: "Servidores NTP (separados por vírgula)"
+  en: "NTP servers (comma-separated)"
+svc.ntp.placeholder.servers:
+  pt: "a.ntp.br, b.ntp.br (vazio = pool padrão do Debian)"
+  en: "a.ntp.br, b.ntp.br (empty = Debian default pool)"
+svc.ntp.hint.servers:
+  pt: "Vazio = usa o pool padrão do Debian, sem gerenciar nada."
+  en: "Empty = use the Debian default pool and manage nothing."
+svc.ntp.field.timezone:
+  pt: "Fuso horário"
+  en: "Time zone"
+svc.ntp.timezone.unmanaged:
+  pt: "Não gerenciar (mantém o que já está configurado)"
+  en: "Do not manage (keep whatever is already configured)"
+svc.ntp.section.serveLan:
+  pt: "Servir horário para a rede local"
+  en: "Serve time to the local network"
+svc.ntp.serveLan.check:
+  pt: "Este firewall também serve NTP para a rede local (via chrony, protegido por firewall)"
+  en: "This firewall also serves NTP to the local network (via chrony, protected by the firewall)"
+svc.ntp.field.allowedNetworks:
+  pt: "Redes autorizadas (CIDR, separadas por vírgula)"
+  en: "Allowed networks (CIDR, comma-separated)"
+svc.ntp.hint.allowedNetworks:
+  pt: "Escolha quais redes podem sincronizar o horário aqui — LAN, VLANs, Wi-Fi ou rede de convidados. Vazio = nenhuma rede liberada (não é \"liberar tudo\")."
+  en: "Choose which networks may sync time from here — LAN, VLANs, Wi-Fi or a guest network. Empty = no network allowed (it does not mean \"allow everything\")."
+svc.ntp.live.off:
+  pt: "Em vigor: NTP não está sendo servido para a rede local."
+  en: "In effect: NTP is not being served to the local network."
+svc.ntp.live.serving.prefix:
+  pt: "Em vigor: servindo NTP para"
+  en: "In effect: serving NTP to"
+svc.ntp.live.serving.tail:
+  pt: ", anunciado via DHCP (opção 42) e negado para qualquer outra origem."
+  en: ", advertised over DHCP (option 42) and denied to every other source."
+svc.ntp.live.noNetworks:
+  pt: "Em vigor: nenhuma rede autorizada — NTP negado para todo mundo até uma rede ser adicionada e salva."
+  en: "In effect: no allowed network — NTP is denied to everyone until a network is added and saved."
+svc.ntp.pendingChanges:
+  pt: "Há alterações não salvas acima — clique em \"Salvar config\" para aplicá-las."
+  en: "There are unsaved changes above — click \"Save config\" to apply them."
+
+# ─── Hosts da rede ─────────────────────────────────────────────────────────
+svc.hosts.title:
+  pt: "Hosts da rede"
+  en: "Network hosts"
+svc.hosts.subtitle:
+  pt: "{online} online de {total} conhecidos"
+  en: "{online} online out of {total} known"
+svc.hosts.filter.placeholder:
+  pt: "Filtrar por IP, MAC, apelido..."
+  en: "Filter by IP, MAC, alias..."
+svc.hosts.filter.aria:
+  pt: "Filtrar hosts"
+  en: "Filter hosts"
+svc.hosts.notEnforced.one:
+  pt: "O host bloqueado abaixo pode não estar sendo bloqueado de verdade."
+  en: "The blocked host below may not actually be blocked."
+svc.hosts.notEnforced.many:
+  pt: "Os {n} hosts bloqueados abaixo podem não estar sendo bloqueados de verdade."
+  en: "The {n} blocked hosts below may not actually be blocked."
+svc.hosts.offButLive:
+  pt: "O bloqueio de hosts aparece desligado, mas ainda está valendo no firewall."
+  en: "Host blocking looks disabled, but it is still in force in the firewall."
+svc.hosts.unknownEnforcement:
+  pt: "Não dá para confirmar aqui se os bloqueios abaixo estão em vigor."
+  en: "There is no way to confirm here whether the blocks below are in effect."
+svc.hosts.openGroups:
+  pt: "Abrir os grupos de regras"
+  en: "Open the rule groups"
+svc.hosts.talkers.title:
+  pt: "Top consumidores"
+  en: "Top talkers"
+svc.hosts.talkers.hint:
+  pt: "— quem está usando a banda agora (fluxos ativos)"
+  en: "— who is using the bandwidth right now (active flows)"
+svc.hosts.talkers.down:
+  pt: "Download"
+  en: "Download"
+svc.hosts.talkers.up:
+  pt: "Upload"
+  en: "Upload"
+svc.hosts.loadError:
+  pt: "Não foi possível carregar os hosts."
+  en: "Could not load the hosts."
+svc.hosts.empty:
+  pt: "Nenhum host encontrado"
+  en: "No hosts found"
+svc.hosts.noMatch:
+  pt: "Nenhum host corresponde ao filtro"
+  en: "No host matches the filter"
+svc.hosts.alias:
+  pt: "Apelido"
+  en: "Alias"
+svc.hosts.block:
+  pt: "Bloquear"
+  en: "Block"
+svc.hosts.unblock:
+  pt: "Desbloquear"
+  en: "Unblock"
+svc.hosts.badge.blocked:
+  pt: "bloqueado"
+  en: "blocked"
+svc.hosts.badge.notEnforced:
+  pt: "bloqueado — não em vigor"
+  en: "blocked — not in effect"
+svc.hosts.col.host:
+  pt: "Host"
+  en: "Host"
+svc.hosts.col.ip:
+  pt: "IP"
+  en: "IP"
+svc.hosts.col.mac:
+  pt: "MAC"
+  en: "MAC"
+svc.hosts.col.interface:
+  pt: "Interface"
+  en: "Interface"
+svc.hosts.col.state:
+  pt: "Estado"
+  en: "State"
+svc.hosts.col.actions:
+  pt: "Ações"
+  en: "Actions"
+svc.hosts.aliasModal.title:
+  pt: "Apelido do host"
+  en: "Host alias"
+svc.hosts.aliasModal.placeholder:
+  pt: "Ex.: PC do João, TV da sala"
+  en: "e.g. John's laptop, living room TV"
+svc.hosts.alias.saveError:
+  pt: "Erro ao salvar apelido"
+  en: "Failed to save the alias"
+svc.hosts.blockModal.title:
+  pt: "Bloquear host"
+  en: "Block host"
+svc.hosts.unblockModal.title:
+  pt: "Desbloquear host"
+  en: "Unblock host"
+svc.hosts.confirm.block:
+  pt: "Deseja bloquear o host"
+  en: "Block host"
+svc.hosts.confirm.unblock:
+  pt: "Deseja desbloquear o host"
+  en: "Unblock host"
+svc.hosts.confirm.wontApply:
+  pt: "Este bloqueio não vai entrar em vigor agora."
+  en: "This block will not take effect now."
+svc.hosts.err.block:
+  pt: "Erro ao bloquear host"
+  en: "Failed to block host"
+svc.hosts.err.unblock:
+  pt: "Erro ao desbloquear host"
+  en: "Failed to unblock host"
+svc.hosts.processing:
+  pt: "Processando..."
+  en: "Processing..."

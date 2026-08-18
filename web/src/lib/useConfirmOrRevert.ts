@@ -30,13 +30,18 @@ import type { CountdownAnchor } from './pendingWindow';
 // (resolutionMark.check.ts): dentro do hook, nada a alcançava sem montar a tela
 // inteira e esperar noventa segundos.
 import { claim, consume, release } from './resolutionMark';
+import { useI18n } from '../i18n';
 import type { FirewallPendingChange, FirewallPendingResponse, MsgLevel } from '../types';
 
 // locked é a trava do backend refletida na tela — nada mais e nada menos.
 // Aguardando confirmação, TODA mutação de grupo e de regra responde 409, e um
 // 409 cru numa tela sem explicação é pior que um botão desabilitado que diz
 // por quê: daí lockReason, no `title` de cada controle e no texto ao lado.
-export const LOCK_REASON = 'Há uma alteração aguardando confirmação. Confirme o acesso ou reverta agora, na faixa no topo, para voltar a editar.';
+// A frase da trava vem do dicionário (issue #105). Ela é `const` de módulo
+// desde sempre, e por isso escapou da primeira passada da tradução: não é texto
+// de JSX nem argumento de chamada — é um valor exportado, lido por ~10
+// controles desabilitados em cinco telas.
+export const LOCK_REASON_KEY = 'fw.lock.reason';
 
 export interface ConfirmOrRevert {
   /** A janela em aberto, ou null quando não há nenhuma. */
@@ -67,6 +72,7 @@ export function useConfirmOrRevert(
   // respondeu seria a tela AFIRMANDO que não há nada aguardando, no minuto em
   // que confirmar é a única coisa que devolve o acesso do operador. Estado
   // desconhecido se mostra como desconhecido.
+  const { t } = useI18n();
   const [pending, setPending] = useState<FirewallPendingChange | null>(null);
   const [pendingUnknown, setPendingUnknown] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -97,6 +103,11 @@ export function useConfirmOrRevert(
   loadRef.current = load;
   const msgRef = useRef(onMsg);
   msgRef.current = onMsg;
+  // Mesma razão do msgRef: o `t` é usado dentro de efeitos e callbacks que não
+  // o têm nas dependências. Guardar a referência evita recriar o efeito do poll
+  // a cada render só porque a função de tradução é nova.
+  const tRef = useRef(t);
+  tRef.current = t;
 
   // takePending é o único lugar que adota um pendente vindo do servidor — do
   // GET ou do corpo da própria mutação. Junto com ele vem sempre a âncora da
@@ -144,7 +155,7 @@ export function useConfirmOrRevert(
         if (!consume(resolvedRef, prev.id)) {
           // Em ÂMBAR, não em verde: uma alteração desfeita pelo relógio não é
           // uma boa notícia, e a cor é a primeira coisa que o operador lê.
-          msgRef.current('O prazo acabou sem confirmação: a alteração foi revertida e os grupos e as regras voltaram ao estado anterior.', 'warn');
+          msgRef.current(tRef.current('fw.toast.window.expired'), 'warn');
         }
         await loadRef.current();
       }
@@ -219,7 +230,7 @@ export function useConfirmOrRevert(
       await refreshPending();
       return true;
     } catch (e) {
-      msgRef.current('Erro: ' + errMsg(e));
+      msgRef.current(tRef.current('common.errorPrefix') + errMsg(e), 'error');
       // Uma mutação que falhou não deixa a tela como estava: a reversão que
       // não conclui, por exemplo, já restaurou o BANCO e devolve 500 — sem
       // este load a lista continuaria mostrando o grupo que acabou de deixar
@@ -281,16 +292,16 @@ export function useConfirmOrRevert(
 
   const confirmPending = () => resolve(
     '/api/nftables/pending/confirm',
-    'Acesso confirmado: a alteração passa a valer e não será mais revertida.',
+    t('fw.toast.window.confirmed'),
   );
   const revertPending = () => resolve(
     '/api/nftables/pending/revert',
-    'Alteração revertida: os grupos e as regras voltaram ao estado anterior.',
+    t('fw.toast.window.reverted'),
   );
 
   return {
     pending, pendingUnknown, pendingSeconds, busy, setBusy,
-    locked, lockReason: LOCK_REASON, editDisabled,
+    locked, lockReason: t(LOCK_REASON_KEY), editDisabled,
     refreshPending, adoptPending, run, confirmPending, revertPending,
   };
 }

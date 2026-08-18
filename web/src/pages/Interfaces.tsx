@@ -2,27 +2,13 @@ import { useEffect, useState } from 'react';
 import { Search, Pencil } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import client from '../api/client';
+import { useI18n } from '../i18n';
 import InterfaceTraffic from '../components/InterfaceTraffic';
 import Panel from '../components/ui/Panel';
 import Tabs, { type TabItem } from '../components/ui/Tabs';
 import Tag, { type TagVariant } from '../components/ui/Tag';
 import IconButton from '../components/ui/IconButton';
 import type { IfaceView, PendingChange, StableNameEntry } from '../types';
-
-const TABS: TabItem[] = [
-  { id: 'overview', label: 'Visão geral' },
-  { id: 'list', label: 'Interfaces' },
-  { id: 'vlans', label: 'VLANs' },
-  { id: 'bridges', label: 'Bridges' },
-  { id: 'traffic', label: 'Tráfego' },
-];
-
-const kindLabel: Record<string, string> = { physical: 'física', vlan: 'vlan', bridge: 'bridge' };
-const roleTag: Record<string, { label: string; variant: TagVariant }> = {
-  wan: { label: 'WAN', variant: 'ok' },
-  lan: { label: 'LAN', variant: 'neutral' },
-  unassigned: { label: 'não atribuída', variant: 'idle' },
-};
 
 // Groups by the Role the backend already computed (spec §5.1: Role is a
 // label, never re-derived on the frontend). The only extra step here is
@@ -38,6 +24,20 @@ function groupByRole(ifaces: IfaceView[]) {
 }
 
 export default function Interfaces() {
+  const { t } = useI18n();
+  const TABS: TabItem[] = [
+    { id: 'overview', label: t('net.if.tab.overview') },
+    { id: 'list', label: t('net.if.tab.list') },
+    { id: 'vlans', label: t('net.if.tab.vlans') },
+    { id: 'bridges', label: t('net.if.tab.bridges') },
+    { id: 'traffic', label: t('net.if.tab.traffic') },
+  ];
+  const kindLabel: Record<string, string> = { physical: t('net.if.kind.physical'), vlan: 'vlan', bridge: 'bridge' };
+  const roleTag: Record<string, { label: string; variant: TagVariant }> = {
+    wan: { label: 'WAN', variant: 'ok' },
+    lan: { label: 'LAN', variant: 'neutral' },
+    unassigned: { label: t('net.if.role.unassigned'), variant: 'idle' },
+  };
   const [tab, setTab] = useState('overview');
   const [ifaces, setIfaces] = useState<IfaceView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -176,15 +176,15 @@ export default function Interfaces() {
   return (
     <div className="p-6 space-y-6">
       <div>
-        <h1 className="text-xl font-bold text-white">Interfaces</h1>
+        <h1 className="text-xl font-bold text-white">{t('net.if.title')}</h1>
         <p className="text-gray-500 text-sm mt-0.5">
-          Estado físico e topologia da rede.
+          {t('net.if.subtitle')}
         </p>
       </div>
 
       {error && (
         <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
-          Falha ao carregar interfaces.
+          {t('net.if.loadFailed')}
         </div>
       )}
 
@@ -194,22 +194,22 @@ export default function Interfaces() {
           <div key={p.interface} className="flex items-center gap-4 px-4 py-3 bg-amber-500/10 border border-amber-500/30 rounded-xl">
             <Tag variant="warn" dot>{secondsLeft}s</Tag>
             <div className="flex-1 text-sm text-amber-200">
-              <span className="font-medium">{p.interface}</span> foi alterada e aguarda confirmação.
-              Verifique se o acesso continua funcionando antes de confirmar. Em caso de dúvida, reverta.
+              <span className="font-medium">{p.interface}</span>{' '}
+              {t('net.if.pending.body')}
             </div>
             <button
               onClick={() => handleConfirm(p.interface)}
               disabled={actioning === p.interface}
               className="btn-primary text-xs"
             >
-              Confirmar
+              {t('net.if.pending.confirm')}
             </button>
             <button
               onClick={() => handleRollback(p.interface)}
               disabled={actioning === p.interface}
               className="btn-secondary text-xs"
             >
-              Reverter
+              {t('net.if.pending.rollback')}
             </button>
           </div>
         );
@@ -218,7 +218,7 @@ export default function Interfaces() {
       <Tabs items={TABS} active={tab} onChange={setTab} />
 
       {tab === 'overview' && (
-        <Panel title="Painel traseiro">
+        <Panel title={t('net.if.backPanel')}>
           {(() => {
             const { wan, lan, unassigned } = groupByRole(visible);
             // Only count interfaces actually still hidden — a role-bearing
@@ -248,7 +248,7 @@ export default function Interfaces() {
                   <div className="flex items-center gap-2 shrink-0">
                     {i.kind === 'physical' && (
                       <Tag variant={physAbnormal ? 'warn' : 'ok'} dot>
-                        {i.live.carrier ? 'link ativo' : 'sem link'}
+                        {i.live.carrier ? t('net.if.link.up') : t('net.if.link.down')}
                       </Tag>
                     )}
                     {i.kind === 'physical' && (
@@ -257,12 +257,12 @@ export default function Interfaces() {
                         disabled={identifying === i.name}
                         className="text-xs text-gray-500 hover:text-gray-300 disabled:text-blue-400"
                       >
-                        {identifying === i.name ? 'piscando…' : 'identificar'}
+                        {identifying === i.name ? t('net.if.blinking') : t('net.if.identify')}
                       </button>
                     )}
                     {i.kind === 'physical' && (
                       <Link to={`/interfaces/${encodeURIComponent(i.name)}/edit`} className="text-xs text-gray-500 hover:text-gray-300">
-                        editar
+                        {t('net.if.edit')}
                       </Link>
                     )}
                   </div>
@@ -293,16 +293,16 @@ export default function Interfaces() {
                 )}
                 {unassigned.length > 0 && (
                   <div>
-                    <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Não atribuídas</div>
+                    <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">{t('net.if.group.unassigned')}</div>
                     {unassigned.map((i) => renderRow(i))}
                   </div>
                 )}
                 {wan.length === 0 && lan.length === 0 && unassigned.length === 0 && (
-                  <p className="text-gray-500 text-sm">Nenhuma interface detectada.</p>
+                  <p className="text-gray-500 text-sm">{t('net.if.none')}</p>
                 )}
                 {systemIfaces.length > 0 && !showSystem && (
                   <button onClick={() => setShowSystem(true)} className="text-xs text-gray-600 hover:text-gray-400">
-                    {systemIfaces.length} interfaces de sistema ocultas · mostrar
+                    {t('net.if.systemHidden', { n: systemIfaces.length })}
                   </button>
                 )}
               </div>
@@ -312,11 +312,10 @@ export default function Interfaces() {
       )}
 
       {tab === 'overview' && stableNames.length > 0 && (
-        <Panel title="Nomes estáveis por MAC">
+        <Panel title={t('net.if.stable.title')}>
           <p className="text-gray-500 text-sm mb-3">
-            Fixa o nome de cada interface WAN pelo endereço MAC da placa, não pela
-            posição física no computador — troca de hardware não muda mais o nome.
-            Só tem efeito depois de um <b>reboot</b>.
+            {t('net.if.stable.body')}{' '}
+            {t('net.if.stable.reboot')}<b>{t('net.if.stable.reboot.strong')}</b>{t('net.if.stable.reboot.tail')}
           </p>
           <div className="space-y-2 mb-3">
             {stableNames.map((e) => (
@@ -328,10 +327,10 @@ export default function Interfaces() {
             ))}
           </div>
           {stableApplied ? (
-            <p className="text-green-400 text-sm">Aplicado — reinicie a máquina para os nomes valerem.</p>
+            <p className="text-green-400 text-sm">{t('net.if.stable.applied')}</p>
           ) : (
             <button onClick={applyStableNames} disabled={applyingStable} className="btn-primary text-sm disabled:opacity-50">
-              {applyingStable ? 'Aplicando…' : 'Aplicar (requer reboot)'}
+              {applyingStable ? t('net.if.stable.applying') : t('net.if.stable.apply')}
             </button>
           )}
         </Panel>
@@ -346,7 +345,7 @@ export default function Interfaces() {
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="buscar por nome, apelido ou descrição"
+                placeholder={t('net.if.search.ph')}
                 className="input pl-9 w-full"
               />
             </div>
@@ -355,13 +354,15 @@ export default function Interfaces() {
                 onClick={() => setShowSystem((v) => !v)}
                 className="text-xs text-gray-500 hover:text-gray-300"
               >
-                {showSystem ? 'ocultar' : 'mostrar'} {hiddenSystemCount} interfaces de sistema
+                {showSystem
+                  ? t('net.if.toggle.hide', { n: hiddenSystemCount })
+                  : t('net.if.toggle.show', { n: hiddenSystemCount })}
               </button>
             )}
           </div>
 
           {loading ? (
-            <div className="text-gray-500 text-sm">Carregando...</div>
+            <div className="text-gray-500 text-sm">{t('common.loading')}</div>
           ) : (
             <>
               {/* Mobile: stacked cards (< sm) */}
@@ -382,23 +383,23 @@ export default function Interfaces() {
                             <IconButton
                               icon={Pencil}
                               to={`/interfaces/${encodeURIComponent(i.name)}/edit`}
-                              label="Editar interface"
+                              label={t('net.if.action.edit')}
                             />
                           </div>
                         )}
                       </div>
                       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                        <dt className="text-gray-500">Tipo</dt>
+                        <dt className="text-gray-500">{t('net.if.col.kind')}</dt>
                         <dd className="text-gray-400">{kindLabel[i.kind] ?? i.kind}</dd>
-                        <dt className="text-gray-500">Endereço</dt>
+                        <dt className="text-gray-500">{t('net.if.col.address')}</dt>
                         <dd className="text-gray-400 font-mono">
                           {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
                         </dd>
-                        <dt className="text-gray-500">Físico</dt>
+                        <dt className="text-gray-500">{t('net.if.col.physical')}</dt>
                         <dd>
                           {i.kind === 'physical' ? (
                             <Tag variant={physAbnormal ? 'warn' : 'ok'} dot>
-                              {i.live.carrier ? 'link ativo' : 'sem link'}
+                              {i.live.carrier ? t('net.if.link.up') : t('net.if.link.down')}
                             </Tag>
                           ) : (
                             <span className="text-gray-600">—</span>
@@ -409,7 +410,7 @@ export default function Interfaces() {
                   );
                 })}
                 {filtered.length === 0 && (
-                  <div className="text-center text-gray-500 text-sm py-6">Nenhuma interface encontrada.</div>
+                  <div className="text-center text-gray-500 text-sm py-6">{t('net.if.noneFound')}</div>
                 )}
               </div>
 
@@ -418,12 +419,12 @@ export default function Interfaces() {
                 <table className="hidden sm:table w-full text-sm">
                   <thead>
                     <tr className="text-left text-gray-500 border-b border-gray-800">
-                      <th className="pb-3 pr-4 font-medium">Interface</th>
-                      <th className="pb-3 pr-4 font-medium">Tipo</th>
-                      <th className="pb-3 pr-4 font-medium">Endereço</th>
-                      <th className="pb-3 pr-4 font-medium">Físico</th>
-                      <th className="pb-3 pr-4 font-medium">Papel</th>
-                      <th className="pb-3 font-medium">Ações</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.if.col.interface')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.if.col.kind')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.if.col.address')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.if.col.physical')}</th>
+                      <th className="pb-3 pr-4 font-medium">{t('net.if.col.role')}</th>
+                      <th className="pb-3 font-medium">{t('net.col.actions')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -443,7 +444,7 @@ export default function Interfaces() {
                           <td className="py-3 pr-4">
                             {i.kind === 'physical' ? (
                               <Tag variant={physAbnormal ? 'warn' : 'ok'} dot>
-                                {i.live.carrier ? 'link ativo' : 'sem link'}
+                                {i.live.carrier ? t('net.if.link.up') : t('net.if.link.down')}
                               </Tag>
                             ) : (
                               <span className="text-gray-600">—</span>
@@ -457,7 +458,7 @@ export default function Interfaces() {
                               <IconButton
                                 icon={Pencil}
                                 to={`/interfaces/${encodeURIComponent(i.name)}/edit`}
-                                label="Editar interface"
+                                label={t('net.if.action.edit')}
                               />
                             )}
                           </td>
@@ -467,7 +468,7 @@ export default function Interfaces() {
                     {filtered.length === 0 && (
                       <tr>
                         <td colSpan={6} className="py-6 text-center text-gray-500">
-                          Nenhuma interface encontrada.
+                          {t('net.if.noneFound')}
                         </td>
                       </tr>
                     )}
@@ -489,11 +490,11 @@ export default function Interfaces() {
                 <div key={i.name} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
                   <div className="text-white font-medium truncate">{i.alias || i.name}</div>
                   <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                    <dt className="text-gray-500">Pai</dt>
+                    <dt className="text-gray-500">{t('net.if.col.parent')}</dt>
                     <dd className="text-gray-400 font-mono">{i.parent ?? '—'}</dd>
-                    <dt className="text-gray-500">Tag</dt>
+                    <dt className="text-gray-500">{t('net.if.col.tag')}</dt>
                     <dd className="text-gray-400 font-mono">{i.vlan_id ?? '—'}</dd>
-                    <dt className="text-gray-500">Endereço</dt>
+                    <dt className="text-gray-500">{t('net.if.col.address')}</dt>
                     <dd className="text-gray-400 font-mono">
                       {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
                     </dd>
@@ -501,7 +502,7 @@ export default function Interfaces() {
                 </div>
               ))}
               {vlans.length === 0 && (
-                <div className="text-center text-gray-500 text-sm py-6">Nenhuma VLAN detectada.</div>
+                <div className="text-center text-gray-500 text-sm py-6">{t('net.if.vlans.none')}</div>
               )}
             </div>
 
@@ -510,10 +511,10 @@ export default function Interfaces() {
               <table className="hidden sm:table w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-500 border-b border-gray-800">
-                    <th className="pb-3 pr-4 font-medium">Nome</th>
-                    <th className="pb-3 pr-4 font-medium">Pai</th>
-                    <th className="pb-3 pr-4 font-medium">Tag</th>
-                    <th className="pb-3 font-medium">Endereço</th>
+                    <th className="pb-3 pr-4 font-medium">{t('net.if.col.name')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('net.if.col.parent')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('net.if.col.tag')}</th>
+                    <th className="pb-3 font-medium">{t('net.if.col.address')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -529,7 +530,7 @@ export default function Interfaces() {
                   ))}
                   {vlans.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="py-6 text-center text-gray-500">Nenhuma VLAN detectada.</td>
+                      <td colSpan={4} className="py-6 text-center text-gray-500">{t('net.if.vlans.none')}</td>
                     </tr>
                   )}
                 </tbody>
@@ -549,9 +550,9 @@ export default function Interfaces() {
                 <div key={i.name} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
                   <div className="text-white font-medium truncate">{i.alias || i.name}</div>
                   <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                    <dt className="text-gray-500">Membros</dt>
+                    <dt className="text-gray-500">{t('net.if.col.members')}</dt>
                     <dd className="text-gray-400 font-mono">{(i.members ?? []).join(', ') || '—'}</dd>
-                    <dt className="text-gray-500">Endereço</dt>
+                    <dt className="text-gray-500">{t('net.if.col.address')}</dt>
                     <dd className="text-gray-400 font-mono">
                       {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
                     </dd>
@@ -559,7 +560,7 @@ export default function Interfaces() {
                 </div>
               ))}
               {bridges.length === 0 && (
-                <div className="text-center text-gray-500 text-sm py-6">Nenhuma bridge detectada.</div>
+                <div className="text-center text-gray-500 text-sm py-6">{t('net.if.bridges.none')}</div>
               )}
             </div>
 
@@ -568,9 +569,9 @@ export default function Interfaces() {
               <table className="hidden sm:table w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-500 border-b border-gray-800">
-                    <th className="pb-3 pr-4 font-medium">Nome</th>
-                    <th className="pb-3 pr-4 font-medium">Membros</th>
-                    <th className="pb-3 font-medium">Endereço</th>
+                    <th className="pb-3 pr-4 font-medium">{t('net.if.col.name')}</th>
+                    <th className="pb-3 pr-4 font-medium">{t('net.if.col.members')}</th>
+                    <th className="pb-3 font-medium">{t('net.if.col.address')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -585,7 +586,7 @@ export default function Interfaces() {
                   ))}
                   {bridges.length === 0 && (
                     <tr>
-                      <td colSpan={3} className="py-6 text-center text-gray-500">Nenhuma bridge detectada.</td>
+                      <td colSpan={3} className="py-6 text-center text-gray-500">{t('net.if.bridges.none')}</td>
                     </tr>
                   )}
                 </tbody>

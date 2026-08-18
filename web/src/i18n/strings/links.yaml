@@ -1,0 +1,543 @@
+# Área "links": página de Links WAN, balanceamento de saída e stress-test.
+#
+# Prefixo obrigatório: links.*
+# Termos que NÃO são traduzidos e por isso não têm chave: nomes de interface
+# (enp3s0), palavras do nftables/iptables (mangle, MARK, PREROUTING, fwmark,
+# from all, default), siglas (IP, DNS, CIDR, LAN, WAN, VoIP) e nomes próprios
+# (LinkGuard, WAN1).
+
+# ─── Página / cabeçalho ──────────────────────────────────────────────────────
+links.title:
+  pt: "Links WAN"
+  en: "WAN Links"
+links.subtitle:
+  pt: "Gerencie os links de internet"
+  en: "Manage your internet links"
+links.btn.wizard:
+  pt: "Assistente 2 WAN"
+  en: "Dual-WAN wizard"
+links.btn.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
+links.btn.new:
+  pt: "Novo Link"
+  en: "New link"
+links.btn.save:
+  pt: "Salvar"
+  en: "Save"
+links.btn.saving:
+  pt: "Salvando..."
+  en: "Saving..."
+links.btn.cancel:
+  pt: "Cancelar"
+  en: "Cancel"
+
+# ─── Tabela / lista ──────────────────────────────────────────────────────────
+links.loading:
+  pt: "Carregando..."
+  en: "Loading..."
+links.empty.title:
+  pt: "Nenhum link configurado"
+  en: "No links configured"
+links.empty.hint:
+  pt: "Clique em \"Novo Link\" para começar"
+  en: "Click \"New link\" to get started"
+links.disabled:
+  pt: "desativado"
+  en: "disabled"
+links.action.edit:
+  pt: "Editar link"
+  en: "Edit link"
+links.action.delete:
+  pt: "Excluir link"
+  en: "Delete link"
+links.field.name:
+  pt: "Nome"
+  en: "Name"
+links.field.interface:
+  pt: "Interface"
+  en: "Interface"
+links.field.ip:
+  pt: "IP"
+  en: "IP"
+links.field.gateway:
+  pt: "Gateway"
+  en: "Gateway"
+links.field.ipGateway:
+  pt: "IP / Gateway"
+  en: "IP / Gateway"
+links.field.weight:
+  pt: "Peso"
+  en: "Weight"
+links.field.latency:
+  pt: "Latência"
+  en: "Latency"
+links.field.loss:
+  pt: "Perda"
+  en: "Loss"
+links.field.status:
+  pt: "Status"
+  en: "Status"
+links.field.actions:
+  pt: "Ações"
+  en: "Actions"
+
+# ─── Modal de criar/editar link ──────────────────────────────────────────────
+links.modal.new:
+  pt: "Novo Link WAN"
+  en: "New WAN Link"
+links.modal.edit:
+  pt: "Editar Link WAN"
+  en: "Edit WAN Link"
+links.form.name:
+  pt: "Nome *"
+  en: "Name *"
+links.form.interface:
+  pt: "Interface *"
+  en: "Interface *"
+links.form.selectInterface:
+  pt: "Selecione interface"
+  en: "Select an interface"
+links.form.noInterfaces:
+  pt: "Nenhuma interface detectada. Verifique permissões do host e atualize."
+  en: "No interfaces detected. Check the host permissions and refresh."
+links.form.ip:
+  pt: "Endereço IP"
+  en: "IP address"
+links.form.gateway:
+  pt: "Gateway"
+  en: "Gateway"
+links.form.weight:
+  pt: "Peso (prioridade)"
+  en: "Weight (priority)"
+links.form.dnsTest:
+  pt: "DNS de teste"
+  en: "Test DNS server"
+links.form.monitorHosts:
+  pt: "Hosts de monitoramento (separados por vírgula)"
+  en: "Monitoring hosts (comma-separated)"
+links.form.enabled:
+  pt: "Link habilitado"
+  en: "Link enabled"
+links.error.save:
+  pt: "Erro ao salvar link"
+  en: "Failed to save the link"
+links.error.delete:
+  pt: "Erro ao excluir link"
+  en: "Failed to delete the link"
+links.success.deleted:
+  pt: "Link \"{name}\" excluído com sucesso."
+  en: "Link \"{name}\" deleted."
+
+# ─── Modal de exclusão ───────────────────────────────────────────────────────
+links.delete.title:
+  pt: "Excluir Link WAN"
+  en: "Delete WAN Link"
+links.delete.confirmPre:
+  pt: "Tem certeza que deseja excluir o link"
+  en: "Are you sure you want to delete the link"
+links.delete.confirmPost:
+  pt: "? Esta ação não pode ser desfeita."
+  en: "? This cannot be undone."
+links.delete.confirm:
+  pt: "Excluir"
+  en: "Delete"
+links.delete.deleting:
+  pt: "Excluindo..."
+  en: "Deleting..."
+
+# ─── Assistente de 2 WAN ─────────────────────────────────────────────────────
+links.wizard.title:
+  pt: "Assistente Mágico de 2 WAN"
+  en: "Dual-WAN Magic Wizard"
+links.wizard.subtitle:
+  pt: "Configura failover rápido ou balanceamento por marcação de pacotes."
+  en: "Sets up quick failover or load balancing by packet marking."
+links.wizard.mode.failover:
+  pt: "Failover inteligente"
+  en: "Smart failover"
+links.wizard.mode.failoverDesc:
+  pt: "Todo tráfego usa a WAN principal e troca para a secundária em falha."
+  en: "All traffic uses the primary WAN and switches to the secondary when it fails."
+links.wizard.mode.balance:
+  pt: "Balanceamento por marca"
+  en: "Balancing by packet mark"
+links.wizard.mode.balanceDesc:
+  pt: "Mangle + fwmark + ip rule para dividir clientes entre 2 links."
+  en: "mangle + fwmark + ip rule to split clients across 2 links."
+links.wizard.primary:
+  pt: "WAN primária *"
+  en: "Primary WAN *"
+links.wizard.secondary:
+  pt: "WAN secundária *"
+  en: "Secondary WAN *"
+links.wizard.select:
+  pt: "Selecione"
+  en: "Select"
+links.wizard.lan:
+  pt: "Sub-rede LAN dos clientes *"
+  en: "Client LAN subnet *"
+links.wizard.primaryWeight:
+  pt: "Peso WAN primária (%)"
+  en: "Primary WAN weight (%)"
+links.wizard.secondaryWeight:
+  pt: "Peso WAN secundária (%)"
+  en: "Secondary WAN weight (%)"
+links.wizard.weightsNote:
+  pt: "Os pesos são complementares e devem somar 100%."
+  en: "The two weights are complementary and must add up to 100%."
+links.wizard.primaryLinkName:
+  pt: "WAN Primária ({iface})"
+  en: "Primary WAN ({iface})"
+links.wizard.secondaryLinkName:
+  pt: "WAN Secundária ({iface})"
+  en: "Secondary WAN ({iface})"
+links.wizard.err.twoIfaces:
+  pt: "Selecione duas interfaces WAN diferentes."
+  en: "Select two different WAN interfaces."
+links.wizard.err.lanRequired:
+  pt: "Informe a sub-rede LAN para balanceamento (ex.: 192.168.0.0/24)."
+  en: "Enter the LAN subnet to balance (e.g. 192.168.0.0/24)."
+links.wizard.err.lanInvalid:
+  pt: "Sub-rede inválida — use o formato CIDR, ex.: 192.168.1.0/24."
+  en: "Invalid subnet — use CIDR notation, e.g. 192.168.1.0/24."
+links.wizard.err.weightSum:
+  pt: "A soma dos pesos das WANs deve ser 100%."
+  en: "The WAN weights must add up to 100%."
+links.wizard.err.apply:
+  pt: "Falha ao aplicar assistente de 2 WAN."
+  en: "Failed to apply the dual-WAN wizard."
+links.wizard.success.failover:
+  pt: "Assistente aplicado: failover configurado (primária > secundária)."
+  en: "Wizard applied: failover configured (primary > secondary)."
+links.wizard.success.balance:
+  pt: "Assistente aplicado: balanceamento por marca (mangle + ip rule fwmark)."
+  en: "Wizard applied: balancing by packet mark (mangle + ip rule fwmark)."
+
+# ─── Assistente: tela de revisão ─────────────────────────────────────────────
+links.wizard.review.title:
+  pt: "Revise antes de aplicar"
+  en: "Review before applying"
+links.wizard.review.warn:
+  pt: "As alterações abaixo serão aplicadas ao roteamento e firewall do host. A conectividade pode cair por alguns instantes durante a aplicação."
+  en: "The changes below will be applied to the host's routing and firewall. Connectivity may drop for a few seconds while they are applied."
+links.wizard.review.mode:
+  pt: "Modo:"
+  en: "Mode:"
+links.wizard.review.linksTitle:
+  pt: "Links WAN que serão criados/atualizados:"
+  en: "WAN links that will be created or updated:"
+links.wizard.review.primaryOn:
+  pt: "WAN Primária em"
+  en: "Primary WAN on"
+links.wizard.review.secondaryOn:
+  pt: "WAN Secundária em"
+  en: "Secondary WAN on"
+links.wizard.review.weightSuffix:
+  pt: " (peso {w}%)"
+  en: " (weight {w}%)"
+links.wizard.review.routesTitle:
+  pt: "Rotas padrão por tabela:"
+  en: "Default route per routing table:"
+links.wizard.review.routePre:
+  pt: "Rota"
+  en: "Route"
+links.wizard.review.routePrimaryPost:
+  pt: "pelo gateway da primária, na tabela própria do link."
+  en: "via the primary gateway, in that link's own routing table."
+links.wizard.review.routeSecondaryPost:
+  pt: "pelo gateway da secundária, na tabela própria do link."
+  en: "via the secondary gateway, in that link's own routing table."
+links.wizard.review.ipRuleTitle:
+  pt: "Regras ip rule:"
+  en: "ip rule entries:"
+links.wizard.review.fromAllPrimary:
+  pt: "→ tabela da primária (prioridade 100)."
+  en: "→ primary's table (priority 100)."
+links.wizard.review.fromAllSecondary:
+  pt: "→ tabela da secundária (prioridade 200)."
+  en: "→ secondary's table (priority 200)."
+links.wizard.review.mangleTitle:
+  pt: "Regras mangle MARK (PREROUTING) para a LAN"
+  en: "mangle MARK rules (PREROUTING) for LAN"
+links.wizard.review.markRandom:
+  pt: "aleatório, com probabilidade {p}."
+  en: "at random, with probability {p}."
+links.wizard.review.markRest:
+  pt: "para o tráfego restante."
+  en: "for the remaining traffic."
+links.wizard.review.fwmarkTitle:
+  pt: "Regras ip rule por fwmark:"
+  en: "ip rule entries by fwmark:"
+links.wizard.review.fwmarkPrimary:
+  pt: "→ tabela da primária (prioridade 110)."
+  en: "→ primary's table (priority 110)."
+links.wizard.review.fwmarkSecondary:
+  pt: "→ tabela da secundária (prioridade 120)."
+  en: "→ secondary's table (priority 120)."
+links.wizard.btn.review:
+  pt: "Revisar alterações"
+  en: "Review changes"
+links.wizard.btn.close:
+  pt: "Fechar"
+  en: "Close"
+links.wizard.btn.apply:
+  pt: "Confirmar e aplicar"
+  en: "Confirm and apply"
+links.wizard.btn.applying:
+  pt: "Aplicando..."
+  en: "Applying..."
+links.wizard.btn.back:
+  pt: "Voltar"
+  en: "Back"
+
+# ─── Balanceamento de saída (WanBalancing) ───────────────────────────────────
+links.bal.title:
+  pt: "Balanceamento de saída (multi-WAN)"
+  en: "Outbound balancing (multi-WAN)"
+links.bal.subtitle:
+  pt: "Define como o tráfego geral sai pelas suas internets."
+  en: "Sets how general traffic leaves through your internet links."
+links.bal.help.title:
+  pt: "Balanceamento vs. Failover"
+  en: "Balancing vs. Failover"
+links.bal.help.failoverTerm:
+  pt: "Failover"
+  en: "Failover"
+links.bal.help.failoverBody:
+  pt: ": usa um link por vez e troca se ele cair."
+  en: ": uses one link at a time and switches over if it goes down."
+links.bal.help.balanceTerm:
+  pt: "Balanceamento"
+  en: "Balancing"
+links.bal.help.balanceBody1:
+  pt: ": distribui as conexões entre os links ao mesmo tempo, na proporção dos"
+  en: ": spreads connections across the links at the same time, in proportion to their"
+links.bal.help.weightsTerm:
+  pt: "pesos"
+  en: "weights"
+links.bal.help.balanceBody2:
+  pt: "— e ainda tira um link do rodízio automaticamente se ele cair."
+  en: "— and it also drops a link from the rotation automatically if that link goes down."
+links.bal.mode.failover:
+  pt: "Failover"
+  en: "Failover"
+links.bal.mode.balance:
+  pt: "Balanceamento"
+  en: "Balancing"
+links.bal.error.generic:
+  pt: "Falha na operação. Tente novamente."
+  en: "The operation failed. Try again."
+links.bal.pending.title:
+  pt: "Confirme em {s}s ou revertemos a rota automaticamente."
+  en: "Confirm within {s}s or the route is rolled back automatically."
+links.bal.pending.hint:
+  pt: "Verifique se a internet continua funcionando antes de confirmar. Em caso de dúvida, reverta."
+  en: "Check that the internet is still working before confirming. When in doubt, roll back."
+links.bal.pending.keep:
+  pt: "Manter alteração"
+  en: "Keep change"
+links.bal.pending.rollback:
+  pt: "Reverter agora"
+  en: "Roll back now"
+links.bal.failoverInfo.pre:
+  pt: "O balanceamento está desativado. Cada link é usado conforme a prioridade/failover. Ative o"
+  en: "Balancing is off. Each link is used according to its priority, with failover. Turn on"
+links.bal.failoverInfo.post:
+  pt: "para distribuir o tráfego entre as WANs pelos pesos."
+  en: "to spread traffic across the WANs by weight."
+links.bal.weightTitle:
+  pt: "Peso (proporção do tráfego)"
+  en: "Weight (share of traffic)"
+links.bal.off:
+  pt: "off"
+  en: "off"
+links.bal.applyWeights:
+  pt: "Aplicar pesos"
+  en: "Apply weights"
+links.bal.applyHint:
+  pt: "Aplica com rede protegida (reverte sozinho se você não confirmar)."
+  en: "Applies with a safety net: the change rolls itself back if you do not confirm."
+links.bal.currentRoute:
+  pt: "Rota atual: "
+  en: "Current route: "
+links.bal.targetRoute:
+  pt: "Rota alvo: "
+  en: "Target route: "
+
+# ─── Reação a link degradado ─────────────────────────────────────────────────
+links.bal.degrade.title:
+  pt: "Reação a link degradado"
+  en: "Reaction to a degraded link"
+links.bal.degrade.evict:
+  pt: "Expulsar conexões de link degradado"
+  en: "Move connections off a degraded link"
+links.bal.degrade.help1:
+  pt: "Quando um link fica"
+  en: "When a link stays"
+links.bal.degrade.helpDegradedTerm:
+  pt: "degradado"
+  en: "degraded"
+links.bal.degrade.help2:
+  pt: "(ping alto / oscilando, mas ainda vivo) por várias verificações seguidas, o LinkGuard pode"
+  en: "(high or erratic ping, but still up) for several checks in a row, LinkGuard can"
+links.bal.degrade.helpMigrateTerm:
+  pt: "migrar as conexões ativas"
+  en: "move its active connections"
+links.bal.degrade.help3:
+  pt: "dele para um link saudável. As conexões no link ruim são"
+  en: "over to a healthy link. Connections on the bad link are"
+links.bal.degrade.helpResetTerm:
+  pt: "reiniciadas"
+  en: "reset"
+links.bal.degrade.help4:
+  pt: "(reconectam na hora no link bom) — ideal para chamadas/VoIP que estavam travando. Só age se houver outro link saudável."
+  en: "(they reconnect immediately over the good link) — ideal for calls/VoIP that were breaking up. It only acts if another healthy link exists."
+links.bal.degrade.samples:
+  pt: "Amostras ruins seguidas antes de agir"
+  en: "Consecutive bad samples before acting"
+links.bal.degrade.samplesHint:
+  pt: "~10s por amostra (ex.: 3 ≈ 30s de link ruim)."
+  en: "~10s per sample (e.g. 3 ≈ 30s of a bad link)."
+links.bal.degrade.cooldown:
+  pt: "Intervalo mínimo entre migrações (s)"
+  en: "Minimum interval between migrations (s)"
+links.bal.degrade.cooldownHint:
+  pt: "Evita migrar repetidamente num link que oscila."
+  en: "Keeps a flapping link from triggering migration over and over."
+
+# ─── Rebalanceamento agendado ────────────────────────────────────────────────
+links.bal.sched.title:
+  pt: "Rebalanceamento agendado"
+  en: "Scheduled rebalancing"
+links.bal.sched.hint:
+  pt: "Aplica pesos diferentes em horários definidos (ex.: priorizar a WAN1 no horário comercial e equilibrar à noite). Roda no fuso do servidor."
+  en: "Applies different weights at set times (e.g. favor WAN1 during business hours and even things out at night). Runs in the server's timezone."
+links.bal.sched.activeTitle:
+  pt: "Ativo — clique para pausar"
+  en: "Active — click to pause"
+links.bal.sched.pausedTitle:
+  pt: "Pausado — clique para ativar"
+  en: "Paused — click to activate"
+links.bal.sched.remove:
+  pt: "Remover"
+  en: "Remove"
+links.bal.sched.namePlaceholder:
+  pt: "Nome (ex.: Horário comercial)"
+  en: "Name (e.g. Business hours)"
+links.bal.sched.add:
+  pt: "Adicionar agendamento"
+  en: "Add schedule"
+links.weekday.sun:
+  pt: "Dom"
+  en: "Sun"
+links.weekday.mon:
+  pt: "Seg"
+  en: "Mon"
+links.weekday.tue:
+  pt: "Ter"
+  en: "Tue"
+links.weekday.wed:
+  pt: "Qua"
+  en: "Wed"
+links.weekday.thu:
+  pt: "Qui"
+  en: "Thu"
+links.weekday.fri:
+  pt: "Sex"
+  en: "Fri"
+links.weekday.sat:
+  pt: "Sáb"
+  en: "Sat"
+
+# ─── Stress-test dos links ───────────────────────────────────────────────────
+links.stress.title:
+  pt: "Stress-test dos links"
+  en: "Link stress test"
+links.stress.subtitle:
+  pt: "Testa uma WAN de cada vez, com restauração automática (à prova de falha do próprio painel)."
+  en: "Tests one WAN at a time and restores it automatically, even if this panel itself goes down."
+links.stress.help.title:
+  pt: "Stress-test"
+  en: "Stress test"
+links.stress.help1:
+  pt: "Valida o failover multi-WAN"
+  en: "Validates multi-WAN failover"
+links.stress.helpOnDemandTerm:
+  pt: "sob demanda"
+  en: "on demand"
+links.stress.help2:
+  pt: ": derruba ou degrada uma WAN de propósito, mede a continuidade (ping/DNS) enquanto o balanceador reage, e"
+  en: ": it takes a WAN down or degrades it on purpose, measures continuity (ping/DNS) while the balancer reacts, and"
+links.stress.helpRestoreTerm:
+  pt: "restaura sozinho"
+  en: "restores it on its own"
+links.stress.help3:
+  pt: "Assim você confirma que o failover funciona sem esperar o provedor cair."
+  en: "That way you confirm failover works without waiting for the ISP to go down."
+links.stress.link:
+  pt: "Link"
+  en: "Link"
+links.stress.scenario:
+  pt: "Cenário"
+  en: "Scenario"
+links.stress.mode.outage:
+  pt: "Queda (link down)"
+  en: "Outage (link down)"
+links.stress.mode.degrade:
+  pt: "Degradação (latência/perda)"
+  en: "Degradation (latency/loss)"
+links.stress.duration:
+  pt: "Duração: {n}s"
+  en: "Duration: {n}s"
+links.stress.delay:
+  pt: "Latência (ms)"
+  en: "Latency (ms)"
+links.stress.loss:
+  pt: "Perda (%)"
+  en: "Loss (%)"
+links.stress.run:
+  pt: "Rodar teste"
+  en: "Run test"
+links.stress.runHint:
+  pt: "Metade do tempo com a falha, metade recuperando. A WAN escolhida será impactada de propósito."
+  en: "Half the time with the fault in place, half recovering. The WAN you pick will be disrupted on purpose."
+links.stress.stop:
+  pt: "Parar + restaurar"
+  en: "Stop + restore"
+links.stress.state.outage:
+  pt: "Queda"
+  en: "Outage"
+links.stress.state.degrade:
+  pt: "Degradação {delay}ms/{loss}%"
+  en: "Degradation {delay}ms/{loss}%"
+links.stress.state.running:
+  pt: "rodando"
+  en: "running"
+links.stress.state.done:
+  pt: "concluído"
+  en: "done"
+links.stress.restored:
+  pt: "restaurado"
+  en: "restored"
+links.stress.fail:
+  pt: "FALHA"
+  en: "FAIL"
+links.stress.legend.baseline:
+  pt: "baseline"
+  en: "baseline"
+links.stress.legend.fault:
+  pt: "falha"
+  en: "fault"
+links.stress.legend.recovery:
+  pt: "recuperação"
+  en: "recovery"
+links.stress.legend.loss:
+  pt: "perda (ping/DNS)"
+  en: "loss (ping/DNS)"
+links.stress.noPermission:
+  pt: "Você não tem permissão para rodar testes (requer gestão de rotas)."
+  en: "You do not have permission to run tests (requires route management)."
+links.stress.error.start:
+  pt: "falha ao iniciar o teste"
+  en: "failed to start the test"

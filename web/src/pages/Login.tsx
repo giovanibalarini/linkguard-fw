@@ -80,8 +80,8 @@ export default function Login() {
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  title={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
-                  aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  title={showPassword ? t('shell.login.hidePassword') : t('shell.login.showPassword')}
+                  aria-label={showPassword ? t('shell.login.hidePassword') : t('shell.login.showPassword')}
                   className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-gray-300 transition-colors"
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -122,7 +122,7 @@ export default function Login() {
             </button>
           </form>
           <p className="text-gray-600 text-xs text-center mt-4">
-            Usuário padrão: admin / Senha inicial definida no setup
+            {t('shell.login.defaults')}
           </p>
         </div>
       </div>

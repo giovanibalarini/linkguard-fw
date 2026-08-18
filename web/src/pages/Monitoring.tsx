@@ -8,6 +8,7 @@ import {
 import client from '../api/client';
 import Panel from '../components/ui/Panel';
 import type { WanLink, SystemMetrics, TimelineResponse } from '../types';
+import { useI18n } from '../i18n';
 
 interface HistoryPoint {
   time: string;
@@ -15,6 +16,7 @@ interface HistoryPoint {
 }
 
 export default function Monitoring() {
+  const { t } = useI18n();
   const [links, setLinks] = useState<WanLink[]>([]);
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [latencyHistory, setLatencyHistory] = useState<HistoryPoint[]>([]);
@@ -109,27 +111,27 @@ export default function Monitoring() {
     <div className="p-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-white">Monitoramento</h1>
-          <p className="text-gray-500 text-sm">Métricas em tempo real</p>
+          <h1 className="text-xl font-bold text-white">{t('mon.title')}</h1>
+          <p className="text-gray-500 text-sm">{t('mon.subtitle')}</p>
           <p className="text-gray-600 text-xs mt-0.5">
-            Atualização automática a cada 10s
-            {secondsAgo !== null && ` · atualizado há ${secondsAgo}s`}
+            {t('mon.autoRefresh.10s')}
+            {secondsAgo !== null && t('mon.updatedAgo', { s: secondsAgo })}
           </p>
         </div>
         <button onClick={fetchData} className="btn-secondary flex items-center gap-2">
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Atualizar
+          {t('mon.refresh')}
         </button>
       </div>
 
       {/* Error banner */}
-      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm flex items-center justify-between"><span>Falha ao carregar dados do firewall. Exibindo últimos dados conhecidos.</span><button onClick={fetchData} className="btn-secondary">Tentar novamente</button></div>}
+      {error && <div className="card border border-red-500/30 bg-red-500/10 text-red-400 text-sm flex items-center justify-between"><span>{t('mon.error.load')}</span><button onClick={fetchData} className="btn-secondary">{t('mon.error.retry')}</button></div>}
 
       {/* Initial loading skeleton */}
       {loading && links.length === 0 && !sys && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[0, 1, 2].map(i => (
-            <div key={i} className="card text-gray-500 text-sm animate-pulse">Carregando...</div>
+            <div key={i} className="card text-gray-500 text-sm animate-pulse">{t('mon.loading')}</div>
           ))}
         </div>
       )}
@@ -148,23 +150,23 @@ export default function Monitoring() {
             </div>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-gray-500">Interface</span>
+                <span className="text-gray-500">{t('mon.link.interface')}</span>
                 <span className="text-gray-300 font-mono">{link.interface}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-500">Latência</span>
+                <span className="text-gray-500">{t('mon.link.latency')}</span>
                 <span style={{ color: COLORS[i % COLORS.length] }} className="font-mono">
                   {link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-500">Perda de pacotes</span>
+                <span className="text-gray-500">{t('mon.link.packetLoss')}</span>
                 <span className={`font-mono ${link.packet_loss > 10 ? 'text-red-400' : 'text-gray-300'}`}>
                   {link.packet_loss.toFixed(1)}%
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-500">Última verificação</span>
+                <span className="text-gray-500">{t('mon.link.lastCheck')}</span>
                 <span className="text-gray-400 text-xs">
                   {link.last_check ? new Date(link.last_check).toLocaleTimeString() : '—'}
                 </span>
@@ -176,7 +178,7 @@ export default function Monitoring() {
 
       {/* Latency chart */}
       {links.length > 0 && (
-        <Panel title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Latência por Link (ms)</span></span>}>
+        <Panel title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('mon.chart.latency.title')}</span></span>}>
           {latencyHistory.length > 1 ? (
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={latencyHistory}>
@@ -191,13 +193,13 @@ export default function Monitoring() {
               </LineChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-gray-500 text-sm text-center py-12">Coletando dados…</p>
+            <p className="text-gray-500 text-sm text-center py-12">{t('mon.chart.collecting')}</p>
           )}
         </Panel>
       )}
 
       {/* CPU / Memory chart */}
-      <Panel title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-purple-400" /><span className="text-white font-semibold">CPU e Memória (%)</span></span>}>
+      <Panel title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-purple-400" /><span className="text-white font-semibold">{t('mon.chart.cpuMem.title')}</span></span>}>
         {cpuHistory.length > 1 ? (
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={cpuHistory}>
@@ -207,17 +209,17 @@ export default function Monitoring() {
               <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }} />
               <Legend />
               <Line type="monotone" dataKey="CPU" stroke="#3b82f6" dot={false} strokeWidth={2} />
-              <Line type="monotone" dataKey="Memória" stroke="#8b5cf6" dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="Memória" name={t('mon.chart.series.memory')} stroke="#8b5cf6" dot={false} strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <p className="text-gray-500 text-sm text-center py-12">Coletando dados…</p>
+          <p className="text-gray-500 text-sm text-center py-12">{t('mon.chart.collecting')}</p>
         )}
       </Panel>
 
       {/* Correlated diagnostic timeline */}
       <Panel
-        title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-emerald-400" /><span className="text-white font-semibold">Linha do tempo</span></span>}
+        title={<span className="flex items-center gap-2"><Activity className="w-4 h-4 text-emerald-400" /><span className="text-white font-semibold">{t('mon.timeline.title')}</span></span>}
         action={
           <div className="flex gap-2">
             {[1, 6, 24].map(h => (
@@ -233,10 +235,10 @@ export default function Monitoring() {
         }
       >
         {timelineLoading && !timeline && (
-          <p className="text-gray-500 text-sm text-center py-12">Carregando linha do tempo…</p>
+          <p className="text-gray-500 text-sm text-center py-12">{t('mon.timeline.loading')}</p>
         )}
         {timeline && timeline.series.every(s => s.points.length === 0) && (
-          <p className="text-gray-500 text-sm text-center py-12">Sem dados no período selecionado.</p>
+          <p className="text-gray-500 text-sm text-center py-12">{t('mon.timeline.empty')}</p>
         )}
         {timeline && timeline.series.some(s => s.points.length > 0) && (
           <div className="space-y-6">
@@ -251,7 +253,7 @@ export default function Monitoring() {
               return (
                 <div key={link.id}>
                   <p className="text-gray-400 text-xs mb-1">
-                    {link.name} — latência (ms), faixa min–max · arraste na régua abaixo do gráfico pra dar zoom
+                    {t('mon.timeline.linkCaption', { link: link.name })}
                   </p>
                   <ResponsiveContainer width="100%" height={180}>
                     <ComposedChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
@@ -289,7 +291,7 @@ export default function Monitoring() {
             })}
             {timeline.states.filter(s => s.state !== 'online').length > 0 && (
               <div>
-                <p className="text-gray-400 text-xs mb-1">Episódios no período</p>
+                <p className="text-gray-400 text-xs mb-1">{t('mon.timeline.episodes')}</p>
                 <ul className="text-xs text-gray-300 space-y-1">
                   {timeline.states
                     .filter(s => s.state !== 'online')
@@ -298,7 +300,7 @@ export default function Monitoring() {
                         <span>{s.label} → {s.state}</span>
                         <span className="text-gray-500">
                           {new Date(s.started_at * 1000).toLocaleTimeString()}
-                          {s.ended_at ? ` – ${new Date(s.ended_at * 1000).toLocaleTimeString()}` : ' (em curso)'}
+                          {s.ended_at ? ` – ${new Date(s.ended_at * 1000).toLocaleTimeString()}` : t('mon.timeline.ongoing')}
                         </span>
                       </li>
                     ))}
@@ -311,22 +313,22 @@ export default function Monitoring() {
 
       {/* Interface traffic */}
       {sys && sys.interfaces && sys.interfaces.length > 0 && (
-        <Panel title="Tráfego por Interface">
+        <Panel title={t('mon.iface.panel.title')}>
           {/* Mobile: stacked cards (< sm) */}
           <div className="sm:hidden space-y-2">
             {sys.interfaces.filter(i => i.name !== 'lo').map(iface => (
               <div key={iface.name} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
                 <div className="text-white font-mono font-medium truncate">{iface.name}</div>
                 <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                  <dt className="text-gray-500">RX total</dt>
+                  <dt className="text-gray-500">{t('mon.iface.rxTotal')}</dt>
                   <dd className="text-gray-400 font-mono">{formatBytes(iface.rx_bytes)}</dd>
-                  <dt className="text-gray-500">TX total</dt>
+                  <dt className="text-gray-500">{t('mon.iface.txTotal')}</dt>
                   <dd className="text-gray-400 font-mono">{formatBytes(iface.tx_bytes)}</dd>
-                  <dt className="text-gray-500">RX Pacotes</dt>
+                  <dt className="text-gray-500">{t('mon.iface.rxPackets')}</dt>
                   <dd className="text-gray-400 font-mono">{iface.rx_packets.toLocaleString()}</dd>
-                  <dt className="text-gray-500">TX Pacotes</dt>
+                  <dt className="text-gray-500">{t('mon.iface.txPackets')}</dt>
                   <dd className="text-gray-400 font-mono">{iface.tx_packets.toLocaleString()}</dd>
-                  <dt className="text-gray-500">Erros</dt>
+                  <dt className="text-gray-500">{t('mon.iface.errors')}</dt>
                   <dd className="text-gray-400 font-mono">{iface.rx_errors + iface.tx_errors}</dd>
                 </dl>
               </div>
@@ -338,12 +340,12 @@ export default function Monitoring() {
             <table className="hidden sm:table w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b border-gray-800">
-                  <th className="pb-3 pr-4 font-medium">Interface</th>
-                  <th className="pb-3 pr-4 font-medium">RX total</th>
-                  <th className="pb-3 pr-4 font-medium">TX total</th>
-                  <th className="pb-3 pr-4 font-medium">RX Pacotes</th>
-                  <th className="pb-3 pr-4 font-medium">TX Pacotes</th>
-                  <th className="pb-3 font-medium">Erros</th>
+                  <th className="pb-3 pr-4 font-medium">{t('mon.link.interface')}</th>
+                  <th className="pb-3 pr-4 font-medium">{t('mon.iface.rxTotal')}</th>
+                  <th className="pb-3 pr-4 font-medium">{t('mon.iface.txTotal')}</th>
+                  <th className="pb-3 pr-4 font-medium">{t('mon.iface.rxPackets')}</th>
+                  <th className="pb-3 pr-4 font-medium">{t('mon.iface.txPackets')}</th>
+                  <th className="pb-3 font-medium">{t('mon.iface.errors')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -392,16 +394,17 @@ interface LatencyTooltipProps {
 }
 
 function LatencyTooltip({ active, payload }: LatencyTooltipProps) {
+  const { t } = useI18n();
   if (!active || !payload || payload.length === 0) return null;
   const p = payload[0].payload;
   return (
     <div className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs shadow-lg">
       <p className="text-gray-400 mb-1">{new Date(p.ts).toLocaleString()}</p>
       <p className="text-white font-mono">
-        {p.avg.toFixed(1)} ms <span className="text-gray-500">média</span>
+        {p.avg.toFixed(1)} ms <span className="text-gray-500">{t('mon.tooltip.avg')}</span>
       </p>
       <p className="text-gray-400 font-mono">
-        faixa {p.min.toFixed(1)}–{p.max.toFixed(1)} ms
+        {t('mon.tooltip.range', { min: p.min.toFixed(1), max: p.max.toFixed(1) })}
       </p>
     </div>
   );

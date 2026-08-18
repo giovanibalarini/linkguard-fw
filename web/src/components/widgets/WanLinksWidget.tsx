@@ -3,6 +3,7 @@ import client from '../../api/client';
 import Sparkline, { type SparklinePoint } from '../ui/Sparkline';
 import Tag, { type TagVariant } from '../ui/Tag';
 import WidgetCard, { WidgetNote, usePolled } from './WidgetCard';
+import { useI18n } from '../../i18n';
 import { formatBps, latestTotal, pointsFromHistory } from '../../lib/series';
 import type { Point } from '../../lib/series';
 import type { TrafficHistoryResponse, WanLink } from '../../types';
@@ -15,10 +16,10 @@ const VARIANTE: Record<string, TagVariant> = {
 };
 
 const ROTULO: Record<string, string> = {
-  online: 'online',
-  offline: 'offline',
-  degraded: 'degradado',
-  unknown: 'desconhecido',
+  online: 'wid.status.online',
+  offline: 'wid.status.offline',
+  degraded: 'wid.status.degraded',
+  unknown: 'wid.status.unknown',
 };
 
 /**
@@ -31,6 +32,7 @@ const ROTULO: Record<string, string> = {
  * faria um link carregado parecer um link com metade do tráfego.
  */
 export default function WanLinksWidget() {
+  const { t } = useI18n();
   const { data: links, state } = usePolled<WanLink[]>('/api/links');
   const [series, setSeries] = useState<Record<string, Point[]>>({});
 
@@ -71,19 +73,19 @@ export default function WanLinksWidget() {
 
   return (
     <WidgetCard
-      title="Links WAN"
+      title={t('wid.wan.title')}
       action={
         links && links.length > 0 ? (
           <span className="shrink-0 font-mono text-xs text-gray-500">
-            {online}/{links.length} online
+            {t('wid.wan.count', { online, total: links.length })}
           </span>
         ) : undefined
       }
     >
-      {state === 'loading' && <WidgetNote>Carregando…</WidgetNote>}
-      {state === 'error' && <WidgetNote>Não foi possível ler os links agora.</WidgetNote>}
+      {state === 'loading' && <WidgetNote>{t('wid.loading')}</WidgetNote>}
+      {state === 'error' && <WidgetNote>{t('wid.wan.error')}</WidgetNote>}
       {state === 'ok' && (links ?? []).length === 0 && (
-        <WidgetNote>Nenhum link WAN configurado ainda.</WidgetNote>
+        <WidgetNote>{t('wid.wan.empty')}</WidgetNote>
       )}
 
       <div className="space-y-1.5">
@@ -101,14 +103,16 @@ export default function WanLinksWidget() {
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-sm text-white">{link.name}</span>
                 <Tag variant={VARIANTE[link.status] ?? 'idle'} dot>
-                  {ROTULO[link.status] ?? link.status}
+                  {ROTULO[link.status] ? t(ROTULO[link.status]) : link.status}
                 </Tag>
               </div>
               <div className="flex items-baseline justify-between gap-2">
                 <span className="font-mono text-base text-white">{formatBps(taxa)}</span>
                 <span className="text-[11px] text-gray-500">
-                  {link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—'} ·{' '}
-                  {link.packet_loss.toFixed(1)}% perda
+                  {t('wid.wan.latency.loss', {
+                    lat: link.latency_ms > 0 ? `${link.latency_ms.toFixed(1)} ms` : '—',
+                    loss: link.packet_loss.toFixed(1),
+                  })}
                 </span>
               </div>
               <Sparkline
