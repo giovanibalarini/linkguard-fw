@@ -36,6 +36,15 @@ linkguard-fw
 !cmd/linkguard-fw/
 !cmd/linkguard-fw/main.go
 web/node_modules/
+
+# Estado incremental do tsc. É um cache LOCAL da máquina que compilou: ele
+# lista caminhos absolutos e carimbos de tempo do disco de quem rodou o build,
+# então cada `npm run build` de cada pessoa produz um conteúdo diferente para o
+# mesmo código. Versionado, ele entrou em 27 commits só sujando o diff — e
+# aparecia como alteração pendente logo depois de um clone limpo + build,
+# fazendo `git status` mentir sobre haver trabalho por salvar.
+*.tsbuildinfo
+
 *.db
 *.db-shm
 *.db-wal
