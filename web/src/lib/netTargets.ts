@@ -79,14 +79,34 @@ export function buildTargets(
   const out: Target[] = [];
   const ipsDeHosts = new Set<string>();
 
+  // A reserva é indexada ANTES, por IP e por MAC, porque ela costuma ter o nome
+  // que o host não tem.
+  //
+  // Isto foi encontrado olhando a tela com dados reais: a maioria dos aparelhos
+  // de uma LAN não anuncia hostname e nunca recebeu apelido, então a lista
+  // aparecia como uma coluna de endereços MAC — exatamente o que este seletor
+  // existe para evitar. E o nome estava ali do lado, na reserva de DHCP, que a
+  // fusão por IP jogava fora.
+  const nomeDaReserva = new Map<string, string>();
+  for (const r of reservas || []) {
+    const nome = (r.hostname || '').trim();
+    if (!nome) continue;
+    if ((r.ip || '').trim()) nomeDaReserva.set((r.ip || '').trim(), nome);
+    if ((r.mac || '').trim()) nomeDaReserva.set((r.mac || '').trim().toLowerCase(), nome);
+  }
+
   for (const h of hosts || []) {
     const ip = (h.ip || '').trim();
     if (!ip) continue;
     ipsDeHosts.add(ip);
+    const proprio = (h.alias || '').trim() || (h.hostname || '').trim();
+    const daReserva = nomeDaReserva.get(ip) || nomeDaReserva.get((h.mac || '').trim().toLowerCase());
     out.push({
       id: `host:${h.mac || ip}`,
       kind: 'host',
-      label: hostName(h),
+      // O que o admin escreveu vem primeiro (apelido), depois o que o aparelho
+      // diz de si, depois o nome da reserva — e só então o MAC.
+      label: proprio || daReserva || h.mac,
       hint: ip,
       value: ip,
       online: onlineRecently(h.last_seen, agora),

@@ -8,8 +8,13 @@
  * kernel.
  */
 
+import { useMemo } from 'react';
 import client from '../../api/client';
 import Modal from '../ui/Modal';
+import Combo, { type ComboItem } from '../ui/Combo';
+import { useNetTargets } from '../../lib/useNetTargets';
+import { KIND_LABEL } from '../../lib/netTargets';
+import { SERVICES } from '../../lib/services';
 import NftPreview from './NftPreview';
 import { ACTIONS } from './groupMeta';
 import type { Action, RuleModalState } from './groupMeta';
@@ -38,6 +43,34 @@ interface Props {
 
 export default function RuleModal({ state, setState, ifaces, cor, onClose }: Props) {
   const { busy, locked, lockReason, editDisabled, run } = cor;
+  const { targets } = useNetTargets();
+
+  // Os alvos viram itens do seletor aqui, e não em lib/netTargets, porque esta
+  // é a única parte que sabe o que é um ComboItem — a lib fica pura e testável.
+  const itensDeRede: ComboItem[] = useMemo(
+    () => targets.map((t) => ({
+      id: t.id, label: t.label, hint: t.hint, group: KIND_LABEL[t.kind],
+      ...(t.kind === 'host' ? { dot: !!t.online } : {}),
+    })),
+    [targets],
+  );
+
+  // A regra guarda o ENDEREÇO, não o id do alvo: é o endereço que vai para o
+  // nft, e uma regra não pode depender de o aparelho continuar na lista de
+  // hosts para continuar significando a mesma coisa.
+  const idDoValor = (v: string) => targets.find((t) => t.value === v)?.id || '';
+  const valorDe = (i: ComboItem) => targets.find((t) => t.id === i.id)?.value || '';
+
+  const itensDeServico: ComboItem[] = useMemo(
+    () => SERVICES
+      .filter((s) => !state.proto || s.proto === state.proto)
+      .map((s) => ({
+        id: `svc:${s.port}/${s.proto}`,
+        label: `${s.name} — ${s.what}`,
+        hint: `${s.port}/${s.proto}`,
+      })),
+    [state.proto],
+  );
 
   const saveRule = () => {
     const payload = {
@@ -93,12 +126,32 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
             </select>
           </div>
           <div>
-            <label className="label">Origem (IP/CIDR)</label>
-            <input className="input w-full" placeholder="qualquer" value={state.saddr} onChange={(e) => setState({ ...state, saddr: e.target.value })} />
+            <label className="label">Origem</label>
+            {/* O LinkGuard já sabe quem são os aparelhos da rede — pedir que o
+                admin descubra o IP por fora e digite era jogar fora o que o
+                produto conhece. Endereço na mão continua possível: é a última
+                opção da lista, e só aparece quando a busca não casa com nada. */}
+            <Combo
+              items={itensDeRede}
+              value={idDoValor(state.saddr)}
+              onPick={(i) => setState({ ...state, saddr: i ? valorDe(i) : '' })}
+              onFreeText={(t) => setState({ ...state, saddr: t })}
+              freeTextHint="como endereço"
+              placeholder="Buscar aparelho ou endereço…"
+              emptyLabel="Qualquer origem"
+            />
           </div>
           <div>
-            <label className="label">Destino (IP/CIDR)</label>
-            <input className="input w-full" placeholder="qualquer" value={state.daddr} onChange={(e) => setState({ ...state, daddr: e.target.value })} />
+            <label className="label">Destino</label>
+            <Combo
+              items={itensDeRede}
+              value={idDoValor(state.daddr)}
+              onPick={(i) => setState({ ...state, daddr: i ? valorDe(i) : '' })}
+              onFreeText={(t) => setState({ ...state, daddr: t })}
+              freeTextHint="como endereço"
+              placeholder="Buscar aparelho ou endereço…"
+              emptyLabel="Qualquer destino"
+            />
           </div>
           <div>
             <label className="label">Protocolo</label>
@@ -111,8 +164,19 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
           </div>
           {(state.proto === 'tcp' || state.proto === 'udp') && (
             <div>
-              <label className="label">Porta de destino</label>
-              <input className="input w-full" placeholder="ex.: 443 ou 1000-2000" value={state.dport} onChange={(e) => setState({ ...state, dport: e.target.value })} />
+              <label className="label">Serviço (porta de destino)</label>
+              {/* Quem não decora que área de trabalho remota é 3389 procura por
+                  "remoto". Quem já sabe digita 3389 e acha do mesmo jeito. Faixa
+                  de portas continua aceita pelo texto livre. */}
+              <Combo
+                items={itensDeServico}
+                value={state.dport ? `svc:${state.dport}/${state.proto}` : ''}
+                onPick={(i) => setState({ ...state, dport: i ? String(i.id).split(':')[1].split('/')[0] : '' })}
+                onFreeText={(t) => setState({ ...state, dport: t })}
+                freeTextHint="como porta"
+                placeholder="Buscar serviço ou porta…"
+                emptyLabel="Qualquer porta"
+              />
             </div>
           )}
         </div>

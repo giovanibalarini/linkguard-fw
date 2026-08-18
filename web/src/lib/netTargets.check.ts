@@ -99,4 +99,37 @@ const HOSTS: HostLike[] = [
   eq(searchTargets('x', []).length, 0, 'busca em lista vazia');
 }
 
+
+
+{
+  // Encontrado olhando a tela com dados reais: a maioria dos aparelhos de uma
+  // LAN não anuncia hostname e nunca recebeu apelido, então a lista virava uma
+  // coluna de MACs — o que este seletor existe para evitar. E o nome estava ali
+  // do lado, na reserva de DHCP, que a fusão por IP jogava fora.
+  const semNome: HostLike[] = [{ mac: 'f8:1b:04:1c:81:77', ip: '192.168.3.13', hostname: '', alias: '' }];
+  const t = buildTargets(semNome, [{ mac: 'f8:1b:04:1c:81:77', ip: '192.168.3.13', hostname: 'impressora-recepcao' }], [], '', AGORA);
+  eq(t.length, 1, 'continua sendo um aparelho só');
+  eq(t[0].label, 'impressora-recepcao', 'host sem nome herda o nome da reserva');
+}
+
+{
+  // Mas o que o ADMIN escreveu continua ganhando: o apelido é a intenção mais
+  // recente e mais deliberada das três.
+  const comApelido: HostLike[] = [{ mac: 'aa:11', ip: '10.0.0.5', hostname: 'host-do-fabricante', alias: 'PC da recepção' }];
+  const t = buildTargets(comApelido, [{ mac: 'aa:11', ip: '10.0.0.5', hostname: 'reserva-antiga' }], [], '', AGORA);
+  eq(t[0].label, 'PC da recepção', 'apelido ganha da reserva e do hostname');
+}
+
+{
+  // E casa por MAC também, não só por IP: o host pode estar num IP diferente do
+  // reservado (a reserva ainda não aplicou, ou ele pegou lease dinâmico antes).
+  const t = buildTargets(
+    [{ mac: 'bb:22', ip: '192.168.3.150', hostname: '', alias: '' }],
+    [{ mac: 'BB:22', ip: '192.168.3.10', hostname: 'nvr-portaria' }],
+    [], '', AGORA);
+  const host = t.find((x) => x.kind === 'host')!;
+  eq(host.label, 'nvr-portaria', 'casa por MAC mesmo com IP diferente');
+  check(t.some((x) => x.kind === 'reserva'), 'e a reserva, em outro IP, segue oferecida');
+}
+
 console.log(`${n} asserções passaram.`);
