@@ -39,11 +39,21 @@ type fakeReconcileExec struct {
 	// a test can only see the file's path, which says nothing about what
 	// was actually validated.
 	checkScripts []string
+	// applyScripts é o mesmo para `nft -f` SEM o -c: o caminho atômico da
+	// chain forward com política restritiva (issue #92). Sem isto o teste só
+	// enxerga o caminho do arquivo temporário, que é apagado no retorno e não
+	// diz nada sobre o que foi aplicado.
+	applyScripts []string
 }
 
 func (e *fakeReconcileExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
 	full := strings.Join(append([]string{cmd}, args...), " ")
 	e.executed = append(e.executed, full)
+	if len(args) >= 2 && args[0] == "-f" {
+		if body, err := os.ReadFile(args[1]); err == nil {
+			e.applyScripts = append(e.applyScripts, string(body))
+		}
+	}
 	if e.failOn != nil {
 		return "", e.failOn(full)
 	}

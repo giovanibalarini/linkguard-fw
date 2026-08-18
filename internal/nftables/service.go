@@ -45,6 +45,10 @@ type Service struct {
 	// adminAccessSource alimenta as regras de sobrevivência. Só consultada com
 	// política restritiva; ausente nesse caso é ERRO (ver adminAccess).
 	adminAccessSource func() (AdminAccess, error)
+	// forwardPolicySource é a política da chain forward (#92). Independente da
+	// input: bloquear o que atravessa e liberar o que chega ao firewall é uma
+	// combinação legítima.
+	forwardPolicySource func() (Policy, error)
 
 	// confPath é o arquivo que Persist grava — o ruleset de BOOT da máquina
 	// (ver ConfPath e SetConfPath). Injetável no Service, e não só na variável

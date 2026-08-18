@@ -521,6 +521,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// manter aberto — e é assim que o admin se tranca fora. O renderizador
 	// aborta nesse caso, e esta ligação é o que faz o caso não acontecer.
 	nftSvc.SetInputPolicySource(frSvc.InputPolicy)
+	nftSvc.SetForwardPolicySource(frSvc.ForwardPolicy)
 	nftSvc.SetAdminAccessSource(func() (nftables.AdminAccess, error) {
 		netCfg := netsvc.DefaultConfig()
 		if raw, _ := db.GetSetting("netsvc_config"); raw != "" {

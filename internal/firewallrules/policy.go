@@ -26,8 +26,14 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 )
 
-// PolicySettingKey é a chave em `settings`.
-const PolicySettingKey = "firewall_input_policy"
+// As chaves em `settings`. Duas, e não uma: as posturas são independentes —
+// bloquear o que atravessa e liberar o que chega ao próprio firewall é uma
+// combinação legítima e comum, e um valor só tiraria do admin exatamente a
+// escolha que ele veio fazer.
+const (
+	PolicySettingKey        = "firewall_input_policy"
+	ForwardPolicySettingKey = "firewall_forward_policy"
+)
 
 // InputPolicy devolve a política padrão configurada da chain input.
 //
@@ -61,4 +67,29 @@ func (s *Service) SetInputPolicy(p nftables.Policy) error {
 		return fmt.Errorf("política inválida: %q", p)
 	}
 	return s.db.SetSetting(PolicySettingKey, string(p))
+}
+
+// ForwardPolicy devolve a política padrão da chain forward — o tráfego que
+// ATRAVESSA o firewall (issue #92). Mesmo contrato de InputPolicy.
+func (s *Service) ForwardPolicy() (nftables.Policy, error) {
+	raw, err := s.db.GetSetting(ForwardPolicySettingKey)
+	if err != nil {
+		return "", fmt.Errorf("ler a política padrão da forward: %w", err)
+	}
+	if raw == "" {
+		return nftables.PolicyAccept, nil
+	}
+	p := nftables.Policy(raw)
+	if !p.Valid() {
+		return "", fmt.Errorf("política padrão da forward inválida gravada no banco: %q", raw)
+	}
+	return p, nil
+}
+
+// SetForwardPolicy grava a política da forward.
+func (s *Service) SetForwardPolicy(p nftables.Policy) error {
+	if !p.Valid() {
+		return fmt.Errorf("política inválida: %q", p)
+	}
+	return s.db.SetSetting(ForwardPolicySettingKey, string(p))
 }

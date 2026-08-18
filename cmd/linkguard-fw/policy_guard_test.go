@@ -83,7 +83,7 @@ func TestMainLigaAsDuasFontesJuntas(t *testing.T) {
 	fset := token.NewFileSet()
 	entradas, _ := os.ReadDir(".")
 
-	var temPolitica, temAcesso bool
+	var temPolitica, temAcesso, temForward bool
 	for _, e := range entradas {
 		nome := e.Name()
 		if e.IsDir() || !strings.HasSuffix(nome, ".go") || strings.HasSuffix(nome, "_test.go") {
@@ -103,6 +103,8 @@ func TestMainLigaAsDuasFontesJuntas(t *testing.T) {
 				temPolitica = true
 			case "SetAdminAccessSource":
 				temAcesso = true
+			case "SetForwardPolicySource":
+				temForward = true
 			}
 			return true
 		})
@@ -115,5 +117,14 @@ func TestMainLigaAsDuasFontesJuntas(t *testing.T) {
 	}
 	if !temPolitica {
 		t.Error("nenhuma das duas está ligada: a postura do firewall não chega ao renderizador (issue #78)")
+	}
+	// E a terceira fonte, a da chain forward (#92). Ela é independente das
+	// outras duas — não precisa de acesso administrativo, porque nada do que o
+	// operador usa para confirmar atravessa o firewall —, mas se não estiver
+	// ligada o painel grava a postura no banco e o renderizador nunca a lê: a
+	// tela diria "bloqueando" com a rede inteira passando.
+	if !temForward {
+		t.Error("SetForwardPolicySource não está ligada: a postura do tráfego que ATRAVESSA o firewall " +
+			"seria gravada no banco e nunca aplicada (issue #92)")
 	}
 }

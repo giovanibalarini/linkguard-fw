@@ -208,3 +208,73 @@ func TestSurvivalTodaLinhaTerminaEmAccept(t *testing.T) {
 		}
 	}
 }
+
+// A lista da chain FORWARD (issue #92). Ela responde uma pergunta diferente da
+// de cima: a input protege o acesso À máquina, a forward protege as conexões
+// que a rede já tem.
+
+// TestForwardSurvivalAceitaEstablished é a asserção que parece contradizer
+// TestSurvivalNaoAceitaEstablished, e não contradiz — são chains diferentes.
+//
+// O problema da #86 é a sessão SSH do OPERADOR sobrevivendo ao próprio bloqueio
+// e fazendo o teste dos 90 segundos mentir. Essa sessão vai para o firewall:
+// é `input`. Nada do que o operador usa para confirmar passa pela forward.
+//
+// Aqui, a ausência de `established` é que seria o desastre: "bloquear tudo"
+// derrubaria cada download, cada chamada e cada página já aberta no instante em
+// que é aplicado — e o operador confirmaria uma janela olhando para uma rede
+// que ele acabou de cortar por um motivo que não é o que ele quis dizer.
+func TestForwardSurvivalAceitaEstablished(t *testing.T) {
+	rs := ForwardSurvivalRules()
+	if !contem(rs, "ct state established,related") {
+		t.Fatalf("a lista da forward não aceita conexões já estabelecidas: %v\n"+
+			"Sem isto, uma política restritiva não bloqueia \"o que não foi liberado\":\n"+
+			"bloqueia tudo, porque nenhuma resposta de servidor casa com regra de saída.", linhas(rs))
+	}
+	if got := strings.Join(rs[0], " "); !strings.Contains(got, "established") {
+		t.Errorf("ela não é a primeira linha: %q", got)
+	}
+}
+
+// TestForwardSurvivalLiberaOsEncaminhamentos: `ct status dnat` casa com o que a
+// chain de DNAT já traduziu. Sem esta linha, criar um encaminhamento de porta
+// numa máquina bloqueada grava o DNAT e o pacote morre logo depois, na política
+// — o sintoma é "o redirecionamento não funciona", sem nada apontando para o
+// firewall.
+func TestForwardSurvivalLiberaOsEncaminhamentos(t *testing.T) {
+	if !contem(ForwardSurvivalRules(), "ct status dnat") {
+		t.Error("sem a liberação do DNAT: todo encaminhamento de porta seria traduzido e descartado")
+	}
+}
+
+// TestForwardSurvivalNaoTemAcessoAdministrativo: SSH, painel e DHCP servido não
+// atravessam o firewall — são tráfego para a própria máquina. Emiti-los aqui
+// abriria, na chain que decide sobre a rede inteira, portas que ninguém pediu.
+func TestForwardSurvivalNaoTemAcessoAdministrativo(t *testing.T) {
+	for _, l := range linhas(ForwardSurvivalRules()) {
+		for _, proibido := range []string{"dport 22", "dport 67", "dport 68", "iif lo"} {
+			if strings.Contains(l, proibido) {
+				t.Errorf("acesso administrativo na chain forward: %q contém %q", l, proibido)
+			}
+		}
+	}
+}
+
+// Mesmas invariantes estruturais da lista de cima: nada de drop disfarçado de
+// sobrevivência, nada de amarrar interface (#83), nenhum token vazio.
+func TestForwardSurvivalTemAsMesmasInvariantes(t *testing.T) {
+	for _, r := range ForwardSurvivalRules() {
+		l := strings.Join(r, " ")
+		if r[len(r)-1] != "accept" {
+			t.Errorf("linha não termina em accept: %q", l)
+		}
+		if strings.Contains(l, "iifname") || strings.Contains(l, "oifname") {
+			t.Errorf("regra de sobrevivência amarrada a nome de interface: %q (#83)", l)
+		}
+		for j, tok := range r {
+			if strings.TrimSpace(tok) == "" {
+				t.Errorf("token %d em branco em %q", j, l)
+			}
+		}
+	}
+}
