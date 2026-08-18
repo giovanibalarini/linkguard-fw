@@ -8,6 +8,11 @@
 // dizendo `drop` num lugar e `descarta` no outro para a mesma linha do
 // firewall.
 
+// ATENÇÃO (issue #105): os campos `hint`, `title`, `what` e `empty` daqui
+// guardam CHAVES do dicionário, não texto. Quem renderiza chama t(meta.hint).
+// Os keywords do nftables (accept/drop/reject, continue, forward/input,
+// `ct state new`) continuam literais de propósito: são o que o admin vai achar
+// no `nft list ruleset`, e traduzi-los criaria um vocabulário só do painel.
 import { Check, Ban, Slash, ArrowRightLeft, Server, Zap, DoorOpen } from 'lucide-react';
 import { isSystemGroup, KIND_BLOCKED_HOSTS, KIND_BLOCKLIST } from '../../lib/blockGroups';
 import type { FirewallGroup, GroupConnState, GroupFallthrough, GroupScope, NftManaged } from '../../types';
@@ -23,9 +28,9 @@ export type Unit = 'bytes' | 'bits';
 // reading. Same reasoning as rendering rule conditions in raw nft syntax
 // (design spec §7.2.1).
 export const ACTIONS: Record<Action, { label: string; hint: string; color: string; ring: string; Icon: typeof Check }> = {
-  accept: { label: 'accept', hint: 'deixa passar', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10', Icon: Check },
-  drop: { label: 'drop', hint: 'descarta em silêncio', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10', Icon: Ban },
-  reject: { label: 'reject', hint: 'recusa e avisa a origem', color: 'text-orange-400', ring: 'border-orange-500 bg-orange-500/10', Icon: Slash },
+  accept: { label: 'accept', hint: 'fw.action.accept.hint', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10', Icon: Check },
+  drop: { label: 'drop', hint: 'fw.action.drop.hint', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10', Icon: Ban },
+  reject: { label: 'reject', hint: 'fw.action.reject.hint', color: 'text-orange-400', ring: 'border-orange-500 bg-orange-500/10', Icon: Slash },
 };
 
 // "E o que sobrar?" is the group's own verdict for traffic that entered it
@@ -33,9 +38,9 @@ export const ACTIONS: Record<Action, { label: string; hint: string; color: strin
 // (`continue` really is one), so they are not translated either — the short
 // Portuguese sentence beside each one carries the meaning.
 export const FALLTHROUGH: Record<GroupFallthrough, { hint: string; color: string; ring: string }> = {
-  continue: { hint: 'não decide nada; a avaliação segue adiante', color: 'text-gray-300', ring: 'border-gray-600 bg-gray-700/30' },
-  accept: { hint: 'deixa passar tudo o que sobrou', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10' },
-  drop: { hint: 'descarta em silêncio tudo o que sobrou', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10' },
+  continue: { hint: 'fw.fallthrough.continue.hint', color: 'text-gray-300', ring: 'border-gray-600 bg-gray-700/30' },
+  accept: { hint: 'fw.fallthrough.accept.hint', color: 'text-green-400', ring: 'border-green-500 bg-green-500/10' },
+  drop: { hint: 'fw.fallthrough.drop.hint', color: 'text-red-400', ring: 'border-red-500 bg-red-500/10' },
 };
 
 /** O que um grupo do sistema é, na tela: ver SYSTEM_KINDS. */
@@ -64,19 +69,19 @@ export const SYSTEM_KINDS: Record<string, SystemKind> = {
     // nela. Dizer "qualquer tráfego" era falso justamente onde mais engana —
     // um host "bloqueado" continua abrindo o painel, o SSH, o DNS e o DHCP
     // do próprio firewall, porque isso é input, não forward.
-    what: 'Todo tráfego ROTEADO de ou para estes hosts é descartado: eles não saem para a internet nem alcançam outra rede através do firewall. O que eles ainda alcançam é o próprio firewall (painel, SSH, DNS e DHCP), porque estas linhas ficam só na chain forward. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo.',
+    what: 'fw.systemKind.blockedHosts.what',
     lines: ['ip saddr @blocked_hosts counter drop', 'ip daddr @blocked_hosts counter drop'],
-    member: ['host', 'hosts'],
-    empty: 'Nenhum host bloqueado.',
+    member: ['fw.systemKind.blockedHosts.member.one', 'fw.systemKind.blockedHosts.member.many'],
+    empty: 'fw.systemKind.blockedHosts.empty',
   },
   [KIND_BLOCKLIST]: {
     // Mesma correção do kind acima, pelo mesmo motivo: só a forward. O que o
     // PRÓPRIO firewall inicia para um destino bloqueado (atualização,
     // consulta DNS dele) é output e não passa por estas linhas.
-    what: 'Todo tráfego ROTEADO de ou para estes destinos é descartado — a faixa vale como origem e como destino. Estas linhas ficam só na chain forward: o que o próprio firewall inicia para esses destinos não passa por elas. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo.',
+    what: 'fw.systemKind.blocklist.what',
     lines: ['ip daddr @blocklist counter drop', 'ip saddr @blocklist counter drop'],
-    member: ['faixa', 'faixas'],
-    empty: 'Nenhum destino bloqueado.',
+    member: ['fw.systemKind.blocklist.member.one', 'fw.systemKind.blocklist.member.many'],
+    empty: 'fw.systemKind.blocklist.empty',
   },
 };
 
@@ -103,16 +108,16 @@ export const SCOPES: Record<'forward' | 'input', {
 }> = {
   forward: {
     chain: 'forward',
-    title: 'atravessando o firewall',
-    hint: 'a LAN saindo para a internet, uma VLAN falando com outra',
+    title: 'fw.scope.forward.title',
+    hint: 'fw.scope.forward.hint',
     color: 'text-gray-300',
     ring: 'border-gray-500 bg-gray-700/40',
     Icon: ArrowRightLeft,
   },
   input: {
     chain: 'input',
-    title: 'destinado ao firewall',
-    hint: 'SSH, este painel, DNS, Samba — o que chega na própria máquina',
+    title: 'fw.scope.input.title',
+    hint: 'fw.scope.input.hint',
     color: 'text-orange-300',
     ring: 'border-orange-500 bg-orange-500/10',
     Icon: Server,
@@ -153,16 +158,16 @@ export const CONN_STATES: Record<'any' | 'new', {
   Icon: typeof Check;
 }> = {
   any: {
-    title: 'toda conexão',
-    hint: 'decide na hora, inclusive sobre o que já está em curso: a transferência que o host já estava fazendo cai junto',
+    title: 'fw.connState.any.title',
+    hint: 'fw.connState.any.hint',
     expr: '',
     color: 'text-gray-300',
     ring: 'border-gray-500 bg-gray-700/40',
     Icon: Zap,
   },
   new: {
-    title: 'só conexões novas',
-    hint: 'não derruba a transferência que já está em curso; vale para o que for aberto daqui em diante',
+    title: 'fw.connState.new.title',
+    hint: 'fw.connState.new.hint',
     expr: 'ct state new',
     color: 'text-sky-300',
     ring: 'border-sky-500 bg-sky-500/10',

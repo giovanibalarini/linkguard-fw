@@ -5,6 +5,7 @@ import {
   ShieldAlert, Lock, AlertTriangle, DoorOpen,
 } from 'lucide-react';
 import client from '../api/client';
+import { useI18n } from '../i18n';
 import IconButton from './ui/IconButton';
 import { useAuth } from '../context/AuthContext';
 import { adminGroupsAbove, isSystemGroup } from '../lib/blockGroups';
@@ -77,6 +78,7 @@ interface Props {
  *    the exact slots they already occupied.
  */
 export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
+  const { t } = useI18n();
   const { can } = useAuth();
   // Bloquear/desbloquear host é permissão da tela de Hosts (hosts.block), não
   // de firewall.write: o bloqueio por MAC mora no inventário, e é de lá que a
@@ -203,14 +205,14 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   const toggleGroup = (g: FirewallGroup) => run(
     () => client.post('/api/nftables/groups/toggle', { id: g.id, enabled: !g.enabled }),
     g.enabled
-      ? (isSystemGroup(g.kind) ? 'Bloqueio desligado — os membros continuam guardados.' : 'Grupo desligado — as regras continuam guardadas.')
-      : (isSystemGroup(g.kind) ? 'Bloqueio ligado.' : 'Grupo ligado.'),
+      ? (isSystemGroup(g.kind) ? t('fw.toast.group.blockOff') : t('fw.toast.group.off'))
+      : (isSystemGroup(g.kind) ? t('fw.toast.group.blockOn') : t('fw.toast.group.on')),
   );
   const removeGroup = (g: FirewallGroup) => {
     const n = splitGroupRules(g).rules.length;
     const detail = n === 0 ? '' : ` As ${n} regra${n === 1 ? '' : 's'} dentro dele ${n === 1 ? 'será apagada' : 'serão apagadas'} junto.`;
     if (!confirm(`Remover o grupo "${g.name}"?${detail}`)) return;
-    run(() => client.delete('/api/nftables/groups', { data: { id: g.id } }), 'Grupo removido.');
+    run(() => client.delete('/api/nftables/groups', { data: { id: g.id } }), t('fw.toast.group.removed'));
   };
 
   // Reordering, both here and in the rules table, is optimistic with an
@@ -298,7 +300,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   };
 
   if (loading) {
-    return <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando grupos...</div>;
+    return <div className="card text-center py-8 text-gray-500 animate-pulse">{t('fw.groups.loading')}</div>;
   }
 
   const detail = selected ? splitGroupRules(selected) : undefined;
@@ -347,7 +349,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
           são dois problemas diferentes, com duas ações diferentes. */}
       {applyStatus?.boot_persist_error && (
         <div className="card border border-amber-500/30 bg-amber-500/10 text-amber-300 text-sm">
-          <p className="font-medium">Suas regras estão valendo agora, mas não sobrevivem a um reboot.</p>
+          <p className="font-medium">{t('fw.groups.notPersisted')}</p>
           <p className="mt-1 text-amber-200/80">
             O firewall em vigor não pôde ser gravado no arquivo que a máquina carrega no boot: {applyStatus.boot_persist_error}. Se a máquina reiniciar antes de isso ser resolvido, ela volta com o firewall anterior — não com o que está nesta tela.
           </p>
@@ -360,7 +362,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               exatamente isso primeiro, vê que não muda nada e conclui que o
               produto está quebrado. */}
           <p className="mt-2 text-amber-200/80">
-            <span className="font-medium text-amber-300">Como resolver:</span> devolva a permissão de escrita em <code className="font-mono text-xs">/etc/nftables.conf</code> e depois <span className="font-medium text-amber-300">reinicie o serviço</span> — <code className="font-mono text-xs break-all">systemctl restart linkguard-fw</code>. Aplicar outra regra não apaga este aviso: o serviço em execução continua sem poder escrever no arquivo até ser reiniciado.
+            <span className="font-medium text-amber-300">{t('fw.groups.howToFix')}</span> {t('fw.groups.restorePermission')} <code className="font-mono text-xs">/etc/nftables.conf</code> e depois <span className="font-medium text-amber-300">{t('fw.groups.restartService')}</span> — <code className="font-mono text-xs break-all">systemctl restart linkguard-fw</code>. Aplicar outra regra não apaga este aviso: o serviço em execução continua sem poder escrever no arquivo até ser reiniciado.
           </p>
         </div>
       )}
@@ -373,12 +375,12 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
         <p className="text-gray-400 text-xs flex items-start gap-2">
           <ShieldAlert className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
           <span>
-            <span className="text-gray-300">A lista abaixo é a ordem real de avaliação, de cima para baixo.</span>{' '}
+            <span className="text-gray-300">{t('fw.groups.evalOrder')}</span>{' '}
             O que a condição de entrada de um grupo não casar é pulado inteiro; os bloqueios do sistema nascem no topo e podem ser arrastados como qualquer outro item.
           </span>
         </p>
         <div className="flex items-center gap-2 text-xs shrink-0">
-          <span className="text-gray-500">Contadores em:</span>
+          <span className="text-gray-500">{t('fw.groups.countersIn')}</span>
           <div className="inline-flex rounded-lg border border-gray-700 overflow-hidden">
             <button onClick={() => setUnit('bytes')} className={`px-3 py-1.5 ${unit === 'bytes' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}>bytes</button>
             <button onClick={() => setUnit('bits')} className={`px-3 py-1.5 border-l border-gray-700 ${unit === 'bits' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}>bits</button>
@@ -405,8 +407,8 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
         {!selected || !detail ? (
           <div className="card text-center py-16">
             <Layers className="w-10 h-10 text-gray-700 mx-auto mb-3" />
-            <p className="text-gray-400 text-sm">Nenhum grupo para mostrar.</p>
-            <p className="text-gray-600 text-xs mt-1">Um grupo junta regras sob uma condição de entrada e liga ou desliga todas de uma vez.</p>
+            <p className="text-gray-400 text-sm">{t('fw.groups.empty')}</p>
+            <p className="text-gray-600 text-xs mt-1">{t('fw.groups.emptyHint')} vez.</p>
           </div>
         ) : selectedSys ? (
           /* ─── Detalhe de um grupo do sistema (spec §4) ───────────────── */
@@ -468,7 +470,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                       title={locked ? lockReason : undefined}
                       className="btn-secondary flex items-center gap-1.5 text-xs px-2.5 py-1.5 disabled:opacity-50"
                     >
-                      {selected.enabled ? <><PowerOff className="w-3.5 h-3.5" /> Desligar</> : <><Power className="w-3.5 h-3.5" /> Ligar</>}
+                      {selected.enabled ? <><PowerOff className="w-3.5 h-3.5" />{t('fw.groups.disable')}</> : <><Power className="w-3.5 h-3.5" />{t('fw.groups.enable')}</>}
                     </button>
                     <IconButton icon={Pencil} onClick={() => openEditGroup(selected)} disabled={editDisabled} label="Editar grupo" title={locked ? lockReason : undefined} />
                     <IconButton icon={Trash2} onClick={() => removeGroup(selected)} disabled={editDisabled} label="Remover grupo" title={locked ? lockReason : undefined} variant="danger" />
@@ -490,10 +492,10 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
             <div className="rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2.5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div className="min-w-0 text-sm">
-                  <span className="text-gray-500 text-xs uppercase tracking-wide mr-2">Quando</span>
+                  <span className="text-gray-500 text-xs uppercase tracking-wide mr-2">{t('fw.groups.when')}</span>
                   <span className="text-gray-200">{describeCondition(selected)}</span>
                   <span className="text-gray-600 mx-2">·</span>
-                  <span className="text-gray-500 text-xs uppercase tracking-wide mr-2">Onde</span>
+                  <span className="text-gray-500 text-xs uppercase tracking-wide mr-2">{t('fw.groups.where')}</span>
                   {/* "Onde" era um texto fixo dizendo "atravessando" — com o
                       escopo da Fase C2 isso vira mentira na tela justamente no
                       grupo que pode cortar o acesso do operador. */}
@@ -507,7 +509,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                   {groupConnState(selected) === 'new' && (
                     <>
                       <span className="text-gray-600 mx-2">·</span>
-                      <span className="text-gray-500 text-xs uppercase tracking-wide mr-2">Quais conexões</span>
+                      <span className="text-gray-500 text-xs uppercase tracking-wide mr-2">{t('fw.groups.whichConnections')}</span>
                       <span className="text-sky-300">{CONN_STATES.new.title}</span>
                     </>
                   )}
@@ -515,7 +517,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 <div className="text-xs font-mono text-gray-400 shrink-0">
                   {selected.has_counter
                     ? <>entraram {selected.packets.toLocaleString('pt-BR')} pct · {formatCount(selected.bytes, unit)}</>
-                    : <span className="text-gray-600">sem contador · —</span>}
+                    : <span className="text-gray-600">{t('fw.groups.noCounter')}</span>}
                 </div>
               </div>
               {/* A linha de verdade, com o `ct state new` no meio quando ele
@@ -523,7 +525,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
               <NftPreview endpoint="/api/nftables/groups/preview" body={groupPreviewBody(selected)} className="mt-1.5 text-gray-600" />
               {groupConnState(selected) === 'new' && (
                 <p className="mt-1.5 text-[11px] text-sky-300/90">
-                  Só decide sobre conexões novas: {CONN_STATES.new.hint}.
+                  {t('fw.groups.newOnly', { hint: t(CONN_STATES.new.hint) })}
                 </p>
               )}
               {/* Alcançabilidade é transitiva: se nada pula para a chain,
@@ -549,12 +551,12 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 <thead>
                   <tr className="text-left text-gray-500 border-b border-gray-800 text-[11px] uppercase tracking-wide">
                     <th className="pb-2 pr-2 font-medium w-10">#</th>
-                    <th className="pb-2 pr-3 font-medium w-28">Ação</th>
-                    <th className="pb-2 pr-3 font-medium">Quando a regra casa</th>
-                    <th className="pb-2 pr-3 font-medium">Descrição</th>
-                    <th className="pb-2 pr-3 font-medium text-right w-20">Pacotes</th>
-                    <th className="pb-2 pr-3 font-medium text-right w-20">Tráfego</th>
-                    {canWrite && <th className="pb-2 font-medium w-28 text-right">Ações</th>}
+                    <th className="pb-2 pr-3 font-medium w-28">{t('fw.groups.col.action')}</th>
+                    <th className="pb-2 pr-3 font-medium">{t('fw.groups.col.match')}</th>
+                    <th className="pb-2 pr-3 font-medium">{t('fw.groups.col.description')}</th>
+                    <th className="pb-2 pr-3 font-medium text-right w-20">{t('fw.groups.col.packets')}</th>
+                    <th className="pb-2 pr-3 font-medium text-right w-20">{t('fw.groups.col.traffic')}</th>
+                    {canWrite && <th className="pb-2 font-medium w-28 text-right">{t('fw.groups.col.actions')}</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -640,7 +642,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                                 <IconButton icon={Trash2} onClick={() => removeRule(r)} disabled={editDisabled} title={locked ? lockReason : undefined} label="Excluir regra" variant="danger" className="min-w-[32px] min-h-[32px]" />
                               </div>
                             ) : (
-                              <span className="block text-right text-[10px] text-gray-600">não é sua regra</span>
+                              <span className="block text-right text-[10px] text-gray-600">{t('fw.groups.notYourRule')}</span>
                             )}
                           </td>
                         )}
@@ -659,7 +661,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                         </span>
                       </td>
                       <td className="py-2 pr-3 align-top font-mono text-[12px] text-gray-400 break-words">{r.expression}</td>
-                      <td className="py-2 pr-3 align-top text-gray-500 text-xs">Está no firewall, mas não corresponde a nenhuma regra sua.</td>
+                      <td className="py-2 pr-3 align-top text-gray-500 text-xs">{t('fw.groups.notYourRule.hint')}</td>
                       <td className="py-2 pr-3 align-top text-right font-mono text-xs text-gray-500">{r.has_counter ? r.packets.toLocaleString('pt-BR') : '—'}</td>
                       <td className="py-2 pr-3 align-top text-right font-mono text-xs text-gray-500">{r.has_counter ? formatCount(r.bytes, unit) : '—'}</td>
                       {canWrite && <td />}
@@ -675,12 +677,12 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
             <div className={`rounded-lg border px-3 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${FALLTHROUGH[selected.fallthrough]?.ring ?? FALLTHROUGH.continue.ring}`}>
               <div className="flex items-center gap-2 text-sm min-w-0">
                 <CornerDownRight className="w-3.5 h-3.5 text-gray-500 shrink-0" aria-hidden="true" />
-                <span className="text-gray-400 text-xs">E o que sobrar?</span>
+                <span className="text-gray-400 text-xs">{t('fw.group.leftover')}</span>
                 <span className={`font-mono text-xs font-medium ${FALLTHROUGH[selected.fallthrough]?.color ?? 'text-gray-300'}`}>
                   {selected.fallthrough || 'continue'}
                 </span>
                 <span className="text-gray-500 text-xs truncate">
-                  {FALLTHROUGH[selected.fallthrough]?.hint ?? FALLTHROUGH.continue.hint}
+                  {t(FALLTHROUGH[selected.fallthrough]?.hint ?? FALLTHROUGH.continue.hint)}
                 </span>
               </div>
               <div className="text-xs font-mono text-gray-500 shrink-0">
@@ -697,7 +699,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 title={locked ? lockReason : undefined}
                 className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50"
               >
-                <Plus className="w-4 h-4" /> Nova regra neste grupo
+                <Plus className="w-4 h-4" /> {t('fw.groups.newRuleHere')}
               </button>
             )}
           </div>

@@ -7,6 +7,7 @@ import client from '../api/client';
 import Panel from '../components/ui/Panel';
 import IconButton from '../components/ui/IconButton';
 import { useAuth } from '../context/AuthContext';
+import { useI18n } from '../i18n';
 import PortForwarding from '../components/PortForwarding';
 import FirewallOverview from '../components/FirewallOverview';
 import FirewallGroups from '../components/FirewallGroups';
@@ -17,20 +18,16 @@ import type { IptablesBackup, MsgLevel, NftChainInfo, SystemMetrics } from '../t
 // A aba "blocks" (Bloqueios e direcionamento) se dissolveu: os dois bloqueios
 // viraram grupos do sistema, dentro de "Grupos de regras", e o direcionamento
 // por WAN ganhou casa própria (spec de 2026-08-12, §3).
-const TABS = [
-  ['overview', 'Visão geral'],
-  // A postura vem logo depois da visão geral, e antes dos grupos: ela é a
-  // pergunta de cima ("o que acontece com o tráfego que nenhuma regra
-  // menciona?"), e as regras só fazem sentido depois de respondida.
-  ['posture', 'Postura'],
-  ['groups', 'Grupos de regras'],
-  ['steering', 'Direcionamento por WAN'],
-  ['portforward', 'Encaminhamento'],
-  ['ruleset', 'Ruleset'],
-  ['backups', 'Snapshots'],
-] as const;
+// Só os ids: o rótulo de cada aba vem do dicionário (fw.tab.<id>), porque ele
+// é texto que a pessoa lê. Fixar o par [id, rótulo] aqui foi o que deixava a
+// interface presa a um idioma (issue #105).
+//
+// A postura vem logo depois da visão geral, e antes dos grupos: ela é a
+// pergunta de cima ("o que acontece com o tráfego que nenhuma regra
+// menciona?"), e as regras só fazem sentido depois de respondida.
+const TABS = ['overview', 'posture', 'groups', 'steering', 'portforward', 'ruleset', 'backups'] as const;
 
-type Tab = (typeof TABS)[number][0];
+type Tab = (typeof TABS)[number];
 
 // O âmbar do aviso é o mesmo da faixa do confirmar-ou-reverte (o `warn` do
 // design system), e não por acaso: a mensagem "o prazo acabou e a alteração foi
@@ -43,11 +40,12 @@ const MSG_STYLES: Record<MsgLevel, string> = {
 };
 
 function isTab(v: string | null): v is Tab {
-  return !!v && TABS.some(([id]) => id === v);
+  return !!v && (TABS as readonly string[]).includes(v);
 }
 
 export default function Firewall() {
   const { can } = useAuth();
+  const { t } = useI18n();
   const canWrite = can('firewall.write');
   // ?tab=groups deixa outra tela apontar direto para a aba certa — é o que a
   // tela de Hosts usa para levar o admin ao grupo "Hosts bloqueados" quando
@@ -152,15 +150,15 @@ export default function Firewall() {
       )}
 
       <div className="flex gap-2 border-b border-gray-800 overflow-x-auto">
-        {TABS.map(([id, label]) => (
+        {TABS.map((id) => (
           <button key={id} onClick={() => setActiveTab(id)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap shrink-0 ${activeTab === id ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
-            {id === 'backups' ? `${label} (${backups.length})` : label}
+            {id === 'backups' ? `${t('fw.tab.backups')} (${backups.length})` : t(`fw.tab.${id}`)}
           </button>
         ))}
       </div>
 
       {loading ? (
-        <div className="card text-center py-8 text-gray-500 animate-pulse">Carregando...</div>
+        <div className="card text-center py-8 text-gray-500 animate-pulse">{t('common.loading')}</div>
       ) : activeTab === 'overview' ? (
         <FirewallOverview
           chains={overview}

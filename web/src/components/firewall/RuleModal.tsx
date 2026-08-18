@@ -10,6 +10,7 @@
 
 import { useMemo, useState } from 'react';
 import client from '../../api/client';
+import { useI18n } from '../../i18n';
 import Modal from '../ui/Modal';
 import Combo, { type ComboItem } from '../ui/Combo';
 import { useNetTargets } from '../../lib/useNetTargets';
@@ -44,6 +45,7 @@ interface Props {
 }
 
 export default function RuleModal({ state, setState, ifaces, cor, onClose }: Props) {
+  const { t } = useI18n();
   const { busy, locked, lockReason, editDisabled, run } = cor;
   const { targets } = useNetTargets();
   const { mode } = useUIMode();
@@ -91,7 +93,7 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
     const req = state.id
       ? client.put('/api/nftables/rules', { id: state.id, ...payload })
       : client.post('/api/nftables/rules', payload);
-    run(() => req, state.id ? 'Regra atualizada.' : 'Regra criada.').then((ok) => { if (ok) onClose(); });
+    run(() => req, t(state.id ? 'fw.toast.rule.updated' : 'fw.toast.rule.created')).then((ok) => { if (ok) onClose(); });
   };
 
   return (
@@ -111,7 +113,7 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
         ) : (
         <>
         <div>
-          <label className="label mb-2 block">Ação</label>
+          <label className="label mb-2 block">{t('fw.rule.action')}</label>
           <div className="grid grid-cols-3 gap-2">
             {(Object.keys(ACTIONS) as Action[]).map((act) => {
               const a = ACTIONS[act];
@@ -120,7 +122,7 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
                 <button key={act} onClick={() => setState({ ...state, action: act })} className={`flex flex-col items-center gap-1 rounded-lg border p-3 transition ${active ? a.ring : 'border-gray-700 bg-gray-800/40 hover:border-gray-600'}`}>
                   <a.Icon className={`w-5 h-5 ${active ? a.color : 'text-gray-400'}`} />
                   <span className={`text-xs font-mono ${active ? a.color : 'text-gray-400'}`}>{a.label}</span>
-                  <span className="text-[10px] text-gray-500 leading-tight text-center">{a.hint}</span>
+                  <span className="text-[10px] text-gray-500 leading-tight text-center">{t(a.hint)}</span>
                 </button>
               );
             })}
@@ -129,21 +131,21 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="label">Interface de entrada</label>
+            <label className="label">{t('fw.rule.inIface')}</label>
             <select className="input w-full" value={state.iif} onChange={(e) => setState({ ...state, iif: e.target.value })}>
-              <option value="">Qualquer</option>
+              <option value="">{t('fw.rule.any')}</option>
               {ifaces.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
           <div>
-            <label className="label">Interface de saída</label>
+            <label className="label">{t('fw.rule.outIface')}</label>
             <select className="input w-full" value={state.oif} onChange={(e) => setState({ ...state, oif: e.target.value })}>
-              <option value="">Qualquer</option>
+              <option value="">{t('fw.rule.any')}</option>
               {ifaces.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
           <div>
-            <label className="label">Origem</label>
+            <label className="label">{t('fw.rule.source')}</label>
             {/* O LinkGuard já sabe quem são os aparelhos da rede — pedir que o
                 admin descubra o IP por fora e digite era jogar fora o que o
                 produto conhece. Endereço na mão continua possível: é a última
@@ -154,26 +156,26 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
               onPick={(i) => setState({ ...state, saddr: i ? valorDe(i) : '' })}
               onFreeText={(t) => setState({ ...state, saddr: t })}
               freeTextHint="como endereço"
-              placeholder="Buscar aparelho ou endereço…"
+              placeholder={t('fw.rule.searchTarget')}
               emptyLabel="Qualquer origem"
             />
           </div>
           <div>
-            <label className="label">Destino</label>
+            <label className="label">{t('fw.rule.dest')}</label>
             <Combo
               items={itensDeRede}
               value={idDoValor(state.daddr)}
               onPick={(i) => setState({ ...state, daddr: i ? valorDe(i) : '' })}
               onFreeText={(t) => setState({ ...state, daddr: t })}
               freeTextHint="como endereço"
-              placeholder="Buscar aparelho ou endereço…"
+              placeholder={t('fw.rule.searchTarget')}
               emptyLabel="Qualquer destino"
             />
           </div>
           <div>
-            <label className="label">Protocolo</label>
+            <label className="label">{t('fw.rule.proto')}</label>
             <select className="input w-full" value={state.proto} onChange={(e) => setState({ ...state, proto: e.target.value })}>
-              <option value="">Qualquer</option>
+              <option value="">{t('fw.rule.any')}</option>
               <option value="tcp">TCP</option>
               <option value="udp">UDP</option>
               <option value="icmp">ICMP</option>
@@ -181,7 +183,7 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
           </div>
           {(state.proto === 'tcp' || state.proto === 'udp') && (
             <div>
-              <label className="label">Serviço (porta de destino)</label>
+              <label className="label">{t('fw.rule.service')}</label>
               {/* Quem não decora que área de trabalho remota é 3389 procura por
                   "remoto". Quem já sabe digita 3389 e acha do mesmo jeito. Faixa
                   de portas continua aceita pelo texto livre. */}
@@ -191,7 +193,7 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
                 onPick={(i) => setState({ ...state, dport: i ? String(i.id).split(':')[1].split('/')[0] : '' })}
                 onFreeText={(t) => setState({ ...state, dport: t })}
                 freeTextHint="como porta"
-                placeholder="Buscar serviço ou porta…"
+                placeholder={t('fw.rule.searchService')}
                 emptyLabel="Qualquer porta"
               />
             </div>
@@ -199,10 +201,10 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
         </div>
 
         <div>
-          <label className="label">Descrição (por que essa regra existe)</label>
+          <label className="label">{t('fw.rule.description')}</label>
           <input
             className="input w-full"
-            placeholder="ex.: libera VPN do parceiro X"
+            placeholder={t('fw.rule.description.placeholder')}
             maxLength={500}
             value={state.description}
             onChange={(e) => setState({ ...state, description: e.target.value })}
@@ -229,9 +231,9 @@ export default function RuleModal({ state, setState, ifaces, cor, onClose }: Pro
             title={locked ? lockReason : undefined}
             className="btn-primary flex-1 disabled:opacity-50"
           >
-            {busy ? 'Salvando...' : 'Salvar'}
+            {busy ? t('common.saving') : t('common.save')}
           </button>
-          <button onClick={onClose} className="btn-secondary flex-1">Cancelar</button>
+          <button onClick={onClose} className="btn-secondary flex-1">{t('common.cancel')}</button>
         </div>
       )}
     </Modal>

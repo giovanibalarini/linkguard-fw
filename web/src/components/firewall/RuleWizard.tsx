@@ -14,6 +14,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useI18n } from '../../i18n';
 import { Ban, Check, Globe, SlidersHorizontal } from 'lucide-react';
 import Combo, { type ComboItem } from '../ui/Combo';
 import { useNetTargets } from '../../lib/useNetTargets';
@@ -39,6 +40,7 @@ interface Props {
 }
 
 export default function RuleWizard({ onAplicar, onAvancado }: Props) {
+  const { t } = useI18n();
   const { targets } = useNetTargets();
   const [intent, setIntent] = useState<Intent>('bloquear');
   const [alvo, setAlvo] = useState<Target | null>(null);
@@ -77,7 +79,7 @@ export default function RuleWizard({ onAplicar, onAvancado }: Props) {
   return (
     <div className="space-y-5">
       <div>
-        <h3 className="text-white font-semibold text-sm">O que você quer fazer?</h3>
+        <h3 className="text-white font-semibold text-sm">{t('fw.wizard.whatToDo')}</h3>
         <p className="text-gray-500 text-xs mt-0.5">
           Sem escolher grupo, sem escopo, sem decorar porta.
         </p>
@@ -111,21 +113,21 @@ export default function RuleWizard({ onAplicar, onAvancado }: Props) {
               items={itensDeRede}
               value={alvo?.id ?? ''}
               onPick={(i) => setAlvo(i ? targets.find((t) => t.id === i.id) ?? null : null)}
-              placeholder="Buscar por nome ou endereço…"
+              placeholder={t('fw.wizard.searchByName')}
               emptyLabel="Escolher aparelho"
             />
           </div>
 
           {precisaDeServico(intent) && (
             <div>
-              <label className="label mb-1.5 block">Qual serviço?</label>
+              <label className="label mb-1.5 block">{t('fw.wizard.whichService')}</label>
               <Combo
                 items={itensDeServico}
                 value={servico ? `${servico.port}/${servico.proto}` : ''}
                 onPick={(i) => setServico(
                   i ? SERVICES.find((s) => `${s.port}/${s.proto}` === i.id) ?? null : null,
                 )}
-                placeholder="Buscar “remoto”, “arquivos”, ou a porta…"
+                placeholder={t('fw.wizard.searchServiceHint')}
                 emptyLabel="Escolher serviço"
               />
             </div>
@@ -136,7 +138,7 @@ export default function RuleWizard({ onAplicar, onAvancado }: Props) {
               conferir. Inverter a ordem devolveria ao admin exatamente o
               problema que o assistente veio resolver. */}
           <div className="rounded-lg border border-gray-700 bg-gray-800/40 p-4">
-            <p className="text-xs uppercase tracking-wide text-gray-600 mb-2">O que vai acontecer</p>
+            <p className="text-xs uppercase tracking-wide text-gray-600 mb-2">{t('fw.wizard.whatWillHappen')}</p>
             <p className="text-sm text-gray-200">{descreverRegra(intent, alvo, servico)}</p>
           </div>
 

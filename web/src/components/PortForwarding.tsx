@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useI18n } from '../i18n';
 import { Plus, Trash2, ArrowRight, Loader2, Network, Power } from 'lucide-react';
 import client from '../api/client';
 import HelpTip from './HelpTip';
@@ -21,6 +22,7 @@ const emptyForm: Omit<PortForward, 'id'> = {
  * prerouting DNAT chain.
  */
 export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
+  const { t } = useI18n();
   const [list, setList] = useState<PortForward[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [busy, setBusy] = useState(false);
@@ -46,7 +48,7 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
       const { data } = await client.post<PortForward[]>('/api/portforward', { ...form, dest_ip: form.dest_ip.trim(), name: form.name.trim() });
       setList(data ?? []);
       setForm(emptyForm);
-      onMsg('Encaminhamento salvo e aplicado.');
+      onMsg(t('fw.toast.pf.saved'));
     } catch (e) {
       onMsg('Erro: ' + errMsg(e));
     } finally { setBusy(false); }
@@ -66,21 +68,21 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
     try {
       const { data } = await client.delete<PortForward[]>(`/api/portforward?id=${encodeURIComponent(id)}`);
       setList(data ?? []);
-      onMsg('Encaminhamento removido.');
+      onMsg(t('fw.toast.pf.removed'));
     } catch (e) { onMsg('Erro: ' + errMsg(e)); }
     finally { setBusy(false); }
   };
 
   return (
-    <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">Encaminhamento de portas</span><HelpTip title="O que é encaminhar uma porta?">
-          <>Permite que algo de <b>fora</b> (internet) alcance um <b>serviço dentro da sua rede</b> —
+    <Panel title={<span className="flex items-center gap-2"><Network className="w-4 h-4 text-blue-400" /><span className="text-white font-semibold">{t('fw.pf.title')}</span><HelpTip title={t('fw.pf.whatIs')}>
+          <>Permite que algo de <b>{t('fw.pf.outside')}</b> (internet) alcance um <b>{t('fw.pf.reachService')}</b> —
           como um servidor, câmera ou jogo. Você diz: "conexões que chegam na porta X da minha internet
           devem ir para o aparelho Y na porta Z". Abra só o necessário.</>
         </HelpTip></span>}>
-      <p className="text-gray-500 text-xs mb-4">Redireciona uma porta externa (WAN) para um aparelho da sua rede (DNAT).</p>
+      <p className="text-gray-500 text-xs mb-4">{t('fw.pf.explain')}</p>
 
       {list.length === 0 ? (
-        <p className="text-gray-600 text-sm mb-4">Nenhum encaminhamento configurado.</p>
+        <p className="text-gray-600 text-sm mb-4">{t('fw.pf.empty')}</p>
       ) : (
         <div className="space-y-2 mb-4">
           {list.map((pf) => (
@@ -99,7 +101,7 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
                 <span>{pf.dest_ip}:{pf.dest_port}</span>
               </span>
               {canWrite && (
-                <button onClick={() => remove(pf.id)} disabled={busy} className="text-gray-500 hover:text-red-400 shrink-0" title="Remover">
+                <button onClick={() => remove(pf.id)} disabled={busy} className="text-gray-500 hover:text-red-400 shrink-0" title={t('fw.pf.remove')}>
                   <Trash2 className="w-4 h-4" />
                 </button>
               )}
@@ -113,12 +115,12 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
           <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
             <input
               value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="Nome (ex.: Câmera)"
+              placeholder={t('fw.pf.name.placeholder')}
               className="col-span-2 rounded-md bg-gray-800 border border-gray-700 px-2.5 py-1.5 text-sm text-white"
             />
             <select value={form.interface} onChange={(e) => setForm({ ...form, interface: e.target.value })}
               className="rounded-md bg-gray-800 border border-gray-700 px-2 py-1.5 text-sm text-white">
-              <option value="">Qualquer WAN</option>
+              <option value="">{t('fw.pf.anyWan')}</option>
               {ifaces.map((i) => <option key={i} value={i}>{i}</option>)}
             </select>
             <select value={form.proto} onChange={(e) => setForm({ ...form, proto: e.target.value as 'tcp' | 'udp' })}
@@ -129,20 +131,20 @@ export default function PortForwarding({ ifaces, canWrite, onMsg }: Props) {
             <input
               type="number" min={1} max={65535} value={form.ext_port || ''}
               onChange={(e) => setForm({ ...form, ext_port: Number(e.target.value) })}
-              placeholder="Porta ext."
+              placeholder={t('fw.pf.extPort.placeholder')}
               className="rounded-md bg-gray-800 border border-gray-700 px-2 py-1.5 text-sm text-white"
             />
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
             <input
               value={form.dest_ip} onChange={(e) => setForm({ ...form, dest_ip: e.target.value })}
-              placeholder="IP do aparelho (192.168.x.y)"
+              placeholder={t('fw.pf.deviceIp.placeholder')}
               className="col-span-2 sm:col-span-3 rounded-md bg-gray-800 border border-gray-700 px-2.5 py-1.5 text-sm text-white font-mono"
             />
             <input
               type="number" min={1} max={65535} value={form.dest_port || ''}
               onChange={(e) => setForm({ ...form, dest_port: Number(e.target.value) })}
-              placeholder="Porta interna"
+              placeholder={t('fw.pf.intPort.placeholder')}
               className="rounded-md bg-gray-800 border border-gray-700 px-2 py-1.5 text-sm text-white"
             />
             <button onClick={submit} disabled={!valid || busy}

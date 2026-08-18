@@ -1,0 +1,886 @@
+# Fonte ÚNICA dos textos da interface (issue #105).
+#
+# Regra: texto que a pessoa lê na tela nasce AQUI, nos dois idiomas, e o
+# componente referencia a chave. Nunca o contrário.
+#
+# `npm run i18n:gen` transforma este arquivo em src/i18n/strings.generated.ts.
+# Chave sem tradução em algum idioma quebra o build — de propósito: é o que
+# impede texto novo de nascer só em português, que é como a tradução tinha
+# parado em 3 de 70 telas.
+#
+# Marcadores {assim} são substituídos em runtime: t('chave', {n: 3}).
+
+app.tagline:
+  pt: "Firewall Manager"
+  en: "Firewall Manager"
+nav.dashboard:
+  pt: "Painel"
+  en: "Dashboard"
+nav.traffic:
+  pt: "Tráfego"
+  en: "Traffic"
+nav.links:
+  pt: "Links WAN"
+  en: "WAN Links"
+nav.firewall:
+  pt: "Firewall"
+  en: "Firewall"
+nav.hosts:
+  pt: "Hosts"
+  en: "Hosts"
+nav.dhcp:
+  pt: "DHCP"
+  en: "DHCP"
+nav.dns:
+  pt: "DNS"
+  en: "DNS"
+nav.ntp:
+  pt: "NTP"
+  en: "NTP"
+nav.interfaces:
+  pt: "Interfaces"
+  en: "Interfaces"
+nav.routes:
+  pt: "Rotas"
+  en: "Routes"
+nav.monitoring:
+  pt: "Monitoramento"
+  en: "Monitoring"
+nav.alerts:
+  pt: "Alertas"
+  en: "Alerts"
+nav.logs:
+  pt: "Logs"
+  en: "Logs"
+nav.settings:
+  pt: "Configurações"
+  en: "Settings"
+nav.admin:
+  pt: "Administração"
+  en: "Administration"
+nav.changelog:
+  pt: "Novidades"
+  en: "Novidades"
+group.operacao:
+  pt: "Operação"
+  en: "Operations"
+group.rede:
+  pt: "Rede"
+  en: "Network"
+group.seguranca:
+  pt: "Segurança"
+  en: "Security"
+group.advanced:
+  pt: "Avançado"
+  en: "Advanced"
+group.system:
+  pt: "Sistema"
+  en: "System"
+mode.simple:
+  pt: "Simples"
+  en: "Simple"
+mode.advanced:
+  pt: "Avançado"
+  en: "Advanced"
+action.logout:
+  pt: "Sair"
+  en: "Log out"
+login.subtitle:
+  pt: "Gestão de Firewall Linux"
+  en: "Linux Firewall Management"
+login.title:
+  pt: "Entrar"
+  en: "Sign in"
+login.username:
+  pt: "Usuário"
+  en: "Username"
+login.password:
+  pt: "Senha"
+  en: "Password"
+login.code:
+  pt: "Código de verificação (2FA)"
+  en: "Verification code (2FA)"
+login.code.hint:
+  pt: "Abra seu app autenticador e digite o código de 6 dígitos."
+  en: "Open your authenticator app and enter the 6-digit code."
+login.submit:
+  pt: "Entrar"
+  en: "Sign in"
+login.verify:
+  pt: "Verificar"
+  en: "Verify"
+login.loading:
+  pt: "Entrando..."
+  en: "Signing in..."
+login.invalid:
+  pt: "Usuário ou senha inválidos"
+  en: "Invalid username or password"
+login.locked:
+  pt: "Muitas tentativas. Aguarde alguns minutos e tente de novo."
+  en: "Too many attempts. Wait a few minutes and try again."
+login.invalidCode:
+  pt: "Código inválido. Tente novamente."
+  en: "Invalid code. Please try again."
+dashboard.title:
+  pt: "Dashboard"
+  en: "Dashboard"
+dashboard.subtitle:
+  pt: "Visão geral do sistema"
+  en: "System overview"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Firewall (issue #105) — a área central do produto.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Abas
+fw.tab.overview:
+  pt: "Visão geral"
+  en: "Overview"
+fw.tab.posture:
+  pt: "Postura"
+  en: "Default posture"
+fw.tab.groups:
+  pt: "Grupos de regras"
+  en: "Rule groups"
+fw.tab.steering:
+  pt: "Direcionamento por WAN"
+  en: "WAN steering"
+fw.tab.portforward:
+  pt: "Encaminhamento"
+  en: "Port forwarding"
+fw.tab.ruleset:
+  pt: "Ruleset"
+  en: "Ruleset"
+fw.tab.backups:
+  pt: "Snapshots"
+  en: "Snapshots"
+
+# Postura — os dois cartões
+fw.posture.forward.title:
+  pt: "Tráfego que atravessa o firewall"
+  en: "Traffic crossing the firewall"
+fw.posture.forward.subtitle:
+  pt: "O que sai da sua rede para a internet, e o que vai de uma rede para outra."
+  en: "What leaves your network for the internet, and what goes from one network to another."
+fw.posture.forward.accept:
+  pt: "Tudo passa, menos o que você bloquear. É como o firewall está hoje."
+  en: "Everything passes except what you block. This is how the firewall is today."
+fw.posture.forward.drop:
+  pt: "Nada passa, menos o que você liberar. O que você esquecer de listar fica bloqueado — não solto."
+  en: "Nothing passes except what you allow. Anything you forget to list stays blocked — not loose."
+fw.posture.forward.risk:
+  pt: "A rede inteira para de sair até você liberar o que precisa. O acesso a este painel não é afetado."
+  en: "Your whole network stops reaching out until you allow what it needs. Access to this panel is not affected."
+fw.posture.input.title:
+  pt: "Tráfego destinado ao próprio LinkGuard"
+  en: "Traffic addressed to LinkGuard itself"
+fw.posture.input.subtitle:
+  pt: "Quem pode falar com esta máquina: este painel, SSH, o DNS e o DHCP que ela serve."
+  en: "Who may talk to this machine: this panel, SSH, and the DNS and DHCP it serves."
+fw.posture.input.accept:
+  pt: "Qualquer máquina que alcance o LinkGuard pode tentar falar com ele."
+  en: "Any machine that can reach LinkGuard may try to talk to it."
+fw.posture.input.drop:
+  pt: "Só o acesso administrativo listado abaixo continua chegando."
+  en: "Only the administrative access listed below still gets through."
+fw.posture.input.risk:
+  pt: "Esta é a mudança que tranca o administrador do lado de fora. Se a lista abaixo não incluir o caminho que você usa, você perde o painel e o SSH ao mesmo tempo."
+  en: "This is the change that locks the administrator out. If the list below does not include the path you use, you lose the panel and SSH at the same time."
+
+# Postura — controles
+fw.posture.choice.accept:
+  pt: "Liberar por padrão"
+  en: "Allow by default"
+fw.posture.choice.drop:
+  pt: "Bloquear por padrão"
+  en: "Block by default"
+fw.posture.badge.accept:
+  pt: "Liberando por padrão"
+  en: "Allowing by default"
+fw.posture.badge.drop:
+  pt: "Bloqueando por padrão"
+  en: "Blocking by default"
+fw.posture.badge.unknown:
+  pt: "desconhecida"
+  en: "unknown"
+fw.posture.readError:
+  pt: "Não consegui ler a postura atual do firewall."
+  en: "I could not read the firewall's current posture."
+fw.posture.readError.tail:
+  pt: "A postura não é mostrada como “liberada” por causa disso — o firewall pode estar bloqueando."
+  en: "The posture is not shown as “allowing” because of this — the firewall may well be blocking."
+fw.posture.applied.drop:
+  pt: "Postura alterada para bloquear. Teste o seu acesso e confirme na faixa acima."
+  en: "Posture changed to blocking. Test your access and confirm in the banner above."
+fw.posture.applied.accept:
+  pt: "Postura alterada para liberar por padrão."
+  en: "Posture changed to allowing by default."
+
+# Postura — a lista de sobrevivência
+fw.posture.survival.title:
+  pt: "O que continua passando, sempre"
+  en: "What always keeps getting through"
+fw.posture.survival.subtitle:
+  pt: "Com a postura em bloquear, estas linhas entram acima de tudo — senão “bloquear tudo” significaria bloquear você também. Elas vêm desta máquina, não de uma lista de exemplo."
+  en: "With the posture set to block, these lines go above everything else — otherwise “block everything” would mean blocking you too. They come from this machine, not from an example list."
+fw.posture.survival.error:
+  pt: "Não consegui montar a lista desta chain: {erro}"
+  en: "I could not build this chain's list: {erro}"
+fw.posture.survival.established.what:
+  pt: "Conexões que já estavam abertas"
+  en: "Connections that were already open"
+fw.posture.survival.established.why:
+  pt: "Sem esta linha, bloquear não bloqueia “o que você não liberou”: derruba tudo, inclusive cada download e cada chamada em curso."
+  en: "Without this line, blocking does not block “what you did not allow”: it drops everything, including every download and call in progress."
+fw.posture.survival.related.what:
+  pt: "Respostas de erro e controle das conexões"
+  en: "Error and control replies for connections"
+fw.posture.survival.related.why:
+  pt: "É o que mantém o “pacote grande demais” chegando de volta. Sem ela, conexões travam pela metade sem mensagem nenhuma."
+  en: "This is what keeps “packet too big” getting back to you. Without it, connections hang halfway with no message at all."
+fw.posture.survival.dnat.what:
+  pt: "Os seus encaminhamentos de porta"
+  en: "Your port forwards"
+fw.posture.survival.dnat.why:
+  pt: "Sem esta linha, todo redirecionamento continua sendo traduzido e morre logo depois — o sintoma é “o encaminhamento parou”, sem nada apontando para o firewall."
+  en: "Without this line, every redirect is still translated and dies right after — the symptom is “the forward stopped working”, with nothing pointing at the firewall."
+fw.posture.survival.loopback.what:
+  pt: "A própria máquina falando consigo"
+  en: "The machine talking to itself"
+fw.posture.survival.loopback.why:
+  pt: "O painel escutando em 127.0.0.1 ficaria inalcançável até por um túnel SSH."
+  en: "The panel listening on 127.0.0.1 would be unreachable even through an SSH tunnel."
+fw.posture.survival.icmpv6.what:
+  pt: "Descoberta de vizinhança IPv6"
+  en: "IPv6 neighbour discovery"
+fw.posture.survival.icmpv6.why:
+  pt: "Sem ela o IPv6 morre inteiro, e só ele — o IPv4 continua bom, que é o que faz ninguém relacionar o sintoma com o firewall."
+  en: "Without it IPv6 dies entirely, and only IPv6 — IPv4 keeps working, which is exactly why nobody connects the symptom to the firewall."
+fw.posture.survival.admin.what:
+  pt: "O seu acesso administrativo"
+  en: "Your administrative access"
+fw.posture.survival.admin.why:
+  pt: "SSH e este painel, nas portas que esta máquina realmente usa."
+  en: "SSH and this panel, on the ports this machine actually uses."
+fw.posture.survival.dhcpServed.what:
+  pt: "O DHCP que você serve à rede"
+  en: "The DHCP you serve to your network"
+fw.posture.survival.dhcpServed.why:
+  pt: "Sem ele os aparelhos param de pegar IP — e quem estiver na rede vai dizer que “a internet caiu”."
+  en: "Without it devices stop getting an IP — and everyone on the network will say “the internet is down”."
+fw.posture.survival.dnsServed.what:
+  pt: "O DNS que você serve à rede"
+  en: "The DNS you serve to your network"
+fw.posture.survival.dnsServed.why:
+  pt: "Sem ele nada resolve nome, mesmo com a rede funcionando perfeitamente."
+  en: "Without it nothing resolves names, even with the network working perfectly."
+fw.posture.survival.dhcpClient.what:
+  pt: "O firewall pegando o próprio endereço"
+  en: "The firewall getting its own address"
+fw.posture.survival.dhcpClient.why:
+  pt: "A renovação de DHCP da WAN não passa por conntrack. O sintoma aparece dias depois de uma queda de link, como “a internet caiu sozinha na quarta”."
+  en: "The WAN's DHCP renewal does not go through conntrack. The symptom shows up days after a link flap, as “the internet went down by itself on Wednesday”."
+
+# Postura — as confirmações
+fw.posture.confirm.drop:
+  pt: "Bloquear {alvo} por padrão? A partir daí só passa o que você tiver liberado. Você tem 90 segundos para confirmar que ainda entra; se não confirmar, o LinkGuard desfaz sozinho."
+  en: "Block {alvo} by default? From then on only what you have allowed gets through. You have 90 seconds to confirm you can still get in; if you do not confirm, LinkGuard undoes it by itself."
+fw.posture.confirm.accept:
+  pt: "Liberar {alvo} por padrão? Os seus bloqueios continuam valendo — o que muda é o que acontece com o tráfego que nenhuma regra menciona."
+  en: "Allow {alvo} by default? Your blocks stay in force — what changes is what happens to traffic no rule mentions."
+fw.posture.target.forward:
+  pt: "o tráfego que ATRAVESSA o firewall"
+  en: "traffic CROSSING the firewall"
+fw.posture.target.input:
+  pt: "o acesso AO próprio LinkGuard"
+  en: "access TO LinkGuard itself"
+
+# Comuns a várias telas
+common.loading:
+  pt: "Carregando..."
+  en: "Loading..."
+
+# Faixa do confirmar-ou-reverte — a rede de segurança. O texto aqui é o que
+# impede o operador de se trancar fora, então cada frase é traduzida inteira,
+# nunca montada por concatenação.
+fw.confirm.countdown:
+  pt: "reverte em"
+  en: "reverts in"
+fw.confirm.title:
+  pt: "Esta alteração mexe no tráfego destinado ao próprio firewall e aguarda confirmação."
+  en: "This change affects traffic addressed to the firewall itself and is awaiting confirmation."
+fw.confirm.appliedBy:
+  pt: " · aplicada por "
+  en: " · applied by "
+fw.confirm.unknownUser:
+  pt: "desconhecido"
+  en: "unknown"
+fw.confirm.testAccess:
+  pt: "Teste o acesso que importa — SSH, este painel — antes de confirmar. Se ficou de fora, não faça nada:"
+  en: "Test the access that matters — SSH, this panel — before confirming. If you got locked out, do nothing:"
+fw.confirm.deadlinePassed:
+  pt: "o prazo acabou e a reversão automática está a caminho."
+  en: "the deadline has passed and the automatic revert is on its way."
+fw.confirm.deadlineRunning:
+  pt: "o LinkGuard reverte sozinho quando o prazo acabar."
+  en: "LinkGuard reverts by itself when the deadline runs out."
+fw.confirm.newConnectionsOnly:
+  pt: "Este grupo vale só para conexões novas."
+  en: "This group only applies to new connections."
+fw.confirm.newConnectionsOnly.strong:
+  pt: "A sua sessão atual não é afetada"
+  en: "Your current session is not affected"
+fw.confirm.newConnectionsOnly.tail:
+  pt: "— abra uma conexão nova (outro terminal SSH, uma aba anônima) para testar de verdade antes de confirmar."
+  en: "— open a fresh connection (another SSH terminal, a private tab) to really test before confirming."
+fw.confirm.needWrite:
+  pt: "Confirmar e reverter exigem permissão de escrita no firewall. Chame quem tem — ou espere o prazo, que reverte sozinho."
+  en: "Confirming and reverting require firewall write permission. Call someone who has it — or wait for the deadline, which reverts on its own."
+fw.confirm.staleRead:
+  pt: "O painel não conseguiu reler o estado desta janela agora — o que está acima é a última leitura boa. Continua tentando."
+  en: "The panel could not re-read this window's state just now — what you see above is the last good reading. It keeps trying."
+fw.confirm.reverting.title:
+  pt: "A reversão está em curso — e você já pode editar normalmente."
+  en: "The revert is under way — and you can already edit normally."
+fw.confirm.reverting.body:
+  pt: "Os grupos e as regras já voltaram ao estado anterior aqui no LinkGuard; falta o firewall aceitar a reconfiguração, e ele repete a tentativa até conseguir. Não há o que confirmar: esta alteração não vai mais valer."
+  en: "The groups and rules are already back to their previous state here in LinkGuard; what remains is for the firewall to accept the reconfiguration, and it retries until it succeeds. There is nothing to confirm: this change will no longer take effect."
+fw.confirm.reverting.editable:
+  pt: "A edição continua liberada: se foi uma regra que fez o firewall recusar, é editando ou apagando ela que você resolve — a sua próxima alteração aplica os dois estados de uma vez."
+  en: "Editing stays unlocked: if a rule is what made the firewall refuse, editing or deleting it is how you fix this — your next change applies both states at once."
+fw.confirm.reverting.scope:
+  pt: "A reversão desfaz apenas grupos e regras. Bloqueios por host, encaminhamentos de porta e o NTP continuam como estão."
+  en: "The revert only undoes groups and rules. Host blocks, port forwards and NTP stay as they are."
+fw.confirm.unknown.title:
+  pt: "Não foi possível saber se há alguma alteração aguardando confirmação."
+  en: "It was not possible to tell whether any change is awaiting confirmation."
+fw.confirm.unknown.body:
+  pt: "A consulta ao LinkGuard falhou. Isto não quer dizer que não há nada pendente — quer dizer que não sabemos. Se você acabou de aplicar uma alteração de escopo input, ela pode estar contando os 90 segundos agora."
+  en: "The query to LinkGuard failed. This does not mean nothing is pending — it means we do not know. If you have just applied an input-scoped change, it may be counting down its 90 seconds right now."
+fw.confirm.retry:
+  pt: "Tentar de novo"
+  en: "Try again"
+
+# Vocabulário compartilhado dos grupos (groupMeta). Os keywords do nftables
+# (accept/drop/reject/continue, forward/input, ct state new) NÃO entram aqui:
+# eles são o que o admin acha no `nft list ruleset` e não se traduzem. O que
+# se traduz é a frase ao lado, que carrega o significado.
+fw.action.accept.hint:
+  pt: "deixa passar"
+  en: "lets it through"
+fw.action.drop.hint:
+  pt: "descarta em silêncio"
+  en: "drops it silently"
+fw.action.reject.hint:
+  pt: "recusa e avisa a origem"
+  en: "refuses and tells the sender"
+fw.fallthrough.continue.hint:
+  pt: "não decide nada; a avaliação segue adiante"
+  en: "decides nothing; evaluation carries on"
+fw.fallthrough.accept.hint:
+  pt: "deixa passar tudo o que sobrou"
+  en: "lets through everything left over"
+fw.fallthrough.drop.hint:
+  pt: "descarta em silêncio tudo o que sobrou"
+  en: "silently drops everything left over"
+fw.scope.forward.title:
+  pt: "atravessando o firewall"
+  en: "crossing the firewall"
+fw.scope.forward.hint:
+  pt: "a LAN saindo para a internet, uma VLAN falando com outra"
+  en: "the LAN reaching the internet, one VLAN talking to another"
+fw.scope.input.title:
+  pt: "destinado ao firewall"
+  en: "addressed to the firewall"
+fw.scope.input.hint:
+  pt: "SSH, este painel, DNS, Samba — o que chega na própria máquina"
+  en: "SSH, this panel, DNS, Samba — what arrives at the machine itself"
+fw.connState.any.title:
+  pt: "toda conexão"
+  en: "every connection"
+fw.connState.any.hint:
+  pt: "decide na hora, inclusive sobre o que já está em curso: a transferência que o host já estava fazendo cai junto"
+  en: "decides right away, including what is already under way: the transfer the host had going drops with it"
+fw.connState.new.title:
+  pt: "só conexões novas"
+  en: "new connections only"
+fw.connState.new.hint:
+  pt: "não derruba a transferência que já está em curso; vale para o que for aberto daqui em diante"
+  en: "does not drop transfers already under way; applies to whatever is opened from now on"
+fw.connState.noExpr:
+  pt: "sem `ct state` na linha"
+  en: "no `ct state` on the line"
+
+# Grupos do sistema
+fw.systemKind.blockedHosts.what:
+  pt: "Todo tráfego ROTEADO de ou para estes hosts é descartado: eles não saem para a internet nem alcançam outra rede através do firewall. O que eles ainda alcançam é o próprio firewall (painel, SSH, DNS e DHCP), porque estas linhas ficam só na chain forward. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo."
+  en: "All ROUTED traffic from or to these hosts is dropped: they do not reach the internet nor any other network through the firewall. What they can still reach is the firewall itself (panel, SSH, DNS and DHCP), because these lines live only in the forward chain. This group has no entry condition and no rules: the member list is its whole content."
+fw.systemKind.blockedHosts.member.one:
+  pt: "host"
+  en: "host"
+fw.systemKind.blockedHosts.member.many:
+  pt: "hosts"
+  en: "hosts"
+fw.systemKind.blockedHosts.empty:
+  pt: "Nenhum host bloqueado."
+  en: "No blocked hosts."
+fw.systemKind.blocklist.what:
+  pt: "Todo tráfego ROTEADO de ou para estes destinos é descartado — a faixa vale como origem e como destino. Estas linhas ficam só na chain forward: o que o próprio firewall inicia para esses destinos não passa por elas. Este grupo não tem condição de entrada nem regras: a lista de membros é o próprio conteúdo."
+  en: "All ROUTED traffic from or to these destinations is dropped — the range counts both as source and as destination. These lines live only in the forward chain: what the firewall itself initiates towards those destinations does not go through them. This group has no entry condition and no rules: the member list is its whole content."
+fw.systemKind.blocklist.member.one:
+  pt: "faixa"
+  en: "range"
+fw.systemKind.blocklist.member.many:
+  pt: "faixas"
+  en: "ranges"
+fw.systemKind.blocklist.empty:
+  pt: "Nenhum destino bloqueado."
+  en: "No blocked destinations."
+
+# Modal do grupo
+fw.group.modal.edit:
+  pt: "Editar grupo"
+  en: "Edit group"
+fw.group.modal.new:
+  pt: "Novo grupo"
+  en: "New group"
+fw.group.name:
+  pt: "Nome do grupo"
+  en: "Group name"
+fw.group.name.placeholder:
+  pt: "ex.: Wi-Fi visitantes"
+  en: "e.g. Guest Wi-Fi"
+fw.group.whereItActs:
+  pt: "Onde este grupo age"
+  en: "Where this group acts"
+fw.group.inputWarning.title:
+  pt: "Salvar vai abrir uma janela de 90 segundos."
+  en: "Saving will open a 90-second window."
+fw.group.inputWarning.body:
+  pt: "Este grupo passa a filtrar o que chega no próprio firewall — SSH, este painel, DNS. A alteração é aplicada na hora e, se ninguém confirmar em 90 segundos, o LinkGuard desfaz os grupos e as regras sozinho."
+  en: "This group starts filtering what arrives at the firewall itself — SSH, this panel, DNS. The change is applied immediately and, if nobody confirms within 90 seconds, LinkGuard undoes the groups and rules by itself."
+fw.group.inputWarning.locked:
+  pt: "Enquanto ela estiver aguardando confirmação, a edição de grupos e regras fica bloqueada. Tenha um segundo acesso à máquina à mão se puder."
+  en: "While it awaits confirmation, editing groups and rules is locked. Keep a second way into the machine at hand if you can."
+fw.group.entryCondition:
+  pt: "Quando entrar neste grupo (condição de entrada)"
+  en: "When to enter this group (entry condition)"
+fw.group.inIface:
+  pt: "Interface de entrada"
+  en: "Incoming interface"
+fw.group.any:
+  pt: "Qualquer"
+  en: "Any"
+fw.group.source:
+  pt: "Origem (IP/CIDR)"
+  en: "Source (IP/CIDR)"
+fw.group.dest:
+  pt: "Destino (IP/CIDR)"
+  en: "Destination (IP/CIDR)"
+fw.group.anyPlaceholder:
+  pt: "qualquer"
+  en: "any"
+fw.group.noCondition.input:
+  pt: "Sem condição, todo o tráfego destinado ao firewall entra no grupo. Só IPv4 por enquanto."
+  en: "With no condition, all traffic addressed to the firewall enters the group. IPv4 only for now."
+fw.group.noCondition.forward:
+  pt: "Sem condição, todo o tráfego que atravessa o firewall entra no grupo. Só IPv4 por enquanto."
+  en: "With no condition, all traffic crossing the firewall enters the group. IPv4 only for now."
+fw.group.whichConnections:
+  pt: "Para quais conexões este grupo vale"
+  en: "Which connections this group applies to"
+fw.group.newConnWarning.title:
+  pt: "A sua sessão atual não vai cair — nem se este grupo bloquear você."
+  en: "Your current session will not drop — not even if this group blocks you."
+fw.group.newConnWarning.body:
+  pt: "Nos 90 segundos de confirmação, testar o acesso na aba que já está aberta (ou no SSH já conectado) vai funcionar de qualquer jeito. Para testar de verdade, abra uma conexão nova: outro terminal SSH, uma aba anônima."
+  en: "During the 90-second confirmation, testing access in the tab that is already open (or the SSH already connected) will work regardless. To really test it, open a fresh connection: another SSH terminal, a private tab."
+fw.group.leftover:
+  pt: "E o que sobrar?"
+  en: "And whatever is left over?"
+fw.group.previewLine:
+  pt: "Linha que este grupo põe na chain"
+  en: "Line this group puts on chain"
+fw.group.saved:
+  pt: "Grupo atualizado."
+  en: "Group updated."
+fw.group.created:
+  pt: "Grupo criado."
+  en: "Group created."
+fw.group.dropAbove:
+  pt: "regras acima deste bloqueio podem liberar tráfego que ele descartaria"
+  en: "rules above this block may allow traffic it would otherwise drop"
+
+# Botões comuns
+common.save:
+  pt: "Salvar"
+  en: "Save"
+common.saving:
+  pt: "Salvando..."
+  en: "Saving..."
+common.cancel:
+  pt: "Cancelar"
+  en: "Cancel"
+fw.group.saveAndStart:
+  pt: "Salvar e iniciar os 90 s"
+  en: "Save and start the 90 s"
+fw.groups.newOnly:
+  pt: "Só decide sobre conexões novas: {hint}."
+  en: "Only decides about new connections: {hint}."
+
+# Lista de grupos
+fw.groups.new:
+  pt: "Novo"
+  en: "New"
+fw.groups.inputBadge:
+  pt: "destinado ao firewall · alterar pede confirmação"
+  en: "addressed to the firewall · changing needs confirmation"
+fw.groups.off:
+  pt: "desligado"
+  en: "off"
+fw.groups.offStillInFirewall:
+  pt: "desligado, ainda no firewall"
+  en: "off, still in the firewall"
+fw.groups.configuredNotApplied:
+  pt: "configurado, não aplicado"
+  en: "configured, not applied"
+fw.groups.loading:
+  pt: "Carregando grupos..."
+  en: "Loading groups..."
+fw.groups.notPersisted:
+  pt: "Suas regras estão valendo agora, mas não sobrevivem a um reboot."
+  en: "Your rules are in force now, but will not survive a reboot."
+fw.groups.howToFix:
+  pt: "Como resolver:"
+  en: "How to fix it:"
+fw.groups.restorePermission:
+  pt: "devolva a permissão de escrita em"
+  en: "restore write permission on"
+fw.groups.andThen:
+  pt: "e depois"
+  en: "and then"
+fw.groups.restartService:
+  pt: "reinicie o serviço"
+  en: "restart the service"
+fw.groups.evalOrder:
+  pt: "A lista abaixo é a ordem real de avaliação, de cima para baixo."
+  en: "The list below is the real evaluation order, top to bottom."
+fw.groups.countersIn:
+  pt: "Contadores em:"
+  en: "Counters in:"
+fw.groups.empty:
+  pt: "Nenhum grupo para mostrar."
+  en: "No groups to show."
+fw.groups.emptyHint:
+  pt: "Um grupo junta regras sob uma condição de entrada e liga ou desliga todas de uma"
+  en: "A group gathers rules under one entry condition and turns them all on or off at once"
+fw.groups.disable:
+  pt: "Desligar"
+  en: "Turn off"
+fw.groups.enable:
+  pt: "Ligar"
+  en: "Turn on"
+fw.groups.when:
+  pt: "Quando"
+  en: "When"
+fw.groups.where:
+  pt: "Onde"
+  en: "Where"
+fw.groups.whichConnections:
+  pt: "Quais conexões"
+  en: "Which connections"
+fw.groups.noCounter:
+  pt: "sem contador · —"
+  en: "no counter · —"
+fw.groups.col.action:
+  pt: "Ação"
+  en: "Action"
+fw.groups.col.match:
+  pt: "Quando a regra casa"
+  en: "When the rule matches"
+fw.groups.col.description:
+  pt: "Descrição"
+  en: "Description"
+fw.groups.col.packets:
+  pt: "Pacotes"
+  en: "Packets"
+fw.groups.col.traffic:
+  pt: "Tráfego"
+  en: "Traffic"
+fw.groups.col.actions:
+  pt: "Ações"
+  en: "Actions"
+fw.groups.notYourRule:
+  pt: "não é sua regra"
+  en: "not your rule"
+fw.groups.notYourRule.hint:
+  pt: "Está no firewall, mas não corresponde a nenhuma regra sua."
+  en: "It is in the firewall, but does not match any rule of yours."
+fw.groups.newRuleHere:
+  pt: "Nova regra neste grupo"
+  en: "New rule in this group"
+
+# Modal e assistente de regra
+fw.rule.action:
+  pt: "Ação"
+  en: "Action"
+fw.rule.inIface:
+  pt: "Interface de entrada"
+  en: "Incoming interface"
+fw.rule.outIface:
+  pt: "Interface de saída"
+  en: "Outgoing interface"
+fw.rule.any:
+  pt: "Qualquer"
+  en: "Any"
+fw.rule.source:
+  pt: "Origem"
+  en: "Source"
+fw.rule.dest:
+  pt: "Destino"
+  en: "Destination"
+fw.rule.searchTarget:
+  pt: "Buscar aparelho ou endereço…"
+  en: "Search for a device or address…"
+fw.rule.proto:
+  pt: "Protocolo"
+  en: "Protocol"
+fw.rule.service:
+  pt: "Serviço (porta de destino)"
+  en: "Service (destination port)"
+fw.rule.searchService:
+  pt: "Buscar serviço ou porta…"
+  en: "Search for a service or port…"
+fw.rule.description:
+  pt: "Descrição (por que essa regra existe)"
+  en: "Description (why this rule exists)"
+fw.rule.description.placeholder:
+  pt: "ex.: libera VPN do parceiro X"
+  en: "e.g. allows partner X's VPN"
+fw.wizard.whatToDo:
+  pt: "O que você quer fazer?"
+  en: "What do you want to do?"
+fw.wizard.searchByName:
+  pt: "Buscar por nome ou endereço…"
+  en: "Search by name or address…"
+fw.wizard.whichService:
+  pt: "Qual serviço?"
+  en: "Which service?"
+fw.wizard.searchServiceHint:
+  pt: "Buscar “remoto”, “arquivos”, ou a porta…"
+  en: "Search “remote”, “files”, or the port…"
+fw.wizard.whatWillHappen:
+  pt: "O que vai acontecer"
+  en: "What will happen"
+
+# Membros dos grupos do sistema
+fw.sysmembers.managed:
+  pt: "Mantido pelo LinkGuard: não pode ser apagado nem renomeado. Pode ser ligado, desligado e reordenado."
+  en: "Managed by LinkGuard: it cannot be deleted or renamed. It can be turned on, turned off and reordered."
+fw.sysmembers.driftTitle:
+  pt: "O bloqueio está ligado aqui, mas o firewall não confirma as linhas dele."
+  en: "The block is enabled here, but the firewall does not confirm its lines."
+fw.sysmembers.noHostMatch:
+  pt: "sem host correspondente no inventário"
+  en: "no matching host in the inventory"
+fw.sysmembers.macBlockTitle:
+  pt: "O bloqueio de host é feito pelo MAC, no inventário. Este IP está no set mas não casa com nenhum host conhecido."
+  en: "Host blocking is done by MAC, in the inventory. This IP is in the set but does not match any known host."
+fw.sysmembers.cidrPlaceholder:
+  pt: "CIDR ou IP (ex.: 163.116.128.0/17)"
+  en: "CIDR or IP (e.g. 163.116.128.0/17)"
+fw.sysmembers.hosts:
+  pt: "Hosts"
+  en: "Hosts"
+fw.sysmembers.blockHost:
+  pt: "Bloquear host"
+  en: "Block host"
+fw.sysmembers.filterPlaceholder:
+  pt: "Filtrar por IP, MAC, apelido..."
+  en: "Filter by IP, MAC, nickname..."
+common.close:
+  pt: "Fechar"
+  en: "Close"
+
+# Visão geral — os estágios do caminho do pacote. Os nomes de chain e os
+# keywords do nft (accept, drop, dnat, jump...) NÃO entram: são o que o admin
+# acha no `nft list ruleset`.
+fw.stage.input.label:
+  pt: "Entrada"
+  en: "Input"
+fw.stage.input.hint:
+  pt: "tráfego destinado ao próprio firewall (ex.: proteção de NTP)"
+  en: "traffic addressed to the firewall itself (e.g. NTP protection)"
+fw.stage.mark.label:
+  pt: "Marcação"
+  en: "Marking"
+fw.stage.mark.hint:
+  pt: "direciona um host para uma WAN específica"
+  en: "steers a host to a specific WAN"
+fw.stage.forward.label:
+  pt: "Encaminhamento"
+  en: "Forwarding"
+fw.stage.forward.hint:
+  pt: "tráfego atravessando: bloqueios e grupos de regras, na ordem da aba \"Grupos de regras\""
+  en: "traffic crossing through: blocks and rule groups, in the order of the \"Rule groups\" tab"
+fw.stage.postrouting.label:
+  pt: "NAT de saída"
+  en: "Outbound NAT"
+fw.stage.postrouting.hint:
+  pt: "mascaramento de origem para as WANs"
+  en: "source masquerading towards the WANs"
+fw.stage.dnat.label:
+  pt: "Redirecionamento de porta"
+  en: "Port redirection"
+fw.stage.dnat.hint:
+  pt: "encaminhamento de porta (DNAT)"
+  en: "port forwarding (DNAT)"
+fw.overview.rule:
+  pt: "regra"
+  en: "rule"
+fw.overview.toggleExpr:
+  pt: "Mostrar/ocultar expressão nft"
+  en: "Show/hide nft expression"
+fw.overview.driftTitle:
+  pt: "Está ativada aqui, mas o firewall não confirma que ela está em vigor — a linha não foi encontrada no ruleset."
+  en: "It is enabled here, but the firewall does not confirm it is in force — the line was not found in the ruleset."
+fw.overview.yourRule:
+  pt: "Sua regra"
+  en: "Your rule"
+fw.overview.editInGroups:
+  pt: "Editar na aba Grupos de regras"
+  en: "Edit in the Rule groups tab"
+fw.overview.bytesUnit:
+  pt: "bytes (KB/MB/GB)"
+  en: "bytes (KB/MB/GB)"
+fw.overview.bitsUnit:
+  pt: "bits (Kb/Mb/Gb)"
+  en: "bits (Kb/Mb/Gb)"
+fw.overview.oneOfYourGroups:
+  pt: "um dos seus grupos de regras"
+  en: "one of your rule groups"
+fw.overview.noCustomRules:
+  pt: "Nenhuma regra personalizada."
+  en: "No custom rules."
+fw.overview.createOne:
+  pt: "Criar uma"
+  en: "Create one"
+fw.overview.otherChains:
+  pt: "Outras chains"
+  en: "Other chains"
+fw.overview.otherChains.hint:
+  pt: "Não previstas no agrupamento acima — exibidas mesmo assim, para não esconder nada."
+  en: "Not covered by the grouping above — shown anyway, so nothing is hidden."
+
+# Encaminhamento de portas
+fw.pf.title:
+  pt: "Encaminhamento de portas"
+  en: "Port forwarding"
+fw.pf.whatIs:
+  pt: "O que é encaminhar uma porta?"
+  en: "What is port forwarding?"
+fw.pf.allowsFrom:
+  pt: "Permite que algo de"
+  en: "Lets something from"
+fw.pf.outside:
+  pt: "fora"
+  en: "outside"
+fw.pf.reachService:
+  pt: "serviço dentro da sua rede"
+  en: "a service inside your network"
+fw.pf.explain:
+  pt: "Redireciona uma porta externa (WAN) para um aparelho da sua rede (DNAT)."
+  en: "Redirects an external (WAN) port to a device on your network (DNAT)."
+fw.pf.empty:
+  pt: "Nenhum encaminhamento configurado."
+  en: "No port forwards configured."
+fw.pf.remove:
+  pt: "Remover"
+  en: "Remove"
+fw.pf.name.placeholder:
+  pt: "Nome (ex.: Câmera)"
+  en: "Name (e.g. Camera)"
+fw.pf.anyWan:
+  pt: "Qualquer WAN"
+  en: "Any WAN"
+fw.pf.extPort.placeholder:
+  pt: "Porta ext."
+  en: "Ext. port"
+fw.pf.deviceIp.placeholder:
+  pt: "IP do aparelho (192.168.x.y)"
+  en: "Device IP (192.168.x.y)"
+fw.pf.intPort.placeholder:
+  pt: "Porta interna"
+  en: "Internal port"
+
+# Direcionamento por WAN
+fw.steering.title:
+  pt: "Direcionamento por WAN"
+  en: "WAN steering"
+fw.steering.hostIp.placeholder:
+  pt: "IP do host (ex.: 192.168.3.50)"
+  en: "Host IP (e.g. 192.168.3.50)"
+fw.steering.empty:
+  pt: "Nenhum host direcionado."
+  en: "No hosts steered."
+fw.steering.hosts:
+  pt: "Hosts"
+  en: "Hosts"
+
+# Mensagens de confirmação (toasts) da área de firewall. Elas escapam de um
+# grep de JSX porque são argumentos de função — e foi assim que sobreviveram à
+# primeira passada da tradução.
+fw.toast.blocklist.added:
+  pt: "Destino bloqueado."
+  en: "Destination blocked."
+fw.toast.blocklist.removed:
+  pt: "Destino desbloqueado."
+  en: "Destination unblocked."
+fw.toast.host.blocked:
+  pt: "Host bloqueado."
+  en: "Host blocked."
+fw.toast.host.unblocked:
+  pt: "Host desbloqueado."
+  en: "Host unblocked."
+fw.toast.rule.updated:
+  pt: "Regra atualizada."
+  en: "Rule updated."
+fw.toast.rule.created:
+  pt: "Regra criada."
+  en: "Rule created."
+fw.toast.steering.toWan2:
+  pt: "Host direcionado para a WAN2."
+  en: "Host steered to WAN2."
+fw.toast.steering.toWan1:
+  pt: "Host revertido para a WAN1."
+  en: "Host reverted to WAN1."
+fw.toast.pf.saved:
+  pt: "Encaminhamento salvo e aplicado."
+  en: "Port forward saved and applied."
+fw.toast.pf.removed:
+  pt: "Encaminhamento removido."
+  en: "Port forward removed."
+fw.toast.group.blockOff:
+  pt: "Bloqueio desligado — os membros continuam guardados."
+  en: "Block turned off — the members are still stored."
+fw.toast.group.off:
+  pt: "Grupo desligado — as regras continuam guardadas."
+  en: "Group turned off — the rules are still stored."
+fw.toast.group.blockOn:
+  pt: "Bloqueio ligado."
+  en: "Block turned on."
+fw.toast.group.on:
+  pt: "Grupo ligado."
+  en: "Group turned on."
+fw.toast.group.removed:
+  pt: "Grupo removido."
+  en: "Group removed."
+fw.sysmembers.driftBanner:
+  pt: "O firewall não confirma estas linhas na chain forward: neste momento nenhum membro abaixo está sendo bloqueado."
+  en: "The firewall does not confirm these lines in the forward chain: right now no member below is actually being blocked."
+fw.sysmembers.offBanner:
+  pt: "Grupo desligado: nenhum membro abaixo está sendo bloqueado. Eles continuam guardados para quando ele voltar."
+  en: "Group turned off: no member below is being blocked. They stay stored for when it comes back."
+fw.overview.noRules:
+  pt: "Nenhuma regra."
+  en: "No rules."

@@ -1,110 +1,35 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { dicts } from './strings.generated';
+import type { Lang } from './strings.generated';
 
 /**
- * Lightweight i18n layer. Strings live in the dictionaries below keyed by a
- * dotted id; t(key) returns the active language's string (falling back to the
- * key). Portuguese is the default; English is provided for the app shell and
- * common surfaces, with page bodies translated incrementally.
+ * A camada de i18n. As strings NÃO moram aqui: elas moram em
+ * `src/i18n/strings.yaml`, com pt e en lado a lado, e `scripts/gen-i18n.mjs`
+ * as transforma em `strings.generated.ts` no build.
+ *
+ * A inversão é o ponto da issue #105. Antes, o texto nascia cravado no JSX e a
+ * tradução era um dicionário à parte que alguém tinha de lembrar de atualizar —
+ * e ninguém lembrava: a cobertura tinha parado em 3 de 70 telas. Agora o texto
+ * nasce no YAML, nos dois idiomas de uma vez, e uma chave sem tradução quebra o
+ * build em vez de virar uma tela meio traduzida em produção.
+ *
+ * t(key) devolve a string do idioma ativo, caindo no português e depois na
+ * própria chave. t(key, {n: 3}) troca os marcadores {n}.
  */
-export type Lang = 'pt' | 'en';
+export type { Lang } from './strings.generated';
 
 const STORAGE_KEY = 'lg_lang';
 
-type Dict = Record<string, string>;
-
-const pt: Dict = {
-  'app.tagline': 'Firewall Manager',
-  // nav
-  'nav.dashboard': 'Painel',
-  'nav.traffic': 'Tráfego',
-  'nav.links': 'Links WAN',
-  'nav.firewall': 'Firewall',
-  'nav.hosts': 'Hosts',
-  'nav.dhcp': 'DHCP',
-  'nav.dns': 'DNS',
-  'nav.ntp': 'NTP',
-  'nav.interfaces': 'Interfaces',
-  'nav.routes': 'Rotas',
-  'nav.monitoring': 'Monitoramento',
-  'nav.alerts': 'Alertas',
-  'nav.logs': 'Logs',
-  'nav.settings': 'Configurações',
-  'nav.admin': 'Administração',
-  'nav.changelog': 'Novidades',
-  'group.operacao': 'Operação',
-  'group.rede': 'Rede',
-  'group.seguranca': 'Segurança',
-  'group.advanced': 'Avançado',
-  'group.system': 'Sistema',
-  'mode.simple': 'Simples',
-  'mode.advanced': 'Avançado',
-  'action.logout': 'Sair',
-  // login
-  'login.subtitle': 'Gestão de Firewall Linux',
-  'login.title': 'Entrar',
-  'login.username': 'Usuário',
-  'login.password': 'Senha',
-  'login.code': 'Código de verificação (2FA)',
-  'login.code.hint': 'Abra seu app autenticador e digite o código de 6 dígitos.',
-  'login.submit': 'Entrar',
-  'login.verify': 'Verificar',
-  'login.loading': 'Entrando...',
-  'login.invalid': 'Usuário ou senha inválidos',
-  'login.locked': 'Muitas tentativas. Aguarde alguns minutos e tente de novo.',
-  'login.invalidCode': 'Código inválido. Tente novamente.',
-  // dashboard
-  'dashboard.title': 'Dashboard',
-  'dashboard.subtitle': 'Visão geral do sistema',
-};
-
-const en: Dict = {
-  'app.tagline': 'Firewall Manager',
-  'nav.dashboard': 'Dashboard',
-  'nav.traffic': 'Traffic',
-  'nav.links': 'WAN Links',
-  'nav.firewall': 'Firewall',
-  'nav.hosts': 'Hosts',
-  'nav.dhcp': 'DHCP',
-  'nav.dns': 'DNS',
-  'nav.ntp': 'NTP',
-  'nav.interfaces': 'Interfaces',
-  'nav.routes': 'Routes',
-  'nav.monitoring': 'Monitoring',
-  'nav.alerts': 'Alerts',
-  'nav.logs': 'Logs',
-  'nav.settings': 'Settings',
-  'nav.admin': 'Administration',
-  'nav.changelog': "What's new",
-  'group.operacao': 'Operations',
-  'group.rede': 'Network',
-  'group.seguranca': 'Security',
-  'group.advanced': 'Advanced',
-  'group.system': 'System',
-  'mode.simple': 'Simple',
-  'mode.advanced': 'Advanced',
-  'action.logout': 'Log out',
-  'login.subtitle': 'Linux Firewall Management',
-  'login.title': 'Sign in',
-  'login.username': 'Username',
-  'login.password': 'Password',
-  'login.code': 'Verification code (2FA)',
-  'login.code.hint': 'Open your authenticator app and enter the 6-digit code.',
-  'login.submit': 'Sign in',
-  'login.verify': 'Verify',
-  'login.loading': 'Signing in...',
-  'login.invalid': 'Invalid username or password',
-  'login.locked': 'Too many attempts. Wait a few minutes and try again.',
-  'login.invalidCode': 'Invalid code. Please try again.',
-  'dashboard.title': 'Dashboard',
-  'dashboard.subtitle': 'System overview',
-};
-
-const dicts: Record<Lang, Dict> = { pt, en };
 
 interface I18nValue {
   lang: Lang;
   setLang: (l: Lang) => void;
-  t: (key: string) => string;
+  // t(key) devolve a string do idioma ativo; t(key, {n: 3}) troca {n} por 3.
+  // A interpolação existe porque boa parte do texto do Firewall tem número e
+  // nome no meio ("3 regras", "grupo X") — sem ela, cada um viraria três
+  // pedaços concatenados no JSX, que é onde a ordem das palavras de um idioma
+  // não cabe na do outro.
+  t: (key: string, vars?: Record<string, string | number>) => string;
 }
 
 const I18nContext = createContext<I18nValue | undefined>(undefined);
@@ -122,7 +47,15 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   }, [lang]);
 
   const setLang = useCallback((l: Lang) => setLangState(l), []);
-  const t = useCallback((key: string) => dicts[lang][key] ?? dicts.pt[key] ?? key, [lang]);
+  const t = useCallback((key: string, vars?: Record<string, string | number>) => {
+    let out = dicts[lang][key] ?? dicts.pt[key] ?? key;
+    if (vars) {
+      for (const [k, v] of Object.entries(vars)) {
+        out = out.split('{' + k + '}').join(String(v));
+      }
+    }
+    return out;
+  }, [lang]);
 
   return <I18nContext.Provider value={{ lang, setLang, t }}>{children}</I18nContext.Provider>;
 }

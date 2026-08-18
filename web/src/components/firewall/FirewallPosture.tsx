@@ -28,10 +28,9 @@ import ConfirmOrRevertBanner from './ConfirmOrRevertBanner';
 import { useConfirmOrRevert } from '../../lib/useConfirmOrRevert';
 import { claimFullBanner } from '../../lib/pendingWindow';
 import { useUIMode } from '../../context/UIModeContext';
-import {
-  POSTURE_COPY, POSTURE_ORDER, confirmPrompt, explainAll, policyLine, postureRequest,
-} from '../../lib/posture';
+import { POSTURE_ORDER, policyLine, postureRequest, survivalLines } from '../../lib/posture';
 import type { Policy, PostureChain } from '../../lib/posture';
+import { useI18n } from '../../i18n';
 import type { MsgLevel } from '../../types';
 
 interface PolicyResponse {
@@ -47,6 +46,7 @@ interface Props {
 
 export default function FirewallPosture({ canWrite, onMsg }: Props) {
   const { mode } = useUIMode();
+  const { t } = useI18n();
   const [data, setData] = useState<PolicyResponse | null>(null);
   const [erro, setErro] = useState('');
   // A input começa recolhida. Ela é a decisão rara e perigosa, e não pode ser a
@@ -63,7 +63,7 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
       // porque o GET falhou seria a tela afirmando que o firewall está aberto
       // no minuto em que ele talvez esteja bloqueando tudo.
       setData(null);
-      setErro('Não consegui ler a postura atual do firewall.');
+      setErro(t('fw.posture.readError'));
     }
   };
 
@@ -74,12 +74,15 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
   useEffect(() => claimFullBanner(), []);
 
   const trocar = (chain: PostureChain, policy: Policy) => {
-    if (!window.confirm(confirmPrompt(chain, policy))) return;
+    // A frase da confirmação é montada por interpolação: o ALVO ("o tráfego que
+    // atravessa" / "o acesso ao próprio LinkGuard") é uma chave à parte porque
+    // ele aparece nas duas frases, e porque a ordem das palavras muda entre os
+    // idiomas — concatenar pedaços no JSX é onde isso quebraria.
+    const alvo = t(`fw.posture.target.${chain}`);
+    if (!window.confirm(t(`fw.posture.confirm.${policy}`, { alvo }))) return;
     run(
       () => client.put('/api/nftables/policy', postureRequest(chain, policy)),
-      policy === 'drop'
-        ? 'Postura alterada para bloquear. Teste o seu acesso e confirme na faixa acima.'
-        : 'Postura alterada para liberar por padrão.',
+      t(policy === 'drop' ? 'fw.posture.applied.drop' : 'fw.posture.applied.accept'),
     );
   };
 
@@ -89,7 +92,7 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
   };
 
   const linhas = (chain: PostureChain) =>
-    explainAll(chain === 'forward' ? data?.survival?.forward : data?.survival?.input);
+    survivalLines(chain === 'forward' ? data?.survival?.forward : data?.survival?.input);
 
   return (
     <div className="space-y-4">
@@ -97,12 +100,11 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
 
       {erro && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
-          {erro} A postura não é mostrada como “liberada” por causa disso — o firewall pode estar bloqueando.
+          {erro} {t('fw.posture.readError.tail')}
         </div>
       )}
 
       {POSTURE_ORDER.map((chain) => {
-        const copy = POSTURE_COPY[chain];
         const p = atual(chain);
         const perigosa = chain === 'input';
         const expandida = aberta[chain];
@@ -118,8 +120,8 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
                 ? <ChevronDown className="w-5 h-5 text-gray-400 mt-0.5 shrink-0" aria-hidden="true" />
                 : <ChevronRight className="w-5 h-5 text-gray-400 mt-0.5 shrink-0" aria-hidden="true" />}
               <div className="min-w-0 flex-1">
-                <h2 className="text-white font-semibold">{copy.titulo}</h2>
-                <p className="text-sm text-gray-400 mt-0.5">{copy.subtitulo}</p>
+                <h2 className="text-white font-semibold">{t(`fw.posture.${chain}.title`)}</h2>
+                <p className="text-sm text-gray-400 mt-0.5">{t(`fw.posture.${chain}.subtitle`)}</p>
               </div>
               {/* O selo da postura atual fica visível mesmo com o cartão
                   recolhido: "está bloqueando?" é a pergunta que se responde de
@@ -132,7 +134,7 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
                       : 'border-green-500/30 bg-green-500/10 text-green-400'
                 }`}
               >
-                {p === null ? 'desconhecida' : p === 'drop' ? 'Bloqueando por padrão' : 'Liberando por padrão'}
+                {t(p === null ? 'fw.posture.badge.unknown' : p === 'drop' ? 'fw.posture.badge.drop' : 'fw.posture.badge.accept')}
               </span>
             </button>
 
@@ -141,7 +143,7 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
                 {perigosa && (
                   <div className="flex gap-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
                     <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" aria-hidden="true" />
-                    <p>{copy.risco}</p>
+                    <p>{t(`fw.posture.${chain}.risk`)}</p>
                   </div>
                 )}
 
@@ -170,12 +172,12 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
                             aria-hidden="true"
                           />
                           <strong className="text-white text-sm">
-                            {op === 'drop' ? 'Bloquear por padrão' : 'Liberar por padrão'}
+                            {t(op === 'drop' ? 'fw.posture.choice.drop' : 'fw.posture.choice.accept')}
                           </strong>
                           {escolhida && <Check className="w-4 h-4 text-gray-400 ml-auto" aria-hidden="true" />}
                         </span>
                         <p className="text-sm text-gray-400 mt-2">
-                          {op === 'drop' ? copy.bloquear : copy.liberar}
+                          {t(`fw.posture.${chain}.${op}`)}
                         </p>
                         {mode === 'advanced' && (
                           <code className="block mt-2 text-[11px] font-mono text-gray-500 break-all">
@@ -188,18 +190,15 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
                 </div>
 
                 {!perigosa && (
-                  <p className="text-sm text-gray-400">{copy.risco}</p>
+                  <p className="text-sm text-gray-400">{t(`fw.posture.${chain}.risk`)}</p>
                 )}
 
                 <div>
-                  <h3 className="text-sm font-medium text-white">O que continua passando, sempre</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Com a postura em bloquear, estas linhas entram acima de tudo — senão “bloquear tudo”
-                    significaria bloquear você também. Elas vêm desta máquina, não de uma lista de exemplo.
-                  </p>
+                  <h3 className="text-sm font-medium text-white">{t('fw.posture.survival.title')}</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">{t('fw.posture.survival.subtitle')}</p>
                   {data?.survival?.error && (
                     <p className="text-xs text-amber-300 mt-2">
-                      Não consegui montar a lista desta chain: {data.survival.error}
+                      {t('fw.posture.survival.error', { erro: data.survival.error })}
                     </p>
                   )}
                   <ul className="mt-3 space-y-2">
@@ -211,9 +210,15 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
                               aparece assim mesmo, crua. Escondê-la faria a tela
                               afirmar que o firewall preserva MENOS do que
                               preserva — o erro na direção que assusta à toa. */}
-                          <span className="text-gray-200">{l.oque || l.nft}</span>
-                          {l.porque && <p className="text-xs text-gray-500 mt-0.5">{l.porque}</p>}
-                          {mode === 'advanced' && l.oque && (
+                          <span className="text-gray-200">
+                            {l.key ? t(`fw.posture.survival.${l.key}.what`) : l.nft}
+                          </span>
+                          {l.key && (
+                            <p className="text-xs text-gray-500 mt-0.5">
+                              {t(`fw.posture.survival.${l.key}.why`)}
+                            </p>
+                          )}
+                          {mode === 'advanced' && l.key && (
                             <code className="block text-[11px] font-mono text-gray-600 mt-1 break-all">{l.nft}</code>
                           )}
                         </div>

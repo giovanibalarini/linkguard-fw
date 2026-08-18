@@ -16,6 +16,7 @@
 
 import { AlertTriangle } from 'lucide-react';
 import client from '../../api/client';
+import { useI18n } from '../../i18n';
 import Modal from '../ui/Modal';
 import NftPreview, { groupPreviewBody } from './NftPreview';
 import { CONN_STATES, FALLTHROUGH, SCOPES } from './groupMeta';
@@ -35,6 +36,7 @@ interface Props {
 }
 
 export default function GroupModal({ state, setState, ifaces, cor, onClose, onCreated }: Props) {
+  const { t } = useI18n();
   const { busy, locked, lockReason, editDisabled, run } = cor;
 
   const saveGroup = () => {
@@ -67,23 +69,23 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
       // regressiva aparecer no mesmo instante em que o grupo de escopo input
       // é salvo, sem esperar o poll.
       return res;
-    }, state.id ? 'Grupo atualizado.' : 'Grupo criado.').then((ok) => { if (ok) onClose(); });
+    }, t(state.id ? 'fw.group.saved' : 'fw.group.created')).then((ok) => { if (ok) onClose(); });
   };
 
   return (
     <Modal
       open={state.open}
       onClose={onClose}
-      title={state.id ? 'Editar grupo' : 'Novo grupo'}
+      title={t(state.id ? 'fw.group.modal.edit' : 'fw.group.modal.new')}
       size="md"
       className="rounded-xl border border-gray-700 bg-gray-900 shadow-2xl flex flex-col"
     >
       <div className="p-6 space-y-4 overflow-y-auto">
         <div>
-          <label className="label">Nome do grupo</label>
+          <label className="label">{t('fw.group.name')}</label>
           <input
             className="input w-full"
-            placeholder="ex.: Wi-Fi visitantes"
+            placeholder={t('fw.group.name.placeholder')}
             maxLength={80}
             value={state.name}
             onChange={(e) => setState({ ...state, name: e.target.value })}
@@ -95,7 +97,7 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
             vem depois (a mesma condição "origem 10.0.0.0/8" quer dizer
             coisas diferentes na forward e na input). */}
         <div>
-          <p className="label mb-2">Onde este grupo age</p>
+          <p className="label mb-2">{t('fw.group.whereItActs')}</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {(['forward', 'input'] as const).map((s) => {
               const meta = SCOPES[s];
@@ -109,8 +111,8 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
                 >
                   <meta.Icon className={`w-4 h-4 shrink-0 mt-0.5 ${active ? meta.color : 'text-gray-400'}`} aria-hidden="true" />
                   <span className="min-w-0">
-                    <span className={`block text-xs font-medium ${active ? meta.color : 'text-gray-300'}`}>{meta.title}</span>
-                    <span className="block text-[10px] text-gray-500 leading-tight mt-0.5">{meta.hint}</span>
+                    <span className={`block text-xs font-medium ${active ? meta.color : 'text-gray-300'}`}>{t(meta.title)}</span>
+                    <span className="block text-[10px] text-gray-500 leading-tight mt-0.5">{t(meta.hint)}</span>
                     {/* O nome da chain é do nftables e não se traduz: é o
                         que o admin vai achar no `nft list ruleset`. */}
                     <span className="block text-[10px] font-mono text-gray-600 mt-1">chain {meta.chain}</span>
@@ -127,12 +129,12 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
             <div className="mt-2 rounded-lg border border-orange-500/40 bg-orange-500/10 p-3 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" aria-hidden="true" />
               <div className="text-[11px] text-orange-200/90 space-y-1">
-                <p className="font-medium text-orange-200">Salvar vai abrir uma janela de 90 segundos.</p>
+                <p className="font-medium text-orange-200">{t('fw.group.inputWarning.title')}</p>
                 <p>
-                  Este grupo passa a filtrar o que chega no próprio firewall — SSH, este painel, DNS. A alteração é aplicada na hora e, se ninguém confirmar em 90 segundos, o LinkGuard desfaz os grupos e as regras sozinho.
+                  {t('fw.group.inputWarning.body')}
                 </p>
                 <p className="text-orange-200/70">
-                  Enquanto ela estiver aguardando confirmação, a edição de grupos e regras fica bloqueada. Tenha um segundo acesso à máquina à mão se puder.
+                  {t('fw.group.inputWarning.locked')}
                 </p>
               </div>
             </div>
@@ -140,26 +142,26 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
         </div>
 
         <div>
-          <p className="label mb-2">Quando entrar neste grupo (condição de entrada)</p>
+          <p className="label mb-2">{t('fw.group.entryCondition')}</p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="label">Interface de entrada</label>
+              <label className="label">{t('fw.group.inIface')}</label>
               <select className="input w-full" value={state.cond_iif} onChange={(e) => setState({ ...state, cond_iif: e.target.value })}>
-                <option value="">Qualquer</option>
+                <option value="">{t('fw.group.any')}</option>
                 {ifaces.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </div>
             <div>
-              <label className="label">Origem (IP/CIDR)</label>
-              <input className="input w-full" placeholder="qualquer" value={state.cond_saddr} onChange={(e) => setState({ ...state, cond_saddr: e.target.value })} />
+              <label className="label">{t('fw.group.source')}</label>
+              <input className="input w-full" placeholder={t('fw.group.anyPlaceholder')} value={state.cond_saddr} onChange={(e) => setState({ ...state, cond_saddr: e.target.value })} />
             </div>
             <div>
-              <label className="label">Destino (IP/CIDR)</label>
-              <input className="input w-full" placeholder="qualquer" value={state.cond_daddr} onChange={(e) => setState({ ...state, cond_daddr: e.target.value })} />
+              <label className="label">{t('fw.group.dest')}</label>
+              <input className="input w-full" placeholder={t('fw.group.anyPlaceholder')} value={state.cond_daddr} onChange={(e) => setState({ ...state, cond_daddr: e.target.value })} />
             </div>
           </div>
           <p className="text-[11px] text-gray-600 mt-1.5">
-            Sem condição, {state.scope === 'input' ? 'todo o tráfego destinado ao firewall' : 'todo o tráfego que atravessa o firewall'} entra no grupo. Só IPv4 por enquanto.
+            {t(state.scope === 'input' ? 'fw.group.noCondition.input' : 'fw.group.noCondition.forward')}
           </p>
         </div>
 
@@ -168,7 +170,7 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
             "origem 192.168.50.0/24" vale para tudo o que casar, ou só para o
             que estiver começando agora. */}
         <div>
-          <p className="label mb-2">Para quais conexões este grupo vale</p>
+          <p className="label mb-2">{t('fw.group.whichConnections')}</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {(['any', 'new'] as const).map((c) => {
               const meta = CONN_STATES[c];
@@ -182,13 +184,13 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
                 >
                   <meta.Icon className={`w-4 h-4 shrink-0 mt-0.5 ${active ? meta.color : 'text-gray-400'}`} aria-hidden="true" />
                   <span className="min-w-0">
-                    <span className={`block text-xs font-medium ${active ? meta.color : 'text-gray-300'}`}>{meta.title}</span>
-                    <span className="block text-[10px] text-gray-500 leading-tight mt-0.5">{meta.hint}</span>
+                    <span className={`block text-xs font-medium ${active ? meta.color : 'text-gray-300'}`}>{t(meta.title)}</span>
+                    <span className="block text-[10px] text-gray-500 leading-tight mt-0.5">{t(meta.hint)}</span>
                     {/* O token do nftables, quando existe. "toda conexão" não
                         acrescenta nada à linha — e dizer isso é mais honesto
                         do que inventar uma expressão para ela. */}
                     <span className="block text-[10px] font-mono text-gray-600 mt-1">
-                      {meta.expr || 'sem `ct state` na linha'}
+                      {meta.expr || t('fw.connState.noExpr')}
                     </span>
                   </span>
                 </button>
@@ -204,9 +206,9 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
             <div className="mt-2 rounded-lg border border-sky-500/40 bg-sky-500/10 p-3 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-sky-300 shrink-0 mt-0.5" aria-hidden="true" />
               <div className="text-[11px] text-sky-100/90 space-y-1">
-                <p className="font-medium text-sky-100">A sua sessão atual não vai cair — nem se este grupo bloquear você.</p>
+                <p className="font-medium text-sky-100">{t('fw.group.newConnWarning.title')}</p>
                 <p>
-                  Nos 90 segundos de confirmação, testar o acesso na aba que já está aberta (ou no SSH já conectado) vai funcionar de qualquer jeito. Para testar de verdade, abra uma conexão nova: outro terminal SSH, uma aba anônima.
+                  {t('fw.group.newConnWarning.body')}
                 </p>
               </div>
             </div>
@@ -214,7 +216,7 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
         </div>
 
         <div>
-          <p className="label mb-2">E o que sobrar?</p>
+          <p className="label mb-2">{t('fw.group.leftover')}</p>
           <div className="grid grid-cols-3 gap-2">
             {(Object.keys(FALLTHROUGH) as GroupFallthrough[]).map((f) => {
               const meta = FALLTHROUGH[f];
@@ -226,7 +228,7 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
                   className={`flex flex-col items-center gap-1 rounded-lg border p-3 transition ${active ? meta.ring : 'border-gray-700 bg-gray-800/40 hover:border-gray-600'}`}
                 >
                   <span className={`text-xs font-mono ${active ? meta.color : 'text-gray-400'}`}>{f}</span>
-                  <span className="text-[10px] text-gray-500 leading-tight text-center">{meta.hint}</span>
+                  <span className="text-[10px] text-gray-500 leading-tight text-center">{t(meta.hint)}</span>
                 </button>
               );
             })}
@@ -239,7 +241,7 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
               grupo de input mandaria o admin procurar a linha na chain
               errada. */}
           <p className="text-xs text-gray-400 mb-1">
-            Linha que este grupo põe na chain <span className="font-mono">{SCOPES[state.scope].chain}</span>:
+            {t('fw.group.previewLine')} <span className="font-mono">{SCOPES[state.scope].chain}</span>:
           </p>
           <NftPreview endpoint="/api/nftables/groups/preview" body={groupPreviewBody(state)} />
         </div>
@@ -251,9 +253,9 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
           title={locked ? lockReason : undefined}
           className="btn-primary flex-1 disabled:opacity-50"
         >
-          {busy ? 'Salvando...' : state.scope === 'input' ? 'Salvar e iniciar os 90 s' : 'Salvar'}
+          {busy ? t('common.saving') : t(state.scope === 'input' ? 'fw.group.saveAndStart' : 'common.save')}
         </button>
-        <button onClick={onClose} className="btn-secondary flex-1">Cancelar</button>
+        <button onClick={onClose} className="btn-secondary flex-1">{t('common.cancel')}</button>
       </div>
     </Modal>
   );
