@@ -573,13 +573,30 @@ func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool
 // como no-op quando uma base chain com a mesma declaração já está lá (mesma
 // convenção já em produção para a DNATChain, ver ApplyPortForwards).
 //
-// A declaração é `policy accept`, e isso não é negociável: uma chain input
-// com `policy drop` cortaria SSH e painel no instante em que fosse aplicada,
-// num firewall que pode não ter outro acesso administrativo. A proteção aqui
-// é por regra específica, nunca por política restritiva (spec §8).
+// A política da declaração sai de inputPolicy(), e o padrão continua sendo
+// `policy accept`.
+//
+// Até 2026-08-18 este valor era o literal "accept", com o comentário dizendo
+// que não era negociável — porque uma chain input com `policy drop` corta SSH e
+// painel no instante em que é aplicada, num firewall que pode não ter outro
+// acesso administrativo. Isso continua verdade, e é por isso que NENHUM caminho
+// do produto grava `drop` hoje: a fonte é opcional e, sem ela, o resultado é
+// byte a byte o de antes (TestPoliticaPadraoEhAceitarSemFonte).
+//
+// O que mudou foi só o LUGAR da leitura, e é o ponto da issue #81: ela acontece
+// aqui dentro, no caminho que os dois escritores da chain (reconcileGroups e
+// ReconcileNTPInput) percorrem já sob reconcileMu. Lida de fora, ela reabriria
+// pelo lado da política o mesmo buraco que o lock fecha pelo lado dos grupos —
+// um toggle de NTP escrevendo a política antiga por cima de uma reversão.
 func (s *Service) reconcileInputChain(ctx context.Context, groups []StoredGroup, ntpNetworks []string, ntpServing bool) error {
+	policy, err := s.inputPolicy()
+	if err != nil {
+		// Aborta sem tocar na chain, o mesmo contrato dos grupos e do NTP: não
+		// saber qual é a política não pode virar "então é accept".
+		return err
+	}
 	if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, InputChain,
-		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", "accept", ";", "}"); err != nil {
+		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", string(policy), ";", "}"); err != nil {
 		return fmt.Errorf("criar chain %s: %w", InputChain, err)
 	}
 	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing))

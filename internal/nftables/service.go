@@ -37,6 +37,11 @@ type Service struct {
 	// este pacote não conhece por si (ver SetInputChainSources).
 	groupsSource   func() ([]StoredGroup, error)
 	ntpInputSource func() (networks []string, serving bool, err error)
+	// inputPolicySource é a política padrão da chain input (#81). Opcional por
+	// natureza — nil resolve para accept, que é o comportamento de sempre. Ver
+	// policy.go para a razão de ela não abortar quando ausente, ao contrário
+	// das duas acima.
+	inputPolicySource func() (Policy, error)
 
 	// confPath é o arquivo que Persist grava — o ruleset de BOOT da máquina
 	// (ver ConfPath e SetConfPath). Injetável no Service, e não só na variável
