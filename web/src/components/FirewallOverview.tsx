@@ -152,7 +152,13 @@ function RuleRow({
 
         {rule.managed ? (
           <span className="inline-flex items-center gap-1.5 shrink-0 text-xs">
-            <span className="px-2 py-0.5 rounded bg-gray-700/60 text-gray-400">{rule.owner.label}</span>
+            {/* Traduz pelo KEY, não pelo label: o backend manda o rótulo em
+                português porque ele também vai para log e auditoria, onde não
+                existe idioma de sessão. Dono sem key (o "LinkGuard" genérico)
+                cai no label, que é o certo — não há o que traduzir nele. */}
+            <span className="px-2 py-0.5 rounded bg-gray-700/60 text-gray-400">
+              {rule.owner.key ? t(`fwx.owner.${rule.owner.key}`) : rule.owner.label}
+            </span>
             {link?.to && (
               <Link to={link.to} className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300">
                 abrir <ExternalLink className="w-3 h-3" />

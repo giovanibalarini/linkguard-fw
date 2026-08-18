@@ -339,3 +339,49 @@ fwx.confirm.btn.confirm:
 fwx.confirm.btn.revert:
   pt: "Reverter agora"
   en: "Revert now"
+
+# Rótulos de DONO de regra (issue #106). O backend manda `owner.key` +
+# `owner.label`; a tela traduz a partir do KEY e usa o label só quando não há
+# chave. O label continua vindo em português do Go de propósito: ele é o que
+# aparece em log, auditoria e resposta de API, onde não existe idioma de
+# sessão — e mudá-lo lá quebraria quem consome a API.
+fwx.owner.nat:
+  pt: "NAT (WANs)"
+  en: "NAT (WANs)"
+fwx.owner.wan_steering:
+  pt: "Direcionamento por WAN"
+  en: "WAN steering"
+fwx.owner.ntp:
+  pt: "NTP"
+  en: "NTP"
+fwx.owner.rule_groups:
+  pt: "Grupos de regras"
+  en: "Rule groups"
+fwx.owner.host_block:
+  pt: "Hosts bloqueados"
+  en: "Blocked hosts"
+fwx.owner.blocklist:
+  pt: "Destinos bloqueados"
+  en: "Blocked destinations"
+fwx.owner.port_forward:
+  pt: "Encaminhamento de porta"
+  en: "Port forwarding"
+
+# Nomes dos grupos do SISTEMA (issue #106).
+#
+# Estes dois grupos são criados pela migração com nome em português gravado no
+# banco. A tela os traduz na EXIBIÇÃO, casando pelo `kind` — nunca pelo nome —,
+# e o banco não é tocado.
+#
+# Por que não um UPDATE na migração: o nome está no banco de instalações que já
+# existem, e reescrevê-lo por causa de uma troca de idioma seria o produto
+# mexendo em dado do usuário. E por que é seguro traduzir só estes dois: eles
+# são MANTIDOS pelo LinkGuard e o próprio painel diz que não podem ser
+# renomeados — ou seja, o nome não é escolha de ninguém. Um grupo criado pelo
+# admin nunca passa por aqui, porque não tem `kind`.
+fwx.systemGroup.blocked_hosts:
+  pt: "Hosts bloqueados"
+  en: "Blocked hosts"
+fwx.systemGroup.blocklist:
+  pt: "Destinos bloqueados"
+  en: "Blocked destinations"

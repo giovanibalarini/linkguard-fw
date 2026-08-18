@@ -11,7 +11,7 @@
 import type { DragEvent } from 'react';
 import { Plus, RefreshCw, GripVertical, Lock, AlertTriangle, DoorOpen } from 'lucide-react';
 import IconButton from '../ui/IconButton';
-import { adminGroupsAbove } from '../../lib/blockGroups';
+import { adminGroupsAbove , groupDisplayNameKey} from '../../lib/blockGroups';
 import { useI18n } from '../../i18n';
 import { moveItem, splitGroupRules } from '../../lib/groupRules';
 import { SYSTEM_KINDS, formatCount, groupConnState, groupScope, membersOf } from './groupMeta';
@@ -37,6 +37,12 @@ export default function GroupList({
   groups, managed, selectedId, unit, canWrite, cor, onSelect, onNewGroup, onRefresh, onReorder,
 }: Props) {
   const { t } = useI18n();
+  // O nome dos dois grupos do SISTEMA é traduzido na exibição; o de um grupo
+  // do admin é mostrado como ele digitou. Ver groupDisplayNameKey.
+  const nomeDoGrupo = (g: { name: string; kind?: string }) => {
+    const k = groupDisplayNameKey(g.kind);
+    return k ? t(k) : g.name;
+  };
   const [dragGroup, setDragGroup] = useState<number | null>(null);
   const { busy, locked, lockReason, editDisabled } = cor;
 
@@ -156,7 +162,7 @@ export default function GroupList({
                   />
                   <span className="min-w-0 flex-1">
                     <span className={`flex items-center gap-1.5 text-sm ${active ? 'text-white font-medium' : 'text-gray-200'}`}>
-                      <span className="truncate">{g.name}</span>
+                      <span className="truncate">{nomeDoGrupo(g)}</span>
                       {sys && (
                         <Lock
                           className="w-3 h-3 shrink-0 text-gray-500"
