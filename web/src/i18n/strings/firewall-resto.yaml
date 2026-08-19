@@ -385,3 +385,89 @@ fwx.systemGroup.blocked_hosts:
 fwx.systemGroup.blocklist:
   pt: "Destinos bloqueados"
   en: "Blocked destinations"
+
+# Descrições de regra (issue #109). O backend manda a CHAVE e as VARIÁVEIS; as
+# palavras são escolhidas aqui, no idioma de quem está olhando. Os valores
+# (endereço, porta, protocolo, nome de interface) chegam prontos e não se
+# traduzem.
+desc.masquerade:
+  pt: "Mascara saída pelas WANs {wans}"
+  en: "Masquerades outbound traffic through WANs {wans}"
+desc.ctRelated:
+  pt: "Aceita o que o conntrack liga a uma conexão já conhecida — na prática os erros ICMP (mantém o Path MTU Discovery funcionando)"
+  en: "Accepts what conntrack ties to an already known connection — in practice ICMP errors (keeps Path MTU Discovery working)"
+desc.ntpAccept:
+  pt: "Aceita NTP"
+  en: "Accepts NTP"
+desc.ntpAcceptFrom:
+  pt: "Aceita NTP vindo de {origem}"
+  en: "Accepts NTP coming from {origem}"
+desc.ntpDrop:
+  pt: "Bloqueia NTP de qualquer outra origem"
+  en: "Blocks NTP from any other source"
+desc.jumpUserRules:
+  pt: "Avalia as regras personalizadas do admin antes dos bloqueios"
+  en: "Evaluates the admin's custom rules before the blocks"
+desc.blockedHosts.to:
+  pt: "Descarta tráfego indo para hosts bloqueados"
+  en: "Drops traffic going to blocked hosts"
+desc.blockedHosts.from:
+  pt: "Descarta tráfego vindo de hosts bloqueados"
+  en: "Drops traffic coming from blocked hosts"
+desc.blocklist.to:
+  pt: "Descarta tráfego indo para destinos bloqueados"
+  en: "Drops traffic going to blocked destinations"
+desc.blocklist.from:
+  pt: "Descarta tráfego vindo de destinos bloqueados"
+  en: "Drops traffic coming from blocked destinations"
+desc.markHost:
+  pt: "Marca o host de origem com a WAN definida em Direcionamento por WAN"
+  en: "Marks the source host with the WAN set in WAN steering"
+desc.dnat:
+  pt: "Encaminha {proto}/{porta} para {destino}"
+  en: "Forwards {proto}/{porta} to {destino}"
+
+# Regras do admin. A frase é INTEIRA, com a condição num marcador só — colar
+# "origem X" + "destino Y" traduzidos produziria inglês de robô, porque a ordem
+# das palavras muda entre os idiomas.
+desc.user.accept:
+  pt: "Permite {cond}"
+  en: "Allows {cond}"
+desc.user.drop:
+  pt: "Bloqueia {cond}"
+  en: "Blocks {cond}"
+desc.user.reject:
+  pt: "Rejeita {cond}"
+  en: "Rejects {cond}"
+desc.user.rule:
+  pt: "Regra {cond}"
+  en: "Rule {cond}"
+desc.user.accept.any:
+  pt: "Permite qualquer tráfego"
+  en: "Allows any traffic"
+desc.user.drop.any:
+  pt: "Bloqueia qualquer tráfego"
+  en: "Blocks any traffic"
+desc.user.reject.any:
+  pt: "Rejeita qualquer tráfego"
+  en: "Rejects any traffic"
+desc.user.rule.any:
+  pt: "Regra para qualquer tráfego"
+  en: "Rule for any traffic"
+
+# As etiquetas das condições, montadas pelo painel a partir de cond=.
+desc.cond.iif:
+  pt: "entrada {v}"
+  en: "in {v}"
+desc.cond.oif:
+  pt: "saída {v}"
+  en: "out {v}"
+desc.cond.saddr:
+  pt: "origem {v}"
+  en: "from {v}"
+desc.cond.daddr:
+  pt: "destino {v}"
+  en: "to {v}"
+desc.cond.proto:
+  pt: "{v}"
+  en: "{v}"

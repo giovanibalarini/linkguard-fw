@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { describeRule as describeRuleText } from '../lib/ruleDesc';
 import { useI18n } from '../i18n';
 import { Link } from 'react-router-dom';
 import {
@@ -135,7 +136,13 @@ function RuleRow({
         <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium border shrink-0 ${v.ring} ${v.color}`}>
           <v.Icon className="w-3 h-3" /><span className="font-mono">{v.label}</span>
         </span>
-        <span className="text-gray-300 text-sm flex-1 min-w-0">{rule.description}</span>
+        {/* A descrição vem do backend em DUAS formas: a frase pronta em
+            português (para log e auditoria) e o descritor estruturado. A tela
+            usa o descritor; sem ele, cai na frase — que é o caso "o backend não
+            soube descrever", em que ele devolve a expressão nft crua. */}
+        <span className="text-gray-300 text-sm flex-1 min-w-0">
+          {describeRuleText(rule.desc, rule.description, t)}
+        </span>
         {disabled && (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border border-gray-600 bg-gray-700/40 text-gray-400 shrink-0">
             Desativada
