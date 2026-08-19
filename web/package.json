@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "npm run i18n:gen && tsc -b && vite build",
     "preview": "vite preview",
-    "check": "npm run i18n:gen && node --experimental-strip-types src/lib/series.check.ts && node --experimental-strip-types src/lib/grid.check.ts && node --experimental-strip-types src/lib/widgets.check.ts && node --experimental-strip-types src/lib/groupRules.check.ts && node --experimental-strip-types src/lib/resolutionMark.check.ts && node --experimental-strip-types src/lib/releaseNotes.check.ts && node --experimental-strip-types src/lib/services.check.ts && node --experimental-strip-types src/lib/netTargets.check.ts && node --experimental-strip-types src/lib/ruleWizard.check.ts && node --experimental-strip-types src/lib/posture.check.ts && node --experimental-strip-types src/lib/blockGroups.check.ts",
+    "check": "npm run i18n:gen && node --experimental-strip-types src/lib/series.check.ts && node --experimental-strip-types src/lib/grid.check.ts && node --experimental-strip-types src/lib/widgets.check.ts && node --experimental-strip-types src/lib/groupRules.check.ts && node --experimental-strip-types src/lib/resolutionMark.check.ts && node --experimental-strip-types src/lib/releaseNotes.check.ts && node --experimental-strip-types src/lib/services.check.ts && node --experimental-strip-types src/lib/netTargets.check.ts && node --experimental-strip-types src/lib/ruleWizard.check.ts && node --experimental-strip-types src/lib/posture.check.ts && node --experimental-strip-types src/lib/blockGroups.check.ts && node --experimental-strip-types src/lib/ruleDesc.check.ts",
     "i18n:gen": "node scripts/gen-i18n.mjs"
   },
   "dependencies": {

@@ -268,5 +268,6 @@ func syntheticUserRule(r StoredRule, chain string) ChainRule {
 		Managed:     false,
 		Owner:       RuleOwner{},
 		Description: describeUserRuleExpression(expr),
+		Desc:        userRuleDesc(expr),
 	}
 }

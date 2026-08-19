@@ -211,6 +211,141 @@ func describeRule(chain, expr string) string {
 	return expr // unrecognised: honest raw expression, never a wrong guess
 }
 
+// descStructured é o espelho de describeManagedExpression/describeUserRuleExpression
+// em forma de chave + variáveis.
+//
+// Os dois convivem de propósito, e a duplicação é aceita porque o que eles
+// produzem é diferente em espécie: um monta uma frase em português para o log,
+// o outro devolve um identificador para o painel traduzir. Fundi-los faria a
+// frase do log depender do dicionário do frontend.
+//
+// Chave vazia significa "não sei descrever": a tela cai na Description crua, que
+// é o comportamento honesto de sempre.
+func descStructured(chain, expr string, managed bool) RuleDesc {
+	if !managed {
+		return userRuleDesc(expr)
+	}
+	switch chain {
+	case masqueradeChain:
+		if strings.Contains(expr, "masquerade") {
+			if m := reOifnameSet.FindStringSubmatch(expr); m != nil {
+				return RuleDesc{Key: "desc.masquerade", Vars: map[string]string{"wans": extractSetText(m[1])}}
+			}
+		}
+
+	case InputChain:
+		if strings.HasPrefix(expr, "ct state related") {
+			return RuleDesc{Key: "desc.ctRelated"}
+		}
+		if strings.Contains(expr, "udp dport 123") {
+			switch {
+			case strings.HasSuffix(expr, "accept"):
+				if m := reSaddrSet.FindStringSubmatch(expr); m != nil {
+					return RuleDesc{Key: "desc.ntpAcceptFrom", Vars: map[string]string{"origem": extractSetText(m[1])}}
+				}
+				return RuleDesc{Key: "desc.ntpAccept"}
+			case strings.HasSuffix(expr, "drop"):
+				return RuleDesc{Key: "desc.ntpDrop"}
+			}
+		}
+
+	case ForwardChain:
+		switch {
+		case expr == "jump user_rules":
+			return RuleDesc{Key: "desc.jumpUserRules"}
+		case strings.Contains(expr, "@blocked_hosts"):
+			if strings.Contains(expr, "ip daddr") {
+				return RuleDesc{Key: "desc.blockedHosts.to"}
+			}
+			return RuleDesc{Key: "desc.blockedHosts.from"}
+		case strings.Contains(expr, "@blocklist"):
+			if strings.Contains(expr, "ip daddr") {
+				return RuleDesc{Key: "desc.blocklist.to"}
+			}
+			return RuleDesc{Key: "desc.blocklist.from"}
+		}
+
+	case MarkHostsChain:
+		if strings.Contains(expr, "map @host_wan") {
+			return RuleDesc{Key: "desc.markHost"}
+		}
+
+	case DNATChain:
+		if m := reDNATRule.FindStringSubmatch(expr); m != nil {
+			return RuleDesc{Key: "desc.dnat", Vars: map[string]string{
+				"proto": strings.ToUpper(m[1]), "porta": m[2], "destino": m[3] + ":" + m[4],
+			}}
+		}
+	}
+	return RuleDesc{}
+}
+
+// userRuleDesc descreve uma regra do admin.
+//
+// A diferença para describeUserRuleExpression é o que ele NÃO faz: não cola
+// pedaços. A frase inteira mora no dicionário com marcadores, porque a ordem
+// das palavras muda entre idiomas — "Bloqueia origem X, destino Y" e "Blocks
+// traffic from X to Y" não têm a mesma estrutura, e concatenar traduções de
+// "origem" e "destino" produziria inglês de robô.
+//
+// A chave carrega a AÇÃO; as condições vão em `cond`, já formatadas pelo mesmo
+// caminho de sempre, porque endereço e porta não se traduzem.
+func userRuleDesc(expr string) RuleDesc {
+	f := parseRuleFields(expr)
+
+	acao := "rule"
+	switch strings.ToLower(f.Action) {
+	case "accept":
+		acao = "accept"
+	case "drop":
+		acao = "drop"
+	case "reject":
+		acao = "reject"
+	}
+
+	var parts []string
+	// As etiquetas ("entrada", "origem") também são traduzíveis, e por isso
+	// viram chave em vez de palavra: o painel monta cada par.
+	for _, par := range []struct{ rotulo, valor string }{
+		{"iif", f.Iif}, {"oif", f.Oif}, {"saddr", f.Saddr}, {"daddr", f.Daddr},
+	} {
+		if par.valor != "" {
+			parts = append(parts, par.rotulo+"="+par.valor)
+		}
+	}
+	if f.Proto != "" {
+		p := strings.ToUpper(f.Proto)
+		if f.Dport != "" {
+			p += ":" + f.Dport
+		}
+		parts = append(parts, "proto="+p)
+	}
+
+	if len(parts) == 0 {
+		return RuleDesc{Key: "desc.user." + acao + ".any"}
+	}
+	return RuleDesc{Key: "desc.user." + acao, Vars: map[string]string{"cond": strings.Join(parts, "|")}}
+}
+
+// RuleDesc é a descrição de uma regra em forma ESTRUTURADA (issue #109).
+//
+// Por que ela existe ao lado de Description, e não no lugar dela. A frase pronta
+// que o Go monta é o que vai para log, auditoria e para quem consome a API — ali
+// não existe idioma de sessão, e removê-la quebraria esses consumidores. Mas ela
+// também é a única descrição que a tela tinha, e por isso a coluna de descrição
+// da Visão geral continuava em português mesmo com o painel em inglês.
+//
+// Com o descritor, o backend passa a dizer O QUE a regra faz (uma chave) e COM
+// QUE VALORES (as variáveis), e quem escolhe as palavras é o painel — que é
+// quem sabe o idioma de quem está olhando.
+//
+// Vars carrega valores JÁ FORMATADOS (TCP, 8080, 192.168.1.5:80). Eles não se
+// traduzem: são endereço, porta e protocolo.
+type RuleDesc struct {
+	Key  string            `json:"key"`
+	Vars map[string]string `json:"vars,omitempty"`
+}
+
 // describeUserRuleExpression describes an admin rule (chain user_rules) by
 // re-parsing it with parseRuleFields — the same best-effort parser the
 // rule-edit modal already relies on to pre-fill its form — rather than

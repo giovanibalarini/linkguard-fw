@@ -298,6 +298,13 @@ export interface FirewallApplyStatus extends LastApply {
 
 // ─── Firewall overview (GET /api/nftables/overview) ───────────────────────
 
+// A descrição estruturada que o backend manda ao lado da frase pronta
+// (issue #109): a chave do que a regra faz, e os valores dela.
+export interface NftRuleDesc {
+  key: string;
+  vars?: Record<string, string>;
+}
+
 export interface NftRuleOwner {
   key?: string;
   label: string;
@@ -313,6 +320,7 @@ export interface NftChainRule {
   managed: boolean;
   owner: NftRuleOwner;
   description: string;
+  desc?: NftRuleDesc;
   // id/enabled are only ever populated for the user_rules chain (Phase B,
   // design spec §4.1): id is the rule's stable DB id (never nft's volatile
   // handle); enabled is undefined for every other chain, and explicitly

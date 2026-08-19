@@ -46,6 +46,12 @@ type ChainRule struct {
 	Managed     bool      `json:"managed"`
 	Owner       RuleOwner `json:"owner"`
 	Description string    `json:"description"`
+	// Desc é a mesma descrição em forma estruturada (issue #109): uma chave e
+	// as variáveis dela. Description continua sendo a frase pronta em
+	// português, para log, auditoria e quem consome a API; Desc é o que
+	// permite ao painel dizer a mesma coisa no idioma de quem está olhando.
+	// Chave vazia = não sei descrever, e a tela cai na Description.
+	Desc RuleDesc `json:"desc"`
 
 	// ID and Enabled are only ever populated for the user_rules chain, by
 	// MergeUserRules (Phase B, design spec §4.1) — every other chain leaves
@@ -198,5 +204,6 @@ func parseChainRuleLine(chainName, line string) ChainRule {
 	rule.Expression = strings.Join(strings.Fields(clean), " ")
 	rule.Managed, rule.Owner = classifyRule(chainName, rule.Expression)
 	rule.Description = describeRule(chainName, rule.Expression)
+	rule.Desc = descStructured(chainName, rule.Expression, !isAdminRuleChain(chainName))
 	return rule
 }
