@@ -55,7 +55,7 @@ func newPrereqTestDB(t *testing.T) *storage.DB {
 // vez de fingir sucesso").
 func TestApplyExplainsAMissingPrerequisiteInsteadOfAGenericInternalError(t *testing.T) {
 	db := newPrereqTestDB(t)
-	h := NewNetsvcHandler(db, prereqNetsvcProvider{}, nil)
+	h := NewNetsvcHandler(db, prereqNetsvcProvider{}, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Apply(w, httptest.NewRequest("POST", "/api/netsvc/apply", nil))
@@ -84,7 +84,7 @@ func TestApplyExplainsAMissingPrerequisiteInsteadOfAGenericInternalError(t *test
 // pages render, not only in the journal.
 func TestAutoApplyRecordsThePrerequisiteReasonInTheApplyStatus(t *testing.T) {
 	db := newPrereqTestDB(t)
-	h := NewNetsvcHandler(db, prereqNetsvcProvider{}, nil)
+	h := NewNetsvcHandler(db, prereqNetsvcProvider{}, nil, nil)
 
 	if err := h.doReload(context.Background()); err == nil {
 		t.Fatal("esperava falha de apply sem o pacote")
@@ -106,7 +106,7 @@ func TestAutoApplyRecordsThePrerequisiteReasonInTheApplyStatus(t *testing.T) {
 // says what is actually wrong and so it can be closed when it is fixed.
 func TestPrerequisiteFailureRaisesItsOwnAlert(t *testing.T) {
 	db := newPrereqTestDB(t)
-	h := NewNetsvcHandler(db, prereqNetsvcProvider{}, alerts.NewService(db))
+	h := NewNetsvcHandler(db, prereqNetsvcProvider{}, alerts.NewService(db), nil)
 
 	if err := h.doReload(context.Background()); err == nil {
 		t.Fatal("esperava falha de apply sem o pacote")
@@ -140,12 +140,12 @@ func TestASuccessfulOnDemandInstallClearsTheAlert(t *testing.T) {
 	db := newPrereqTestDB(t)
 	alertSvc := alerts.NewService(db)
 
-	failing := NewNetsvcHandler(db, prereqNetsvcProvider{}, alertSvc)
+	failing := NewNetsvcHandler(db, prereqNetsvcProvider{}, alertSvc, nil)
 	if err := failing.doReload(context.Background()); err == nil {
 		t.Fatal("esperava falha de apply sem o pacote")
 	}
 
-	fixed := NewNetsvcHandler(db, installingNetsvcProvider{}, alertSvc)
+	fixed := NewNetsvcHandler(db, installingNetsvcProvider{}, alertSvc, nil)
 	if err := fixed.doReload(context.Background()); err != nil {
 		t.Fatalf("doReload depois de instalar: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestASuccessfulOnDemandInstallClearsTheAlert(t *testing.T) {
 // spam a recovery alert on every save.
 func TestARoutineApplyDoesNotCreateRecoveryNoise(t *testing.T) {
 	db := newPrereqTestDB(t)
-	h := NewNetsvcHandler(db, fakeNetsvcProvider{}, alerts.NewService(db))
+	h := NewNetsvcHandler(db, fakeNetsvcProvider{}, alerts.NewService(db), nil)
 
 	if err := h.doReload(context.Background()); err != nil {
 		t.Fatalf("doReload: %v", err)
@@ -189,7 +189,7 @@ func TestUmApplyQueDaCertoFechaOAlertaMesmoSemTerInstaladoNada(t *testing.T) {
 	db := newPrereqTestDB(t)
 	alertSvc := alerts.NewService(db)
 
-	failing := NewNetsvcHandler(db, prereqNetsvcProvider{}, alertSvc)
+	failing := NewNetsvcHandler(db, prereqNetsvcProvider{}, alertSvc, nil)
 	if err := failing.doReload(context.Background()); err == nil {
 		t.Fatal("esperava falha de apply sem o pacote")
 	}
@@ -200,7 +200,7 @@ func TestUmApplyQueDaCertoFechaOAlertaMesmoSemTerInstaladoNada(t *testing.T) {
 
 	// Nada instalado pelo LinkGuard nesta rodada (Installed vazio), e o
 	// apply funciona.
-	fixed := NewNetsvcHandler(db, fakeNetsvcProvider{}, alertSvc)
+	fixed := NewNetsvcHandler(db, fakeNetsvcProvider{}, alertSvc, nil)
 	if err := fixed.doReload(context.Background()); err != nil {
 		t.Fatalf("doReload: %v", err)
 	}

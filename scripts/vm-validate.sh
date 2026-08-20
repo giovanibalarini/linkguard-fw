@@ -1199,6 +1199,111 @@ for l in json.load(sys.stdin):
   vm "ip netns del wan2sim 2>/dev/null; ip link del lg-wan2 2>/dev/null; true" >/dev/null 2>&1
 }
 
+
+# ─── I. Fuga de DNS (issue #124) ─────────────────────────────────────────────
+#
+# O QUE SÓ UMA MÁQUINA PROVA. As duas medidas são comportamento de rede: uma
+# captura a consulta de quem não quer usar o resolver local, a outra recusa um
+# transporte alternativo. Nenhuma das duas se prova lendo texto de regra — a
+# pergunta é o que acontece com o pacote.
+#
+# A bateria cria um cliente atrás da interface de LAN configurada e mede: a
+# consulta para 8.8.8.8 é capturada? A conexão para a 853 é recusada NA HORA
+# (RST) ou fica pendurada? A diferença entre recusar e descartar é a diferença
+# entre "cai de volta em DNS comum na hora" e "o usuário acha que a internet
+# está lenta".
+battery_dnsleak() {
+  head_ "I. Fuga de DNS"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria I não roda"; return; }
+
+  # A configuração padrão serve a LAN em br10; a VM não tem essa interface,
+  # então a bateria cria uma com o mesmo nome e pendura o cliente nela. Assim o
+  # teste exercita a configuração REAL do produto, sem inventar caminho.
+  vm "ip netns del lgdns 2>/dev/null; ip link del br10 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add lgdns && \
+      ip link add br10 type veth peer name br10-cl && \
+      ip link set br10-cl netns lgdns && \
+      ip addr add 192.168.3.3/24 dev br10 && ip link set br10 up && \
+      ip netns exec lgdns ip link set lo up && \
+      ip netns exec lgdns ip addr add 192.168.3.77/24 dev br10-cl && \
+      ip netns exec lgdns ip link set br10-cl up && \
+      ip netns exec lgdns ip route add default via 192.168.3.3" >/dev/null 2>&1
+
+  local st
+  # I1 — desligado é o padrão, e desligado tem de significar chain vazia.
+  st=$(status PUT /api/dns/config "$tok" '{"upstreams":[],"log_queries":false,"force_local_dns":false,"block_dot":false}')
+  [[ "$st" == "200" ]] || { bad "não consegui salvar a configuração de DNS: $st"; return; }
+  sleep 3
+  local redir
+  redir=$(vm "nft list chain inet linkguard dns_redirect 2>/dev/null" | grep -c 'dport 53' || true)
+  if [[ "${redir:-0}" == "0" ]]; then ok "com o controle desligado, nenhuma consulta é capturada"
+  else bad "há $redir regra(s) de captura com o controle desligado"; fi
+
+  # I2 — ligar as duas medidas.
+  st=$(status PUT /api/dns/config "$tok" '{"upstreams":[],"log_queries":false,"force_local_dns":true,"block_dot":true,"dns_except_ips":["192.168.3.99"]}')
+  [[ "$st" == "200" ]] || { bad "não consegui ligar o controle: $st"; return; }
+  sleep 3
+
+  local chain
+  chain=$(vm "nft list chain inet linkguard dns_redirect 2>/dev/null" | tr -d '\r')
+  if grep -q 'udp dport 53' <<<"$chain" && grep -q 'tcp dport 53' <<<"$chain"; then
+    ok "a captura cobre UDP e TCP"
+  else bad "captura incompleta" "$(tr '\n' ' ' <<<"$chain")"; fi
+  if grep -q '192.168.3.99' <<<"$chain"; then ok "o aparelho isento entrou na regra"
+  else bad "a exceção não chegou ao firewall" "$(tr '\n' ' ' <<<"$chain")"; fi
+
+  # I3 — COMPORTAMENTO: a consulta para um resolver externo é capturada. O
+  # contador da regra é a prova de que o pacote passou por ela.
+  vm "nft flush chain inet linkguard dns_redirect >/dev/null 2>&1; true" >/dev/null 2>&1
+  # (o flush acima zera contadores; a reconciliação seguinte reescreve as regras)
+  status PUT /api/dns/config "$tok" '{"upstreams":[],"log_queries":false,"force_local_dns":true,"block_dot":true}' >/dev/null
+  sleep 3
+  vm "ip netns exec lgdns timeout 3 python3 -c \"
+import socket
+s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
+try:
+    s.sendto(b'\\x00\\x00\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x07example\\x03com\\x00\\x00\\x01\\x00\\x01', ('8.8.8.8', 53))
+    s.recvfrom(512)
+except Exception: pass
+\"" >/dev/null 2>&1
+  local capturados
+  capturados=$(vm "nft list chain inet linkguard dns_redirect 2>/dev/null" | grep -oE 'counter packets [0-9]+' | grep -oE '[0-9]+' | head -1)
+  if [[ -n "$capturados" && "$capturados" -gt 0 ]]; then
+    ok "consulta enviada a 8.8.8.8 foi capturada pelo firewall ($capturados pacote(s))"
+  else bad "a consulta para o resolver externo NÃO foi capturada"; fi
+
+  # I4 — COMPORTAMENTO: DoT é recusado na hora, e não descartado. A diferença
+  # aparece no erro: recusa dá ConnectionRefused imediato; descarte dá timeout.
+  local dot
+  dot=$(vm "ip netns exec lgdns timeout 6 python3 -c \"
+import socket, time
+s=socket.socket(); s.settimeout(4)
+t0=time.time()
+try:
+    s.connect(('1.1.1.1', 853)); print('CONECTOU')
+except ConnectionRefusedError: print('RECUSADO', round(time.time()-t0,1))
+except Exception as e: print(type(e).__name__, round(time.time()-t0,1))
+\"" | tr -d '\r')
+  if grep -q 'RECUSADO' <<<"$dot"; then ok "DoT recusado imediatamente (RST): $dot"
+  elif grep -q 'CONECTOU' <<<"$dot"; then bad "a conexão DoT passou: $dot"
+  else bad "DoT não foi recusado com RST — o cliente fica pendurado até o timeout: $dot"; fi
+
+  # I5 — desligar tem de desligar de verdade.
+  status PUT /api/dns/config "$tok" '{"upstreams":[],"log_queries":false,"force_local_dns":false,"block_dot":false}' >/dev/null
+  sleep 3
+  local sobrou
+  sobrou=$(vm "nft list chain inet linkguard dns_redirect 2>/dev/null; nft list chain inet linkguard dns_guard 2>/dev/null" | grep -cE 'dport 53|dport 853' || true)
+  if [[ "${sobrou:-0}" == "0" ]]; then ok "desligar no painel removeu as regras"
+  else bad "sobraram $sobrou regra(s) depois de desligar"; fi
+
+  vm "ip netns del lgdns 2>/dev/null; ip link del br10 2>/dev/null; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -1207,6 +1312,7 @@ battery_capture
 battery_quota
 battery_accounting
 battery_replyrouting
+battery_dnsleak
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

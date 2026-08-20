@@ -30,7 +30,7 @@ func (p *ctxProbeProvider) ReloadConfigs(ctx context.Context, _ netsvc.Config, _
 func TestApplyNaoMorreJuntoComOCliente(t *testing.T) {
 	db := newPrereqTestDB(t)
 	p := &ctxProbeProvider{}
-	h := NewNetsvcHandler(db, p, nil)
+	h := NewNetsvcHandler(db, p, nil, nil)
 
 	// Requisição cujo contexto já foi cancelado: é o que o net/http entrega
 	// quando o cliente desiste.

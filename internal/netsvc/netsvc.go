@@ -30,6 +30,21 @@ type Config struct {
 	Upstreams    []string `json:"upstreams"`      // DNS forwarders ([] = recurse from root)
 	LogQueries   bool     `json:"log_queries"`    // log DNS queries (visibility; I/O heavy)
 	DomainSuffix string   `json:"domain_suffix"`  // optional local domain (e.g. lan)
+
+	// Controle de fuga de DNS (issue #124). Desligados por padrão: mudar o
+	// caminho do DNS da rede sem o admin pedir seria hostil, e é o tipo de
+	// mudança cujo sintoma (site que não abre) ninguém liga ao firewall.
+	//
+	// ForceLocalDNS redireciona a porta 53 da LAN para o resolver local, de
+	// modo que quem configurou 8.8.8.8 no aparelho seja atendido pela caixa —
+	// sem isso, a blocklist do painel não vale para ele.
+	ForceLocalDNS bool `json:"force_local_dns"`
+	// BlockDoT recusa DNS sobre TLS (853) com RST. DoH na 443 continua
+	// passando: é HTTPS comum e indistinguível do resto.
+	BlockDoT bool `json:"block_dot"`
+	// DNSExceptIPs são hosts isentos das duas medidas — quem roda resolver
+	// próprio na LAN de propósito.
+	DNSExceptIPs []string `json:"dns_except_ips"`
 }
 
 // DefaultConfig mirrors the previous isc-dhcp/bind9 behaviour for the strong stack.

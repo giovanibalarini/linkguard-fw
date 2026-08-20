@@ -434,7 +434,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermMonitoringRead)).Get("/api/ai/reports/{id}", aiH.GetReport)
 
 		// DHCP / DNS (Kea + unbound)
-		netH := handlers.NewNetsvcHandler(s.db, s.netSvc, s.alertSvc)
+		netH := handlers.NewNetsvcHandler(s.db, s.netSvc, s.alertSvc, s.nftSvc)
 		r.With(require(auth.PermDHCPRead)).Get("/api/dhcp", netH.GetDHCP)
 		r.With(require(auth.PermDHCPWrite)).Put("/api/dhcp/config", netH.UpdateDHCPConfig)
 		r.With(require(auth.PermDHCPWrite)).Post("/api/dhcp/reservations", netH.UpsertReservation)

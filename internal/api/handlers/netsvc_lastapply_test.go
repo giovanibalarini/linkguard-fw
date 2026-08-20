@@ -38,7 +38,7 @@ func TestLastApplyStatusNilWhenNeverApplied(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	h := NewNetsvcHandler(db, fakeNetsvcProvider{}, nil)
+	h := NewNetsvcHandler(db, fakeNetsvcProvider{}, nil, nil)
 
 	if got := h.lastApplyStatus(); got != nil {
 		t.Fatalf("expected nil last_apply before any apply attempt, got %+v", got)
@@ -72,7 +72,7 @@ func TestLastApplyStatusCarriesRenderWarnings(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	h := NewNetsvcHandler(db, warningNetsvcProvider{}, nil)
+	h := NewNetsvcHandler(db, warningNetsvcProvider{}, nil, nil)
 	if err := h.doReload(context.Background()); err != nil {
 		t.Fatalf("doReload: %v", err)
 	}
