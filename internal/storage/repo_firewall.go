@@ -254,15 +254,29 @@ type FirewallGroup struct {
 	// terminar). Vazio conta como "any": é o valor de toda linha criada antes
 	// desta coluna existir, e toda máquina em produção hoje bloqueia de
 	// imediato.
-	ConnState string    `json:"conn_state"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ConnState string `json:"conn_state"`
+	// Janela de horário (#125). Vazio nos três = grupo vale sempre, que é o
+	// valor de toda linha criada antes destas colunas existirem.
+	//
+	// SchedDays é lista de chaves curtas separadas por vírgula ("mon,tue"), e
+	// vazio significa TODOS os dias — não "nenhum". SchedStart/SchedEnd são
+	// "HH:MM" em hora LOCAL da máquina: medido no nft 1.1.3 do Debian 13, o
+	// `meta hour` é avaliado na hora local do kernel, e não em UTC.
+	//
+	// Faixa que atravessa a meia-noite é válida e é o caso comum ("22:00" às
+	// "06:00"); o nft trata a volta sozinho — também medido, não presumido.
+	SchedDays  string    `json:"sched_days"`
+	SchedStart string    `json:"sched_start"`
+	SchedEnd   string    `json:"sched_end"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
 	rows, err := db.conn.Query(`
         SELECT id, name, chain_name, position, enabled, cond_saddr, cond_daddr,
-               cond_iif, fallthrough, kind, scope, conn_state, created_at, updated_at
+               cond_iif, fallthrough, kind, scope, conn_state,
+               sched_days, sched_start, sched_end, created_at, updated_at
           FROM firewall_groups ORDER BY position ASC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -273,7 +287,8 @@ func (db *DB) ListFirewallGroups() ([]FirewallGroup, error) {
 		var g FirewallGroup
 		if err := rows.Scan(&g.ID, &g.Name, &g.ChainName, &g.Position, &g.Enabled,
 			&g.CondSaddr, &g.CondDaddr, &g.CondIif, &g.Fallthrough, &g.Kind, &g.Scope,
-			&g.ConnState, &g.CreatedAt, &g.UpdatedAt); err != nil {
+			&g.ConnState, &g.SchedDays, &g.SchedStart, &g.SchedEnd,
+			&g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, g)
@@ -287,10 +302,11 @@ func (db *DB) CreateFirewallGroup(g *FirewallGroup) error {
 	_, err := db.conn.Exec(`
         INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
             cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, conn_state,
-            created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            sched_days, sched_start, sched_end, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
 		g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope, g.ConnState,
+		g.SchedDays, g.SchedStart, g.SchedEnd,
 		g.CreatedAt, g.UpdatedAt)
 	return err
 }
@@ -325,9 +341,10 @@ func (db *DB) UpdateFirewallGroup(g *FirewallGroup) error {
 	res, err := db.conn.Exec(`
         UPDATE firewall_groups
            SET name=?, cond_saddr=?, cond_daddr=?, cond_iif=?, fallthrough=?, scope=?,
-               conn_state=?, updated_at=?
+               conn_state=?, sched_days=?, sched_start=?, sched_end=?, updated_at=?
          WHERE id=?`,
 		g.Name, g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Scope, g.ConnState,
+		g.SchedDays, g.SchedStart, g.SchedEnd,
 		g.UpdatedAt, g.ID)
 	if err != nil {
 		return err
@@ -792,8 +809,8 @@ func (db *DB) ReplaceFirewallGroupsAndRules(groups []FirewallGroup, rules []Fire
 	gstmt, err := tx.Prepare(`
         INSERT INTO firewall_groups (id, name, chain_name, position, enabled,
             cond_saddr, cond_daddr, cond_iif, fallthrough, kind, scope, conn_state,
-            created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            sched_days, sched_start, sched_end, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -801,6 +818,7 @@ func (db *DB) ReplaceFirewallGroupsAndRules(groups []FirewallGroup, rules []Fire
 	for _, g := range groups {
 		if _, err := gstmt.Exec(g.ID, g.Name, g.ChainName, g.Position, g.Enabled,
 			g.CondSaddr, g.CondDaddr, g.CondIif, g.Fallthrough, g.Kind, g.Scope, g.ConnState,
+			g.SchedDays, g.SchedStart, g.SchedEnd,
 			g.CreatedAt, g.UpdatedAt); err != nil {
 			return err
 		}

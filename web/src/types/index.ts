@@ -495,6 +495,10 @@ export interface FirewallGroup {
   // rule at all. Edit/delete must be gated on the presence of `id`, never
   // on `managed === false`.
   rules: NftChainInfo;
+  // Janela de horário (#125): vazio = o grupo vale sempre.
+  sched_days?: string;
+  sched_start?: string;
+  sched_end?: string;
 }
 
 export interface FirewallGroupsData {

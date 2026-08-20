@@ -480,6 +480,9 @@ func ToStoredGroup(g storage.FirewallGroup) nftables.StoredGroup {
 		Enabled: g.Enabled, CondSaddr: g.CondSaddr, CondDaddr: g.CondDaddr,
 		CondIif: g.CondIif, Fallthrough: g.Fallthrough, Kind: g.Kind, Scope: g.Scope,
 		ConnState: g.ConnState,
+		// Janela de horário (#125): os três campos andam juntos e não têm
+		// valor derivado — vazio significa "vale sempre".
+		SchedDays: g.SchedDays, SchedStart: g.SchedStart, SchedEnd: g.SchedEnd,
 	}
 }
 

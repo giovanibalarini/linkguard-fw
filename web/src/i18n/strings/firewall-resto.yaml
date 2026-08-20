@@ -471,3 +471,22 @@ desc.cond.daddr:
 desc.cond.proto:
   pt: "{v}"
   en: "{v}"
+
+# ─── Janela de horário do grupo (issue #125) ──────────────────────────────────
+# O aviso do fuso não é detalhe: "22:00" é a hora DO FIREWALL, e o admin pode
+# estar configurando de um computador em outro fuso.
+fw.group.schedule.title:
+  pt: "Janela de horário (opcional)"
+  en: "Time window (optional)"
+fw.group.schedule.explain:
+  pt: "Fora da janela, o grupo inteiro deixa de valer — as regras dentro dele não são nem consultadas. Sem dia marcado vale todos os dias; sem horário vale o dia inteiro."
+  en: "Outside the window the whole group stops applying — the rules inside it are not even consulted. With no day selected it applies every day; with no time it applies all day."
+fw.group.schedule.to:
+  pt: "até"
+  en: "to"
+fw.group.schedule.clear:
+  pt: "remover janela"
+  en: "clear window"
+fw.group.schedule.hint:
+  pt: "Horário do firewall, não do seu computador. Faixa que atravessa a meia-noite é válida (22:00 até 06:00)."
+  en: "The firewall's clock, not your computer's. A window crossing midnight is valid (22:00 to 06:00)."
