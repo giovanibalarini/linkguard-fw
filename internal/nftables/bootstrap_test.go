@@ -247,7 +247,7 @@ func TestBootstrapForwardBlocksMatchForwardChainRulesForSystemGroups(t *testing.
 		{ID: "h", Kind: GroupKindBlockedHosts, ChainName: SystemChainBlockedHosts, Enabled: true, Position: 0},
 		{ID: "l", Kind: GroupKindBlocklist, ChainName: SystemChainBlocklist, Enabled: true, Position: 1},
 	}
-	for _, toks := range forwardChainRules(groups) {
+	for _, toks := range forwardChainRules(groups, false) {
 		line := strings.Join(toks, " ")
 		if !strings.Contains(rs, line) {
 			t.Errorf("bootstrap ruleset diverge de forwardChainRules para os grupos do sistema: falta %q\n%s", line, rs)

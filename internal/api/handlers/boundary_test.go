@@ -157,11 +157,15 @@ const maxInternalImportsPerFile = 6
 // seja um ato deliberado, com um humano perguntando "isto é HTTP?", em vez de
 // acontecer sozinho num import automático do editor.
 var allowedInternalImports = map[string]bool{
-	"internal/ai":            true,
-	"internal/alerts":        true,
-	"internal/auth":          true,
-	"internal/backup":        true,
-	"internal/balancer":      true,
+	"internal/ai":       true,
+	"internal/alerts":   true,
+	"internal/auth":     true,
+	"internal/backup":   true,
+	"internal/balancer": true,
+	// internal/blocklog entrou com o registro de bloqueios (#122): o handler
+	// lê o journal pelo serviço e devolve as linhas. O formato do log do
+	// kernel e a filtragem moram lá.
+	"internal/blocklog":      true,
 	"internal/dashboard":     true,
 	"internal/dnslog":        true,
 	"internal/failover":      true,

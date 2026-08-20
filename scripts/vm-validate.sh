@@ -1456,6 +1456,93 @@ battery_schedule() {
   vm "timedatectl set-ntp true; ip netns del lgsched 2>/dev/null; ip link del veth-sch 2>/dev/null; true" >/dev/null 2>&1
 }
 
+
+# ─── L. Registro de bloqueios (issue #122) ───────────────────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Em nft, `limit` é um CASAMENTO, não um
+# modificador: numa regra `... limit rate 10/second counter drop`, o pacote que
+# EXCEDE a taxa não casa a regra — e portanto NÃO é bloqueado. Escrever o
+# limite no lugar errado transformaria o registro de bloqueios num buraco no
+# firewall, e o painel continuaria dizendo que o host está bloqueado.
+#
+# Por isso a bateria manda mais pacotes do que a taxa de log permite e exige
+# que TODOS continuem sendo descartados.
+battery_blocklog() {
+  head_ "L. Registro de bloqueios"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria L não roda"; return; }
+
+  status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
+
+  # Cliente atrás do firewall, para ser bloqueado de verdade.
+  vm "ip netns del lgblk 2>/dev/null; ip link del veth-blk 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add lgblk && \
+      ip link add veth-blk type veth peer name veth-blk-cl && \
+      ip link set veth-blk-cl netns lgblk && \
+      ip addr add 192.168.66.1/24 dev veth-blk && ip link set veth-blk up && \
+      ip netns exec lgblk ip link set lo up && \
+      ip netns exec lgblk ip addr add 192.168.66.2/24 dev veth-blk-cl && \
+      ip netns exec lgblk ip link set veth-blk-cl up && \
+      ip netns exec lgblk ip route add default via 192.168.66.1" >/dev/null 2>&1
+
+  # L1 — desligado é o padrão, e a chain forward não pode ter linha de log.
+  local st fwd
+  st=$(status PUT /api/nftables/block-log "$tok" '{"enabled":false}')
+  [[ "$st" == "200" ]] || { bad "não consegui desligar o registro: $st"; return; }
+  sleep 2
+  fwd=$(vm "nft list chain inet linkguard forward 2>/dev/null" | tr -d '\r')
+  if ! grep -q 'log prefix' <<<"$fwd"; then ok "com o registro desligado não há linha de log"
+  else bad "há linha de log com o registro desligado" "$(grep 'log prefix' <<<"$fwd" | tr '\n' ' ')"; fi
+
+  # Bloqueia o cliente de teste (o host entra no set do grupo do sistema).
+  status POST /api/hosts/block "$tok" '{"mac":"","blocked":true}' >/dev/null 2>&1
+  vm "nft add element inet linkguard blocked_hosts { 192.168.66.2 }" >/dev/null 2>&1
+
+  # L2 — ligar cria a linha de log SEM tirar a de drop.
+  st=$(status PUT /api/nftables/block-log "$tok" '{"enabled":true}')
+  [[ "$st" == "200" ]] || { bad "não consegui ligar o registro: $st"; return; }
+  sleep 2
+  fwd=$(vm "nft list chain inet linkguard forward 2>/dev/null" | tr -d '\r')
+  if grep -q 'log prefix "lg:blk:host' <<<"$fwd"; then ok "a linha de log apareceu na forward"
+  else bad "a linha de log não apareceu" "$(tr '\n' ' ' <<<"$fwd" | head -c 200)"; fi
+  local drops
+  drops=$(grep -c 'counter.*drop' <<<"$fwd" || true)
+  if [[ "${drops:-0}" -ge 4 ]]; then ok "as quatro linhas de bloqueio continuam lá ($drops)"
+  else bad "o registro comeu linhas de bloqueio: só $drops sobraram"; fi
+
+  # L3 — A ASSERÇÃO CENTRAL: com o registro ligado, o bloqueio continua
+  # bloqueando ACIMA da taxa de log. Se o limite estivesse na regra de drop,
+  # parte destes pacotes passaria.
+  vm "nft add element inet linkguard blocked_hosts { 192.168.66.2 } 2>/dev/null; true" >/dev/null 2>&1
+  local passou
+  passou=$(vm "ip netns exec lgblk ping -c 30 -i 0.05 -W 1 10.0.2.2 2>&1 | grep -oE '[0-9]+ received' | grep -oE '^[0-9]+'" | tr -d '\r')
+  if [[ "${passou:-0}" == "0" ]]; then
+    ok "30 pacotes acima da taxa de log e nenhum passou (o limite está na regra certa)"
+  else bad "$passou de 30 pacotes passaram com o registro ligado — o limite está na regra de drop e abriu um buraco"; fi
+
+  # L4 — e o painel mostra o que foi bloqueado.
+  local n
+  n=$(body GET "/api/nftables/block-log/entries?limit=50" "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(len([e for e in d.get('entries',[]) if e.get('src')=='192.168.66.2']))" 2>/dev/null)
+  if [[ -n "$n" && "$n" -gt 0 ]]; then ok "o painel lista $n descarte(s) do host bloqueado"
+  else bad "o painel não mostrou nenhum descarte do host bloqueado"; fi
+
+  # L5 — desligar remove as linhas de log.
+  status PUT /api/nftables/block-log "$tok" '{"enabled":false}' >/dev/null
+  sleep 2
+  if ! vm "nft list chain inet linkguard forward 2>/dev/null" | grep -q 'log prefix'; then
+    ok "desligar removeu as linhas de log"
+  else bad "as linhas de log sobreviveram ao desligamento"; fi
+
+  vm "nft delete element inet linkguard blocked_hosts { 192.168.66.2 } 2>/dev/null; ip netns del lgblk 2>/dev/null; ip link del veth-blk 2>/dev/null; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -1467,6 +1554,7 @@ battery_replyrouting
 battery_dnsleak
 battery_mssclamp
 battery_schedule
+battery_blocklog
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

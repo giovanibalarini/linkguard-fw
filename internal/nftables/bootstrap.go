@@ -104,7 +104,9 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	// (groups.go) — a mesma fonte que forwardChainRules usa para os dois
 	// grupos do sistema — em vez de uma segunda cópia literal aqui. Ver o
 	// doc-comment de administrativeBlockRules para por que isso importa.
-	for _, tokens := range administrativeBlockRules() {
+	// Sem log no bootstrap: instalação nova nasce com o registro desligado, e
+	// a primeira reconciliação aplica a escolha do admin.
+	for _, tokens := range administrativeBlockRules(false) {
 		fmt.Fprintf(&b, "\t\t%s\n", strings.Join(tokens, " "))
 	}
 	b.WriteString("\t}\n\n")

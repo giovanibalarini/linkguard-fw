@@ -577,6 +577,12 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// conexão fechava. Ver internal/nftables/accounting.go.
 	trafficSvc.SetCounterSource(nftSvc)
 
+	// A opção de registrar bloqueios (#122) é lida do banco a cada
+	// reconciliação, e não guardada em memória: o admin pode ligá-la pelo
+	// painel, e o valor tem de valer na reconciliação seguinte sem reiniciar
+	// nada. Mesmo desenho da política padrão da chain input.
+	nftSvc.SetBlockLogSource(func() (bool, error) { return handlers.BlockLogEnabled(db) })
+
 	rrdSvc := tsdb.NewService(db)
 
 	// A série de consumo por host (#113) usa as três peças que já existem: os

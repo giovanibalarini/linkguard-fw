@@ -166,7 +166,7 @@ func TestIsSystemGroupRecognisesOnlyTheTwoBlockKinds(t *testing.T) {
 func TestSystemGroupKindKnownToIsSystemGroupIsAlwaysRenderedAsSystem(t *testing.T) {
 	const hypotheticalKind = "kind_de_sistema_hipotetico_para_teste"
 	hypotheticalLine := []string{"ip", "saddr", "@hipotetico", "counter", "drop"}
-	systemGroupForwardRules[hypotheticalKind] = func() [][]string {
+	systemGroupForwardRules[hypotheticalKind] = func(bool) [][]string {
 		return [][]string{hypotheticalLine}
 	}
 	t.Cleanup(func() { delete(systemGroupForwardRules, hypotheticalKind) })
@@ -336,7 +336,7 @@ func TestNewOnlyGroupKeepsCtStateAfterEveryCondition(t *testing.T) {
 func TestSystemGroupNeverGetsCtState(t *testing.T) {
 	for _, kind := range []string{GroupKindBlockedHosts, GroupKindBlocklist} {
 		g := StoredGroup{ID: "s", Kind: kind, Enabled: true, ConnState: ConnStateNew}
-		for _, toks := range systemGroupForwardRules[g.Kind]() {
+		for _, toks := range systemGroupForwardRules[g.Kind](false) {
 			if strings.Contains(strings.Join(toks, " "), "ct state") {
 				t.Errorf("kind=%s: grupo do sistema não pode receber ct state", kind)
 			}

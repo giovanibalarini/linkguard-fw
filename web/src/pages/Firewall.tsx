@@ -11,6 +11,7 @@ import { useI18n } from '../i18n';
 import PortForwarding from '../components/PortForwarding';
 import FirewallOverview from '../components/FirewallOverview';
 import FirewallGroups from '../components/FirewallGroups';
+import BlockLog from '../components/firewall/BlockLog';
 import FirewallPosture from '../components/firewall/FirewallPosture';
 import WanSteering from '../components/WanSteering';
 import type { IptablesBackup, MsgLevel, NftChainInfo, SystemMetrics } from '../types';
@@ -25,7 +26,7 @@ import type { IptablesBackup, MsgLevel, NftChainInfo, SystemMetrics } from '../t
 // A postura vem logo depois da visão geral, e antes dos grupos: ela é a
 // pergunta de cima ("o que acontece com o tráfego que nenhuma regra
 // menciona?"), e as regras só fazem sentido depois de respondida.
-const TABS = ['overview', 'posture', 'groups', 'steering', 'portforward', 'ruleset', 'backups'] as const;
+const TABS = ['overview', 'posture', 'groups', 'steering', 'portforward', 'blocklog', 'ruleset', 'backups'] as const;
 
 type Tab = (typeof TABS)[number];
 
@@ -174,6 +175,8 @@ export default function Firewall() {
         <WanSteering canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'portforward' ? (
         <PortForwarding ifaces={ifaces} canWrite={canWrite} onMsg={notify} />
+      ) : activeTab === 'blocklog' ? (
+        <BlockLog canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'ruleset' ? (
         <Panel className="p-0 overflow-hidden">
           <div className="px-4 py-2 border-b border-gray-800 flex items-center gap-2 text-xs text-gray-500"><Terminal className="w-3.5 h-3.5" /><span className="font-mono">nft list ruleset</span></div>

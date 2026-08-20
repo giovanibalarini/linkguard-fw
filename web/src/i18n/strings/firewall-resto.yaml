@@ -490,3 +490,64 @@ fw.group.schedule.clear:
 fw.group.schedule.hint:
   pt: "Horário do firewall, não do seu computador. Faixa que atravessa a meia-noite é válida (22:00 até 06:00)."
   en: "The firewall's clock, not your computer's. A window crossing midnight is valid (22:00 to 06:00)."
+
+# ─── Registro de bloqueios (issue #122) ───────────────────────────────────────
+# A distinção entre "desligado" e "nada bloqueado" é o ponto: dizer a mensagem
+# errada manda o admin procurar defeito onde não há.
+fw.tab.blocklog:
+  pt: "Bloqueios"
+  en: "Blocks"
+fwx.blocklog.title:
+  pt: "O que foi bloqueado"
+  en: "What was blocked"
+fwx.blocklog.explain:
+  pt: "O contador ao lado de cada regra diz quantos pacotes ela descartou; aqui você vê quais. Fica desligado por padrão porque registrar todo descarte custa disco."
+  en: "The counter next to each rule says how many packets it dropped; here you see which ones. Off by default because logging every drop costs disk."
+fwx.blocklog.off:
+  pt: "O registro está desligado — por isso não há nada aqui. Ligue para começar a registrar (só vale daqui para frente; o que foi bloqueado antes não fica guardado)."
+  en: "Logging is off — that is why there is nothing here. Turn it on to start recording (it only applies from now on; what was blocked before is not kept)."
+fwx.blocklog.empty:
+  pt: "Nada foi bloqueado desde que o registro foi ligado."
+  en: "Nothing has been blocked since logging was turned on."
+fwx.blocklog.turnOn:
+  pt: "Ligar registro"
+  en: "Turn logging on"
+fwx.blocklog.turnOff:
+  pt: "Desligar registro"
+  en: "Turn logging off"
+fwx.blocklog.turnedOn:
+  pt: "Registro de bloqueios ligado. As regras foram reaplicadas."
+  en: "Block logging turned on. Rules were reapplied."
+fwx.blocklog.turnedOff:
+  pt: "Registro de bloqueios desligado. As regras foram reaplicadas."
+  en: "Block logging turned off. Rules were reapplied."
+fwx.blocklog.toggleError:
+  pt: "não foi possível mudar o registro de bloqueios."
+  en: "could not change block logging."
+fwx.blocklog.filter:
+  pt: "Filtrar por endereço, interface, protocolo ou porta"
+  en: "Filter by address, interface, protocol or port"
+fwx.blocklog.col.time:
+  pt: "Hora"
+  en: "Time"
+fwx.blocklog.col.why:
+  pt: "Motivo"
+  en: "Reason"
+fwx.blocklog.col.src:
+  pt: "Origem"
+  en: "Source"
+fwx.blocklog.col.dst:
+  pt: "Destino"
+  en: "Destination"
+fwx.blocklog.col.proto:
+  pt: "Proto"
+  en: "Proto"
+fwx.blocklog.col.path:
+  pt: "Caminho"
+  en: "Path"
+fwx.blocklog.kind.host:
+  pt: "host bloqueado"
+  en: "blocked host"
+fwx.blocklog.kind.dest:
+  pt: "destino bloqueado"
+  en: "blocked destination"

@@ -141,7 +141,7 @@ const liveTableWithForeignGroupChain = `table inet linkguard {
 
 func forwardLines(groups []StoredGroup) []string {
 	var lines []string
-	for _, toks := range forwardChainRules(groups) {
+	for _, toks := range forwardChainRules(groups, false) {
 		lines = append(lines, strings.Join(toks, " "))
 	}
 	return lines
@@ -206,7 +206,7 @@ func TestForwardChainDefaultOrderIsBlocksFirst(t *testing.T) {
 		{ID: "b", Kind: GroupKindBlocklist, Enabled: true, Position: 1},
 		{ID: "g", Kind: GroupKindAdmin, ChainName: "grp_aaa", Enabled: true, Position: 2},
 	}
-	s := renderChainScript(ForwardChain, forwardChainRules(groups))
+	s := renderChainScript(ForwardChain, forwardChainRules(groups, false))
 	idxBlock := strings.Index(s, "@blocked_hosts")
 	idxJump := strings.Index(s, "jump grp_aaa")
 	if idxBlock < 0 || idxJump < 0 {
@@ -225,7 +225,7 @@ func TestForwardChainDefaultOrderIsBlocksFirst(t *testing.T) {
 // do set continuam guardados (o set não é tocado).
 func TestForwardChainSkipsDisabledSystemGroup(t *testing.T) {
 	groups := []StoredGroup{{ID: "h", Kind: GroupKindBlockedHosts, Enabled: false, Position: 0}}
-	if len(forwardChainRules(groups)) != 0 {
+	if len(forwardChainRules(groups, false)) != 0 {
 		t.Error("grupo do sistema desligado não emite linha nenhuma")
 	}
 }
@@ -375,7 +375,7 @@ func TestForwardChainSkipsDisabledGroups(t *testing.T) {
 		{ID: "a", ChainName: "grp_aaa", Enabled: false, Position: 0},
 		{ID: "b", ChainName: "grp_bbb", Enabled: true, Position: 1},
 	}
-	joined := renderChainScript(ForwardChain, forwardChainRules(groups))
+	joined := renderChainScript(ForwardChain, forwardChainRules(groups, false))
 	if strings.Contains(joined, "grp_aaa") {
 		t.Error("grupo desligado não pode ter jump na forward")
 	}
@@ -389,7 +389,7 @@ func TestForwardChainRespectsGroupOrder(t *testing.T) {
 		{ID: "b", ChainName: "grp_bbb", Enabled: true, Position: 5},
 		{ID: "a", ChainName: "grp_aaa", Enabled: true, Position: 1},
 	}
-	s := renderChainScript(ForwardChain, forwardChainRules(groups))
+	s := renderChainScript(ForwardChain, forwardChainRules(groups, false))
 	if strings.Index(s, "grp_aaa") > strings.Index(s, "grp_bbb") {
 		t.Errorf("ordem dos jumps não seguiu Position:\n%s", s)
 	}
@@ -402,7 +402,7 @@ func TestForwardChainSkipsGroupWithInvalidCondition(t *testing.T) {
 		{ID: "a", ChainName: "grp_aaa", Enabled: true, Position: 0, CondSaddr: "1.2.3.4; flush ruleset"},
 		{ID: "b", ChainName: "grp_bbb", Enabled: true, Position: 1},
 	}
-	joined := renderChainScript(ForwardChain, forwardChainRules(groups))
+	joined := renderChainScript(ForwardChain, forwardChainRules(groups, false))
 	if strings.Contains(joined, "flush ruleset") || strings.Contains(joined, "grp_aaa") {
 		t.Errorf("condição inválida chegou na forward:\n%s", joined)
 	}
@@ -421,7 +421,7 @@ func TestForwardChainRejectsUnsafeChainName(t *testing.T) {
 		{ID: "c", ChainName: "user_rules", Enabled: true, Position: 2},
 		{ID: "d", ChainName: "grp_ddd", Enabled: true, Position: 3},
 	}
-	joined := renderChainScript(ForwardChain, forwardChainRules(groups))
+	joined := renderChainScript(ForwardChain, forwardChainRules(groups, false))
 	for _, forbidden := range []string{"flush ruleset", "jump user_rules"} {
 		if strings.Contains(joined, forbidden) {
 			t.Errorf("nome de chain inseguro chegou na forward (%q):\n%s", forbidden, joined)
@@ -1735,7 +1735,7 @@ func TestGroupScopeDecidesWhichChainItLandsIn(t *testing.T) {
 		{ID: "f", Kind: GroupKindAdmin, Scope: ScopeForward, ChainName: "grp_fff", Enabled: true, Position: 1},
 	}
 	inp := renderChainScript(InputChain, inputChainRules(groups, nil, false, PolicyAccept, AdminAccess{}))
-	fwd := renderChainScript(ForwardChain, forwardChainRules(groups))
+	fwd := renderChainScript(ForwardChain, forwardChainRules(groups, false))
 	// Presença primeiro: só com as ausências, este teste passaria com os dois
 	// renderizadores devolvendo lista vazia — nenhum grupo em chain nenhuma,
 	// que é um firewall sem as regras do admin, e o teste diria verde.

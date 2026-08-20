@@ -20,6 +20,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
+	"github.com/giovanibalarini/linkguard-fw/internal/blocklog"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnslog"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -315,6 +316,13 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/groups", nftH.CreateGroup)
 		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/groups", nftH.UpdateGroup)
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/groups", nftH.DeleteGroup)
+
+		// Registro do que o firewall descarta (#122). Leitura com
+		// firewall.read; ligar/desligar muda as REGRAS, então é firewall.write.
+		blockLogH := handlers.NewBlockLogHandler(s.db, blocklog.NewService(s.exec), s.nftSvc, s.frSvc)
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/block-log", blockLogH.Status)
+		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/block-log/entries", blockLogH.Entries)
+		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/block-log", blockLogH.SetStatus)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/groups/toggle", nftH.ToggleGroup)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/groups/reorder", nftH.ReorderGroups)
 		// Confirmar-ou-reverte (Fase C2, spec §5): toda mutação que envolve um

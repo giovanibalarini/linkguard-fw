@@ -907,3 +907,26 @@ export interface LinkQuotaStatus {
   used_bytes: number;
   used_pct: number;
 }
+
+// ─── Registro de bloqueios (issue #122) ──────────────────────────────────────
+
+export interface BlockLogEntry {
+  time: string;
+  kind: 'host' | 'dest';
+  in: string;
+  out: string;
+  src: string;
+  dst: string;
+  proto: string;
+  sport: string;
+  dport: string;
+}
+
+// enabled vem junto da lista porque lista vazia com o registro DESLIGADO é
+// "ninguém pediu para registrar", e com ele ligado é "nada foi bloqueado".
+// São mensagens diferentes, e dizer a errada manda o admin procurar defeito
+// onde não há.
+export interface BlockLogResponse {
+  enabled: boolean;
+  entries: BlockLogEntry[];
+}

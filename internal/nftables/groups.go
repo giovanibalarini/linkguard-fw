@@ -163,19 +163,40 @@ const (
 // acrescentado só a um dos dois faria o outro divergir em silêncio (ver
 // TestSystemGroupKindKnownToIsSystemGroupIsAlwaysRenderedAsSystem). Isto
 // fecha essa divergência estruturalmente, não com uma checagem a mais.
-var systemGroupForwardRules = map[string]func() [][]string{
-	GroupKindBlockedHosts: func() [][]string {
-		return [][]string{
-			{"ip", "saddr", "@" + BlockedSet, "counter", "drop"},
-			{"ip", "daddr", "@" + BlockedSet, "counter", "drop"},
-		}
+var systemGroupForwardRules = map[string]func(logar bool) [][]string{
+	GroupKindBlockedHosts: func(logar bool) [][]string {
+		return comLog(logar, BlockLogPrefixHost,
+			[]string{"ip", "saddr", "@" + BlockedSet},
+			[]string{"ip", "daddr", "@" + BlockedSet},
+		)
 	},
-	GroupKindBlocklist: func() [][]string {
-		return [][]string{
-			{"ip", "daddr", "@blocklist", "counter", "drop"},
-			{"ip", "saddr", "@blocklist", "counter", "drop"},
-		}
+	GroupKindBlocklist: func(logar bool) [][]string {
+		return comLog(logar, BlockLogPrefixDest,
+			[]string{"ip", "daddr", "@blocklist"},
+			[]string{"ip", "saddr", "@blocklist"},
+		)
 	},
+}
+
+// comLog monta o par (log, drop) de cada casamento de bloqueio.
+//
+// O LIMITE DE TAXA VAI NA REGRA DE LOG, NUNCA NA DE DROP. Em nft o `limit` é
+// um CASAMENTO, não um modificador: numa regra `... limit rate 10/second
+// counter drop`, o pacote que excede a taxa não casa a regra — e portanto NÃO
+// É BLOQUEADO. Uma varredura rápida o suficiente passaria direto pelo
+// bloqueio, e o painel continuaria dizendo que o host está bloqueado.
+// Verificado no nft real: com log e drop separados, 6 de 6 pacotes são
+// descartados enquanto só os primeiros são registrados.
+func comLog(logar bool, prefixo string, casamentos ...[]string) [][]string {
+	out := make([][]string, 0, len(casamentos)*2)
+	for _, m := range casamentos {
+		if logar {
+			regra := append(append([]string{}, m...), "limit", "rate", blockLogRate, "log", "prefix", fmt.Sprintf("%q", prefixo))
+			out = append(out, regra)
+		}
+		out = append(out, append(append([]string{}, m...), "counter", "drop"))
+	}
+	return out
 }
 
 // administrativeBlockRules é a forma canônica dos quatro bloqueios
@@ -198,10 +219,10 @@ var systemGroupForwardRules = map[string]func() [][]string{
 // já devolve, e quem escreve texto (bootstrap.go) junta cada um com espaço,
 // exatamente como já faz para as regras dos grupos do admin em outros
 // lugares deste pacote.
-func administrativeBlockRules() [][]string {
+func administrativeBlockRules(logar bool) [][]string {
 	var rules [][]string
-	rules = append(rules, systemGroupForwardRules[GroupKindBlockedHosts]()...)
-	rules = append(rules, systemGroupForwardRules[GroupKindBlocklist]()...)
+	rules = append(rules, systemGroupForwardRules[GroupKindBlockedHosts](logar)...)
+	rules = append(rules, systemGroupForwardRules[GroupKindBlocklist](logar)...)
 	return rules
 }
 
