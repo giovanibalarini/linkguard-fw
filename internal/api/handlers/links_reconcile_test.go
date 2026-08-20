@@ -64,7 +64,7 @@ func TestReconcileNATAfterLinkChangeUsesCurrentInterfaces(t *testing.T) {
 	exec := &reconcileSpyExec{}
 	h := &LinksHandler{db: db, nftSvc: nftables.NewService(exec)}
 
-	h.reconcileNAT(context.Background())
+	h.reconcileWANDerived(context.Background())
 
 	if !exec.sawMasqueradeFor("enp5s0") {
 		t.Errorf("expected the NAT rule to be rebuilt with enp5s0; ran: %v", exec.executed)
@@ -84,12 +84,45 @@ func TestReconcileNATSkipsDisabledLinks(t *testing.T) {
 	exec := &reconcileSpyExec{}
 	h := &LinksHandler{db: db, nftSvc: nftables.NewService(exec)}
 
-	h.reconcileNAT(context.Background())
+	h.reconcileWANDerived(context.Background())
 
 	if !exec.sawMasqueradeFor("enp5s0") {
 		t.Errorf("enabled link missing from the NAT rule; ran: %v", exec.executed)
 	}
 	if exec.sawMasqueradeFor("enp9s0") {
 		t.Errorf("disabled link must not be masqueraded; ran: %v", exec.executed)
+	}
+}
+
+// TestReconcileWANDerivedTambemLigaAContabilidade: a contabilidade por host
+// (#112) deriva da MESMA lista de WANs que o masquerade, e por isso precisa
+// mudar junto. Sem isto ela só acompanharia a mudança no boot seguinte — foi
+// exatamente o que a bateria G do vm-validate.sh pegou numa instalação nova,
+// que nasce sem link nenhum: o admin criava o primeiro link pelo painel e a
+// chain de contabilidade não existia até alguém reiniciar o serviço.
+func TestReconcileWANDerivedTambemLigaAContabilidade(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.CreateLink(&storage.Link{ID: "l1", Name: "WAN1", Interface: "enp5s0", Weight: 1, Enabled: true}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+	exec := &reconcileSpyExec{}
+	h := &LinksHandler{db: db, nftSvc: nftables.NewService(exec)}
+
+	h.reconcileWANDerived(context.Background())
+
+	var criouChain, escopouRegra bool
+	for _, cmd := range exec.executed {
+		if strings.Contains(cmd, "add chain") && strings.Contains(cmd, nftables.AcctChain) {
+			criouChain = true
+		}
+		if strings.Contains(cmd, "@"+nftables.AcctUpSet) && strings.Contains(cmd, "enp5s0") {
+			escopouRegra = true
+		}
+	}
+	if !criouChain {
+		t.Errorf("a chain de contabilidade não foi criada ao mudar link; rodou: %v", exec.executed)
+	}
+	if !escopouRegra {
+		t.Errorf("a regra de contabilidade não foi escopada pela WAN atual; rodou: %v", exec.executed)
 	}
 }

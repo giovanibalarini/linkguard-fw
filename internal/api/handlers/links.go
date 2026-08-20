@@ -27,21 +27,31 @@ func NewLinksHandler(svc *links.Service, db *storage.DB, nftSvc *nftables.Servic
 	return &LinksHandler{svc: svc, db: db, nftSvc: nftSvc}
 }
 
-// reconcileNAT rebuilds the masquerade rule from the currently enabled WAN
-// links. Best-effort: a failure here is logged (and surfaced by the
-// firewall-nat health check) but never fails the link operation the admin
-// just performed.
-func (h *LinksHandler) reconcileNAT(ctx context.Context) {
+// reconcileWANDerived rebuilds everything que deriva da lista de WANs
+// habilitadas: a regra de masquerade e a contabilidade por host (#112). As
+// duas leem a MESMA lista, e por isso mudam juntas — deixar uma fora daqui
+// significa que ela só acompanharia a mudança no próximo boot.
+//
+// Foi o que aconteceu com a contabilidade: reconciliada só na subida, ela
+// nunca aparecia numa instalação nova (que nasce sem link nenhum) até alguém
+// reiniciar o serviço. A bateria G do vm-validate.sh pegou isso.
+//
+// Best-effort: a falha é registrada (e aparece no vigia de NAT) mas nunca
+// derruba a operação de link que o admin acabou de fazer.
+func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
 	if h.nftSvc == nil {
 		return
 	}
 	ifaces, err := enabledWANInterfaces(h.db)
 	if err != nil {
-		slog.Warn("não foi possível carregar links para reconciliar a regra de NAT", "err", err)
+		slog.Warn("não foi possível carregar links para reconciliar as regras derivadas das WANs", "err", err)
 		return
 	}
 	if err := h.nftSvc.ReconcileMasquerade(ctx, ifaces); err != nil {
 		slog.Warn("não foi possível reconciliar a regra de NAT após mudança de link", "err", err)
+	}
+	if err := h.nftSvc.EnsureAccounting(ctx, ifaces); err != nil {
+		slog.Warn("não foi possível reconciliar a contabilidade por host após mudança de link", "err", err)
 	}
 }
 
@@ -80,7 +90,7 @@ func (h *LinksHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	h.reconcileNAT(r.Context())
+	h.reconcileWANDerived(r.Context())
 	writeJSON(w, http.StatusCreated, l)
 }
 
@@ -105,7 +115,7 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	h.reconcileNAT(r.Context())
+	h.reconcileWANDerived(r.Context())
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -120,7 +130,7 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	h.reconcileNAT(r.Context())
+	h.reconcileWANDerived(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -131,6 +141,6 @@ func (h *LinksHandler) AutoDetect(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	h.reconcileNAT(r.Context())
+	h.reconcileWANDerived(r.Context())
 	writeJSON(w, http.StatusOK, res)
 }
