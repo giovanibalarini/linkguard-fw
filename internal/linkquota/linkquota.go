@@ -38,8 +38,10 @@ const (
 )
 
 const (
-	// bytesPerGB é decimal (10^9). Ver o comentário de storage.LinkQuota.
+	// bytesPerGB/bytesPerMB são DECIMAIS (10^9, 10^6). Ver o comentário de
+	// storage.LinkQuota.
 	bytesPerGB = 1_000_000_000.0
+	bytesPerMB = 1_000_000.0
 
 	// flushInterval é de quanto em quanto tempo o acumulado em memória vai
 	// para o banco. Um minuto: gravar a cada segundo seria 86.400 UPDATEs por
@@ -218,19 +220,48 @@ func (s *Service) evaluate(linkName, linkID string, q storage.LinkQuota, used ui
 
 	switch {
 	case pct >= 100:
+		// O aviso de "chegando lá" deixa de ser verdade quando a franquia
+		// acaba: mantê-lo aberto ao lado do crítico põe dois alertas do mesmo
+		// link na tela dizendo coisas diferentes sobre o mesmo fato.
+		s.alertSvc.AutoResolve(TypeQuotaWarning, linkID)
 		_ = s.alertSvc.Create(TypeQuotaExceeded, "critical",
 			fmt.Sprintf("Franquia esgotada: %s", linkName),
-			fmt.Sprintf("O link %s já consumiu %.1f GB dos %.0f GB do ciclo (%.0f%%). "+
+			fmt.Sprintf("O link %s já consumiu %s dos %s do ciclo (%.0f%%). "+
 				"O que acontece a partir daqui é com a operadora — o LinkGuard não corta tráfego.",
-				linkName, float64(used)/bytesPerGB, q.LimitGB, pct),
+				linkName, humanBytes(float64(used)), humanGB(q.LimitGB), pct),
 			linkID)
 	case pct >= float64(q.AlertPct):
 		_ = s.alertSvc.Create(TypeQuotaWarning, "warning",
 			fmt.Sprintf("Franquia em %.0f%%: %s", pct, linkName),
-			fmt.Sprintf("O link %s consumiu %.1f GB dos %.0f GB do ciclo.",
-				linkName, float64(used)/bytesPerGB, q.LimitGB),
+			fmt.Sprintf("O link %s consumiu %s dos %s do ciclo.",
+				linkName, humanBytes(float64(used)), humanGB(q.LimitGB)),
 			linkID)
 	}
+}
+
+// humanBytes e humanGB existem porque a primeira versão formatava tudo em
+// "%.1f GB" e "%.0f GB", e numa validação em máquina real o alerta saiu como
+// "consumiu 0.0 GB dos 0 GB do ciclo" — franquia de 20 MB, consumo de 18 MB.
+// Um plano de 500 MB (existe, e é justamente o tipo de plano de backup móvel
+// que esta feature atende) receberia um alerta que não informa nada.
+//
+// A unidade acompanha a grandeza e continua DECIMAL: MB é 10^6, GB é 10^9 — o
+// que a operadora usa. Ver storage.LinkQuota.
+func humanBytes(b float64) string {
+	switch {
+	case b >= bytesPerGB:
+		return fmt.Sprintf("%.1f GB", b/bytesPerGB)
+	case b >= bytesPerMB:
+		return fmt.Sprintf("%.1f MB", b/bytesPerMB)
+	default:
+		return fmt.Sprintf("%.0f KB", b/1000)
+	}
+}
+
+// humanGB formata a franquia declarada, que vem em GB decimais e pode ser
+// fracionária (0,5 GB = 500 MB).
+func humanGB(gb float64) string {
+	return humanBytes(gb * bytesPerGB)
 }
 
 // Snapshot devolve o estado de todos os links para o painel.

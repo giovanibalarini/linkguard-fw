@@ -2,6 +2,7 @@ package linkquota
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,10 +23,12 @@ func newTestDB(t *testing.T) *storage.DB {
 type alerterFalso struct {
 	criados    []string // "tipo|linkID"
 	resolvidos []string
+	mensagens  []string // corpo do alerta, para conferir o texto que o admin lê
 }
 
-func (a *alerterFalso) Create(alertType, _, _, _, linkID string) error {
+func (a *alerterFalso) Create(alertType, _, _, message, linkID string) error {
 	a.criados = append(a.criados, alertType+"|"+linkID)
+	a.mensagens = append(a.mensagens, message)
 	return nil
 }
 func (a *alerterFalso) AutoResolve(alertType, linkID string) {
@@ -364,14 +367,86 @@ func TestDeleteResolveAlertasEMantemHistorico(t *testing.T) {
 	s.AddInterfaceBytes("wan1", 2_000_000_000, 0)
 	s.Flush()
 
+	// Conta só o que o Delete acrescentou: o próprio Flush já resolve o aviso
+	// quando o crítico o substitui, então comparar o total seria frágil.
+	antes := len(al.resolvidos)
 	if err := s.Delete("l1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if len(al.resolvidos) != 2 {
-		t.Errorf("apagar a franquia tem de resolver os alertas dela: %v", al.resolvidos)
+	peloDelete := al.resolvidos[antes:]
+	querendo := map[string]bool{TypeQuotaWarning + "|l1": false, TypeQuotaExceeded + "|l1": false}
+	for _, r := range peloDelete {
+		querendo[r] = true
+	}
+	for tipo, achou := range querendo {
+		if !achou {
+			t.Errorf("apagar a franquia tem de resolver %s; o Delete resolveu %v", tipo, peloDelete)
+		}
 	}
 	u, _ := db.GetLinkUsage("l1", CycleStart(agora, 1).Unix())
 	if u.RxBytes == 0 {
 		t.Error("o consumo medido não pode ser apagado junto com a franquia")
+	}
+}
+
+func TestHumanBytesAcompanhaAGrandeza(t *testing.T) {
+	casos := []struct {
+		in   float64
+		want string
+	}{
+		{18_400_000, "18.4 MB"},
+		{20_000_000, "20.0 MB"},
+		{1_500_000_000, "1.5 GB"},
+		{50_000_000_000, "50.0 GB"},
+		{300_000, "300 KB"},
+	}
+	for _, c := range casos {
+		if got := humanBytes(c.in); got != c.want {
+			t.Errorf("humanBytes(%v) = %q, queria %q", c.in, got, c.want)
+		}
+	}
+	if got := humanGB(0.5); got != "500.0 MB" {
+		t.Errorf("humanGB(0.5) = %q, queria 500.0 MB — plano fracionário existe", got)
+	}
+}
+
+func TestMensagemNaoZeraComFranquiaMenorQueUmGB(t *testing.T) {
+	// Achado numa validação em máquina real: com franquia de 20 MB e 18 MB
+	// consumidos, o alerta saía "consumiu 0.0 GB dos 0 GB do ciclo" — um aviso
+	// que não avisa nada. Plano de backup móvel de 500 MB é exatamente o
+	// público desta feature.
+	s, _, al := servicoComFranquia(t, 0.02, 80) // 20 MB
+	s.AddInterfaceBytes("wan1", 18_400_000, 0)
+	s.Flush()
+
+	if len(al.mensagens) == 0 {
+		t.Fatal("nenhum alerta disparou")
+	}
+	msg := al.mensagens[0]
+	if strings.Contains(msg, "0.0 GB") || strings.Contains(msg, "0 GB") {
+		t.Errorf("a mensagem zerou os números: %q", msg)
+	}
+	if !strings.Contains(msg, "MB") {
+		t.Errorf("franquia abaixo de 1 GB tem de ser dita em MB: %q", msg)
+	}
+}
+
+func TestFranquiaEsgotadaResolveOAvisoAnterior(t *testing.T) {
+	// Os dois abertos ao mesmo tempo põem dois alertas do mesmo link na tela
+	// dizendo coisas diferentes sobre o mesmo fato. Visto na VM.
+	s, _, al := servicoComFranquia(t, 0.02, 80)
+	s.AddInterfaceBytes("wan1", 18_400_000, 0) // 92% → aviso
+	s.Flush()
+	s.AddInterfaceBytes("wan1", 10_000_000, 0) // passa de 100% → crítico
+	s.Flush()
+
+	var resolveuAviso bool
+	for _, r := range al.resolvidos {
+		if r == TypeQuotaWarning+"|l1" {
+			resolveuAviso = true
+		}
+	}
+	if !resolveuAviso {
+		t.Errorf("o crítico não resolveu o aviso que ele substitui; resolvidos: %v", al.resolvidos)
 	}
 }
