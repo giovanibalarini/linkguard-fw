@@ -1341,12 +1341,17 @@ battery_mssclamp() {
 
   # Captura o SYN que sai pela WAN. O destino não precisa responder: o ajuste
   # acontece na saída, e é o SYN que carrega o MSS.
-  vm "nohup timeout 12 tcpdump -i enp0s2 -nn -c 1 -v 'tcp[tcpflags] & tcp-syn != 0 and src 192.168.44.2' > /tmp/mss.txt 2>&1 &" >/dev/null 2>&1
+  # O filtro é pelo DESTINO, e não pela origem: quando o pacote sai pela WAN o
+  # masquerade já trocou o endereço de origem, e a primeira versão desta
+  # asserção capturava zero pacote por causa disso. E o destino é o gateway do
+  # enlace, que existe: para um endereço inexistente o ARP falha e o SYN nunca
+  # chega ao fio.
+  vm "nohup timeout 12 tcpdump -i enp0s2 -nn -c 1 -v 'tcp[tcpflags] & tcp-syn != 0 and dst host 10.0.2.2' > /tmp/mss.txt 2>&1 &" >/dev/null 2>&1
   sleep 2
-  vm "ip netns exec lgmss timeout 3 python3 -c \"
+  vm "ip netns exec lgmss timeout 4 python3 -c \"
 import socket
-s=socket.socket(); s.settimeout(2)
-try: s.connect(('10.0.2.99', 80))
+s=socket.socket(); s.settimeout(3)
+try: s.connect(('10.0.2.2', 9))
 except Exception: pass
 \"" >/dev/null 2>&1
   sleep 4
