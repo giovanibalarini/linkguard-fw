@@ -1061,6 +1061,34 @@ for h in json.load(sys.stdin):
   if [[ "$depois" == "14280" ]]; then ok "o consumo sobreviveu ao fim dos fluxos — é o defeito da #112, corrigido"
   else bad "o consumo mudou depois de os fluxos morrerem: ${depois:-vazio}"; fi
 
+  # G6 — a SÉRIE por host (issue #113). O contador é acumulado; a série é o
+  # histórico. Ela só existe depois de duas amostras (cadência de 10s), então
+  # aqui o tráfego roda em segundo plano enquanto a bateria espera.
+  local mac
+  mac=$(vm "ip netns exec lgclient cat /sys/class/net/veth-lgcl/address" | tr -d '\r')
+  vm "nohup ip netns exec lgclient ping -c 120 -i 0.25 -s 1400 10.0.2.2 >/dev/null 2>&1 &" >/dev/null 2>&1
+  printf '       (30s de tráfego para a série ter mais de uma amostra)\n'
+  sleep 32
+
+  # A consulta é por MAC — a identidade do inventário. E a janela é a curta,
+  # que é a que a tela abre por padrão: ela resolve para passo de 1s nas
+  # interfaces, e a série por host não tem balde de 1s. Se o piso de 10s
+  # regredir, é aqui que aparece.
+  local pontos
+  pontos=$(body GET "/api/hosts/traffic/history?mac=$mac&range=30m" "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(sum(1 for p in d.get('points',[]) if (p.get('rx_bps') or 0) > 0))" 2>/dev/null)
+  if [[ -n "$pontos" && "$pontos" -gt 0 ]]; then
+    ok "a série por host tem $pontos ponto(s) com consumo na janela curta"
+  else bad "a série por host veio vazia para $mac (janela 30m)"; fi
+
+  # G7 — MAC desconhecido não pode virar erro nem série inventada.
+  local st_mac
+  st_mac=$(status GET "/api/hosts/traffic/history?mac=nao-eh-mac&range=30m" "$tok")
+  if [[ "$st_mac" == "400" ]]; then ok "MAC inválido recusado (400)"
+  else bad "MAC inválido devolveu $st_mac"; fi
+
   vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
 }
 

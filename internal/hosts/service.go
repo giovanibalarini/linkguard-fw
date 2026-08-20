@@ -10,6 +10,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/validate"
 )
 
 // Host is one LAN host in the inventory: live neighbour data merged with stored
@@ -140,6 +141,31 @@ func (s *Service) List(ctx context.Context) ([]Host, error) {
 		return hosts[i].IP < hosts[j].IP
 	})
 	return hosts, nil
+}
+
+// MACByIP devolve o mapa IP → MAC da tabela de vizinhança do kernel.
+//
+// Existe para a série de consumo por host (#113) poder rotular a medição pela
+// identidade que o produto usa em todo o resto — alias, bloqueio e inventário
+// são indexados por MAC. Sem isto, o amostrador teria de duplicar o parser de
+// `ip neigh` que já mora aqui.
+//
+// Endereço sem MAC conhecido simplesmente não entra: no modelo deste produto,
+// host da LAN é host com MAC (ver List), e o que atravessa o firewall sem
+// aparecer na vizinhança é roteador de outra rede, não aparelho local.
+func (s *Service) MACByIP(ctx context.Context) (map[string]string, error) {
+	out, err := s.exec.ExecuteRead(ctx, "ip", "neigh", "show")
+	if err != nil {
+		return nil, err
+	}
+	res := map[string]string{}
+	for _, n := range parseNeighbors(out) {
+		if n.IP == "" || n.MAC == "" {
+			continue
+		}
+		res[n.IP] = validate.NormalizeMAC(n.MAC)
+	}
+	return res, nil
 }
 
 // SetAlias assigns a friendly name to a host.

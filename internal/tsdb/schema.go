@@ -14,6 +14,11 @@ var nativeSteps = map[string]int{
 	"if.":    1,
 	"smart.": 30,
 	"boot.":  3600,
+	// host.* (issue #113) é amostrado a cada 10s, e não a cada segundo como
+	// if.*: são N séries por host em vez de duas por interface, e a cadência
+	// de 1s multiplicaria a escrita pelo número de aparelhos da rede. Dez
+	// segundos ainda dá cinco pontos por minuto no rollup mais fino.
+	"host.": 10,
 }
 
 // derivedSteps are the rollup degrees every series gets in addition to its

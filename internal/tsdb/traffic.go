@@ -160,19 +160,58 @@ type HistoryResponse struct {
 // carries both rx_bps and tx_bps, matching the contract the frontend already
 // relies on (it reads both fields off the same point).
 func (s *Service) GetHistory(iface, rangeID string) (*HistoryResponse, error) {
-	iface = strings.TrimSpace(iface)
+	return s.history("if.rx_bps", "if.tx_bps", iface, rangeID)
+}
+
+// GetHostHistory devolve o histórico de consumo de UM host da LAN (issue
+// #113), identificado pelo MAC.
+//
+// O MAC, e não o IP, porque é a identidade que o resto do produto já usa —
+// alias, bloqueio e o próprio inventário são todos indexados por MAC
+// (internal/hosts). Indexar a série pelo IP faria o histórico de um aparelho
+// se partir em dois toda vez que o lease do DHCP mudasse, que é exatamente a
+// fragilidade que a Fase 3 do FEATURES.md aponta.
+func (s *Service) GetHostHistory(mac, rangeID string) (*HistoryResponse, error) {
+	return s.historyStep("host.rx_bps", "host.tx_bps", mac, rangeID, hostStepFor)
+}
+
+// hostStepFor corrige o passo pedido para o que a série por host REALMENTE
+// tem.
+//
+// As janelas curtas (5m, 30m) resolvem para passo de 1 segundo, que é o passo
+// nativo das interfaces. A série por host é amostrada a cada 10s (ver
+// nativeSteps), então não existe balde de 1s para ela: a consulta voltaria
+// vazia e o gráfico do aparelho ficaria em branco justamente na janela que a
+// tela abre por padrão. Elevar o piso para 10 devolve o balde que existe.
+func hostStepFor(rangeID string) (int, time.Duration) {
+	step, dur := rangeToStepDuration(rangeID)
+	if step < 10 {
+		step = 10
+	}
+	return step, dur
+}
+
+// history é o corpo comum: mesma janela, mesmo merge por timestamp, mudando só
+// quais séries são lidas e sob qual rótulo.
+func (s *Service) history(rxSeries, txSeries, label, rangeID string) (*HistoryResponse, error) {
+	return s.historyStep(rxSeries, txSeries, label, rangeID, rangeToStepDuration)
+}
+
+func (s *Service) historyStep(rxSeries, txSeries, label, rangeID string,
+	passo func(string) (int, time.Duration)) (*HistoryResponse, error) {
+	iface := strings.TrimSpace(label)
 	if iface == "" {
 		return nil, fmt.Errorf("interface is required")
 	}
-	step, dur := rangeToStepDuration(rangeID)
+	step, dur := passo(rangeID)
 	toUnix := time.Now().Unix()
 	fromUnix := toUnix - int64(dur.Seconds())
 
-	rxSamples, err := s.db.GetMetricSamples("if.rx_bps", iface, step, fromUnix, toUnix)
+	rxSamples, err := s.db.GetMetricSamples(rxSeries, iface, step, fromUnix, toUnix)
 	if err != nil {
 		return nil, err
 	}
-	txSamples, err := s.db.GetMetricSamples("if.tx_bps", iface, step, fromUnix, toUnix)
+	txSamples, err := s.db.GetMetricSamples(txSeries, iface, step, fromUnix, toUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -326,3 +365,7 @@ func stepForDuration(d time.Duration) (int, error) {
 		return 3600, nil
 	}
 }
+
+// HostStepForTest expõe hostStepFor para o teste do pacote externo. Mesmo
+// padrão dos outros seams *ForTest deste pacote.
+func HostStepForTest(rangeID string) (int, time.Duration) { return hostStepFor(rangeID) }

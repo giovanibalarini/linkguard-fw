@@ -466,8 +466,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// Host inventory
 		hostsH := handlers.NewHostsHandler(s.hostSvc, s.db)
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts", hostsH.List)
-		trafficH := handlers.NewTrafficHandler(s.trafficSvc, s.db)
+		trafficH := handlers.NewTrafficHandler(s.trafficSvc, s.db, s.rrdSvc)
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts/traffic", trafficH.TopTalkers)
+		r.With(require(auth.PermHostsRead)).Get("/api/hosts/traffic/history", trafficH.HostHistory)
 		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/alias", hostsH.SetAlias)
 		r.With(require(auth.PermHostsBlock)).Post("/api/hosts/block", hostsH.SetBlocked)
 

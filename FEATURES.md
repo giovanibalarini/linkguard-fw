@@ -145,15 +145,19 @@ Hoje a auth é single-user (`admin/admin` + JWT). Evoluir para:
 
 ### F3 — Identidade + contabilização de host
 - **Identidade**: `ip neigh` (IP↔MAC) + leases DHCP (hostname) + conntrack.
-- **Contabilização**: ligar `net.netfilter.nf_conntrack_acct=1` e/ou
-  contadores nft por host; agregar com *rollup* temporal.
+- **Contabilização**: contadores nft por host (`update @acct_up { ip saddr }`
+  em base chain própria, depois da filtragem), agregados com *rollup* temporal.
+  O caminho por `net.netfilter.nf_conntrack_acct=1` foi tentado primeiro e
+  **não serve**: conexão fechada some do conntrack e leva os bytes junto.
 
 ### F4 — Armazenamento
 - **Manter SQLite** para config/estado (links, regras, grupos, hosts, usuários,
   alertas). Trocar por Postgres mataria a vantagem de "binário único, drop-in".
 - O dado que escala é **série temporal por host**. Resolver com *downsampling*
-  estilo RRD (1s→1min→1h→1dia), estendendo o `internal/trafficrrd` já existente
-  para a dimensão por host/grupo. **Não** jogar série temporal crua no banco.
+  estilo RRD (1s→1min→1h→1dia), estendendo o `internal/tsdb` (antigo
+  `trafficrrd`) para a dimensão por host — feito na #113, com a série `host.*`
+  amostrada a cada 10s e teto de 50 rótulos por amostra, o excedente somado em
+  "outros". **Não** jogar série temporal crua no banco.
 
 ---
 
@@ -201,7 +205,13 @@ Para máquinas que querem virar firewall "do zero".
 
 ### Fase 2 — Host-cêntrico (a fundação que destrava o resto)
 - [x] Inventário de hosts da LAN trafegando dados (ip neigh + conntrack).
-- [x] Consumo de rede por host (conntrack acct → rollup RRD por host).
+- [x] Consumo de rede por host — **entregue de verdade só nas issues #112 e
+      #113**, e esta linha esteve errada até 2026-08-20. O que existia era
+      leitura instantânea de `/proc/net/nf_conntrack`, que só contém conexão
+      viva: o host que baixou 5 GB há dez minutos aparecia com zero, e não
+      havia rollup nenhum — a série `host.*` não existia no tsdb. Hoje a
+      contagem vem de sets com `counter` no nftables (#112) e o rollup
+      temporal existe, amostrado a cada 10s e rotulado por MAC (#113).
 - [x] **Bloquear host em 1 clique** (named set nft; add/remove atômico).
 
 ### Fase 3 — Grupos de host → WAN

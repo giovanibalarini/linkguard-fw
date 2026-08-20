@@ -372,6 +372,7 @@ type services struct {
 	netifSvc     *netif.Service
 	sysCollector *system.Collector
 	rrdSvc       *tsdb.Service
+	hostSampler  *hosttraffic.Sampler
 	quotaSvc     *linkquota.Service
 	aiClient     *ai.Client
 
@@ -578,6 +579,11 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 
 	rrdSvc := tsdb.NewService(db)
 
+	// A série de consumo por host (#113) usa as três peças que já existem: os
+	// contadores do nftables (#112), a tabela de vizinhança para resolver o
+	// MAC, e o tsdb como gravador — com o rollup e a retenção que ele já tem.
+	hostSampler := hosttraffic.NewSampler(nftSvc, hostSvc, rrdSvc)
+
 	// A franquia por link consome os MESMOS deltas de byte que alimentam as
 	// séries de tráfego — ver tsdb.UsageSink. SetUsageSink tem de acontecer
 	// antes de rrdSvc.Run, que é quem monta o amostrador.
@@ -644,6 +650,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		netifSvc:         netifSvc,
 		sysCollector:     sysCollector,
 		rrdSvc:           rrdSvc,
+		hostSampler:      hostSampler,
 		quotaSvc:         quotaSvc,
 		aiClient:         aiClient,
 		promReg:          promReg,
@@ -714,6 +721,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	trafficSvc, keaSvc, alertSvc := s.trafficSvc, s.keaSvc, s.alertSvc
 	monitor, metricsCollector, rrdSvc := s.monitor, s.metricsCollector, s.rrdSvc
 	quotaSvc := s.quotaSvc
+	hostSampler := s.hostSampler
 	backupSched, journalSched, updatesSched := s.backupSched, s.journalSched, s.updatesSched
 	netifSvc, aiClient := s.netifSvc, s.aiClient
 	ntpInputState := s.ntpInputState
@@ -1085,6 +1093,9 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	// cada reinício abriria um buraco justamente na contagem que a franquia
 	// existe para fazer.
 	spawnWriter("cota", func() { quotaSvc.Run(ctx) })
+	// Escritor: grava a série por host, e perder a última amostra num
+	// reinício abre buraco justamente na série que o histórico existe para ter.
+	spawnWriter("consumo-por-host", func() { hostSampler.Run(ctx) })
 	go balancerSvc.Run(ctx)
 	spawnWriter("backup", func() { backupSched.Run(ctx) })
 	go journalSched.Run(ctx)

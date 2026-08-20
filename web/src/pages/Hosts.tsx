@@ -7,6 +7,7 @@ import { useI18n } from '../i18n';
 import { blockEnforcement, KIND_BLOCKED_HOSTS } from '../lib/blockGroups';
 import type { NetHost, HostTraffic, FirewallGroup, FirewallGroupsData } from '../types';
 import Panel from '../components/ui/Panel';
+import HostHistory from '../components/HostHistory';
 import Modal from '../components/ui/Modal';
 
 function fmtBytes(n: number): string {
@@ -34,6 +35,9 @@ export default function Hosts() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [filter, setFilter] = useState('');
+  // Histórico de consumo do aparelho (#113). Aberto pelo nome na lista, e
+  // não pela coluna de ações: ver consumo é leitura, não gestão.
+  const [historyFor, setHistoryFor] = useState<NetHost | null>(null);
   const [aliasFor, setAliasFor] = useState<NetHost | null>(null);
   const [aliasValue, setAliasValue] = useState('');
   const [aliasError, setAliasError] = useState('');
@@ -272,7 +276,17 @@ export default function Hosts() {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="text-white font-medium truncate">{h.alias || h.hostname || '—'}</div>
+                      {h.mac ? (
+                        <button
+                          onClick={() => setHistoryFor(h)}
+                          className="text-white font-medium truncate hover:text-blue-400 transition-colors text-left"
+                          title={t('svc.hosts.history.open')}
+                        >
+                          {h.alias || h.hostname || '—'}
+                        </button>
+                      ) : (
+                        <div className="text-white font-medium truncate">{h.alias || h.hostname || '—'}</div>
+                      )}
                       <span className={`inline-flex items-center gap-1.5 text-xs ${h.online ? 'text-green-400' : 'text-gray-600'}`}>
                         <Circle className={`w-2 h-2 ${h.online ? 'fill-green-400' : 'fill-gray-600'}`} />
                         {h.online ? h.state : 'offline'}
@@ -334,7 +348,17 @@ export default function Hosts() {
                   {filtered.map((h) => (
                     <tr key={h.mac || h.ip} className={`table-row ${h.blocked ? 'border-l-2 border-l-red-500 opacity-75' : ''}`}>
                       <td className="py-3 pr-4">
-                        <div className="text-white font-medium">{h.alias || h.hostname || '—'}</div>
+                        {h.mac ? (
+                          <button
+                            onClick={() => setHistoryFor(h)}
+                            className="text-white font-medium hover:text-blue-400 transition-colors text-left"
+                            title={t('svc.hosts.history.open')}
+                          >
+                            {h.alias || h.hostname || '—'}
+                          </button>
+                        ) : (
+                          <div className="text-white font-medium">{h.alias || h.hostname || '—'}</div>
+                        )}
                         {h.blocked && (
                           <span
                             className={`inline-flex items-center gap-1 text-xs ${notEnforced ? 'text-orange-400' : 'text-red-400'}`}
@@ -383,6 +407,20 @@ export default function Hosts() {
           </>
         )}
       </Panel>
+
+      <Modal
+        open={historyFor !== null}
+        onClose={() => setHistoryFor(null)}
+        title={<div><span className="text-white font-semibold">{t('svc.hosts.history.title')}</span>{historyFor && <p className="text-gray-500 text-xs mt-1 font-mono font-normal">{historyFor.mac}</p>}</div>}
+        size="lg"
+      >
+        {historyFor && (
+          <HostHistory
+            mac={historyFor.mac}
+            titulo={historyFor.alias || historyFor.hostname || historyFor.ip || historyFor.mac}
+          />
+        )}
+      </Modal>
 
       <Modal
         open={aliasFor !== null}
