@@ -1304,6 +1304,68 @@ except Exception as e: print(type(e).__name__, round(time.time()-t0,1))
   vm "ip netns del lgdns 2>/dev/null; ip link del br10 2>/dev/null; true" >/dev/null 2>&1
 }
 
+
+# ─── J. Ajuste de MSS (issue #130) ───────────────────────────────────────────
+#
+# POR QUE ISTO PRECISA DE UMA MÁQUINA. A regra usa `rt mtu`: ela não carrega
+# número, pega a MTU da rota no momento do pacote. Ler o texto da regra não diz
+# nada sobre o valor que chega no fio — e o valor é a feature inteira.
+#
+# A bateria baixa a MTU da WAN para 1400, faz um cliente da LAN abrir uma
+# conexão que atravessa o firewall, e LÊ O MSS do SYN que sai. Com o ajuste, tem
+# de ser 1360 (1400 - 20 de IP - 20 de TCP). Sem ele, seria 1460 — o valor que
+# o cliente anunciou achando que cabia, e que é a origem do sintoma da issue.
+battery_mssclamp() {
+  head_ "J. Ajuste de MSS"
+
+  local chain
+  chain=$(vm "nft list chain inet linkguard mss_clamp 2>/dev/null" | tr -d '\r')
+  if grep -q 'maxseg size set rt mtu' <<<"$chain"; then
+    ok "o ajuste usa a MTU da rota, sem número cravado"
+  else bad "chain de ajuste de MSS ausente ou com valor fixo" "$(tr '\n' ' ' <<<"$chain")"; fi
+  if grep -q 'priority mangle' <<<"$chain"; then
+    ok "o ajuste roda antes da filtragem"
+  else bad "prioridade inesperada" "$(tr '\n' ' ' <<<"$chain")"; fi
+
+  # Cliente atrás do firewall e MTU reduzida na saída.
+  vm "ip netns del lgmss 2>/dev/null; ip link del veth-mss 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add lgmss && \
+      ip link add veth-mss type veth peer name veth-mss-cl && \
+      ip link set veth-mss-cl netns lgmss && \
+      ip addr add 192.168.44.1/24 dev veth-mss && ip link set veth-mss up && \
+      ip netns exec lgmss ip link set lo up && \
+      ip netns exec lgmss ip addr add 192.168.44.2/24 dev veth-mss-cl && \
+      ip netns exec lgmss ip link set veth-mss-cl up && \
+      ip netns exec lgmss ip route add default via 192.168.44.1" >/dev/null 2>&1
+  vm "ip link set enp0s2 mtu 1400" >/dev/null 2>&1
+
+  # Captura o SYN que sai pela WAN. O destino não precisa responder: o ajuste
+  # acontece na saída, e é o SYN que carrega o MSS.
+  vm "nohup timeout 12 tcpdump -i enp0s2 -nn -c 1 -v 'tcp[tcpflags] & tcp-syn != 0 and src 192.168.44.2' > /tmp/mss.txt 2>&1 &" >/dev/null 2>&1
+  sleep 2
+  vm "ip netns exec lgmss timeout 3 python3 -c \"
+import socket
+s=socket.socket(); s.settimeout(2)
+try: s.connect(('10.0.2.99', 80))
+except Exception: pass
+\"" >/dev/null 2>&1
+  sleep 4
+
+  local capturado
+  capturado=$(vm "cat /tmp/mss.txt 2>/dev/null" | tr -d '\r')
+  local mss
+  mss=$(grep -oE 'mss [0-9]+' <<<"$capturado" | head -1 | grep -oE '[0-9]+')
+  if [[ "$mss" == "1360" ]]; then
+    ok "o MSS que sai pela WAN foi ajustado para a MTU do link (1360 em MTU 1400)"
+  elif [[ "$mss" == "1460" ]]; then
+    bad "o MSS saiu em 1460 — o cliente anunciou o que não cabe, que é o defeito da #130"
+  else
+    bad "não consegui ler o MSS do SYN capturado" "mss=${mss:-vazio} — $(tr '\n' ' ' <<<"$capturado" | head -c 200)"
+  fi
+
+  vm "ip link set enp0s2 mtu 1500; ip netns del lgmss 2>/dev/null; ip link del veth-mss 2>/dev/null; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -1313,6 +1375,7 @@ battery_quota
 battery_accounting
 battery_replyrouting
 battery_dnsleak
+battery_mssclamp
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"
