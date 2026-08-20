@@ -991,6 +991,14 @@ battery_accounting() {
   # não há o que contar, e a falha apareceria como se fosse da contabilidade.
   status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
 
+  # A contabilidade deriva da lista de WANs, então precisa existir pelo menos
+  # um link. Esta bateria cria o seu em vez de depender de a F ter rodado
+  # antes: teste que só passa por causa da ordem das baterias é teste frágil.
+  # E o auto-detect é o caminho do próprio produto — se ele parar de disparar
+  # a reconciliação, esta bateria é quem descobre (foi assim que se descobriu
+  # que a contabilidade só aparecia no boot seguinte).
+  status POST /api/links/auto-detect "$tok" >/dev/null
+
   # G1 — a chain existe, no hook e na prioridade que fazem ela contar só o que
   # PASSOU pela filtragem. Prioridade errada aqui conta pacote descartado como
   # se fosse consumo.
