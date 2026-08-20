@@ -541,3 +541,68 @@ links.stress.noPermission:
 links.stress.error.start:
   pt: "falha ao iniciar o teste"
   en: "failed to start the test"
+
+# ─── Franquia por link (issue #126) ───────────────────────────────────────────
+# GB aqui é decimal (10^9), a unidade da fatura da operadora. O texto do help
+# diz isso: o admin precisa saber que o número do painel é comparável com o
+# número que ele recebe, e que a medição é do firewall, não da operadora.
+links.quota.title:
+  pt: "Franquia dos links"
+  en: "Link data allowance"
+links.quota.subtitle:
+  pt: "Quanto cada link já consumiu no ciclo, e aviso antes de a franquia acabar."
+  en: "How much each link has used in the current cycle, with a warning before the allowance runs out."
+links.quota.help.title:
+  pt: "De onde vem este número"
+  en: "Where this number comes from"
+links.quota.help1:
+  pt: "O consumo é"
+  en: "Usage is"
+links.quota.helpMeasuredTerm:
+  pt: "medido pelo firewall"
+  en: "measured by the firewall"
+links.quota.help2:
+  pt: ", a partir dos contadores da própria interface — os mesmos que desenham os gráficos. A operadora conta do lado dela e pode divergir um pouco. GB aqui é 10⁹, como na fatura. O LinkGuard avisa quando a franquia acaba; ele não corta tráfego."
+  en: ", from the interface's own byte counters — the same ones that draw the charts. The carrier counts on its side and may differ slightly. GB here means 10⁹, as on the bill. LinkGuard warns when the allowance runs out; it does not cut traffic."
+links.quota.used:
+  pt: "{used} GB de {limit} GB · {pct}%"
+  en: "{used} GB of {limit} GB · {pct}%"
+links.quota.usedNoLimit:
+  pt: "{used} GB no ciclo · sem franquia declarada"
+  en: "{used} GB this cycle · no allowance set"
+links.quota.cycle:
+  pt: "Ciclo"
+  en: "Cycle"
+links.quota.define:
+  pt: "Declarar franquia"
+  en: "Set allowance"
+links.quota.edit:
+  pt: "Editar"
+  en: "Edit"
+links.quota.remove:
+  pt: "Remover"
+  en: "Remove"
+links.quota.limit:
+  pt: "Franquia (GB)"
+  en: "Allowance (GB)"
+links.quota.cycleDay:
+  pt: "Fecha no dia"
+  en: "Cycle day"
+links.quota.alertAt:
+  pt: "Avisar em (%)"
+  en: "Warn at (%)"
+links.quota.cycleDayHint:
+  pt: "De 1 a 28 — todo mês tem dia 28, e um fechamento em 29, 30 ou 31 simplesmente não existiria em fevereiro. Mudar o dia começa um ciclo novo: o consumo já medido continua guardado, mas passa a contar a partir da nova data de fechamento."
+  en: "From 1 to 28 — every month has a 28th, and a cycle day of 29, 30 or 31 would not exist in February. Changing the day starts a new cycle: usage already measured is kept, but counting restarts from the new cycle date."
+links.quota.save:
+  pt: "Salvar"
+  en: "Save"
+links.quota.cancel:
+  pt: "Cancelar"
+  en: "Cancel"
+links.quota.error.save:
+  pt: "Não foi possível salvar a franquia."
+  en: "Could not save the allowance."
+links.quota.error.remove:
+  pt: "Não foi possível remover a franquia."
+  en: "Could not remove the allowance."

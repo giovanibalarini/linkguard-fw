@@ -67,6 +67,10 @@ type openState struct {
 type Service struct {
 	db *storage.DB
 
+	// usageSink é opcional e só é lido na montagem do amostrador (Run), então
+	// não precisa do mesmo lock dos baldes.
+	usageSink UsageSink
+
 	mu      sync.Mutex
 	pending map[int]map[seriesLabel]*bucket // step -> (series,label) -> current bucket
 	closed  []closedBucket                  // buckets closed by a rollover, awaiting flush by tick()
@@ -84,6 +88,10 @@ type seriesLabel struct{ series, label string }
 type stateKey struct{ kind, label string }
 
 // NewService creates a tsdb Service.
+// SetUsageSink liga o consumidor dos deltas de byte por interface (a franquia
+// por link). Precisa ser chamado antes de Run — é ele que monta o amostrador.
+func (s *Service) SetUsageSink(u UsageSink) { s.usageSink = u }
+
 func NewService(db *storage.DB) *Service {
 	s := &Service{
 		db:      db,
@@ -268,6 +276,7 @@ func (s *Service) transitionState(kind, label, state string, now int64) {
 func (s *Service) Run(ctx context.Context) {
 	slog.Info("tsdb service started")
 	sampler := NewTrafficSampler(s)
+	sampler.SetUsageSink(s.usageSink)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 

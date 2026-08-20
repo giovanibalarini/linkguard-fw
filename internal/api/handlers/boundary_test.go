@@ -180,6 +180,16 @@ var allowedInternalImports = map[string]bool{
 	// traduz o erro em status. A regra — tetos, filtro, uma por vez, varredura
 	// do TTL — mora lá, e não aqui.
 	"internal/pktcapture": true,
+	// internal/linkquota entrou com a franquia por link (#126): o handler
+	// decodifica, chama e traduz erro em status. A validação (dia de
+	// fechamento, percentual) e o ciclo moram lá.
+	"internal/linkquota":  true,
+	"internal/links":      true,
+	"internal/monitoring": true,
+	"internal/netif":      true,
+	"internal/netsvc":     true,
+	"internal/nftables":   true,
+	"internal/notify":     true,
 	"internal/routes":     true,
 	"internal/secrets":    true,
 	"internal/storage":    true,

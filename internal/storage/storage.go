@@ -79,6 +79,8 @@ func (db *DB) migrate() error {
 		createAIReportsTable,
 		createFirewallGroupsTable,
 		createFirewallRulesTable,
+		createLinkQuotaTable,
+		createLinkUsageTable,
 	}
 
 	for _, m := range migrations {
@@ -969,6 +971,35 @@ CREATE TABLE IF NOT EXISTS traffic_samples (
     rx_bps        REAL NOT NULL,
     tx_bps        REAL NOT NULL,
     PRIMARY KEY (interface, step_seconds, ts_unix)
+);`
+
+// link_quota é a franquia declarada de um link — o que o plano contratado
+// permite —, e link_usage é o consumo medido dentro do ciclo vigente.
+//
+// SÃO DUAS TABELAS, E NÃO COLUNAS EM `links`, por dois motivos: a franquia é
+// opcional (a maioria dos links não tem), e o consumo é escrita frequente
+// (um UPDATE por minuto por link). Misturar isso na linha do link faria toda
+// leitura de link disputar com o acumulador.
+const createLinkQuotaTable = `
+CREATE TABLE IF NOT EXISTS link_quota (
+    link_id    TEXT PRIMARY KEY,
+    limit_gb   REAL NOT NULL,
+    cycle_day  INTEGER NOT NULL DEFAULT 1,
+    alert_pct  INTEGER NOT NULL DEFAULT 80,
+    enabled    INTEGER NOT NULL DEFAULT 1
+);`
+
+// A chave inclui cycle_start: o histórico dos ciclos anteriores fica, e o
+// ciclo novo nasce zerado sem precisar apagar nada. É o que permite responder
+// "quanto gastei no mês passado" sem uma segunda tabela de histórico.
+const createLinkUsageTable = `
+CREATE TABLE IF NOT EXISTS link_usage (
+    link_id     TEXT NOT NULL,
+    cycle_start INTEGER NOT NULL,
+    rx_bytes    INTEGER NOT NULL DEFAULT 0,
+    tx_bytes    INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (link_id, cycle_start)
 );`
 
 const createMetricSamplesTable = `
