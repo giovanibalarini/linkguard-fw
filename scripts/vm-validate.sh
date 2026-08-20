@@ -764,10 +764,117 @@ battery_policy() {
   else bad "postura inválida devolveu $st"; fi
 }
 
+
+# ─── E. Captura de pacotes (issue #114) ──────────────────────────────────────
+#
+# O que esta bateria existe para pegar, e que teste em Go NÃO pega: a captura
+# depende de um binário externo, de escrita em disco dentro do sandbox da
+# unidade e do perfil AppArmor `usr.sbin.tcpdump` do Debian. As três coisas só
+# existem numa máquina de verdade. Na primeira validação (2026-08-20) o arquivo
+# foi gravado normalmente, com o diretório entregue ao usuário `tcpdump` — é
+# esse resultado que as asserções abaixo congelam, para que um upgrade de
+# distribuição que aperte o perfil apareça aqui e não em produção.
+battery_capture() {
+  head_ "E. Captura de pacotes"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria E não roda"; return; }
+
+  local resp st
+
+  # E1 — a permissão nova existe no catálogo. Sem ela no papel, a aba não
+  # aparece para ninguém e a feature fica invisível depois de instalada.
+  if body GET /api/permissions "$tok" | grep -q 'traffic.capture'; then
+    ok "traffic.capture está no catálogo de permissões"
+  else bad "traffic.capture não aparece no catálogo — nenhum papel consegue receber a permissão"; fi
+
+  # E2 — os tetos são do backend, não da tela. Quem chama a API direto não
+  # escapa deles.
+  resp=$(body GET /api/traffic/capture "$tok")
+  if [[ "$(jqk limits.snaplen <<<"$resp")" == "96" ]]; then
+    ok "o snaplen de 96 bytes é declarado pela API"
+  else bad "snaplen inesperado: $resp"; fi
+
+  # E3 — nome de interface que começa com hífen viraria flag do tcpdump.
+  st=$(status POST /api/traffic/capture "$tok" '{"interface":"-i","duration_sec":5}')
+  if [[ "$st" == "400" ]]; then ok "interface começando com hífen recusada (400)"
+  else bad "interface \"-i\" devolveu $st — o valor entra no argv logo depois de -i"; fi
+
+  # E4 — filtro é montado por campos validados; host que não é endereço não vira
+  # expressão BPF crua.
+  st=$(status POST /api/traffic/capture "$tok" '{"interface":"enp0s2","filter":{"host":"1.2.3.4 or -r /etc/shadow"},"duration_sec":5}')
+  if [[ "$st" == "400" ]]; then ok "filtro com expressão embutida recusado (400)"
+  else bad "filtro arbitrário aceito ($st) — -r e -w do tcpdump leem e gravam arquivo"; fi
+
+  # E5 — a captura de verdade, guardando o arquivo.
+  st=$(status POST /api/traffic/capture "$tok" '{"interface":"enp0s2","duration_sec":6,"save_file":true}')
+  if [[ "$st" == "200" ]]; then ok "captura iniciada (200)"
+  else bad "a captura não iniciou: $st"; return; fi
+
+  # E6 — uma por vez. Duas capturas simultâneas em link cheio derrubam a
+  # máquina de referência, e o serviço guarda uma só.
+  st=$(status POST /api/traffic/capture "$tok" '{"interface":"enp0s2","duration_sec":5}')
+  if [[ "$st" == "400" ]]; then ok "segunda captura simultânea recusada (400)"
+  else bad "duas capturas ao mesmo tempo foram aceitas ($st)"; fi
+
+  # O SSH desta própria validação é o tráfego que a captura enxerga.
+  vm "ping -c 4 -i 0.3 10.0.2.2 >/dev/null 2>&1" >/dev/null 2>&1
+  sleep 9
+
+  resp=$(body GET /api/traffic/capture "$tok")
+  if [[ "$(jqk capture.state <<<"$resp")" == "done" ]]; then ok "a captura terminou sozinha no prazo"
+  else bad "estado inesperado: $(jqk capture.state <<<"$resp") — $(jqk capture.message <<<"$resp")"; fi
+
+  local linhas; linhas=$(jqk capture.rows_shown <<<"$resp")
+  if [[ -n "$linhas" && "$linhas" -gt 0 ]]; then ok "a captura trouxe $linhas linhas"
+  else bad "captura sem nenhuma linha" "$(jqk capture.message <<<"$resp")"; fi
+
+  # E7 — O ARQUIVO. Este é o AppArmor: se o perfil barrar a escrita, has_file
+  # vem falso e a mensagem explica. É a asserção que justifica a bateria.
+  # O `tr` não é enfeite: jqk imprime o booleano do Python ("True"), não o do
+  # JSON. A primeira versão desta asserção comparava com "true" e acusou falha
+  # com o arquivo de 5.396 bytes gravado no disco — falso negativo que custou
+  # uma rodada inteira da bateria.
+  if [[ "$(jqk capture.has_file <<<"$resp" | tr 'A-Z' 'a-z')" == "true" ]]; then
+    ok "o .pcap foi gravado (AppArmor não barrou a escrita)"
+  else bad "o .pcap não foi gravado" "$(jqk capture.message <<<"$resp")"; fi
+
+  # E8 — e é um pcap de verdade, legível, com o snaplen que prometemos.
+  local leitura
+  leitura=$(vm "tcpdump -r /var/lib/linkguard-fw/captures/*.pcap -nn -c 1 2>&1 | head -2" | tr -d '\r')
+  if grep -q 'snapshot length 96' <<<"$leitura"; then
+    ok "o arquivo é um pcap válido, com snapshot length 96"
+  else bad "o .pcap não abriu como esperado" "$leitura"; fi
+
+  # E9 — o dono do diretório. O tcpdump do Debian rebaixa privilégio para o
+  # usuário `tcpdump` antes de abrir o arquivo; se o diretório não for dele, a
+  # captura "funciona" e o arquivo não aparece.
+  if vm "stat -c %U /var/lib/linkguard-fw/captures" | tr -d '\r' | grep -qE 'tcpdump|root'; then
+    ok "o diretório de capturas tem dono compatível com o rebaixamento do tcpdump"
+  else bad "dono inesperado do diretório de capturas: $(vm 'stat -c %U /var/lib/linkguard-fw/captures')"; fi
+
+  # E10 — download, que é o que sai da máquina.
+  st=$(status GET /api/traffic/capture/file "$tok")
+  if [[ "$st" == "200" ]]; then ok "o download do .pcap responde 200"
+  else bad "o download devolveu $st"; fi
+
+  # E11 — auditoria. Capturar tráfego alheio é poder de vigilância; sem rastro
+  # de quem capturou e com que filtro, a feature não deveria existir.
+  local logs; logs=$(body GET "/api/logs?limit=40" "$tok")
+  if grep -q 'traffic.capture.start' <<<"$logs"; then ok "o início da captura foi para a auditoria"
+  else bad "captura sem registro de auditoria"; fi
+  if grep -q 'traffic.capture.download' <<<"$logs"; then ok "o download foi para a auditoria"
+  else bad "download do .pcap sem registro de auditoria"; fi
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
 battery_policy
+battery_capture
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"
