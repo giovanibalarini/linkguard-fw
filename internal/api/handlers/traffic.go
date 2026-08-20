@@ -6,17 +6,39 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
+	"github.com/giovanibalarini/linkguard-fw/internal/validate"
 )
 
 // TrafficHandler exposes per-host bandwidth (top talkers) from conntrack.
 type TrafficHandler struct {
 	svc *hosttraffic.Service
 	db  *storage.DB
+	rrd *tsdb.Service
 }
 
 // NewTrafficHandler creates a TrafficHandler.
-func NewTrafficHandler(svc *hosttraffic.Service, db *storage.DB) *TrafficHandler {
-	return &TrafficHandler{svc: svc, db: db}
+func NewTrafficHandler(svc *hosttraffic.Service, db *storage.DB, rrd *tsdb.Service) *TrafficHandler {
+	return &TrafficHandler{svc: svc, db: db, rrd: rrd}
+}
+
+// HostHistory devolve o histórico de consumo de um host (issue #113).
+//
+// O host é identificado pelo MAC, que é a identidade do inventário — a mesma
+// que bloqueio e alias usam. O IP não serve: ele muda com o lease e partiria o
+// histórico do aparelho em dois.
+func (h *TrafficHandler) HostHistory(w http.ResponseWriter, r *http.Request) {
+	mac := validate.NormalizeMAC(r.URL.Query().Get("mac"))
+	if mac == "" {
+		writeError(w, http.StatusBadRequest, "mac inválido")
+		return
+	}
+	resp, err := h.rrd.GetHostHistory(mac, r.URL.Query().Get("range"))
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // TopTalkers returns the LAN hosts consuming the most bandwidth right now.

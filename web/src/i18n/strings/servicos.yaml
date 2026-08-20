@@ -441,3 +441,17 @@ svc.hosts.err.unblock:
 svc.hosts.processing:
   pt: "Processando..."
   en: "Processing..."
+
+# ─── Histórico de consumo por host (issue #113) ───────────────────────────────
+svc.hosts.history.title:
+  pt: "Consumo do aparelho"
+  en: "Device usage"
+svc.hosts.history.open:
+  pt: "Ver o consumo deste aparelho ao longo do tempo"
+  en: "See this device's usage over time"
+svc.hosts.history.empty:
+  pt: "Ainda não há histórico para este aparelho. A série começa quando ele passa a trafegar — o consumo anterior à atualização não existe retroativamente."
+  en: "No history for this device yet. The series starts once it passes traffic — usage from before the update does not exist retroactively."
+svc.hosts.history.error:
+  pt: "Não foi possível carregar o histórico deste aparelho."
+  en: "Could not load this device's history."

@@ -355,3 +355,23 @@ func TestUsageSinkNaoRecebeOSaltoFalsoDeUmReset(t *testing.T) {
 		t.Errorf("reset de contador virou consumo: rx=%d tx=%d", sink.rx["wan1"], sink.tx["wan1"])
 	}
 }
+
+func TestHostStepNuncaPedeUmBaldeQueNaoExiste(t *testing.T) {
+	// A série por host é amostrada a cada 10s, então não existe balde de 1s
+	// para ela. As janelas curtas resolvem para passo 1 (o nativo das
+	// interfaces) e a consulta voltaria vazia — em branco justamente na janela
+	// que a tela do aparelho abre por padrão.
+	for _, janela := range []string{"5m", "30m"} {
+		step, _ := tsdb.HostStepForTest(janela)
+		if step < 10 {
+			t.Errorf("janela %q resolveu para passo %d; a série por host não tem balde abaixo de 10s", janela, step)
+		}
+	}
+	// As janelas longas continuam usando o rollup que já existe.
+	if step, _ := tsdb.HostStepForTest("12h"); step != 60 {
+		t.Errorf("12h resolveu para passo %d, queria 60", step)
+	}
+	if step, _ := tsdb.HostStepForTest("30d"); step != 900 {
+		t.Errorf("30d resolveu para passo %d, queria 900", step)
+	}
+}
