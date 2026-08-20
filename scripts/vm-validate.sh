@@ -1051,7 +1051,9 @@ for h in json.load(sys.stdin):
   printf '       (aguardando os fluxos saírem do conntrack)\n'
   sleep 45
   local vivos
-  vivos=$(vm "grep -c 192.168.3.200 /proc/net/nf_conntrack 2>/dev/null || echo 0" | tr -d '\r')
+  # `grep -c` imprime 0 E sai com código 1 quando não acha; o `|| echo 0`
+  # acrescentava um segundo zero e a variável virava "0\n0".
+  vivos=$(vm "grep -c 192.168.3.200 /proc/net/nf_conntrack 2>/dev/null; true" | tr -d '\r' | head -1)
   local depois
   depois=$(vm "nft list set inet linkguard acct_up 2>/dev/null" | grep -oE '192\.168\.3\.200 counter packets [0-9]+ bytes [0-9]+' | grep -oE 'bytes [0-9]+' | grep -oE '[0-9]+')
   if [[ "$vivos" == "0" ]]; then ok "os fluxos do host saíram do conntrack (a fonte antiga diria zero)"
