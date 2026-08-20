@@ -789,3 +789,91 @@ export interface PendingChange {
   interface: string;
   deadline_unix: number;
 }
+
+// ─── Captura de pacotes (issue #114) ─────────────────────────────────────────
+// Só cabeçalho: o backend captura com snaplen curto e o parser descarta o
+// texto que o tcpdump deriva de payload. Não existe campo de conteúdo aqui, e
+// isso é proposital.
+
+export interface CapturePacket {
+  time: string;
+  src: string;
+  dst: string;
+  proto: string;
+  len: number;
+  flags: string;
+}
+
+export interface CaptureCount {
+  key: string;
+  count: number;
+  bytes: number;
+}
+
+export interface CaptureBucket {
+  sec: number;
+  packets: number;
+  bytes: number;
+}
+
+export interface CaptureHandshake {
+  src: string;
+  dst: string;
+  time: string;
+  tries: number;
+}
+
+export interface CaptureSummary {
+  packets: number;
+  bytes: number;
+  duration_sec: number;
+  protos: CaptureCount[];
+  pairs: CaptureCount[];
+  ports: CaptureCount[];
+  per_second: CaptureBucket[];
+  unanswered: CaptureHandshake[];
+  refused: CaptureHandshake[];
+  unanswered_total: number;
+  refused_total: number;
+  retransmits: number;
+}
+
+export interface CaptureFilter {
+  host: string;
+  port: number;
+  proto: string;
+  direction: string;
+}
+
+export interface CaptureRun {
+  id: string;
+  interface: string;
+  filter: CaptureFilter;
+  filter_expr: string;
+  duration_sec: number;
+  max_packets: number;
+  snaplen: number;
+  state: string; // running | done | aborted | error
+  message: string;
+  started_by: string;
+  started_at: string;
+  ended_at: string;
+  packets: CapturePacket[];
+  rows_shown: number;
+  truncated: boolean;
+  summary: CaptureSummary;
+  has_file: boolean;
+  file_bytes: number;
+}
+
+export interface CaptureStatus {
+  state: string; // idle quando nunca rodou
+  available: boolean; // o tcpdump está instalado?
+  limits: {
+    max_duration_sec: number;
+    max_packets: number;
+    snaplen: number;
+    file_ttl_sec: number;
+  };
+  capture?: CaptureRun;
+}

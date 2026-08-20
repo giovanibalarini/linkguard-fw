@@ -406,3 +406,155 @@ mon.watch.saved:
 mon.watch.saveError:
   pt: "Erro ao salvar."
   en: "Could not save."
+
+# ─── Captura de pacotes (issue #114) ──────────────────────────────────────────
+# O texto aqui carrega uma promessa que precisa continuar verdadeira: a captura
+# é de CABEÇALHO. Se algum dia ela passar a guardar conteúdo, estas frases são
+# as primeiras que têm de mudar.
+mon.capture.title:
+  pt: "Captura de pacotes"
+  en: "Packet capture"
+mon.capture.subtitle:
+  pt: "Ver o que chega e o que sai de uma interface, sem SSH — por tempo limitado e só o cabeçalho."
+  en: "See what arrives at and leaves an interface, without SSH — time-boxed, headers only."
+mon.capture.help.title:
+  pt: "O que esta captura vê"
+  en: "What this capture sees"
+mon.capture.help1:
+  pt: "O firewall copia apenas os primeiros 96 bytes de cada quadro, o que cobre os"
+  en: "The firewall copies only the first 96 bytes of each frame, which covers the"
+mon.capture.helpHeadersTerm:
+  pt: "cabeçalhos"
+  en: "headers"
+mon.capture.help2:
+  pt: " de rede e transporte. Não dá para reconstruir o conteúdo da conversa a partir do que é gravado, e esta tela nunca mostra nada derivado de payload. Toda captura fica registrada no log de auditoria, com quem a fez e qual filtro usou."
+  en: " of the network and transport layers. The content of a conversation cannot be reconstructed from what is recorded, and this screen never shows anything derived from payload. Every capture is recorded in the audit log, with who ran it and which filter was used."
+mon.capture.notInstalled:
+  pt: "O tcpdump não está instalado nesta máquina — ele é quem faz a captura."
+  en: "tcpdump is not installed on this machine — it is what performs the capture."
+mon.capture.install:
+  pt: "Instalar o tcpdump"
+  en: "Install tcpdump"
+mon.capture.interface:
+  pt: "Interface"
+  en: "Interface"
+mon.capture.host:
+  pt: "Host (opcional)"
+  en: "Host (optional)"
+mon.capture.hostPlaceholder:
+  pt: "IP ou faixa"
+  en: "IP or range"
+mon.capture.port:
+  pt: "Porta (opcional)"
+  en: "Port (optional)"
+mon.capture.proto:
+  pt: "Protocolo"
+  en: "Protocol"
+mon.capture.protoAny:
+  pt: "Qualquer"
+  en: "Any"
+mon.capture.direction:
+  pt: "Sentido"
+  en: "Direction"
+mon.capture.dir.any:
+  pt: "Qualquer sentido"
+  en: "Either direction"
+mon.capture.dir.from:
+  pt: "Só de origem"
+  en: "Source only"
+mon.capture.dir.to:
+  pt: "Só para destino"
+  en: "Destination only"
+mon.capture.duration:
+  pt: "Duração: {n}s"
+  en: "Duration: {n}s"
+mon.capture.saveFile:
+  pt: "Guardar .pcap para download ({min} min)"
+  en: "Keep .pcap for download ({min} min)"
+mon.capture.run:
+  pt: "Capturar"
+  en: "Capture"
+mon.capture.auditHint:
+  pt: "Fica no log de auditoria."
+  en: "Recorded in the audit log."
+mon.capture.stop:
+  pt: "Parar"
+  en: "Stop"
+mon.capture.download:
+  pt: "Baixar .pcap ({kb} KB)"
+  en: "Download .pcap ({kb} KB)"
+mon.capture.state.running:
+  pt: "capturando"
+  en: "capturing"
+mon.capture.state.done:
+  pt: "concluída"
+  en: "finished"
+mon.capture.state.aborted:
+  pt: "interrompida"
+  en: "stopped"
+mon.capture.state.error:
+  pt: "falhou"
+  en: "failed"
+mon.capture.topPairs:
+  pt: "Quem falou com quem"
+  en: "Who talked to whom"
+mon.capture.topPorts:
+  pt: "Portas de destino"
+  en: "Destination ports"
+mon.capture.protos:
+  pt: "Protocolos"
+  en: "Protocols"
+mon.capture.pktCount:
+  pt: "{n} pac."
+  en: "{n} pkt"
+mon.capture.none:
+  pt: "Nada."
+  en: "Nothing."
+mon.capture.diag.title:
+  pt: "O que isto sugere"
+  en: "What this suggests"
+mon.capture.diag.unanswered:
+  pt: "{n} tentativa(s) de conexão sem NENHUMA resposta. Num firewall com mais de uma WAN, isso costuma ser resposta saindo pelo link errado — ou regra barrando antes de chegar ao destino."
+  en: "{n} connection attempt(s) with NO reply at all. On a firewall with more than one WAN, this usually means the reply is leaving through the wrong link — or a rule is dropping it before it reaches the destination."
+mon.capture.diag.tries:
+  pt: "{n} tentativas"
+  en: "{n} tries"
+mon.capture.diag.listCut:
+  pt: "Mostrando {shown} de {total}."
+  en: "Showing {shown} of {total}."
+mon.capture.diag.refused:
+  pt: "{n} conexão(ões) recusada(s) com RST — houve resposta, e ela foi \"porta fechada\". É problema no destino, não no caminho."
+  en: "{n} connection(s) refused with RST — there was a reply, and it said \"port closed\". That is a problem at the destination, not on the path."
+mon.capture.diag.retransmits:
+  pt: "{n} retransmissão(ões) — pacote repetido, sinal de perda no caminho."
+  en: "{n} retransmission(s) — repeated packet, a sign of loss along the path."
+mon.capture.col.time:
+  pt: "Hora"
+  en: "Time"
+mon.capture.col.src:
+  pt: "Origem"
+  en: "Source"
+mon.capture.col.dst:
+  pt: "Destino"
+  en: "Destination"
+mon.capture.col.proto:
+  pt: "Proto"
+  en: "Proto"
+mon.capture.col.flags:
+  pt: "Flags"
+  en: "Flags"
+mon.capture.col.len:
+  pt: "Dados"
+  en: "Data"
+mon.capture.rowsCut:
+  pt: "A tabela mostra {shown} de {total} pacotes; o resumo acima é sobre a captura inteira."
+  en: "The table shows {shown} of {total} packets; the summary above covers the whole capture."
+mon.capture.error.start:
+  pt: "Não foi possível iniciar a captura."
+  en: "Could not start the capture."
+mon.capture.error.install:
+  pt: "Não foi possível instalar o tcpdump."
+  en: "Could not install tcpdump."
+mon.capture.error.download:
+  pt: "Não foi possível baixar o arquivo."
+  en: "Could not download the file."

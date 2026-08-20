@@ -37,6 +37,13 @@ const (
 	PermInterfacesWrite Permission = "interfaces.write" // editar interface, identificar porta fisicamente
 	PermNTPWrite        Permission = "ntp.write"        // config de servidores/timezone, aplicar, instalar chrony
 
+	// PermTrafficCapture é separada de monitoring.read de propósito: ler
+	// gráfico de tráfego é leitura de painel, capturar pacote é observar a
+	// conversa de terceiros na rede. Mesmo só com cabeçalho, quem tem esta
+	// permissão vê quem falou com quem — e isso não deve vir junto de "ver
+	// monitoramento" para todo mundo que já tinha essa.
+	PermTrafficCapture Permission = "traffic.capture"
+
 	// Administrative.
 	PermUsersManage Permission = "users.manage" // criar/editar/remover usuários
 	PermRolesManage Permission = "roles.manage" // criar/editar/remover papéis
@@ -56,6 +63,7 @@ var Catalog = []CatalogEntry{
 	{PermDashboardRead, "Dashboard", "Ver dashboard", "Visualizar a visão geral e o status dos links"},
 	{PermMonitoringRead, "Monitoramento", "Ver monitoramento", "Métricas em tempo real e histórico de tráfego"},
 	{PermMonitoringWrite, "Monitoramento", "Resolver alertas", "Marcar um alerta como resolvido, tirando-o do painel"},
+	{PermTrafficCapture, "Monitoramento", "Capturar pacotes", "Capturar cabeçalhos de pacote numa interface, por tempo limitado (fica no log de auditoria)"},
 	{PermLogsRead, "Auditoria", "Ver logs", "Consultar o log de auditoria"},
 
 	{PermLinksRead, "Links WAN", "Ver links", "Listar links e seu status"},
@@ -146,7 +154,7 @@ var DefaultRoles = []DefaultRole{
 		Name:        "Operador",
 		Description: "Operação do dia a dia: links, rotas, firewall e hosts (sem administração)",
 		Permissions: []Permission{
-			PermDashboardRead, PermMonitoringRead, PermMonitoringWrite, PermLogsRead,
+			PermDashboardRead, PermMonitoringRead, PermMonitoringWrite, PermTrafficCapture, PermLogsRead,
 			PermLinksRead, PermLinksWrite,
 			PermRoutesRead, PermRoutesWrite,
 			PermFirewallRead, PermFirewallWrite,

@@ -33,6 +33,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
+	"github.com/giovanibalarini/linkguard-fw/internal/pktcapture"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -85,6 +86,13 @@ type Config struct {
 	// reports failures that are not happening. See
 	// keaunbound.Service.installExec.
 	PkgExec firewall.Executor
+	// CaptureExec é o executor da captura de pacotes. Prazo próprio pelo mesmo
+	// motivo do PkgExec, ao contrário: uma captura pode durar até
+	// pktcapture.MaxDurationSec, e com os 30 s do executor da aplicação toda
+	// captura mais longa que meio minuto morreria no deadline e seria
+	// reportada como falha que não houve. Nil cai no exec, o que só é certo
+	// em teste.
+	CaptureExec firewall.Executor
 }
 
 // New creates and wires up the HTTP server.
@@ -451,6 +459,18 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts/traffic", trafficH.TopTalkers)
 		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/alias", hostsH.SetAlias)
 		r.With(require(auth.PermHostsBlock)).Post("/api/hosts/block", hostsH.SetBlocked)
+
+		// Captura de pacotes sob demanda (só cabeçalho, janela limitada).
+		// Permissão própria: ver gráfico de tráfego é uma coisa, observar a
+		// conversa de terceiros na rede é outra. Ver auth.PermTrafficCapture.
+		captureSvc := pktcapture.NewService(s.exec, cfg.CaptureExec, "")
+		captureSvc.SetInstallExecutor(cfg.PkgExec)
+		capH := handlers.NewCaptureHandler(captureSvc, s.db)
+		r.With(require(auth.PermTrafficCapture)).Get("/api/traffic/capture", capH.Status)
+		r.With(require(auth.PermTrafficCapture)).Post("/api/traffic/capture", capH.Start)
+		r.With(require(auth.PermTrafficCapture)).Delete("/api/traffic/capture", capH.Stop)
+		r.With(require(auth.PermTrafficCapture)).Get("/api/traffic/capture/file", capH.Download)
+		r.With(require(auth.PermTrafficCapture)).Post("/api/traffic/capture/install", capH.Install)
 
 		// Interface inventory (read-only, Phase 1)
 		netifH := handlers.NewNetifHandler(s.netifSvc, s.db)
