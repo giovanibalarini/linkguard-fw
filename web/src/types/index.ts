@@ -930,3 +930,27 @@ export interface BlockLogResponse {
   enabled: boolean;
   entries: BlockLogEntry[];
 }
+
+// ─── DNS dinâmico por link (issue #129) ──────────────────────────────────────
+// O segredo (token/senha do provedor) NUNCA volta do servidor: só existe
+// secret_set, dizendo se há um guardado.
+
+export interface DdnsState {
+  link_id: string;
+  public_ip: string;
+  behind_nat: boolean;
+  updated_at: number;
+  last_error: string;
+}
+
+export interface DdnsView {
+  link_id: string;
+  enabled: boolean;
+  hostname: string;
+  url_template: string;
+  username: string;
+  state: DdnsState;
+  link_name: string;
+  interface: string;
+  secret_set: boolean;
+}

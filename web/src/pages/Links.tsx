@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import WanBalancing from '../components/WanBalancing';
+import LinkDdns from '../components/LinkDdns';
 import LinkQuota from '../components/LinkQuota';
 import LinkStressTest from '../components/LinkStressTest';
 import { useAuth } from '../context/AuthContext';
@@ -345,6 +346,8 @@ export default function Links() {
       {!loading && links.length >= 2 && <WanBalancing links={links} onChanged={fetchLinks} />}
 
       {!loading && links.length > 0 && <LinkQuota canEdit={can('links.write')} />}
+
+      {!loading && links.length > 0 && <LinkDdns canEdit={can('links.write')} />}
 
       {!loading && links.length >= 2 && <LinkStressTest links={links} canRun={can('routes.write')} />}
 
