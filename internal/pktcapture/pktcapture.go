@@ -13,8 +13,14 @@
 // Então a frase honesta não é "o payload não é capturado", é: **não dá para
 // reconstruir conteúdo a partir do que fica no arquivo**, e a tabela do painel
 // nunca mostra nada derivado de payload (o parser descarta o texto descritivo
-// que o tcpdump imprime; só campos estruturados sobrevivem). Quem quiser o
-// detalhe abre o .pcap no Wireshark, e lá o que houver é o mesmo cabeçalho.
+// que o tcpdump imprime; só campos estruturados sobrevivem).
+//
+// A diferença entre a TABELA e o ARQUIVO é real e foi medida na VM: um
+// `tcpdump -r` do .pcap de uma sessão SSH imprime o banner do serviço
+// ("SSH-2.0-OpenSSH_10.0p2"), porque ele cabe nos bytes que sobram depois do
+// cabeçalho. A tabela do painel, do mesmo pacote, mostrou só hora, endereços,
+// protocolo, flags e tamanho. Quem baixa o arquivo recebe mais do que quem lê
+// a tela — e o texto da tela diz isso, em vez de deixar a pessoa descobrir.
 //
 // POR QUE tcpdump, E NÃO UM SNIFFER PRÓPRIO EM GO. O filtro BPF roda no
 // kernel: em link saturado é ele que impede o processo de acordar a cada
