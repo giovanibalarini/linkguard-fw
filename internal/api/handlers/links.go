@@ -9,6 +9,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -17,14 +18,18 @@ type LinksHandler struct {
 	svc    *links.Service
 	db     *storage.DB
 	nftSvc *nftables.Service
+	// routeSvc é opcional: um handler construído sem ele continua
+	// reconciliando NAT e contabilidade, só não mexe em rota. É o que mantém
+	// os testes que constroem o handler à mão funcionando.
+	routeSvc *routes.Service
 }
 
 // NewLinksHandler creates the handler. nftSvc is needed because changing a
 // link's interface must also rebuild the firewall's NAT rule — before
 // 2026-08-10 nothing did, so an edited link left the masquerade rule
 // pointing at the previous interface.
-func NewLinksHandler(svc *links.Service, db *storage.DB, nftSvc *nftables.Service) *LinksHandler {
-	return &LinksHandler{svc: svc, db: db, nftSvc: nftSvc}
+func NewLinksHandler(svc *links.Service, db *storage.DB, nftSvc *nftables.Service, routeSvc *routes.Service) *LinksHandler {
+	return &LinksHandler{svc: svc, db: db, nftSvc: nftSvc, routeSvc: routeSvc}
 }
 
 // reconcileWANDerived rebuilds everything que deriva da lista de WANs
@@ -52,6 +57,34 @@ func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
 	}
 	if err := h.nftSvc.EnsureAccounting(ctx, ifaces); err != nil {
 		slog.Warn("não foi possível reconciliar a contabilidade por host após mudança de link", "err", err)
+	}
+
+	// O roteamento de retorno (#120) também deriva da lista de WANs, e mais
+	// diretamente que os outros dois: trocar a interface ou o gateway de um
+	// link muda o caminho de volta dele. Sem reconciliar aqui, a tabela do link
+	// continuaria apontando para o gateway antigo — e a resposta iria para o
+	// vazio, em silêncio.
+	todos, err := h.db.GetLinks()
+	if err != nil {
+		slog.Warn("não foi possível carregar links para reconciliar o roteamento de retorno", "err", err)
+		return
+	}
+	caminhos := links.WANPaths(todos)
+	marcas := make([]nftables.WANMark, 0, len(caminhos))
+	rotas := make([]routes.ReplyRoute, 0, len(caminhos))
+	for _, c := range caminhos {
+		marcas = append(marcas, nftables.WANMark{Interface: c.Interface, Mark: c.Mark})
+		rotas = append(rotas, routes.ReplyRoute{
+			Interface: c.Interface, Gateway: c.Gateway, Table: c.Table, Mark: c.MarkHex(),
+		})
+	}
+	if err := h.nftSvc.EnsureConnMark(ctx, marcas); err != nil {
+		slog.Warn("não foi possível reconciliar a marcação de conexão após mudança de link", "err", err)
+	}
+	if h.routeSvc != nil {
+		if err := h.routeSvc.EnsureReplyRouting(ctx, rotas); err != nil {
+			slog.Warn("não foi possível reconciliar o roteamento de retorno após mudança de link", "err", err)
+		}
 	}
 }
 
