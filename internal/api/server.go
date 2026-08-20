@@ -27,6 +27,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
+	"github.com/giovanibalarini/linkguard-fw/internal/linkquota"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
 	"github.com/giovanibalarini/linkguard-fw/internal/netif"
@@ -63,6 +64,7 @@ type Server struct {
 	netSvc      netsvc.Provider
 	notifySvc   *notify.Service
 	trafficSvc  *hosttraffic.Service
+	quotaSvc    *linkquota.Service
 	sysCol      *system.Collector
 	rrdSvc      *tsdb.Service
 	promReg     *prometheus.Registry
@@ -100,7 +102,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	linkSvc *links.Service, iptSvc *iptables.Service, routeSvc *routes.Service,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, netifSvc *netif.Service, nftSvc *nftables.Service, frSvc *firewallrules.Service, netSvc netsvc.Provider,
-	notifySvc *notify.Service, trafficSvc *hosttraffic.Service,
+	notifySvc *notify.Service, trafficSvc *hosttraffic.Service, quotaSvc *linkquota.Service,
 	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
 	mon *monitoring.Collector, sec secrets.Secrets, aiClient *ai.Client, backupSched *backup.Scheduler) *Server {
 
@@ -121,6 +123,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		netSvc:      netSvc,
 		notifySvc:   notifySvc,
 		trafficSvc:  trafficSvc,
+		quotaSvc:    quotaSvc,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
@@ -218,6 +221,14 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermLinksRead)).Get("/api/links/{id}", linksH.Get)
 		r.With(require(auth.PermLinksWrite)).Put("/api/links/{id}", linksH.Update)
 		r.With(require(auth.PermLinksWrite)).Delete("/api/links/{id}", linksH.Delete)
+
+		// Franquia (cota de dados) por link — rota própria em vez de
+		// /api/links/quota para não conviver com o {id} acima.
+		quotaH := handlers.NewQuotaHandler(s.quotaSvc, s.db)
+		r.With(require(auth.PermLinksRead)).Get("/api/quotas", quotaH.List)
+		r.With(require(auth.PermLinksRead)).Get("/api/quotas/{id}/history", quotaH.History)
+		r.With(require(auth.PermLinksWrite)).Put("/api/quotas/{id}", quotaH.Save)
+		r.With(require(auth.PermLinksWrite)).Delete("/api/quotas/{id}", quotaH.Delete)
 
 		// Routes
 		routesH := handlers.NewRoutesHandler(s.routeSvc)

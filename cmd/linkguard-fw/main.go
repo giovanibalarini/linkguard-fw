@@ -35,6 +35,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/keaunbound"
+	"github.com/giovanibalarini/linkguard-fw/internal/linkquota"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
@@ -371,6 +372,7 @@ type services struct {
 	netifSvc     *netif.Service
 	sysCollector *system.Collector
 	rrdSvc       *tsdb.Service
+	quotaSvc     *linkquota.Service
 	aiClient     *ai.Client
 
 	promReg          *prometheus.Registry
@@ -571,6 +573,12 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	sysCollector := system.NewCollector()
 	rrdSvc := tsdb.NewService(db)
 
+	// A franquia por link consome os MESMOS deltas de byte que alimentam as
+	// séries de tráfego — ver tsdb.UsageSink. SetUsageSink tem de acontecer
+	// antes de rrdSvc.Run, que é quem monta o amostrador.
+	quotaSvc := linkquota.NewService(db, alertSvc)
+	rrdSvc.SetUsageSink(quotaSvc)
+
 	// Optional AI advisory layer (BYOK): disabled by default (ai.LoadConfig's
 	// Enabled defaults to false), and swallows its own failures — wiring it in
 	// unconditionally here does not change failover/balance behavior.
@@ -599,7 +607,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		Version:     version,
 		PkgExec:     pkgExec,
 		CaptureExec: capExec,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
 	// The link health probe runs on its own (faster) cadence, decoupled from the
@@ -631,6 +639,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		netifSvc:         netifSvc,
 		sysCollector:     sysCollector,
 		rrdSvc:           rrdSvc,
+		quotaSvc:         quotaSvc,
 		aiClient:         aiClient,
 		promReg:          promReg,
 		appMetrics:       appMetrics,
@@ -699,6 +708,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	linkSvc, routeSvc, balancerSvc := s.linkSvc, s.routeSvc, s.balancerSvc
 	trafficSvc, keaSvc, alertSvc := s.trafficSvc, s.keaSvc, s.alertSvc
 	monitor, metricsCollector, rrdSvc := s.monitor, s.metricsCollector, s.rrdSvc
+	quotaSvc := s.quotaSvc
 	backupSched, journalSched, updatesSched := s.backupSched, s.journalSched, s.updatesSched
 	netifSvc, aiClient := s.netifSvc, s.aiClient
 	ntpInputState := s.ntpInputState
@@ -1058,6 +1068,10 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	go monitor.Run(ctx)
 	spawnWriter("metrics", func() { metricsCollector.Run(ctx, interval) })
 	spawnWriter("tsdb", func() { rrdSvc.Run(ctx) })
+	// Escritor: o Run grava o acumulado do minuto na saída, e perder isso a
+	// cada reinício abriria um buraco justamente na contagem que a franquia
+	// existe para fazer.
+	spawnWriter("cota", func() { quotaSvc.Run(ctx) })
 	go balancerSvc.Run(ctx)
 	spawnWriter("backup", func() { backupSched.Run(ctx) })
 	go journalSched.Run(ctx)

@@ -877,3 +877,24 @@ export interface CaptureStatus {
   };
   capture?: CaptureRun;
 }
+
+// ─── Franquia por link (issue #126) ──────────────────────────────────────────
+// limit_gb e o consumo são em GB DECIMAIS (10^9) — a unidade da fatura da
+// operadora. Ver storage.LinkQuota no backend.
+
+export interface LinkQuotaStatus {
+  link_id: string;
+  link_name: string;
+  interface: string;
+  configured: boolean;
+  enabled: boolean;
+  limit_gb: number;
+  cycle_day: number;
+  alert_pct: number;
+  cycle_start: number;
+  cycle_end: number;
+  rx_bytes: number;
+  tx_bytes: number;
+  used_bytes: number;
+  used_pct: number;
+}

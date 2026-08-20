@@ -9,6 +9,18 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 )
 
+// UsageSink recebe os MESMOS deltas de byte que viram taxa nas séries.
+//
+// Existe para a franquia por link (internal/linkquota) contar consumo sem
+// abrir um segundo caminho de medição: dois leitores independentes dos
+// contadores divergiriam — cada um com seu instante de leitura e seu próprio
+// tratamento de reset —, e aí o gráfico e a franquia contariam coisas
+// diferentes sobre o mesmo link. Um sink só, alimentado de onde o delta já é
+// calculado e já é protegido contra reset de contador.
+type UsageSink interface {
+	AddInterfaceBytes(iface string, rx, tx uint64)
+}
+
 // TrafficSampler feeds the "if.rx_bps"/"if.tx_bps" series once a second from
 // interface byte counters, mirroring what internal/trafficrrd used to do
 // directly against the database — the difference is it now calls Gauge()
@@ -16,6 +28,7 @@ import (
 type TrafficSampler struct {
 	sysCol *system.Collector
 	rec    Recorder
+	usage  UsageSink
 
 	prevCounters map[string]struct {
 		ts int64
@@ -37,6 +50,10 @@ func NewTrafficSampler(rec Recorder) *TrafficSampler {
 		}),
 	}
 }
+
+// SetUsageSink liga (opcionalmente) um consumidor dos deltas de byte. Nil —
+// o padrão — mantém o amostrador exatamente como era.
+func (t *TrafficSampler) SetUsageSink(u UsageSink) { t.usage = u }
 
 // SampleOnce reads current interface counters and reports the delta-derived
 // rate for each interface. Call once per second.
@@ -92,6 +109,11 @@ func (t *TrafficSampler) sampleInterfaces(interfaces []system.InterfaceMetrics, 
 		}
 		t.rec.Gauge("if.rx_bps", iface.Name, rxDelta/dt)
 		t.rec.Gauge("if.tx_bps", iface.Name, txDelta/dt)
+		if t.usage != nil {
+			// Os deltas já vêm zerados quando o contador resetou (ver acima),
+			// então o sink nunca recebe o salto falso de um reboot.
+			t.usage.AddInterfaceBytes(iface.Name, uint64(rxDelta), uint64(txDelta))
+		}
 	}
 }
 

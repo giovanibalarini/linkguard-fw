@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import WanBalancing from '../components/WanBalancing';
+import LinkQuota from '../components/LinkQuota';
 import LinkStressTest from '../components/LinkStressTest';
 import { useAuth } from '../context/AuthContext';
 import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-react';
@@ -342,6 +343,8 @@ export default function Links() {
       )}
 
       {!loading && links.length >= 2 && <WanBalancing links={links} onChanged={fetchLinks} />}
+
+      {!loading && links.length > 0 && <LinkQuota canEdit={can('links.write')} />}
 
       {!loading && links.length >= 2 && <LinkStressTest links={links} canRun={can('routes.write')} />}
 
