@@ -165,8 +165,12 @@ var allowedInternalImports = map[string]bool{
 	// internal/blocklog entrou com o registro de bloqueios (#122): o handler
 	// lê o journal pelo serviço e devolve as linhas. O formato do log do
 	// kernel e a filtragem moram lá.
-	"internal/blocklog":      true,
-	"internal/dashboard":     true,
+	"internal/blocklog":  true,
+	"internal/dashboard": true,
+	// internal/ddns entrou com o DNS dinâmico (#129): o handler grava a
+	// configuração e o segredo e devolve o estado. A descoberta do endereço,
+	// a detecção de CGNAT e o protocolo do provedor moram lá.
+	"internal/ddns":          true,
 	"internal/dnslog":        true,
 	"internal/failover":      true,
 	"internal/firewallrules": true,

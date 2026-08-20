@@ -21,6 +21,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
 	"github.com/giovanibalarini/linkguard-fw/internal/blocklog"
+	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnslog"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -66,6 +67,7 @@ type Server struct {
 	notifySvc   *notify.Service
 	trafficSvc  *hosttraffic.Service
 	quotaSvc    *linkquota.Service
+	ddnsSvc     *ddns.Service
 	sysCol      *system.Collector
 	rrdSvc      *tsdb.Service
 	promReg     *prometheus.Registry
@@ -104,6 +106,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	failoverSvc *failover.Service, balancerSvc *balancer.Service, alertSvc *alerts.Service, authSvc *auth.Service,
 	hostSvc *hosts.Service, netifSvc *netif.Service, nftSvc *nftables.Service, frSvc *firewallrules.Service, netSvc netsvc.Provider,
 	notifySvc *notify.Service, trafficSvc *hosttraffic.Service, quotaSvc *linkquota.Service,
+	ddnsSvc *ddns.Service,
 	sysCol *system.Collector, rrdSvc *tsdb.Service, promReg *prometheus.Registry,
 	mon *monitoring.Collector, sec secrets.Secrets, aiClient *ai.Client, backupSched *backup.Scheduler) *Server {
 
@@ -125,6 +128,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		notifySvc:   notifySvc,
 		trafficSvc:  trafficSvc,
 		quotaSvc:    quotaSvc,
+		ddnsSvc:     ddnsSvc,
 		sysCol:      sysCol,
 		rrdSvc:      rrdSvc,
 		promReg:     promReg,
@@ -222,6 +226,13 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermLinksRead)).Get("/api/links/{id}", linksH.Get)
 		r.With(require(auth.PermLinksWrite)).Put("/api/links/{id}", linksH.Update)
 		r.With(require(auth.PermLinksWrite)).Delete("/api/links/{id}", linksH.Delete)
+
+		// DNS dinâmico por link (#129). Mesma permissão dos links: é
+		// configuração de WAN, e quem pode mexer em link pode mexer nisto.
+		ddnsH := handlers.NewDDNSHandler(s.db, s.ddnsSvc, s.sec)
+		r.With(require(auth.PermLinksRead)).Get("/api/ddns", ddnsH.List)
+		r.With(require(auth.PermLinksWrite)).Put("/api/ddns", ddnsH.Save)
+		r.With(require(auth.PermLinksWrite)).Post("/api/ddns/check", ddnsH.CheckNow)
 
 		// Franquia (cota de dados) por link — rota própria em vez de
 		// /api/links/quota para não conviver com o {id} acima.

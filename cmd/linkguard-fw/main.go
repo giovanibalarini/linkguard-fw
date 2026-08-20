@@ -28,6 +28,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
 	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
+	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
@@ -374,6 +375,7 @@ type services struct {
 	rrdSvc       *tsdb.Service
 	hostSampler  *hosttraffic.Sampler
 	quotaSvc     *linkquota.Service
+	ddnsSvc      *ddns.Service
 	aiClient     *ai.Client
 
 	promReg          *prometheus.Registry
@@ -594,6 +596,14 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// séries de tráfego — ver tsdb.UsageSink. SetUsageSink tem de acontecer
 	// antes de rrdSvc.Run, que é quem monta o amostrador.
 	quotaSvc := linkquota.NewService(db, alertSvc)
+
+	// DNS dinâmico por link (#129). A descoberta do endereço usa a MESMA
+	// leitura de `ip addr` que o balanceador — duas leituras com parsers
+	// diferentes divergiriam no primeiro formato inesperado, e o sintoma seria
+	// o nome apontando para lugar nenhum.
+	ddnsSvc := ddns.NewService(db, secretsSvc, func(ctx context.Context, iface string) string {
+		return balancer.InterfaceIPv4(ctx, exec, iface)
+	})
 	rrdSvc.SetUsageSink(quotaSvc)
 
 	// Optional AI advisory layer (BYOK): disabled by default (ai.LoadConfig's
@@ -624,7 +634,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		Version:     version,
 		PkgExec:     pkgExec,
 		CaptureExec: capExec,
-	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
+	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
 	// The link health probe runs on its own (faster) cadence, decoupled from the
@@ -658,6 +668,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		rrdSvc:           rrdSvc,
 		hostSampler:      hostSampler,
 		quotaSvc:         quotaSvc,
+		ddnsSvc:          ddnsSvc,
 		aiClient:         aiClient,
 		promReg:          promReg,
 		appMetrics:       appMetrics,
@@ -749,6 +760,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	trafficSvc, keaSvc, alertSvc := s.trafficSvc, s.keaSvc, s.alertSvc
 	monitor, metricsCollector, rrdSvc := s.monitor, s.metricsCollector, s.rrdSvc
 	quotaSvc := s.quotaSvc
+	ddnsSvc := s.ddnsSvc
 	hostSampler := s.hostSampler
 	backupSched, journalSched, updatesSched := s.backupSched, s.journalSched, s.updatesSched
 	netifSvc, aiClient := s.netifSvc, s.aiClient
@@ -1142,6 +1154,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	// Escritor: grava a série por host, e perder a última amostra num
 	// reinício abre buraco justamente na série que o histórico existe para ter.
 	spawnWriter("consumo-por-host", func() { hostSampler.Run(ctx) })
+	go ddnsSvc.Run(ctx)
 	go balancerSvc.Run(ctx)
 	spawnWriter("backup", func() { backupSched.Run(ctx) })
 	go journalSched.Run(ctx)

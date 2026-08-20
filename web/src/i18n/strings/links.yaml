@@ -606,3 +606,80 @@ links.quota.error.save:
 links.quota.error.remove:
   pt: "Não foi possível remover a franquia."
   en: "Could not remove the allowance."
+
+# ─── DNS dinâmico por link (issue #129) ───────────────────────────────────────
+# O aviso de CGNAT é o que evita horas de diagnóstico numa tela que não tem
+# nada a ver com o problema: atrás dele, encaminhamento de porta não funciona
+# de jeito nenhum, por mais correta que a regra esteja.
+links.ddns.title:
+  pt: "DNS dinâmico"
+  en: "Dynamic DNS"
+links.ddns.subtitle:
+  pt: "Mantém um nome apontando para o endereço público de cada link — sem isso, o encaminhamento de porta aponta para um endereço que o provedor troca sem avisar."
+  en: "Keeps a name pointing at each link's public address — without it, port forwarding points at an address the ISP changes without notice."
+links.ddns.help.title:
+  pt: "Como funciona"
+  en: "How it works"
+links.ddns.help1:
+  pt: "O endereço é conferido a cada 5 minutos e o provedor só é avisado quando ele muda. A configuração é"
+  en: "The address is checked every 5 minutes and the provider is only notified when it changes. Configuration is"
+links.ddns.helpPerLinkTerm:
+  pt: "por link"
+  en: "per link"
+links.ddns.help2:
+  pt: ": numa caixa com duas WANs são dois endereços que mudam, e cada nome acompanha o seu. Quando o endereço da interface já é público, nenhum serviço externo é consultado; atrás de NAT do provedor, o firewall pergunta a um serviço externo qual é o endereço visto de fora."
+  en: ": on a box with two WANs there are two addresses changing, and each name follows its own. When the interface address is already public no external service is queried; behind carrier NAT, the firewall asks an external service what address is seen from outside."
+links.ddns.notSet:
+  pt: "sem nome configurado"
+  en: "no name configured"
+links.ddns.noAddressYet:
+  pt: "endereço ainda não verificado"
+  en: "address not checked yet"
+links.ddns.ok:
+  pt: "atualizado"
+  en: "up to date"
+links.ddns.behindNat:
+  pt: "atrás de NAT do provedor (CGNAT) — encaminhamento de porta não funciona neste link"
+  en: "behind carrier NAT (CGNAT) — port forwarding does not work on this link"
+links.ddns.configure:
+  pt: "Configurar"
+  en: "Configure"
+links.ddns.edit:
+  pt: "Editar"
+  en: "Edit"
+links.ddns.disable:
+  pt: "Desativar"
+  en: "Disable"
+links.ddns.hostname:
+  pt: "Nome que deve apontar para este link"
+  en: "Name that should point at this link"
+links.ddns.urlTemplate:
+  pt: "URL de atualização do provedor"
+  en: "Provider update URL"
+links.ddns.urlHint:
+  pt: "Use {hostname} e {ip} onde eles entram. O {ip} é obrigatório: sem ele o provedor usaria o endereço de quem chama, o que acerta por acidente e falha em silêncio."
+  en: "Use {hostname} and {ip} where they belong. {ip} is required: without it the provider would use the caller's address, which happens to work by accident and fails silently."
+links.ddns.username:
+  pt: "Usuário (se o provedor exigir)"
+  en: "Username (if the provider requires one)"
+links.ddns.secret:
+  pt: "Senha ou token"
+  en: "Password or token"
+links.ddns.secretStored:
+  pt: "(já guardado — deixe em branco para manter)"
+  en: "(already stored — leave blank to keep)"
+links.ddns.checkNow:
+  pt: "Verificar agora"
+  en: "Check now"
+links.ddns.save:
+  pt: "Salvar"
+  en: "Save"
+links.ddns.cancel:
+  pt: "Cancelar"
+  en: "Cancel"
+links.ddns.error.save:
+  pt: "Não foi possível salvar a configuração de DNS dinâmico."
+  en: "Could not save the dynamic DNS configuration."
+links.ddns.error.check:
+  pt: "Não foi possível verificar agora."
+  en: "Could not check right now."

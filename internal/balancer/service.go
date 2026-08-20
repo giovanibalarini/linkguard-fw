@@ -575,6 +575,15 @@ func (s *Service) EvictDegraded(ctx context.Context, link *storage.Link) {
 	slog.Info("evict: flushed flows from degraded link", "link", link.Name, "ip", ip)
 }
 
+// InterfaceIPv4 é interfaceIPv4 exportada para quem precisa da mesma resposta
+// sem ter um balancer em mãos — hoje o DDNS (#129), que precisa saber o
+// endereço atual de cada WAN. Exportar em vez de copiar: duas leituras do
+// mesmo `ip addr` com parsers diferentes divergem no primeiro formato
+// inesperado, e o sintoma seria o nome de DNS apontando para lugar nenhum.
+func InterfaceIPv4(ctx context.Context, exec firewall.Executor, iface string) string {
+	return (&Service{exec: exec}).interfaceIPv4(ctx, iface)
+}
+
 // interfaceIPv4 returns the first global IPv4 address configured on iface, or ""
 // if none (or the lookup fails).
 func (s *Service) interfaceIPv4(ctx context.Context, iface string) string {

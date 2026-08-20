@@ -1543,6 +1543,166 @@ print(len([e for e in d.get('entries',[]) if e.get('src')=='192.168.66.2']))" 2>
   vm "nft delete element inet linkguard blocked_hosts { 192.168.66.2 } 2>/dev/null; ip netns del lgblk 2>/dev/null; ip link del veth-blk 2>/dev/null; true" >/dev/null 2>&1
 }
 
+# ─── M. DNS dinâmico (issue #129) ────────────────────────────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Um cliente de DDNS falha de dois jeitos
+# que teste de unidade não pega e que o painel esconde:
+#
+#  1. Ele amarra a requisição ao endereço do link (numa caixa com duas WANs,
+#     sair pela WAN errada publica o endereço errado). Amarrar socket a um
+#     endereço só falha de verdade numa máquina de verdade.
+#  2. Os provedores do protocolo dyndns respondem HTTP 200 com o erro NO CORPO
+#     ("badauth", "nohost"). Um cliente que olha só o código diz "atualizado"
+#     para sempre enquanto o nome aponta para o endereço antigo — e o
+#     encaminhamento de porta, que é o motivo de tudo isto existir, fica quebrado
+#     sem nenhum sinal.
+#
+# Por isso a bateria sobe um provedor de mentira NA PRÓPRIA VM, num endereço
+# público de teste (203.0.113.0/24, TEST-NET-3), e confere o que chegou nele.
+# Endereço público na interface também exercita o caminho que NÃO consulta
+# serviço externo nenhum — a bateria roda offline de propósito.
+battery_ddns() {
+  head_ "M. DNS dinâmico"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria M não roda"; return; }
+
+  # Provedor de mentira: /upd responde "good", /badauth responde 200 com erro
+  # no corpo. Todos os acessos ficam registrados.
+  vm "pkill -f ddns-fake >/dev/null 2>&1; ip link del lg-ddns 2>/dev/null; rm -f /tmp/ddns-hits.log; true" >/dev/null 2>&1
+  vm "ip link add lg-ddns type dummy && ip addr add 203.0.113.7/24 dev lg-ddns && ip link set lg-ddns up" >/dev/null 2>&1
+  vm "cat > /tmp/ddns-fake.py <<'PYEOF'
+import http.server, socketserver
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        open('/tmp/ddns-hits.log','a').write(self.path + '\n')
+        corpo = b'badauth' if self.path.startswith('/badauth') else b'good 203.0.113.7'
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(corpo)))
+        self.end_headers()
+        self.wfile.write(corpo)
+    def log_message(self, *a): pass
+socketserver.TCPServer.allow_reuse_address = True
+socketserver.TCPServer(('203.0.113.7', 18080), H).serve_forever()
+PYEOF
+      setsid python3 /tmp/ddns-fake.py >/dev/null 2>&1 < /dev/null &
+      sleep 1" >/dev/null 2>&1
+
+  # Sanidade: se o provedor de mentira não responde, a bateria não tem como
+  # distinguir "DDNS quebrado" de "listener quebrado" — então nem tenta.
+  local vivo
+  vivo=$(vm "curl -s -o /dev/null -w '%{http_code}' --max-time 3 'http://203.0.113.7:18080/ping'" | tr -d '\r')
+  if [[ "$vivo" != "200" ]]; then
+    bad "o provedor de mentira não subiu na VM (HTTP '$vivo'); a bateria M não roda"
+    vm "pkill -f ddns-fake; ip link del lg-ddns 2>/dev/null; true" >/dev/null 2>&1
+    return
+  fi
+  vm "rm -f /tmp/ddns-hits.log" >/dev/null 2>&1
+
+  # Link com endereço PÚBLICO na interface, cadastrado pelo painel.
+  local st
+  st=$(status POST /api/links "$tok" '{"name":"WAN DDNS","interface":"lg-ddns","gateway":"203.0.113.1","ip_address":"203.0.113.7","weight":1,"enabled":true,"monitor_hosts":"203.0.113.1","dns_test":"203.0.113.1"}')
+  if [[ "$st" != "200" && "$st" != "201" ]]; then bad "não consegui cadastrar o link de teste: $st"; return; fi
+  local link
+  link=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l['interface']=='lg-ddns': print(l['id'])" 2>/dev/null)
+  [[ -n "$link" ]] || { bad "o link de teste não apareceu na listagem"; return; }
+
+  local bom="http://203.0.113.7:18080/upd?h={hostname}&ip={ip}"
+  local ruim="http://203.0.113.7:18080/badauth?h={hostname}&ip={ip}"
+
+  # M1 — modelo sem {ip} é recusado NA HORA. Sem o {ip}, o provedor usa o
+  # endereço de quem chamou: acerta por acidente enquanto a caixa fala pela WAN
+  # certa e erra em silêncio no dia em que ela troca de link.
+  st=$(status PUT /api/ddns "$tok" "{\"link_id\":\"$link\",\"enabled\":true,\"hostname\":\"casa.teste\",\"url_template\":\"http://203.0.113.7:18080/upd?h={hostname}\"}")
+  if [[ "$st" == "400" ]]; then ok "modelo de URL sem {ip} é recusado ao salvar"
+  else bad "modelo sem {ip} foi aceito (HTTP $st) — o nome apontaria para o endereço de quem chamou"; fi
+
+  # M2 — salvar de verdade, com segredo.
+  st=$(status PUT /api/ddns "$tok" "{\"link_id\":\"$link\",\"enabled\":true,\"hostname\":\"casa.teste\",\"url_template\":\"$bom\",\"username\":\"u1\",\"secret\":\"tok-secreto-123\"}")
+  if [[ "$st" == "200" ]]; then ok "configuração aceita pelo painel"
+  else bad "não consegui salvar a configuração: $st"; return; fi
+
+  # M3 — o segredo NUNCA volta pela API, mas o painel sabe que existe um.
+  local linha
+  linha=$(body GET /api/ddns "$tok" | python3 -c "
+import json,sys
+for r in json.load(sys.stdin):
+    if r.get('interface')=='lg-ddns': print(json.dumps(r))" 2>/dev/null)
+  if grep -q '"secret_set": *true' <<<"$linha" && ! grep -q 'tok-secreto-123' <<<"$linha"; then
+    ok "o segredo não volta pela API, mas a tela sabe que há um guardado"
+  else bad "a API expôs o segredo ou perdeu o secret_set" "$(head -c 200 <<<"$linha")"; fi
+
+  # M4 — A ASSERÇÃO CENTRAL: a verificação publica de verdade, amarrada ao
+  # endereço do link, com hostname e IP substituídos.
+  status POST /api/ddns/check "$tok" >/dev/null
+  local hits
+  hits=$(vm "cat /tmp/ddns-hits.log 2>/dev/null" | tr -d '\r')
+  if grep -q 'h=casa.teste' <<<"$hits" && grep -q 'ip=203.0.113.7' <<<"$hits"; then
+    ok "o provedor recebeu o nome e o endereço do link substituídos"
+  else bad "o provedor não recebeu a atualização" "recebido: $(tr '\n' ' ' <<<"$hits" | head -c 200)"; fi
+
+  # M5 — endereço público na interface não consulta serviço externo nenhum, e o
+  # painel mostra o resultado sem erro.
+  local estado
+  estado=$(body GET /api/ddns "$tok" | python3 -c "
+import json,sys
+for r in json.load(sys.stdin):
+    if r.get('interface')=='lg-ddns':
+        s=r.get('state') or {}
+        print(s.get('public_ip',''), s.get('behind_nat'), repr(s.get('last_error','')))" 2>/dev/null)
+  if [[ "$estado" == "203.0.113.7 False ''" ]]; then
+    ok "o painel mostra o endereço publicado, sem CGNAT e sem erro ($estado)"
+  else bad "o estado publicado está errado" "$estado"; fi
+
+  # M6 — mesma configuração, mesmo endereço: NÃO incomoda o provedor de novo.
+  # Vários deles bloqueiam a conta por atualização repetida.
+  local antes depois
+  antes=$(vm "grep -c '^/upd' /tmp/ddns-hits.log 2>/dev/null || echo 0" | tr -d '\r')
+  status POST /api/ddns/check "$tok" >/dev/null
+  depois=$(vm "grep -c '^/upd' /tmp/ddns-hits.log 2>/dev/null || echo 0" | tr -d '\r')
+  if [[ "$antes" == "$depois" ]]; then ok "endereço inalterado não gera nova atualização ($depois)"
+  else bad "o provedor foi chamado de novo sem nada ter mudado ($antes → $depois)"; fi
+
+  # M7 — trocar a configuração REPUBLICA mesmo com o endereço igual. Sem isto,
+  # o admin que corrige o nome errado espera o provedor trocar o IP — semanas.
+  status PUT /api/ddns "$tok" "{\"link_id\":\"$link\",\"enabled\":true,\"hostname\":\"casa2.teste\",\"url_template\":\"$bom\",\"username\":\"u1\"}" >/dev/null
+  status POST /api/ddns/check "$tok" >/dev/null
+  if vm "cat /tmp/ddns-hits.log" | grep -q 'h=casa2.teste'; then
+    ok "corrigir o nome republica na hora, sem esperar o endereço mudar"
+  else bad "o nome corrigido não foi publicado — ficaria parado até o provedor trocar o IP"; fi
+
+  # M8 — A OUTRA ASSERÇÃO CENTRAL: HTTP 200 com erro no corpo é FALHA. É assim
+  # que o protocolo dyndns responde a token errado, e é onde um cliente ingênuo
+  # mente "atualizado" para sempre.
+  status PUT /api/ddns "$tok" "{\"link_id\":\"$link\",\"enabled\":true,\"hostname\":\"casa3.teste\",\"url_template\":\"$ruim\",\"username\":\"u1\"}" >/dev/null
+  status POST /api/ddns/check "$tok" >/dev/null
+  local erro
+  erro=$(body GET /api/ddns "$tok" | python3 -c "
+import json,sys
+for r in json.load(sys.stdin):
+    if r.get('interface')=='lg-ddns': print((r.get('state') or {}).get('last_error',''))" 2>/dev/null)
+  if [[ -n "$erro" ]]; then ok "200 com \"badauth\" no corpo é registrado como falha ($erro)"
+  else bad "o provedor recusou a atualização e o painel diz que deu certo"; fi
+
+  # M9 — e a falha é TENTADA DE NOVO na verificação seguinte. Erro que não é
+  # retentado é erro permanente por acidente.
+  antes=$(vm "grep -c '^/badauth' /tmp/ddns-hits.log 2>/dev/null || echo 0" | tr -d '\r')
+  status POST /api/ddns/check "$tok" >/dev/null
+  depois=$(vm "grep -c '^/badauth' /tmp/ddns-hits.log 2>/dev/null || echo 0" | tr -d '\r')
+  if [[ "${depois:-0}" -gt "${antes:-0}" ]]; then ok "depois de falhar, a verificação seguinte tenta de novo"
+  else bad "a falha não foi retentada ($antes → $depois) — ficaria parada para sempre"; fi
+
+  # Limpeza: o link de teste, o provedor de mentira e a interface saem.
+  status DELETE "/api/links/$link" "$tok" >/dev/null 2>&1
+  vm "pkill -f ddns-fake >/dev/null 2>&1; ip link del lg-ddns 2>/dev/null; rm -f /tmp/ddns-fake.py /tmp/ddns-hits.log; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -1555,6 +1715,7 @@ battery_dnsleak
 battery_mssclamp
 battery_schedule
 battery_blocklog
+battery_ddns
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"
