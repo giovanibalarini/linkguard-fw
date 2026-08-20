@@ -967,12 +967,100 @@ for q in json.load(sys.stdin):
   else bad "remover a franquia escondeu o consumo já medido — a chave do ciclo mudou debaixo da leitura"; fi
 }
 
+
+# ─── G. Contabilidade por host (issue #112) ──────────────────────────────────
+#
+# O QUE SÓ UMA MÁQUINA DE VERDADE PROVA. A contabilidade conta tráfego
+# FORWARDED, e teste em Go não tem tráfego atravessando nada. Aqui a bateria
+# cria um cliente numa netns atrás do firewall, gera tráfego que de fato
+# atravessa, e confere o número no kernel e no painel.
+#
+# E confere a coisa que dá nome à issue: o consumo tem de sobreviver ao fim do
+# fluxo. A fonte antiga (/proc/net/nf_conntrack) só tinha conexão viva, então o
+# host que baixou 5 GB há dez minutos aparecia com zero.
+battery_accounting() {
+  head_ "G. Contabilidade por host"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria G não roda"; return; }
+
+  # A bateria D pode ter deixado a forward bloqueando. Sem tráfego atravessando
+  # não há o que contar, e a falha apareceria como se fosse da contabilidade.
+  status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
+
+  # G1 — a chain existe, no hook e na prioridade que fazem ela contar só o que
+  # PASSOU pela filtragem. Prioridade errada aqui conta pacote descartado como
+  # se fosse consumo.
+  local chain; chain=$(vm "nft list chain inet linkguard acct 2>/dev/null" | tr -d '\r')
+  if grep -q 'hook forward priority filter + 10' <<<"$chain"; then
+    ok "a chain de contabilidade está depois da filtragem (priority filter + 10)"
+  else bad "chain de contabilidade ausente ou na prioridade errada" "$(tr '\n' ' ' <<<"$chain")"; fi
+
+  # G2 — escopada por interface. Sem isso, `ip saddr` do tráfego de entrada
+  # criaria um elemento por endereço da internet e o set (65.535) enche.
+  if grep -qE 'iifname != .* update @acct_up' <<<"$chain" && grep -qE 'oifname != .* update @acct_down' <<<"$chain"; then
+    ok "as regras estão escopadas pelas interfaces WAN"
+  else bad "regras de contabilidade fora do formato esperado" "$(tr '\n' ' ' <<<"$chain")"; fi
+
+  # G3 — cliente de verdade atrás do firewall, e tráfego que atravessa.
+  vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
+  vm "nft flush set inet linkguard acct_up; nft flush set inet linkguard acct_down" >/dev/null 2>&1
+  vm "ip netns add lgclient && \
+      ip link add veth-lgfw type veth peer name veth-lgcl && \
+      ip link set veth-lgcl netns lgclient && \
+      ip addr add 192.168.3.1/24 dev veth-lgfw && ip link set veth-lgfw up && \
+      ip netns exec lgclient ip link set lo up && \
+      ip netns exec lgclient ip addr add 192.168.3.200/24 dev veth-lgcl && \
+      ip netns exec lgclient ip link set veth-lgcl up && \
+      ip netns exec lgclient ip route add default via 192.168.3.1" >/dev/null 2>&1
+  vm "ip netns exec lgclient ping -c 10 -s 1400 -i 0.05 10.0.2.2" >/dev/null 2>&1
+
+  # 10 pacotes de 1400 bytes de payload = 10 x 1428 no fio. Números exatos, e
+  # não "maior que zero": contagem dobrada (o mesmo pacote casando as duas
+  # regras) passaria despercebida por um teste frouxo.
+  local up down
+  up=$(vm "nft list set inet linkguard acct_up 2>/dev/null" | grep -oE '192\.168\.3\.200 counter packets [0-9]+ bytes [0-9]+' | grep -oE 'bytes [0-9]+' | grep -oE '[0-9]+')
+  down=$(vm "nft list set inet linkguard acct_down 2>/dev/null" | grep -oE '192\.168\.3\.200 counter packets [0-9]+ bytes [0-9]+' | grep -oE 'bytes [0-9]+' | grep -oE '[0-9]+')
+  if [[ "$up" == "14280" ]]; then ok "o que o cliente enviou foi contado exatamente (14280 bytes)"
+  else bad "upload contado errado: ${up:-vazio} (esperado 14280 — dobrado seria 28560)"; fi
+  if [[ "$down" == "14280" ]]; then ok "o que chegou ao cliente foi contado exatamente (14280 bytes)"
+  else bad "download contado errado: ${down:-vazio} (esperado 14280)"; fi
+
+  # G4 — o número chega ao painel, pela LAN configurada.
+  local api_bytes
+  api_bytes=$(body GET /api/hosts/traffic "$tok" | python3 -c "
+import json,sys
+for h in json.load(sys.stdin):
+    if h['ip']=='192.168.3.200': print(h['rx_bytes'])" 2>/dev/null)
+  if [[ "$api_bytes" == "14280" ]]; then ok "o painel devolve o mesmo número que o kernel contou"
+  else bad "o painel devolveu ${api_bytes:-nada} para o host de teste"; fi
+
+  # G5 — A ASSERÇÃO QUE DÁ NOME À ISSUE. Os fluxos ICMP envelhecem e somem do
+  # conntrack; o consumo NÃO pode sumir junto.
+  printf '       (aguardando os fluxos saírem do conntrack)\n'
+  sleep 45
+  local vivos
+  vivos=$(vm "grep -c 192.168.3.200 /proc/net/nf_conntrack 2>/dev/null || echo 0" | tr -d '\r')
+  local depois
+  depois=$(vm "nft list set inet linkguard acct_up 2>/dev/null" | grep -oE '192\.168\.3\.200 counter packets [0-9]+ bytes [0-9]+' | grep -oE 'bytes [0-9]+' | grep -oE '[0-9]+')
+  if [[ "$vivos" == "0" ]]; then ok "os fluxos do host saíram do conntrack (a fonte antiga diria zero)"
+  else printf '       (ainda há %s fluxo(s) no conntrack; a asserção seguinte vale do mesmo jeito)\n' "$vivos"; fi
+  if [[ "$depois" == "14280" ]]; then ok "o consumo sobreviveu ao fim dos fluxos — é o defeito da #112, corrigido"
+  else bad "o consumo mudou depois de os fluxos morrerem: ${depois:-vazio}"; fi
+
+  vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
 battery_policy
 battery_capture
 battery_quota
+battery_accounting
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

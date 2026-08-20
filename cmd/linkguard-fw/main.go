@@ -571,6 +571,11 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		return nomes, nil
 	})
 	sysCollector := system.NewCollector()
+	// O consumo por host passa a vir dos contadores do nftables (#112), e não
+	// mais das conexões vivas do conntrack — que perdiam os bytes assim que a
+	// conexão fechava. Ver internal/nftables/accounting.go.
+	trafficSvc.SetCounterSource(nftSvc)
+
 	rrdSvc := tsdb.NewService(db)
 
 	// A franquia por link consome os MESMOS deltas de byte que alimentam as
@@ -842,6 +847,14 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			}
 			if err := nftSvc.ReconcileMasquerade(ctx, enabledWANs); err != nil {
 				slog.Warn("não foi possível reconciliar a regra de NAT no boot", "err", err)
+			}
+
+			// A contabilidade por host (#112) usa a MESMA lista de WANs, e pelo
+			// mesmo motivo do masquerade precisa ser reconciliada em todo boot:
+			// EnsureTable é no-op em máquina já provisionada, então sem isto
+			// uma instalação existente nunca ganharia a chain.
+			if err := nftSvc.EnsureAccounting(ctx, enabledWANs); err != nil {
+				slog.Warn("não foi possível reconciliar a contabilidade por host no boot", "err", err)
 			}
 
 			// Reconcile the structural chain (mark_hosts) on every boot too.

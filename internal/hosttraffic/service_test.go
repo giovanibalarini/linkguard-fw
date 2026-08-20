@@ -1,50 +1,104 @@
 package hosttraffic
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 )
 
-// Real-ish conntrack lines (with nf_conntrack_acct=1). NATed LAN->internet flow:
-// orig src is the LAN host (upload bytes), reply bytes are the download.
-const sample = `ipv4     2 tcp      6 111 TIME_WAIT src=192.168.3.35 dst=104.16.9.34 sport=56824 dport=443 packets=276 bytes=44530 src=104.16.9.34 dst=192.168.18.2 sport=443 dport=56824 packets=159 bytes=1676127 [ASSURED] mark=0 zone=0 use=2
-ipv4     2 udp      17 6 src=192.168.3.18 dst=192.168.3.3 sport=40924 dport=53 packets=1 bytes=60 src=192.168.3.3 dst=192.168.3.18 sport=53 dport=40924 packets=1 bytes=188 mark=0 zone=0 use=2
-ipv4     2 tcp      6 104 SYN_SENT src=192.168.3.35 dst=1.2.3.4 sport=46372 dport=80 packets=1 bytes=60 [UNREPLIED] src=1.2.3.4 dst=192.168.18.2 sport=80 dport=46372 mark=0 zone=0 use=2
-ipv4     2 tcp      6 100 ESTABLISHED src=8.8.8.8 dst=192.168.18.2 sport=443 dport=1234 packets=1 bytes=500 src=192.168.18.2 dst=8.8.8.8 sport=1234 dport=443 packets=1 bytes=100 mark=0 zone=0 use=2
-`
-
-func TestParseConntrack(t *testing.T) {
-	got := parseConntrack(sample, "192.168.3.0/24")
-	// Hosts .35 and .18 are in the subnet; the 8.8.8.8-origin flow is ignored.
-	if len(got) != 2 {
-		t.Fatalf("expected 2 LAN hosts, got %d: %+v", len(got), got)
+func TestRankHostsOrdenaPorConsumoTotal(t *testing.T) {
+	contadores := map[string]nftables.HostCounter{
+		"192.168.3.50": {RxBytes: 5000, TxBytes: 1000},
+		"192.168.3.51": {RxBytes: 100, TxBytes: 50},
+		"192.168.3.52": {RxBytes: 9000, TxBytes: 0},
+		"8.8.8.8":      {RxBytes: 999999, TxBytes: 999999}, // fora da LAN
 	}
-	// Top talker must be .35 (44530+1676127 ≫ .18's 60+188).
-	if got[0].IP != "192.168.3.35" {
-		t.Fatalf("expected .35 as top talker, got %+v", got[0])
+	got := rankHosts(contadores, "192.168.3.0/24")
+	if len(got) != 3 {
+		t.Fatalf("queria 3 hosts da LAN, veio %d: %+v", len(got), got)
 	}
-	// .35 aggregates the TIME_WAIT flow (tx 44530, rx 1676127) plus the
-	// UNREPLIED SYN (tx +60, no reply bytes).
-	if got[0].TxBytes != 44590 || got[0].RxBytes != 1676127 {
-		t.Errorf(".35 bytes wrong: tx=%d rx=%d", got[0].TxBytes, got[0].RxBytes)
+	if got[0].IP != "192.168.3.52" || got[1].IP != "192.168.3.50" {
+		t.Errorf("ordem por consumo total errada: %+v", got)
 	}
-	if got[1].IP != "192.168.3.18" || got[1].TxBytes != 60 || got[1].RxBytes != 188 {
-		t.Errorf(".18 wrong: %+v", got[1])
+	for _, h := range got {
+		if h.IP == "8.8.8.8" {
+			t.Error("endereço fora da faixa da LAN entrou no ranking")
+		}
 	}
 }
 
-func TestParseConntrackBadSubnet(t *testing.T) {
-	if len(parseConntrack(sample, "not-a-cidr")) != 0 {
-		t.Error("bad subnet should yield no results")
+func TestRankHostsDesempateEhEstavel(t *testing.T) {
+	// Sem desempate por endereço a ordem vem do map e muda a cada leitura — e
+	// a tela, que atualiza sozinha, pisca trocando as linhas de lugar.
+	contadores := map[string]nftables.HostCounter{
+		"192.168.3.10": {RxBytes: 100},
+		"192.168.3.11": {RxBytes: 100},
+		"192.168.3.12": {RxBytes: 100},
+	}
+	primeira := rankHosts(contadores, "192.168.3.0/24")
+	for i := 0; i < 20; i++ {
+		outra := rankHosts(contadores, "192.168.3.0/24")
+		for j := range primeira {
+			if primeira[j].IP != outra[j].IP {
+				t.Fatalf("ordem instável entre leituras: %v vs %v", primeira, outra)
+			}
+		}
 	}
 }
 
-// TestEnsureAccountingEnablesAndPersists is the regression test for the root
-// cause of "per-host traffic stopped calculating": nf_conntrack_acct was off.
+func TestRankHostsFaixaInvalidaNaoDevolveNil(t *testing.T) {
+	// nil vira null no JSON e a tela quebra iterando.
+	if got := rankHosts(map[string]nftables.HostCounter{"1.2.3.4": {}}, "faixa-torta"); got == nil {
+		t.Error("faixa inválida devolveu nil em vez de lista vazia")
+	}
+}
+
+type contadorFalso struct {
+	dados map[string]nftables.HostCounter
+	err   error
+}
+
+func (c *contadorFalso) HostCounters(context.Context) (map[string]nftables.HostCounter, error) {
+	return c.dados, c.err
+}
+
+func TestTopTalkersSemFonteDizQueNaoSabe(t *testing.T) {
+	// Lista vazia seria indistinguível de "ninguém trafegou" — o exato engano
+	// que a #112 existe para acabar.
+	s := NewService(firewall.NewDryRunExecutor())
+	if _, err := s.TopTalkers(context.Background(), "192.168.3.0/24"); err == nil {
+		t.Error("sem fonte de contadores, TopTalkers devia devolver erro")
+	}
+}
+
+func TestTopTalkersPropagaErroDaFonte(t *testing.T) {
+	s := NewService(firewall.NewDryRunExecutor())
+	s.SetCounterSource(&contadorFalso{err: errors.New("nft fora do ar")})
+	if _, err := s.TopTalkers(context.Background(), "192.168.3.0/24"); err == nil {
+		t.Error("erro do nft foi engolido")
+	}
+}
+
+func TestTopTalkersUsaAFonteDeContadores(t *testing.T) {
+	s := NewService(firewall.NewDryRunExecutor())
+	s.SetCounterSource(&contadorFalso{dados: map[string]nftables.HostCounter{
+		"192.168.3.50": {RxBytes: 10, TxBytes: 20},
+	}})
+	got, err := s.TopTalkers(context.Background(), "192.168.3.0/24")
+	if err != nil {
+		t.Fatalf("TopTalkers: %v", err)
+	}
+	if len(got) != 1 || got[0].RxBytes != 10 || got[0].TxBytes != 20 {
+		t.Errorf("resultado: %+v", got)
+	}
+}
+
 func TestEnsureAccountingEnablesAndPersists(t *testing.T) {
 	dir := t.TempDir()
 	acct := filepath.Join(dir, "nf_conntrack_acct")
