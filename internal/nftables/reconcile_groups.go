@@ -274,7 +274,7 @@ func (s *Service) reconcileGroups(ctx context.Context, groups []StoredGroup) err
 	}
 
 	// 3. reconstruir a forward
-	forwardRules := forwardChainRules(valid)
+	forwardRules := forwardChainRules(valid, s.logBlocks())
 	// A invariante "a forward nunca fica sem bloqueio em silêncio" mora uma
 	// camada acima (internal/firewallrules.ensureSystemGroupsPresent, que
 	// aborta ANTES de chegar aqui quando a lista não tem os dois grupos do
@@ -582,7 +582,7 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 			return fmt.Errorf("grupo %q: %w", g.Name, err)
 		}
 	}
-	if err := s.CheckChainEnsuring(ctx, ForwardChain, forwardChainRules(groups), ensure); err != nil {
+	if err := s.CheckChainEnsuring(ctx, ForwardChain, forwardChainRules(groups, s.logBlocks()), ensure); err != nil {
 		return err
 	}
 

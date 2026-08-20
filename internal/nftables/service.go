@@ -42,6 +42,14 @@ type Service struct {
 	// policy.go para a razão de ela não abortar quando ausente, ao contrário
 	// das duas acima.
 	inputPolicySource func() (Policy, error)
+
+	// blockLogSource diz se o admin ligou o registro do que é bloqueado
+	// (#122). Opcional, como inputPolicySource: fonte não ligada resolve para
+	// "desligado", que é o estado de toda máquina anterior a esta entrega.
+	// Erro de leitura NÃO derruba a reconciliação — o firewall continua
+	// bloqueando; o que se perde é o registro, e perder o registro é
+	// infinitamente melhor que perder o bloqueio.
+	blockLogSource func() (bool, error)
 	// adminAccessSource alimenta as regras de sobrevivência. Só consultada com
 	// política restritiva; ausente nesse caso é ERRO (ver adminAccess).
 	adminAccessSource func() (AdminAccess, error)
@@ -1270,4 +1278,22 @@ func RenderGroupJump(g StoredGroup) (string, error) {
 		return "", err
 	}
 	return strings.Join(tokens, " "), nil
+}
+
+// SetBlockLogSource liga a fonte da opção de registrar bloqueios (#122).
+func (s *Service) SetBlockLogSource(src func() (bool, error)) { s.blockLogSource = src }
+
+// logBlocks resolve a opção. Sem fonte, ou com fonte que falhou, devolve
+// false: é o estado de quem nunca ligou a opção, e é o lado seguro — a
+// alternativa seria registrar sem o admin ter pedido, gastando disco dele.
+func (s *Service) logBlocks() bool {
+	if s.blockLogSource == nil {
+		return false
+	}
+	on, err := s.blockLogSource()
+	if err != nil {
+		slog.Warn("não consegui ler a opção de registrar bloqueios; seguindo sem registrar", "err", err)
+		return false
+	}
+	return on
 }

@@ -67,7 +67,10 @@ func systemGroupExpressions(kind string) []string {
 		return nil
 	}
 	var exprs []string
-	for _, tokens := range renderer() {
+	// false: a visão do painel compara com a forma SEM log. A regra de log é
+	// uma linha à parte, com verdict nenhum — ela não é o bloqueio, e contá-la
+	// aqui faria o painel dizer que o grupo do sistema tem o dobro de regras.
+	for _, tokens := range renderer(false) {
 		var parts []string
 		for _, t := range tokens {
 			if t == "counter" {

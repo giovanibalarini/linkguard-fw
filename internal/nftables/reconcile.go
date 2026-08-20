@@ -201,7 +201,7 @@ const (
 // moram dentro de um grupo (a migração única leva as antigas para o grupo
 // "Minhas regras"), e um jump para uma chain que não é mais a fonte da
 // verdade só poderia divergir dela.
-func forwardChainRules(groups []StoredGroup) [][]string {
+func forwardChainRules(groups []StoredGroup, logarBloqueios bool) [][]string {
 	sorted := make([]StoredGroup, len(groups))
 	copy(sorted, groups)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Position < sorted[j].Position })
@@ -220,7 +220,7 @@ func forwardChainRules(groups []StoredGroup) [][]string {
 			// ATRAVESSANDO o firewall. Uma linha com scope=input (edição à
 			// mão, corrupção) que tirasse o bloqueio daqui apagaria da forward
 			// a proteção que o admin ligou, sem parecer erro nenhum.
-			rules = append(rules, renderer()...)
+			rules = append(rules, renderer(logarBloqueios)...)
 			continue
 		}
 		if GroupScope(g) != ScopeForward {
