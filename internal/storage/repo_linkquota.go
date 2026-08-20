@@ -65,14 +65,6 @@ func (db *DB) SaveLinkQuota(q LinkQuota) error {
 	return nil
 }
 
-// DeleteLinkQuota remove a franquia de um link (o consumo medido continua).
-func (db *DB) DeleteLinkQuota(linkID string) error {
-	if _, err := db.conn.Exec(`DELETE FROM link_quota WHERE link_id = ?`, linkID); err != nil {
-		return fmt.Errorf("remover franquia: %w", err)
-	}
-	return nil
-}
-
 // AddLinkUsage soma bytes ao ciclo indicado, criando a linha se for o
 // primeiro tráfego do ciclo.
 //

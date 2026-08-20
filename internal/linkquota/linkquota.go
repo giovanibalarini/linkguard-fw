@@ -288,12 +288,15 @@ func (s *Service) Snapshot() ([]Status, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Configured é "tem franquia DECLARADA", e não "tem linha no banco": a
+		// linha sobrevive à remoção da franquia justamente para preservar o
+		// dia de fechamento (ver Delete), com limite zero.
 		st := Status{
 			LinkID:     l.ID,
 			LinkName:   l.Name,
 			Interface:  l.Interface,
-			Configured: hasQuota,
-			Enabled:    hasQuota && q.Enabled,
+			Configured: hasQuota && q.LimitGB > 0,
+			Enabled:    hasQuota && q.Enabled && q.LimitGB > 0,
 			LimitGB:    q.LimitGB,
 			CycleDay:   cycleDay,
 			AlertPct:   q.AlertPct,
@@ -328,15 +331,38 @@ func (s *Service) Save(q storage.LinkQuota) error {
 	return s.db.SaveLinkQuota(q)
 }
 
-// Delete remove a franquia. O consumo medido continua no banco: apagar o
-// histórico porque o admin desligou o aviso seria destruir dado que ele pode
-// querer no mês seguinte.
+// Delete remove a franquia declarada — mas PRESERVA o dia de fechamento, e não
+// apaga a linha.
+//
+// POR QUE ASSIM, e não um DELETE de verdade: o consumo é gravado com a chave
+// (link, início do ciclo), e o início do ciclo sai do dia de fechamento. Apagar
+// a linha faz o dia voltar ao padrão (1), o que muda a chave e faz o painel
+// procurar um ciclo diferente daquele em que o consumo foi medido. O dado
+// continua no banco e some da tela.
+//
+// Isso não é teoria: numa validação em máquina real (2026-08-20), remover uma
+// franquia de fechamento 28 fez o consumo exibido cair de 2,6 MB para 35 KB
+// sozinho, porque a leitura passou a olhar o ciclo que começa no dia 1. O
+// histórico mostrava as duas linhas, e a tela mostrava a errada.
+//
+// Guardar a linha com limite zero mantém o ciclo estável e faz "sem franquia"
+// ser um estado explícito, em vez da ausência de informação.
 func (s *Service) Delete(linkID string) error {
 	if s.alertSvc != nil {
 		s.alertSvc.AutoResolve(TypeQuotaWarning, linkID)
 		s.alertSvc.AutoResolve(TypeQuotaExceeded, linkID)
 	}
-	return s.db.DeleteLinkQuota(linkID)
+	quotas, err := s.db.GetLinkQuotas()
+	if err != nil {
+		return err
+	}
+	q, ok := quotas[linkID]
+	if !ok {
+		return nil // nunca teve franquia: nada a remover
+	}
+	q.LimitGB = 0
+	q.Enabled = false
+	return s.db.SaveLinkQuota(q)
 }
 
 // History devolve os ciclos anteriores de um link.
