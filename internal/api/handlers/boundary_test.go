@@ -175,16 +175,21 @@ var allowedInternalImports = map[string]bool{
 	"internal/netsvc":        true,
 	"internal/nftables":      true,
 	"internal/notify":        true,
-	"internal/routes":        true,
-	"internal/secrets":       true,
-	"internal/storage":       true,
-	"internal/stresstest":    true,
-	"internal/system":        true,
-	"internal/sysupdates":    true,
-	"internal/timesync":      true,
-	"internal/tsdb":          true,
-	"internal/updater":       true,
-	"internal/validate":      true,
+	// internal/pktcapture entrou com a captura de pacotes (#114) pelo mesmo
+	// motivo do stresstest: o handler decodifica o pedido, chama o serviço e
+	// traduz o erro em status. A regra — tetos, filtro, uma por vez, varredura
+	// do TTL — mora lá, e não aqui.
+	"internal/pktcapture": true,
+	"internal/routes":     true,
+	"internal/secrets":    true,
+	"internal/storage":    true,
+	"internal/stresstest": true,
+	"internal/system":     true,
+	"internal/sysupdates": true,
+	"internal/timesync":   true,
+	"internal/tsdb":       true,
+	"internal/updater":    true,
+	"internal/validate":   true,
 }
 
 // boundaryFile é um arquivo não-teste do pacote com seus imports diretos.

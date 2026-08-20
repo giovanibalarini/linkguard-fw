@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowUpToLine, Network } from 'lucide-react';
 import client from '../api/client';
+import PacketCapture from '../components/PacketCapture';
 import TrafficChart from '../components/TrafficChart';
+import { useAuth } from '../context/AuthContext';
 import { deriveRate, type RateCounter } from '../lib/interfaceRates';
 import {
   TRAFFIC_WINDOWS,
@@ -109,6 +111,7 @@ function Mini({ points, mode }: { points: Point[]; mode: ScaleMode }) {
 
 export default function Traffic() {
   const { t } = useI18n();
+  const { can } = useAuth();
   const [range, setRange] = useState<string>(TRAFFIC_WINDOWS[0].range);
   const [mode, setMode] = useState<ScaleMode>('linear');
   const [selected, setSelected] = useState<string | null>(null);
@@ -354,6 +357,12 @@ export default function Traffic() {
           loading={histLoading}
         />
       )}
+
+      {/* ─── Captura de pacotes ──────────────────────────────────────────── */}
+      <PacketCapture
+        interfaces={interfaces.map((i) => i.name)}
+        canCapture={can('traffic.capture')}
+      />
     </div>
   );
 }

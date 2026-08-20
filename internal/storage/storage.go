@@ -201,6 +201,7 @@ var schemaMigrations = []migration{
 	{9, "dashboard_layout", upDashboardLayout},
 	{10, "monitoring.write nos papéis operacionais", upGrantMonitoringWrite},
 	{11, "pending_firewall_change.applied_state", upAddPendingChangeAppliedState},
+	{12, "traffic.capture nos papéis que administram papéis", upGrantTrafficCapture},
 }
 
 const createSchemaMigrationsTable = `
@@ -340,6 +341,48 @@ func upGrantMonitoringWrite(tx *sql.Tx) error {
 	if _, err := tx.Exec(
 		`INSERT INTO settings (key, value) VALUES (?, '1')`, marker); err != nil {
 		return fmt.Errorf("gravar o marcador da migração monitoring.write: %w", err)
+	}
+	return nil
+}
+
+// upGrantTrafficCapture concede traffic.capture (issue #114) aos papéis que já
+// administram papéis.
+//
+// POR QUE SÓ ESSES, E POR QUE CONCEDER. A permissão é NOVA — ninguém a tinha,
+// então não há direito adquirido a preservar, e o padrão certo para capacidade
+// nova é não distribuí-la sozinha. A exceção é o papel que tem roles.manage:
+// quem pode editar papéis já pode se conceder qualquer permissão, então
+// conceder aqui não move fronteira de segurança nenhuma — só evita que o
+// administrador de uma instalação existente encontre a aba nova desligada, sem
+// nada na tela explicando que a permissão existe e é dele.
+//
+// O critério NÃO é "papel embutido chamado Administrador": papéis embutidos são
+// semeados uma vez e podem ter sido editados desde então. A pergunta certa é o
+// que o papel PODE, não como ele se chama.
+//
+// Marcador próprio em settings, e não a presença da permissão, pelo mesmo
+// motivo da migração 10: com a sonda pela presença, um admin que revogasse a
+// permissão a veria voltar no boot seguinte, e migração que desfaz decisão do
+// operador é pior que migração que falta.
+func upGrantTrafficCapture(tx *sql.Tx) error {
+	const marker = "migration_traffic_capture_granted"
+	var already int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM settings WHERE key = ?`, marker).Scan(&already); err != nil {
+		return fmt.Errorf("checar o marcador da migração traffic.capture: %w", err)
+	}
+	if already > 0 {
+		return nil
+	}
+	if _, err := tx.Exec(`
+		INSERT OR IGNORE INTO role_permissions (role_id, permission)
+		SELECT DISTINCT role_id, 'traffic.capture'
+		FROM role_permissions
+		WHERE permission = 'roles.manage'`); err != nil {
+		return fmt.Errorf("conceder traffic.capture aos papéis administrativos: %w", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO settings (key, value) VALUES (?, '1')`, marker); err != nil {
+		return fmt.Errorf("gravar o marcador da migração traffic.capture: %w", err)
 	}
 	return nil
 }

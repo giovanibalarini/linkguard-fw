@@ -66,6 +66,12 @@ var version = "dev"
 // is deliberately detached from the client's.
 const pkgInstallTimeout = 10 * time.Minute
 
+// captureTimeout é o teto do executor da captura de pacotes: a maior janela
+// que o pktcapture aceita, com folga para o processo subir e sair. Não é a
+// duração da captura — essa vem do pedido do admin, limitada em
+// pktcapture.MaxDurationSec.
+const captureTimeout = 3 * time.Minute
+
 func main() {
 	os.Exit(run())
 }
@@ -446,6 +452,16 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		pkgExec = firewall.NewRealExecutor(pkgInstallTimeout)
 	}
 
+	// A captura de pacotes tem prazo próprio pelo mesmo motivo, ao contrário:
+	// ela roda por até pktcapture.MaxDurationSec, e os 30 s do executor da
+	// aplicação matariam toda captura mais longa que meio minuto reportando
+	// falha que não houve. A janela real de cada captura continua sendo
+	// imposta lá dentro; este prazo é só o teto que não pode ser menor que ela.
+	capExec := exec
+	if !cfg.DryRun {
+		capExec = firewall.NewRealExecutor(captureTimeout)
+	}
+
 	alertSvc := alerts.NewService(db)
 	// Close state-derived alerts left open by a previous process before any
 	// watcher starts observing again: the health state that gates whether a
@@ -576,12 +592,13 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	updatesSched := monitoring.NewUpdatesScheduler(metricsCollector)
 
 	server := api.New(api.Config{
-		Addr:    cfg.Addr(),
-		DryRun:  cfg.DryRun,
-		WebFS:   linkguardfw.WebFS,
-		PromReg: promReg,
-		Version: version,
-		PkgExec: pkgExec,
+		Addr:        cfg.Addr(),
+		DryRun:      cfg.DryRun,
+		WebFS:       linkguardfw.WebFS,
+		PromReg:     promReg,
+		Version:     version,
+		PkgExec:     pkgExec,
+		CaptureExec: capExec,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
