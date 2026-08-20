@@ -58,6 +58,9 @@ func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
 	if err := h.nftSvc.EnsureAccounting(ctx, ifaces); err != nil {
 		slog.Warn("não foi possível reconciliar a contabilidade por host após mudança de link", "err", err)
 	}
+	if err := h.nftSvc.EnsureMSSClamp(ctx, ifaces); err != nil {
+		slog.Warn("não foi possível reconciliar o ajuste de MSS após mudança de link", "err", err)
+	}
 
 	// O roteamento de retorno (#120) também deriva da lista de WANs, e mais
 	// diretamente que os outros dois: trocar a interface ou o gateway de um

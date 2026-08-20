@@ -887,6 +887,12 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 				slog.Warn("não foi possível reconciliar a contabilidade por host no boot", "err", err)
 			}
 
+			// Ajuste de MSS (#130): também deriva da lista de WANs, e é no-op
+			// por construção onde a MTU é 1500 — ver EnsureMSSClamp.
+			if err := nftSvc.EnsureMSSClamp(ctx, enabledWANs); err != nil {
+				slog.Warn("não foi possível reconciliar o ajuste de MSS no boot", "err", err)
+			}
+
 			// Roteamento de retorno por WAN (#120). As duas metades saem da
 			// MESMA lista de caminhos, derivada num lugar só (links.WANPaths),
 			// para a marca gravada na conexão e a tabela consultada pela rota
