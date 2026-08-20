@@ -1,24 +1,31 @@
-// Package hosttraffic computes per-host bandwidth from the conntrack table
-// (requires net.netfilter.nf_conntrack_acct=1). It answers "who is using the
-// link right now" — the top talkers — by aggregating the bytes of every active
-// flow to/from each LAN host.
+// Package hosttraffic responde "quem consumiu link" por host da LAN.
+//
+// A FONTE MUDOU NA #112. Até a v1.0.133 isto agregava os bytes das conexões
+// vivas em /proc/net/nf_conntrack — e conexão fechada some daquela tabela,
+// levando os bytes junto. O resultado era um ranking de "quem tem conexão
+// aberta gorda neste segundo", exibido com o nome de "top consumidores".
+//
+// Agora vem dos contadores por endereço que o nftables mantém (ver
+// internal/nftables/accounting.go), onde o que já passou não é apagado quando
+// a conexão termina.
+//
+// O sysctl net.netfilter.nf_conntrack_acct continua sendo garantido por
+// EnsureAccounting aqui, mas não é mais o que alimenta esta tela: ele fica
+// porque outras leituras de conntrack no produto dependem dele.
 package hosttraffic
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 )
-
-// ConntrackPath is the kernel's live flow table (with byte counters when
-// nf_conntrack_acct is enabled).
-const ConntrackPath = "/proc/net/nf_conntrack"
 
 // AccountingSysctl is the kernel knob that makes conntrack keep per-flow byte
 // counters. With it off, /proc/net/nf_conntrack has no bytes= fields and
@@ -38,7 +45,8 @@ type HostTraffic struct {
 
 // Service reads conntrack and aggregates per-host traffic.
 type Service struct {
-	exec firewall.Executor
+	exec     firewall.Executor
+	counters CounterSource
 
 	// Paths are fields (not consts) so tests can point them at a temp dir.
 	acctPath    string
@@ -80,63 +88,67 @@ func (s *Service) EnsureAccounting() {
 	}
 }
 
-// TopTalkers returns LAN hosts ranked by active-flow bytes (descending).
+// CounterSource entrega os contadores por host mantidos pelo nftables. É
+// interface (e não o *nftables.Service direto) para este pacote continuar
+// testável sem subir o serviço inteiro de firewall.
+type CounterSource interface {
+	HostCounters(ctx context.Context) (map[string]nftables.HostCounter, error)
+}
+
+// SetCounterSource liga a fonte de contadores. Sem ela, TopTalkers responde
+// que não sabe — ver o comentário lá.
+func (s *Service) SetCounterSource(src CounterSource) { s.counters = src }
+
+// TopTalkers devolve os hosts da LAN ordenados por consumo no ciclo dos
+// contadores (decrescente).
+//
+// MUDOU EM #112, E A MUDANÇA É O PONTO. Antes isto lia
+// /proc/net/nf_conntrack, que só tem conexão VIVA: o host que baixou 5 GB há
+// dez minutos aparecia com zero, e mil conexões curtas de navegação eram
+// subcontadas enquanto um download longo aparecia inteiro. Agora vem dos
+// contadores por endereço que o próprio nftables mantém, onde conexão fechada
+// não apaga o que já passou.
+//
+// SEM FONTE, RESPONDE ERRO — de propósito. Devolver lista vazia seria
+// indistinguível de "ninguém trafegou", e mostrar número que não corresponde
+// ao que aconteceu é exatamente o defeito que a #112 existe para consertar.
 func (s *Service) TopTalkers(ctx context.Context, subnetCIDR string) ([]HostTraffic, error) {
-	out, err := s.exec.ExecuteRead(ctx, "cat", ConntrackPath)
+	if s.counters == nil {
+		return nil, fmt.Errorf("contabilidade por host indisponível: a chain de contabilidade do nftables não está ligada")
+	}
+	contadores, err := s.counters.HostCounters(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return parseConntrack(out, subnetCIDR), nil
+	return rankHosts(contadores, subnetCIDR), nil
 }
 
-// parseConntrack aggregates per-host bytes from a conntrack dump. The LAN host
-// is the original source; its upload is the orig direction's bytes and its
-// download is the reply direction's bytes (which under NAT is addressed to the
-// WAN IP, so we key on the orig source rather than the reply destination).
-func parseConntrack(content, subnetCIDR string) []HostTraffic {
+// rankHosts filtra pela faixa da LAN e ordena por consumo total.
+//
+// O filtro por faixa continua existindo mesmo com as regras já escopadas por
+// interface: a chain conta o que atravessa o firewall, e numa caixa com mais
+// de uma rede interna nem todo endereço contado pertence à LAN que o painel
+// está mostrando.
+func rankHosts(contadores map[string]nftables.HostCounter, subnetCIDR string) []HostTraffic {
 	_, ipnet, err := net.ParseCIDR(strings.TrimSpace(subnetCIDR))
 	if err != nil {
 		return []HostTraffic{}
 	}
-	agg := map[string]*HostTraffic{}
-	for _, line := range strings.Split(content, "\n") {
-		var srcs, byteVals []string
-		for _, f := range strings.Fields(line) {
-			switch {
-			case strings.HasPrefix(f, "src="):
-				srcs = append(srcs, f[4:])
-			case strings.HasPrefix(f, "bytes="):
-				byteVals = append(byteVals, f[6:])
-			}
-		}
-		if len(srcs) == 0 {
-			continue
-		}
-		host := srcs[0] // original source = the host that initiated the flow
+	out := make([]HostTraffic, 0, len(contadores))
+	for host, c := range contadores {
 		ip := net.ParseIP(host)
 		if ip == nil || !ipnet.Contains(ip) {
 			continue
 		}
-		h := agg[host]
-		if h == nil {
-			h = &HostTraffic{IP: host}
-			agg[host] = h
-		}
-		if len(byteVals) >= 1 {
-			v, _ := strconv.ParseUint(byteVals[0], 10, 64)
-			h.TxBytes += v
-		}
-		if len(byteVals) >= 2 {
-			v, _ := strconv.ParseUint(byteVals[1], 10, 64)
-			h.RxBytes += v
-		}
-	}
-	out := make([]HostTraffic, 0, len(agg))
-	for _, h := range agg {
-		out = append(out, *h)
+		out = append(out, HostTraffic{IP: host, RxBytes: c.RxBytes, TxBytes: c.TxBytes})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].RxBytes+out[i].TxBytes > out[j].RxBytes+out[j].TxBytes
+		if out[i].RxBytes+out[i].TxBytes != out[j].RxBytes+out[j].TxBytes {
+			return out[i].RxBytes+out[i].TxBytes > out[j].RxBytes+out[j].TxBytes
+		}
+		// Desempate estável por endereço: sem isto a ordem entre hosts de
+		// mesmo consumo muda a cada leitura, e a tela pisca sozinha.
+		return out[i].IP < out[j].IP
 	})
 	return out
 }
