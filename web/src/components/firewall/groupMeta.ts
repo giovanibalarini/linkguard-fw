@@ -216,7 +216,37 @@ export const emptyGroupModal = {
   fallthrough: 'continue' as GroupFallthrough, chain_name: '',
   scope: 'forward' as 'forward' | 'input',
   conn_state: 'any' as 'any' | 'new',
+  // Janela de horário (#125). sched_days vazio = todos os dias; as horas
+  // vazias = o grupo vale o dia inteiro.
+  sched_days: '',
+  sched_start: '',
+  sched_end: '',
 };
+
+/** Dias da semana, na ordem em que a semana acontece. A chave é a que o
+ *  backend guarda; o rótulo é curto porque são sete botões numa linha. */
+export const WEEK_DAYS: { key: string; label: string }[] = [
+  { key: 'mon', label: 'seg' },
+  { key: 'tue', label: 'ter' },
+  { key: 'wed', label: 'qua' },
+  { key: 'thu', label: 'qui' },
+  { key: 'fri', label: 'sex' },
+  { key: 'sat', label: 'sáb' },
+  { key: 'sun', label: 'dom' },
+];
+
+/** Descreve a janela em uma frase, para a lista de grupos. Vazio = sem janela. */
+export function describeSchedule(g: { sched_days?: string; sched_start?: string; sched_end?: string }): string {
+  const dias = (g.sched_days ?? '').split(',').filter(Boolean);
+  const temHora = !!(g.sched_start && g.sched_end);
+  if (!dias.length && !temHora) return '';
+  const partes: string[] = [];
+  if (dias.length) {
+    partes.push(dias.map((d) => WEEK_DAYS.find((w) => w.key === d)?.label ?? d).join(', '));
+  }
+  if (temHora) partes.push(`${g.sched_start}–${g.sched_end}`);
+  return partes.join(' · ');
+}
 export type GroupModalState = typeof emptyGroupModal;
 
 export function describeCondition(g: { cond_iif: string; cond_saddr: string; cond_daddr: string; scope?: GroupScope; kind?: string }): string {

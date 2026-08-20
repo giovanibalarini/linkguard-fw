@@ -19,7 +19,7 @@ import client from '../../api/client';
 import { useI18n } from '../../i18n';
 import Modal from '../ui/Modal';
 import NftPreview, { groupPreviewBody } from './NftPreview';
-import { CONN_STATES, FALLTHROUGH, SCOPES } from './groupMeta';
+import { CONN_STATES, FALLTHROUGH, SCOPES, WEEK_DAYS } from './groupMeta';
 import type { GroupModalState } from './groupMeta';
 import type { ConfirmOrRevert } from '../../lib/useConfirmOrRevert';
 import type { FirewallGroup, GroupFallthrough } from '../../types';
@@ -56,6 +56,16 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
       // propósito). Omiti-lo aqui faria a troca na tela não acontecer, com
       // HTTP 200 — o defeito exato que o campo `scope` já teve neste projeto.
       conn_state: state.conn_state,
+      // A janela vai SEMPRE, como objeto — inclusive vazia. No backend, o
+      // objeto ausente é "mantenha a janela gravada" e o objeto presente com
+      // campos vazios é "remova a janela". Omitir aqui faria o admin não
+      // conseguir tirar uma janela que ele mesmo pôs, com HTTP 200 e a tela
+      // mostrando que tirou.
+      schedule: {
+        days: state.sched_days,
+        start: state.sched_start,
+        end: state.sched_end,
+      },
     };
     const req = state.id
       ? client.put('/api/nftables/groups', { id: state.id, ...payload })
@@ -125,6 +135,50 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
               que o escopo input é escolhido, e não depois de salvar: quem
               está prestes a mexer no acesso à própria máquina tem que saber
               disso antes de clicar. */}
+          {/* Janela de horário (#125). O kernel avalia dia e hora a cada
+              pacote: não há agendador que possa deixar de rodar. */}
+          <div className="mt-5 pt-4 border-t border-gray-800">
+            <label className="label">{t('fw.group.schedule.title')}</label>
+            <p className="text-gray-500 text-xs mt-1">{t('fw.group.schedule.explain')}</p>
+            <div className="flex flex-wrap gap-1 mt-2">
+              {WEEK_DAYS.map((d) => {
+                const dias = state.sched_days.split(',').filter(Boolean);
+                const on = dias.includes(d.key);
+                return (
+                  <button
+                    key={d.key}
+                    type="button"
+                    disabled={editDisabled}
+                    onClick={() => {
+                      const novos = on ? dias.filter((x) => x !== d.key) : [...dias, d.key];
+                      // A ordem da semana é reposta pelo backend; aqui só
+                      // importa o conjunto.
+                      setState({ ...state, sched_days: novos.join(',') });
+                    }}
+                    className={`px-2 py-1 rounded text-xs ${on ? 'bg-blue-500/20 text-blue-300' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}`}
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2 mt-3">
+              <input type="time" className="input font-mono" disabled={editDisabled}
+                value={state.sched_start} onChange={(e) => setState({ ...state, sched_start: e.target.value })} />
+              <span className="text-gray-500 text-sm">{t('fw.group.schedule.to')}</span>
+              <input type="time" className="input font-mono" disabled={editDisabled}
+                value={state.sched_end} onChange={(e) => setState({ ...state, sched_end: e.target.value })} />
+              {(state.sched_start || state.sched_end || state.sched_days) && (
+                <button type="button" disabled={editDisabled}
+                  onClick={() => setState({ ...state, sched_days: '', sched_start: '', sched_end: '' })}
+                  className="text-gray-500 hover:text-gray-300 text-xs underline">
+                  {t('fw.group.schedule.clear')}
+                </button>
+              )}
+            </div>
+            <p className="text-gray-600 text-[11px] mt-2">{t('fw.group.schedule.hint')}</p>
+          </div>
+
           {state.scope === 'input' && (
             <div className="mt-2 rounded-lg border border-orange-500/40 bg-orange-500/10 p-3 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" aria-hidden="true" />

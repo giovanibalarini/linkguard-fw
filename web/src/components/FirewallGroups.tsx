@@ -203,6 +203,9 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
     cond_iif: g.cond_iif, fallthrough: g.fallthrough || 'continue', chain_name: g.chain_name,
     scope: groupScope(g),
     conn_state: groupConnState(g),
+    sched_days: g.sched_days ?? '',
+    sched_start: g.sched_start ?? '',
+    sched_end: g.sched_end ?? '',
   });
   const closeGroupModal = () => setGroupModal((m) => ({ ...m, open: false }));
   // A mensagem diz o que continua guardado, e um grupo do sistema não guarda

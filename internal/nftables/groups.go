@@ -229,19 +229,24 @@ func IsSystemGroup(kind string) bool {
 // serializada, para não haver duas listas de regras na mesma resposta,
 // dizendo coisas diferentes.
 type StoredGroup struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	ChainName   string       `json:"chain_name"`
-	Position    int          `json:"position"`
-	Enabled     bool         `json:"enabled"`
-	CondSaddr   string       `json:"cond_saddr"`
-	CondDaddr   string       `json:"cond_daddr"`
-	CondIif     string       `json:"cond_iif"`
-	Fallthrough string       `json:"fallthrough"`
-	Kind        string       `json:"kind"`
-	Scope       string       `json:"scope"`
-	ConnState   string       `json:"conn_state"`
-	Rules       []StoredRule `json:"-"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	ChainName   string `json:"chain_name"`
+	Position    int    `json:"position"`
+	Enabled     bool   `json:"enabled"`
+	CondSaddr   string `json:"cond_saddr"`
+	CondDaddr   string `json:"cond_daddr"`
+	CondIif     string `json:"cond_iif"`
+	Fallthrough string `json:"fallthrough"`
+	Kind        string `json:"kind"`
+	Scope       string `json:"scope"`
+	ConnState   string `json:"conn_state"`
+	// Janela de horário (#125): fora dela o jump do grupo não casa, e as
+	// regras dentro dele não são sequer consultadas.
+	SchedDays  string       `json:"sched_days"`
+	SchedStart string       `json:"sched_start"`
+	SchedEnd   string       `json:"sched_end"`
+	Rules      []StoredRule `json:"-"`
 }
 
 // GroupChainName derives the chain name from the group's id, never from the
@@ -338,6 +343,14 @@ func groupJumpTokens(g StoredGroup) ([]string, error) {
 		}
 		t = append(t, "iifname", g.CondIif)
 	}
+	// A janela entra DEPOIS do iifname e ANTES do endereço: é a ordem em que o
+	// nft reimprime a regra (medido), e emitir fora dela faria o texto guardado
+	// divergir do que se lê de volta do kernel.
+	sched := GroupSchedule(g)
+	if err := sched.Validate(); err != nil {
+		return nil, err
+	}
+	t = append(t, sched.Tokens()...)
 	if g.CondSaddr != "" {
 		if !validIPv4OrCIDR(g.CondSaddr) {
 			return nil, fmt.Errorf("origem inválida")
@@ -406,4 +419,9 @@ func renderGroupChain(g StoredGroup) (tokenSets [][]string, skipped []string) {
 		tokenSets = append(tokenSets, []string{"counter", "drop"})
 	}
 	return tokenSets, skipped
+}
+
+// GroupSchedule extrai a janela de horário de um grupo.
+func GroupSchedule(g StoredGroup) Schedule {
+	return Schedule{Days: g.SchedDays, Start: g.SchedStart, End: g.SchedEnd}
 }

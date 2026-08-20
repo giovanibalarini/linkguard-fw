@@ -71,6 +71,22 @@ type groupBody struct {
 	Fallthrough string `json:"fallthrough"`
 	Scope       string `json:"scope"`
 	ConnState   string `json:"conn_state"`
+	// Schedule é a janela de horário (#125), e é PONTEIRO de propósito.
+	//
+	// Os três campos andam juntos e o valor "vazio" é significativo — vazio é
+	// "vale sempre". Sem o ponteiro não haveria como distinguir "não mexa na
+	// janela" de "remova a janela", e a escolha silenciosa entre as duas é a
+	// pior possível: um cliente que não conheça o campo apagaria o controle
+	// parental que o admin configurou, com HTTP 200 e nada mudando na tela. É
+	// o mesmo perigo que os comentários de Scope e ConnState logo abaixo
+	// descrevem, resolvido aqui pelo tipo em vez de por um valor-sentinela.
+	Schedule *scheduleBody `json:"schedule"`
+}
+
+type scheduleBody struct {
+	Days  string `json:"days"`
+	Start string `json:"start"`
+	End   string `json:"end"`
 }
 
 func (b groupBody) trimmed() groupBody {
@@ -83,6 +99,22 @@ func (b groupBody) trimmed() groupBody {
 		Fallthrough: strings.TrimSpace(b.Fallthrough),
 		Scope:       strings.TrimSpace(b.Scope),
 		ConnState:   strings.TrimSpace(b.ConnState),
+		Schedule:    trimSchedule(b.Schedule),
+	}
+}
+
+// trimSchedule normaliza a janela preservando a distinção entre ausente (nil)
+// e vazia (presente com campos em branco = remover). NormalizeDays também
+// descarta dia inválido e ordena a semana, para o banco não guardar a ordem em
+// que o admin clicou.
+func trimSchedule(s *scheduleBody) *scheduleBody {
+	if s == nil {
+		return nil
+	}
+	return &scheduleBody{
+		Days:  nftables.NormalizeDays(s.Days),
+		Start: strings.TrimSpace(s.Start),
+		End:   strings.TrimSpace(s.End),
 	}
 }
 
@@ -163,6 +195,9 @@ func (h *NftablesHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		Fallthrough: b.Fallthrough,
 		Scope:       b.Scope,
 		ConnState:   b.ConnState,
+	}
+	if b.Schedule != nil {
+		row.SchedDays, row.SchedStart, row.SchedEnd = b.Schedule.Days, b.Schedule.Start, b.Schedule.End
 	}
 	// A ordem obrigatória mora em firewallrules.ApplyGuarded (issue #20). O que
 	// este handler descreve é só O QUE muda; QUANDO cada passo roda não é mais
@@ -254,6 +289,11 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	// cliente manda "any" explicitamente, que é o que a tela faz.
 	if b.ConnState != "" {
 		row.ConnState = b.ConnState
+	}
+	// Janela ausente é "mantenha"; janela presente com campos vazios é
+	// "remova". Ver o comentário do campo Schedule em groupBody.
+	if b.Schedule != nil {
+		row.SchedDays, row.SchedStart, row.SchedEnd = b.Schedule.Days, b.Schedule.Start, b.Schedule.End
 	}
 	candidato := func(current []nftables.StoredGroup) []nftables.StoredGroup {
 		out := make([]nftables.StoredGroup, len(current))

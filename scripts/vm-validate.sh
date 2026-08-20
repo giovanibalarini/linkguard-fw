@@ -1371,6 +1371,91 @@ except Exception: pass
   vm "ip link set enp0s2 mtu 1500; ip netns del lgmss 2>/dev/null; ip link del veth-mss 2>/dev/null; true" >/dev/null 2>&1
 }
 
+
+# ─── K. Janela de horário do grupo (issue #125) ──────────────────────────────
+#
+# O QUE SÓ UMA MÁQUINA PROVA. A condição é avaliada pelo KERNEL a cada pacote
+# (`meta day` / `meta hour`), então o que decide se a feature funciona é o
+# relógio da caixa — não o texto da regra. A bateria move o relógio e mede o
+# tráfego real atravessando o firewall dentro e fora da janela.
+#
+# E MEDE O FUSO. `meta hour` usa a hora LOCAL do kernel, não UTC — foi medido
+# no nft 1.1.3 e é do que a feature depende. Se uma versão futura mudar isso, o
+# controle parental passaria a disparar três horas fora em qualquer máquina que
+# não esteja em UTC, sem nenhum erro aparecer. A bateria roda com a VM em -03
+# justamente para essa regressão não passar despercebida.
+battery_schedule() {
+  head_ "K. Janela de horário do grupo"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria K não roda"; return; }
+
+  status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
+
+  # Fuso diferente de UTC: é o que torna a asserção de hora local significativa.
+  vm "timedatectl set-timezone America/Sao_Paulo; timedatectl set-ntp false" >/dev/null 2>&1
+
+  # Cliente atrás do firewall.
+  vm "ip netns del lgsched 2>/dev/null; ip link del veth-sch 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add lgsched && \
+      ip link add veth-sch type veth peer name veth-sch-cl && \
+      ip link set veth-sch-cl netns lgsched && \
+      ip addr add 192.168.55.1/24 dev veth-sch && ip link set veth-sch up && \
+      ip netns exec lgsched ip link set lo up && \
+      ip netns exec lgsched ip addr add 192.168.55.2/24 dev veth-sch-cl && \
+      ip netns exec lgsched ip link set veth-sch-cl up && \
+      ip netns exec lgsched ip route add default via 192.168.55.1" >/dev/null 2>&1
+
+  # Grupo com janela noturna, bloqueando o cliente de teste.
+  local grupo
+  grupo=$(body POST /api/nftables/groups "$tok" '{"name":"Janela K","cond_saddr":"192.168.55.2","fallthrough":"continue","scope":"forward","conn_state":"any","schedule":{"days":"","start":"22:00","end":"06:00"}}' | jqk id)
+  [[ -n "$grupo" ]] || { bad "não consegui criar o grupo com janela"; return; }
+  status POST /api/nftables/rules "$tok" "{\"group_id\":\"$grupo\",\"action\":\"drop\",\"saddr\":\"192.168.55.2\",\"enabled\":true,\"description\":\"bloqueio da bateria K\"}" >/dev/null
+  sleep 2
+
+  # K1 — a janela chegou ao ruleset vivo, e na ordem canônica.
+  local fwd
+  fwd=$(vm "nft list chain inet linkguard forward 2>/dev/null" | tr -d '\r')
+  if grep -q 'meta hour "22:00"-"06:00"' <<<"$fwd"; then
+    ok "a janela está na linha do jump do grupo"
+  else bad "a janela não chegou ao firewall" "$(grep jump <<<"$fwd" | tr '\n' ' ')"; fi
+
+  # K2/K3 — O TESTE QUE IMPORTA: o mesmo tráfego, dois horários.
+  testa_horario() {
+    vm "date -s '$1' >/dev/null 2>&1; conntrack -F >/dev/null 2>&1; true" >/dev/null 2>&1
+    sleep 1
+    if vm "ip netns exec lgsched ping -c 2 -W 2 10.0.2.2 >/dev/null 2>&1 && echo passou" | grep -q passou; then
+      echo "passou"
+    else
+      echo "bloqueado"
+    fi
+  }
+  local dentro fora
+  dentro=$(testa_horario "23:30:00")
+  fora=$(testa_horario "12:00:00")
+
+  if [[ "$dentro" == "bloqueado" ]]; then ok "dentro da janela (23:30) o grupo bloqueia"
+  else bad "dentro da janela o tráfego passou — a janela não está valendo"; fi
+  if [[ "$fora" == "passou" ]]; then ok "fora da janela (12:00) o mesmo tráfego passa"
+  else bad "fora da janela o tráfego continuou bloqueado — o grupo vale 24h"; fi
+
+  # K4 — hora LOCAL, e não UTC. Às 23:30 locais são 02:30 UTC, que também cai
+  # dentro de 22:00-06:00 — então esse par não distingue. O par que distingue é
+  # 20:00 local (23:00 UTC): local está FORA da janela, UTC está DENTRO.
+  local limite
+  limite=$(testa_horario "20:00:00")
+  if [[ "$limite" == "passou" ]]; then
+    ok "a janela segue a hora local (20:00 local = 23:00 UTC, e passou)"
+  else bad "às 20:00 locais o tráfego foi bloqueado — a janela está seguindo UTC, e o controle dispararia 3h fora"; fi
+
+  # Limpeza: o grupo sai, o relógio volta.
+  status DELETE /api/nftables/groups "$tok" "{\"id\":\"$grupo\"}" >/dev/null 2>&1
+  vm "timedatectl set-ntp true; ip netns del lgsched 2>/dev/null; ip link del veth-sch 2>/dev/null; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -1381,6 +1466,7 @@ battery_accounting
 battery_replyrouting
 battery_dnsleak
 battery_mssclamp
+battery_schedule
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

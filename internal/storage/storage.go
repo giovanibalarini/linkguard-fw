@@ -204,6 +204,7 @@ var schemaMigrations = []migration{
 	{10, "monitoring.write nos papéis operacionais", upGrantMonitoringWrite},
 	{11, "pending_firewall_change.applied_state", upAddPendingChangeAppliedState},
 	{12, "traffic.capture nos papéis que administram papéis", upGrantTrafficCapture},
+	{13, "firewall_groups: janela de horário", upAddFirewallGroupSchedule},
 }
 
 const createSchemaMigrationsTable = `
@@ -546,6 +547,31 @@ func upAddFirewallGroupConnState(tx *sql.Tx) error {
 	}
 	if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN conn_state TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("adicionar coluna conn_state: %w", err)
+	}
+	return nil
+}
+
+// upAddFirewallGroupSchedule acrescenta a janela de horário do grupo (#125).
+//
+// Três colunas e não uma: dia da semana e faixa de hora são condições
+// independentes no nft (`meta day` e `meta hour`), e guardá-las numa string só
+// obrigaria a parsear no caminho que monta a regra — onde erro de parsing vira
+// regra errada no firewall, e não mensagem de erro.
+func upAddFirewallGroupSchedule(tx *sql.Tx) error {
+	for _, col := range []string{"sched_days", "sched_start", "sched_end"} {
+		var count int
+		err := tx.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('firewall_groups') WHERE name = ?`, col,
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("checar coluna %s: %w", col, err)
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("adicionar coluna %s: %w", col, err)
+		}
 	}
 	return nil
 }
@@ -1086,6 +1112,9 @@ CREATE TABLE IF NOT EXISTS firewall_groups (
     kind         TEXT NOT NULL DEFAULT '',
     scope        TEXT NOT NULL DEFAULT '',
     conn_state   TEXT NOT NULL DEFAULT '',
+    sched_days   TEXT NOT NULL DEFAULT '',
+    sched_start  TEXT NOT NULL DEFAULT '',
+    sched_end    TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
