@@ -52,7 +52,13 @@ export default function Dns() {
     finally { setBusy(false); }
   };
 
-  const saveConfig = () => cfg && run(() => client.put('/api/dns/config', { upstreams: cfg.upstreams, log_queries: cfg.log_queries }), t('svc.dns.msg.configSaved'));
+  const saveConfig = () => cfg && run(() => client.put('/api/dns/config', {
+    upstreams: cfg.upstreams,
+    log_queries: cfg.log_queries,
+    force_local_dns: cfg.force_local_dns,
+    block_dot: cfg.block_dot,
+    dns_except_ips: cfg.dns_except_ips ?? [],
+  }), t('svc.dns.msg.configSaved'));
   const addDomain = () => newDomain.trim() && run(() => client.post('/api/dns/blocklist', { domain: newDomain.trim() }), t('svc.dns.msg.domainBlocked')).then(() => setNewDomain(''));
   const delDomain = (d: string) => run(() => client.delete('/api/dns/blocklist', { data: { domain: d } }), t('svc.dns.msg.domainUnblocked'));
   const apply = () => run(() => client.post('/api/netsvc/apply', null, { timeout: INSTALL_TIMEOUT_MS }), t('svc.common.applied'));
@@ -115,6 +121,42 @@ export default function Dns() {
                 </label>
               </div>
             </div>
+            {/* Fuga de DNS (#124). O texto abaixo é parte da feature: sem ele
+                a tela venderia como controle o que é apenas redução. */}
+            <div className="mt-5 pt-4 border-t border-gray-800">
+              <label className="label">{t('svc.dns.field.leak')}</label>
+              <p className="text-gray-500 text-xs mt-1">{t('svc.dns.leak.explain')}</p>
+              <label className="flex items-center gap-2 mt-3 cursor-pointer">
+                <input type="checkbox" className="w-4 h-4" checked={!!cfg.force_local_dns} disabled={!canWrite}
+                  onChange={(e) => setCfg({ ...cfg, force_local_dns: e.target.checked })} />
+                <span className="text-gray-300 text-sm">{t('svc.dns.check.forceLocal')}</span>
+              </label>
+              <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                <input type="checkbox" className="w-4 h-4" checked={!!cfg.block_dot} disabled={!canWrite}
+                  onChange={(e) => setCfg({ ...cfg, block_dot: e.target.checked })} />
+                <span className="text-gray-300 text-sm">{t('svc.dns.check.blockDot')}</span>
+              </label>
+              {(cfg.force_local_dns || cfg.block_dot) && (
+                <label className="block mt-3">
+                  <span className="text-gray-400 text-xs">{t('svc.dns.field.except')}</span>
+                  <input
+                    className="input mt-1 w-full font-mono text-sm"
+                    disabled={!canWrite}
+                    value={(cfg.dns_except_ips ?? []).join(', ')}
+                    placeholder="192.168.3.9, 192.168.3.10"
+                    onChange={(e) => setCfg({
+                      ...cfg,
+                      dns_except_ips: e.target.value.split(',').map((v) => v.trim()).filter(Boolean),
+                    })}
+                  />
+                  <span className="text-gray-600 text-[11px]">{t('svc.dns.except.hint')}</span>
+                </label>
+              )}
+              {(cfg.force_local_dns || cfg.block_dot) && (
+                <p className="text-amber-300/80 text-xs mt-3">{t('svc.dns.leak.warning')}</p>
+              )}
+            </div>
+
             {canWrite && <div className="mt-4"><button onClick={saveConfig} disabled={busy} className="btn-primary disabled:opacity-50">{t('svc.common.saveConfig')}</button></div>}
           </Panel>
 

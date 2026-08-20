@@ -455,3 +455,29 @@ svc.hosts.history.empty:
 svc.hosts.history.error:
   pt: "Não foi possível carregar o histórico deste aparelho."
   en: "Could not load this device's history."
+
+# ─── Fuga de DNS (issue #124) ─────────────────────────────────────────────────
+# O aviso não é disclaimer jurídico: é o que impede a tela de vender como
+# controle o que é apenas redução de contorno. Sem ele, a feature vira a mesma
+# confiança falsa que existe para corrigir.
+svc.dns.field.leak:
+  pt: "Impedir que aparelhos ignorem este resolver"
+  en: "Stop devices from bypassing this resolver"
+svc.dns.leak.explain:
+  pt: "A blocklist acima só vale para quem usa o resolver desta máquina. Um aparelho com 8.8.8.8 configurado à mão a ignora por completo."
+  en: "The blocklist above only applies to devices using this machine's resolver. A device with 8.8.8.8 set by hand ignores it entirely."
+svc.dns.check.forceLocal:
+  pt: "Redirecionar consultas da LAN para este resolver (transparente)"
+  en: "Redirect LAN queries to this resolver (transparent)"
+svc.dns.check.blockDot:
+  pt: "Recusar DNS sobre TLS (porta 853)"
+  en: "Refuse DNS over TLS (port 853)"
+svc.dns.field.except:
+  pt: "Aparelhos isentos (IPs separados por vírgula)"
+  en: "Exempt devices (comma-separated IPs)"
+svc.dns.except.hint:
+  pt: "Para quem roda resolver próprio na rede de propósito."
+  en: "For devices deliberately running their own resolver."
+svc.dns.leak.warning:
+  pt: "Isto reduz o contorno, não elimina: DoH em servidor não listado, com IP fixo, sai como HTTPS comum na porta 443 e continua passando. O controle que não se contorna é bloquear o destino no firewall, não o DNS."
+  en: "This reduces bypassing, it does not eliminate it: DoH to an unlisted server on a fixed IP leaves as ordinary HTTPS on port 443 and still gets through. The control that cannot be bypassed is blocking the destination in the firewall, not DNS."

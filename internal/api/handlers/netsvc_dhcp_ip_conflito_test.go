@@ -25,7 +25,7 @@ func newDHCPConflitoHandler(t *testing.T) *NetsvcHandler {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() }) //nolint:errcheck // teste
-	return NewNetsvcHandler(db, fakeNetsvcProvider{}, nil)
+	return NewNetsvcHandler(db, fakeNetsvcProvider{}, nil, nil)
 }
 
 func upsertReserva(t *testing.T, h *NetsvcHandler, mac, ip, hostname string) *httptest.ResponseRecorder {

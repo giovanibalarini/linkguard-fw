@@ -12,6 +12,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
+	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 	"github.com/giovanibalarini/linkguard-fw/internal/validate"
@@ -31,6 +32,9 @@ type NetsvcHandler struct {
 	provider netsvc.Provider
 	alertSvc *alerts.Service
 	applier  *autoApplier
+	// nftSvc aplica a parte de firewall da tela de DNS (#124). Opcional: um
+	// handler sem ele continua aplicando DHCP/DNS normalmente.
+	nftSvc *nftables.Service
 }
 
 // autoApplyDelay is how long the handler waits for edits to settle before
@@ -53,8 +57,8 @@ const applyBudget = 15 * time.Minute
 
 // NewNetsvcHandler creates a NetsvcHandler. Saving any DHCP/DNS change now
 // auto-applies (debounced), so the admin no longer needs a separate "Aplicar".
-func NewNetsvcHandler(db *storage.DB, provider netsvc.Provider, alertSvc *alerts.Service) *NetsvcHandler {
-	h := &NetsvcHandler{db: db, provider: provider, alertSvc: alertSvc}
+func NewNetsvcHandler(db *storage.DB, provider netsvc.Provider, alertSvc *alerts.Service, nftSvc *nftables.Service) *NetsvcHandler {
+	h := &NetsvcHandler{db: db, provider: provider, alertSvc: alertSvc, nftSvc: nftSvc}
 	h.applier = newAutoApplier(autoApplyDelay, func() {
 		// Mesmo orçamento do "Aplicar agora": o auto-apply também pode cair
 		// no caminho que instala kea/unbound.
@@ -132,7 +136,41 @@ func (h *NetsvcHandler) doReload(ctx context.Context) error {
 	if b, mErr := json.Marshal(st); mErr == nil {
 		_ = h.db.SetSetting(netsvcApplyStatusKey, string(b))
 	}
+
+	// O controle de fuga de DNS (#124) é firewall, não configuração de daemon,
+	// mas nasce da MESMA tela e da mesma configuração — então é reconciliado
+	// aqui, junto. Aplicado mesmo quando o reload do Kea/unbound falhou: as
+	// regras não dependem do daemon ter subido, e deixar o redirecionamento
+	// para trás porque o unbound reclamou de outra coisa seria surpresa.
+	h.reconcileDNSGuard(ctx)
 	return err
+}
+
+// reconcileDNSGuard traduz a configuração da tela de DNS para o firewall.
+//
+// O resolver é o próprio endereço que o DHCP anuncia aos clientes: se a caixa
+// diz "use este resolver", é para ele que a consulta capturada tem de ir.
+func (h *NetsvcHandler) reconcileDNSGuard(ctx context.Context) {
+	if h.nftSvc == nil {
+		return
+	}
+	cfg := h.getConfig()
+	resolver := ""
+	if len(cfg.DNSToClients) > 0 {
+		resolver = cfg.DNSToClients[0]
+	}
+	if resolver == "" {
+		resolver = cfg.Gateway
+	}
+	if err := h.nftSvc.EnsureDNSGuard(ctx, nftables.DNSGuardConfig{
+		ForceLocal:   cfg.ForceLocalDNS,
+		BlockDoT:     cfg.BlockDoT,
+		LANInterface: cfg.Interface,
+		Resolver:     resolver,
+		ExceptIPs:    cfg.DNSExceptIPs,
+	}); err != nil {
+		slog.Warn("não foi possível reconciliar o controle de fuga de DNS", "err", err)
+	}
 }
 
 // scheduleApply arms the debounced auto-apply after a mutation.
@@ -391,6 +429,10 @@ func (h *NetsvcHandler) UpdateDNSConfig(w http.ResponseWriter, r *http.Request) 
 	var b struct {
 		Upstreams  []string `json:"upstreams"`
 		LogQueries bool     `json:"log_queries"`
+		// Controle de fuga de DNS (#124).
+		ForceLocalDNS bool     `json:"force_local_dns"`
+		BlockDoT      bool     `json:"block_dot"`
+		DNSExceptIPs  []string `json:"dns_except_ips"`
 	}
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -408,9 +450,29 @@ func (h *NetsvcHandler) UpdateDNSConfig(w http.ResponseWriter, r *http.Request) 
 		}
 		ups = append(ups, u)
 	}
+	// As exceções vão para dentro de uma regra do nft; endereço inválido é
+	// recusado aqui, e não descartado em silêncio: o admin que digitou errado
+	// precisa saber que aquele host NÃO ficou isento.
+	excecoes := []string{}
+	for _, ip := range b.DNSExceptIPs {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			continue
+		}
+		parsed := net.ParseIP(ip)
+		if parsed == nil || parsed.To4() == nil {
+			writeError(w, http.StatusBadRequest, "endereço isento inválido: "+ip)
+			return
+		}
+		excecoes = append(excecoes, ip)
+	}
+
 	cfg := h.getConfig()
 	cfg.Upstreams = ups
 	cfg.LogQueries = b.LogQueries
+	cfg.ForceLocalDNS = b.ForceLocalDNS
+	cfg.BlockDoT = b.BlockDoT
+	cfg.DNSExceptIPs = excecoes
 	if err := h.saveConfig(cfg); err != nil {
 		writeInternalError(w, err)
 		return

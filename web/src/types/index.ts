@@ -525,6 +525,11 @@ export interface NetsvcConfig {
   upstreams: string[];
   log_queries: boolean;
   domain_suffix: string;
+  // Controle de fuga de DNS (#124). Ver a tela de DNS para o que cada um
+  // realmente garante — e o que não garante.
+  force_local_dns: boolean;
+  block_dot: boolean;
+  dns_except_ips: string[];
 }
 export interface DHCPReservation { mac: string; ip: string; hostname: string; created_at?: string; updated_at?: string; }
 export interface DHCPLease { expiry: number; mac: string; ip: string; hostname: string; }

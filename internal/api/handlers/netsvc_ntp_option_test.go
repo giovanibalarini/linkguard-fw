@@ -42,7 +42,7 @@ func newTestNetsvcHandlerWithProvider(t *testing.T) (*NetsvcHandler, *capturingN
 	}
 	t.Cleanup(func() { db.Close() })
 	p := &capturingNetsvcProvider{}
-	return NewNetsvcHandler(db, p, nil), p
+	return NewNetsvcHandler(db, p, nil, nil), p
 }
 
 // TestDoReloadOmitsNTPServerOptionByDefault: a fresh install (NTP settings
