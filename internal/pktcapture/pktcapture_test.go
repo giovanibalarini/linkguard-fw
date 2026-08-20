@@ -149,7 +149,31 @@ func novoServicoBloqueado(t *testing.T) (*Service, chan struct{}) {
 	libera := make(chan struct{})
 	ex := &bloqExec{libera: libera}
 	s := NewService(ex, ex, t.TempDir())
-	t.Cleanup(func() { close(libera) })
+	// Destravar o executor NÃO basta: é preciso esperar a goroutine da captura
+	// sair antes de o t.TempDir() ser removido.
+	//
+	// POR QUÊ. A goroutine pode ainda nem ter chegado ao ensureDir quando o
+	// teste termina. Os cleanups rodam em ordem inversa, então o RemoveAll do
+	// TempDir vem logo depois deste — e um MkdirAll que acontece DEPOIS do
+	// RemoveAll recria o diretório, deixando o diretório-pai não vazio. O
+	// sintoma é "TempDir RemoveAll cleanup: directory not empty", num teste
+	// que não tem nada a ver com o que falhou.
+	//
+	// Isto não é teoria: passou no CI da PR e quebrou o job de release, onde a
+	// suíte inteira roda junto e o escalonamento é outro. Teste que falha por
+	// sorte do relógio derruba release (é a issue #71 outra vez, por outro
+	// caminho).
+	t.Cleanup(func() {
+		close(libera)
+		prazo := time.Now().Add(3 * time.Second)
+		for time.Now().Before(prazo) {
+			if c := s.Status(); c == nil || c.State != StateRunning {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		t.Error("a goroutine da captura não terminou antes da limpeza do teste")
+	})
 	return s, libera
 }
 
