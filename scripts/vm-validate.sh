@@ -1092,6 +1092,113 @@ print(sum(1 for p in d.get('points',[]) if (p.get('rx_bps') or 0) > 0))" 2>/dev/
   vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
 }
 
+
+# ─── H. Roteamento de retorno por WAN (issue #120) ───────────────────────────
+#
+# O DEFEITO QUE ESTA BATERIA REPRODUZ. Numa caixa com mais de uma WAN, o que
+# ENTRA por uma delas responde pela rota default — multipath em modo
+# balanceado, link principal em failover. Quando a resposta sai pela WAN
+# errada, leva o endereço de origem da outra e o provedor descarta. Do lado de
+# fora parece porta fechada.
+#
+# COMO ELA REPRODUZ ISSO SEM UMA SEGUNDA OPERADORA. Cria uma WAN simulada com
+# veth + netns e coloca o "cliente remoto" ATRÁS dela, num endereço que não
+# está na sub-rede do enlace. Assim a resposta precisa mesmo escolher entre dois
+# defaults — que é a única condição em que o defeito aparece.
+#
+# E ELA FAZ O TESTE A/B. Depois de provar que responde, esvazia as chains e
+# prova que PARA de responder. Sem essa metade, a asserção passaria mesmo se a
+# feature não fizesse nada (o caminho poderia estar funcionando por outro
+# motivo), e ninguém saberia.
+battery_replyrouting() {
+  head_ "H. Roteamento de retorno por WAN"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria H não roda"; return; }
+
+  # WAN simulada com um cliente atrás dela.
+  vm "ip netns del wan2sim 2>/dev/null; ip link del lg-wan2 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add wan2sim && \
+      ip link add lg-wan2 type veth peer name wan2-far && \
+      ip link set wan2-far netns wan2sim && \
+      ip addr add 10.66.0.1/24 dev lg-wan2 && ip link set lg-wan2 up && \
+      ip netns exec wan2sim ip link set lo up && \
+      ip netns exec wan2sim ip addr add 10.66.0.2/24 dev wan2-far && \
+      ip netns exec wan2sim ip link set wan2-far up && \
+      ip netns exec wan2sim ip addr add 203.0.113.5/32 dev lo && \
+      ip netns exec wan2sim ip route add 10.66.0.1 dev wan2-far" >/dev/null 2>&1
+
+  # Cadastrar a WAN pelo painel é o caminho do produto — e é o que dispara a
+  # reconciliação. Se ela parar de disparar na criação de link, é aqui que
+  # aparece.
+  local st
+  st=$(status POST /api/links "$tok" '{"name":"WAN2 simulada","interface":"lg-wan2","gateway":"10.66.0.2","ip_address":"10.66.0.1","weight":1,"enabled":true,"monitor_hosts":"10.66.0.2","dns_test":"10.66.0.2"}')
+  if [[ "$st" == "200" || "$st" == "201" ]]; then ok "WAN simulada cadastrada pelo painel ($st)"
+  else bad "não consegui cadastrar a WAN simulada: $st"; return; fi
+
+  local tabela
+  tabela=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l['interface']=='lg-wan2': print(l['table_id'])" 2>/dev/null)
+  [[ -n "$tabela" ]] || { bad "a WAN simulada não recebeu tabela de rota"; return; }
+
+  # H1 — as duas chains, e o TIPO da de saída. `type filter` no hook output
+  # escreveria a marca sem o kernel refazer a rota: pareceria configurado e não
+  # faria nada.
+  local pre out
+  pre=$(vm "nft list chain inet linkguard conn_mark 2>/dev/null" | tr -d '\r')
+  out=$(vm "nft list chain inet linkguard output_mark 2>/dev/null" | tr -d '\r')
+  if grep -q 'hook prerouting priority mangle + 10' <<<"$pre"; then
+    ok "a chain de marcação está no prerouting, depois da mark_hosts"
+  else bad "chain conn_mark ausente ou na prioridade errada" "$(tr '\n' ' ' <<<"$pre")"; fi
+  if grep -q 'type route hook output' <<<"$out"; then
+    ok "a chain de saída é do tipo route (o kernel refaz a rota)"
+  else bad "chain output_mark não é type route — a marca seria escrita e ignorada" "$(tr '\n' ' ' <<<"$out")"; fi
+
+  # H2 — memória por WAN, e a restauração por último.
+  if grep -q 'iifname "lg-wan2" ct state new' <<<"$pre"; then
+    ok "a WAN nova ganhou regra de memória"
+  else bad "sem regra de memória para lg-wan2" "$(tr '\n' ' ' <<<"$pre")"; fi
+  local ultima
+  ultima=$(grep -E 'ct mark|iifname' <<<"$pre" | tail -1)
+  if grep -q 'meta mark set ct mark' <<<"$ultima"; then
+    ok "a restauração é a última regra da chain"
+  else bad "a restauração não é a última: $(echo "$ultima" | tr -s ' ')"; fi
+
+  # H3/H4 — a metade de roteamento: regra e tabela.
+  if vm "ip rule show" | grep -q "lookup $tabela"; then
+    ok "existe ip rule apontando a marca para a tabela do link"
+  else bad "nenhuma ip rule para a tabela $tabela"; fi
+  if vm "ip route show table $tabela" | grep -q 'default via 10.66.0.2'; then
+    ok "a tabela do link tem o default dele"
+  else bad "tabela $tabela sem default" "$(vm "ip route show table $tabela" | tr '\n' ' ')"; fi
+
+  # H5 — o teste que importa: cliente ATRÁS da WAN secundária é respondido.
+  if vm "ip netns exec wan2sim ping -c 3 -W 2 -I 203.0.113.5 10.66.0.1 >/dev/null 2>&1 && echo ok" | grep -q ok; then
+    ok "o cliente atrás da WAN secundária recebe resposta"
+  else bad "sem resposta para o cliente atrás da WAN secundária — é o defeito da #120"; fi
+
+  # H6 — A OUTRA METADE DO A/B. Sem as chains, tem de PARAR de responder. Se
+  # continuar respondendo, o teste acima não estava testando nada.
+  vm "nft flush chain inet linkguard conn_mark; nft flush chain inet linkguard output_mark; conntrack -F 2>/dev/null; true" >/dev/null 2>&1
+  if vm "ip netns exec wan2sim ping -c 2 -W 2 -I 203.0.113.5 10.66.0.1 >/dev/null 2>&1 && echo ok" | grep -q ok; then
+    bad "respondeu mesmo SEM a marcação — a asserção anterior não prova nada"
+  else ok "sem a marcação o cliente fica sem resposta (o defeito, reproduzido)"; fi
+
+  # H7 — e a reconciliação devolve.
+  vm "systemctl restart linkguard-fw" >/dev/null 2>&1
+  sleep 8
+  if vm "ip netns exec wan2sim ping -c 3 -W 2 -I 203.0.113.5 10.66.0.1 >/dev/null 2>&1 && echo ok" | grep -q ok; then
+    ok "a reconciliação do boot devolve o caminho de volta"
+  else bad "depois do restart o caminho de volta não voltou"; fi
+
+  vm "ip netns del wan2sim 2>/dev/null; ip link del lg-wan2 2>/dev/null; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -1099,6 +1206,7 @@ battery_policy
 battery_capture
 battery_quota
 battery_accounting
+battery_replyrouting
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

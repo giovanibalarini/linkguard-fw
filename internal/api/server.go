@@ -214,7 +214,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermSystemWrite)).Put("/api/system/traffic-retention", sysH.SetTrafficRetention)
 
 		// Links
-		linksH := handlers.NewLinksHandler(s.linkSvc, s.db, s.nftSvc)
+		linksH := handlers.NewLinksHandler(s.linkSvc, s.db, s.nftSvc, s.routeSvc)
 		r.With(require(auth.PermLinksRead)).Get("/api/links", linksH.List)
 		r.With(require(auth.PermLinksWrite)).Post("/api/links", linksH.Create)
 		r.With(require(auth.PermLinksWrite)).Post("/api/links/auto-detect", linksH.AutoDetect)

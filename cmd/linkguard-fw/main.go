@@ -697,6 +697,28 @@ func wireCallbacks(ctx context.Context, s *services) {
 	})
 }
 
+// connMarksDe e replyRoutesDe traduzem o caminho de volta de cada WAN para o
+// que cada camada entende. São duas linhas cada, e existem para a conversão
+// acontecer num lugar só: o dia em que a marca deixar de ser o table_id, é aqui
+// que se descobre — e não numa caixa em que a resposta some.
+func connMarksDe(caminhos []links.WANPath) []nftables.WANMark {
+	out := make([]nftables.WANMark, 0, len(caminhos))
+	for _, c := range caminhos {
+		out = append(out, nftables.WANMark{Interface: c.Interface, Mark: c.Mark})
+	}
+	return out
+}
+
+func replyRoutesDe(caminhos []links.WANPath) []routes.ReplyRoute {
+	out := make([]routes.ReplyRoute, 0, len(caminhos))
+	for _, c := range caminhos {
+		out = append(out, routes.ReplyRoute{
+			Interface: c.Interface, Gateway: c.Gateway, Table: c.Table, Mark: c.MarkHex(),
+		})
+	}
+	return out
+}
+
 // startBackground sobe TUDO que roda em segundo plano: o provisionamento da
 // máquina (o que o LinkGuard faz no boot que mexe em nftables/rotas/NTP), o
 // timer do confirmar-ou-reverte e as goroutinas de coleta.
@@ -863,6 +885,18 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// uma instalação existente nunca ganharia a chain.
 			if err := nftSvc.EnsureAccounting(ctx, enabledWANs); err != nil {
 				slog.Warn("não foi possível reconciliar a contabilidade por host no boot", "err", err)
+			}
+
+			// Roteamento de retorno por WAN (#120). As duas metades saem da
+			// MESMA lista de caminhos, derivada num lugar só (links.WANPaths),
+			// para a marca gravada na conexão e a tabela consultada pela rota
+			// nunca discordarem.
+			caminhos := links.WANPaths(configuredLinks)
+			if err := nftSvc.EnsureConnMark(ctx, connMarksDe(caminhos)); err != nil {
+				slog.Warn("não foi possível reconciliar a marcação de conexão no boot", "err", err)
+			}
+			if err := routeSvc.EnsureReplyRouting(ctx, replyRoutesDe(caminhos)); err != nil {
+				slog.Warn("não foi possível reconciliar o roteamento de retorno no boot", "err", err)
 			}
 
 			// Reconcile the structural chain (mark_hosts) on every boot too.
