@@ -870,11 +870,109 @@ battery_capture() {
   else bad "download do .pcap sem registro de auditoria"; fi
 }
 
+# ─── F. Franquia por link (issue #126) ───────────────────────────────────────
+#
+# O que só uma máquina de verdade prova aqui: o consumo vem dos contadores de
+# byte da interface, passa pelo amostrador de 1s e só vira linha no banco no
+# flush de um minuto. Teste em Go exercita a aritmética; ele não prova que o
+# número que chega no painel é o que o kernel contou.
+battery_quota() {
+  head_ "F. Franquia por link"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria F não roda"; return; }
+
+  # Precisa de pelo menos um link. O auto-detect é o caminho do próprio produto.
+  status POST /api/links/auto-detect "$tok" >/dev/null
+  local link
+  link=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+ls=json.load(sys.stdin)
+print(ls[0]['id'] if ls else '')" 2>/dev/null)
+  [[ -n "$link" ]] || { bad "nenhum link detectado; a bateria F não roda"; return; }
+
+  local resp st
+
+  # F1 — todo link aparece, com ou sem franquia declarada. Um link ausente da
+  # lista é um link que ninguém consegue proteger.
+  resp=$(body GET /api/quotas "$tok")
+  if grep -q "$link" <<<"$resp"; then ok "o link aparece na lista de franquias"
+  else bad "o link não veio em /api/quotas"; fi
+
+  # F2 — dia de fechamento acima de 28 não existe em fevereiro.
+  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":31,"alert_pct":80,"enabled":true}')
+  if [[ "$st" == "400" ]]; then ok "dia de fechamento 31 recusado (400)"
+  else bad "dia 31 aceito ($st) — o ciclo sumiria em fevereiro"; fi
+
+  # F3 — percentual de aviso fora da faixa.
+  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":10,"alert_pct":150,"enabled":true}')
+  if [[ "$st" == "400" ]]; then ok "aviso em 150% recusado (400)"
+  else bad "percentual fora da faixa aceito ($st)"; fi
+
+  # F4 — franquia válida, e o ciclo calculado.
+  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":28,"alert_pct":80,"enabled":true}')
+  if [[ "$st" == "200" ]]; then ok "franquia declarada (200)"
+  else bad "declarar franquia devolveu $st"; fi
+
+  resp=$(body GET /api/quotas "$tok")
+  local ini fim
+  ini=$(python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['link_id']=='$link': print(q['cycle_start'])" <<<"$resp" 2>/dev/null)
+  fim=$(python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['link_id']=='$link': print(q['cycle_end'])" <<<"$resp" 2>/dev/null)
+  if [[ -n "$ini" && -n "$fim" && "$fim" -gt "$ini" ]]; then
+    ok "o ciclo tem início e fim, nessa ordem"
+  else bad "ciclo inválido: início=$ini fim=$fim"; fi
+
+  # F5 — O NÚMERO. Gera tráfego e espera o flush de um minuto. É a asserção que
+  # prova a cadeia inteira: contador da interface → amostrador → banco → API.
+  vm "ping -c 60 -s 20000 -i 0.02 10.0.2.2 >/dev/null 2>&1" >/dev/null 2>&1
+  printf '       (aguardando o flush de 1 minuto do acumulador)\n'
+  sleep 70
+  local usado
+  usado=$(body GET /api/quotas "$tok" | python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['link_id']=='$link': print(q['used_bytes'])" 2>/dev/null)
+  if [[ -n "$usado" && "$usado" -gt 0 ]]; then ok "o consumo medido chegou ao painel ($usado bytes)"
+  else bad "o consumo continuou zerado depois do flush — a cadeia de medição não fechou"; fi
+
+  # F6 — remover a franquia não pode apagar o que já foi medido: é o histórico
+  # do mês, e o admin pode declarar a franquia de novo amanhã.
+  st=$(status DELETE "/api/quotas/$link" "$tok")
+  if [[ "$st" == "200" ]]; then ok "franquia removida (200)"
+  else bad "remover franquia devolveu $st"; fi
+  resp=$(body GET /api/quotas "$tok")
+  local aindaUsado config
+  aindaUsado=$(python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['link_id']=='$link': print(q['used_bytes'])" <<<"$resp" 2>/dev/null)
+  config=$(python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['link_id']=='$link': print(str(q['configured']).lower())" <<<"$resp" 2>/dev/null)
+  # O `tr` não é enfeite: jqk/python imprimem "False", não "false".
+  if [[ "$(tr 'A-Z' 'a-z' <<<"$config")" == "false" ]]; then ok "a franquia saiu da configuração"
+  else bad "a franquia continua declarada depois do DELETE"; fi
+  if [[ -n "$aindaUsado" && "$aindaUsado" -gt 0 ]]; then
+    ok "o consumo medido sobreviveu à remoção da franquia"
+  else bad "remover a franquia escondeu o consumo já medido — a chave do ciclo mudou debaixo da leitura"; fi
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
 battery_policy
 battery_capture
+battery_quota
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

@@ -169,17 +169,6 @@ var allowedInternalImports = map[string]bool{
 	"internal/hosts":         true,
 	"internal/hosttraffic":   true,
 	"internal/iptables":      true,
-	"internal/links":         true,
-	"internal/monitoring":    true,
-	"internal/netif":         true,
-	"internal/netsvc":        true,
-	"internal/nftables":      true,
-	"internal/notify":        true,
-	// internal/pktcapture entrou com a captura de pacotes (#114) pelo mesmo
-	// motivo do stresstest: o handler decodifica o pedido, chama o serviço e
-	// traduz o erro em status. A regra — tetos, filtro, uma por vez, varredura
-	// do TTL — mora lá, e não aqui.
-	"internal/pktcapture": true,
 	// internal/linkquota entrou com a franquia por link (#126): o handler
 	// decodifica, chama e traduz erro em status. A validação (dia de
 	// fechamento, percentual) e o ciclo moram lá.
@@ -190,6 +179,11 @@ var allowedInternalImports = map[string]bool{
 	"internal/netsvc":     true,
 	"internal/nftables":   true,
 	"internal/notify":     true,
+	// internal/pktcapture entrou com a captura de pacotes (#114) pelo mesmo
+	// motivo do stresstest: o handler decodifica o pedido, chama o serviço e
+	// traduz o erro em status. A regra — tetos, filtro, uma por vez, varredura
+	// do TTL — mora lá, e não aqui.
+	"internal/pktcapture": true,
 	"internal/routes":     true,
 	"internal/secrets":    true,
 	"internal/storage":    true,

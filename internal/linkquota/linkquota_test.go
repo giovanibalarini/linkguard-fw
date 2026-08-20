@@ -450,3 +450,49 @@ func TestFranquiaEsgotadaResolveOAvisoAnterior(t *testing.T) {
 		t.Errorf("o crítico não resolveu o aviso que ele substitui; resolvidos: %v", al.resolvidos)
 	}
 }
+
+func TestRemoverFranquiaNaoEscondeOConsumoJaMedido(t *testing.T) {
+	// Achado em máquina real: a chave do consumo é (link, início do ciclo), e o
+	// início vem do dia de fechamento. Apagando a linha, o dia volta a 1, a
+	// leitura passa a olhar outro ciclo, e o número na tela cai sozinho — de
+	// 2,6 MB para 35 KB, no caso medido. O dado não some do banco; some da
+	// vista, que é pior, porque parece correto.
+	s, _, _ := servicoComFranquia(t, 1, 80)
+	// Fechamento no dia 28, e "hoje" é dia 20: o ciclo vigente começou no mês
+	// passado. Com o padrão (dia 1), o ciclo seria outro — é essa diferença que
+	// o teste explora.
+	if err := s.Save(storage.LinkQuota{LinkID: "l1", LimitGB: 1, CycleDay: 28, AlertPct: 80, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	agora := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	s.nowFn = func() time.Time { return agora }
+
+	s.AddInterfaceBytes("wan1", 2_600_000, 0)
+	s.Flush()
+
+	antes, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if antes[0].UsedBytes != 2_600_000 {
+		t.Fatalf("consumo antes da remoção = %d, queria 2600000", antes[0].UsedBytes)
+	}
+
+	if err := s.Delete("l1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	depois, err := s.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if depois[0].Configured {
+		t.Error("a franquia continua declarada depois de removida")
+	}
+	if depois[0].UsedBytes != 2_600_000 {
+		t.Errorf("o consumo exibido caiu para %d ao remover a franquia — o ciclo mudou de chave debaixo da leitura",
+			depois[0].UsedBytes)
+	}
+	if depois[0].CycleDay != 28 {
+		t.Errorf("o dia de fechamento não foi preservado: %d", depois[0].CycleDay)
+	}
+}
