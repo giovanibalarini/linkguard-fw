@@ -31,6 +31,11 @@ type policyResponse struct {
 	Survival *survivalView `json:"survival,omitempty"`
 	// Pending descreve a janela aberta, quando a troca acabou de ser aplicada.
 	Pending *pendingView `json:"pending,omitempty"`
+	// Exposure é o que o firewall deixa passar HOJE, dito em vez de omitido
+	// (issue #119, fase 3). As duas primeiras fases mexeram em regra; esta
+	// mexe em afirmação — o ruleset passou a proteger mais e a tela continuou
+	// descrevendo um firewall que não é o que está rodando.
+	Exposure *nftables.Exposure `json:"exposure,omitempty"`
 }
 
 type survivalView struct {
@@ -59,7 +64,13 @@ func (h *NftablesHandler) GetInputPolicy(w http.ResponseWriter, r *http.Request)
 	if serr != nil {
 		sv.Error = serr.Error()
 	}
-	writeJSON(w, http.StatusOK, policyResponse{Policy: string(p), Forward: string(fw), Survival: sv})
+	// A exposição sai das MESMAS fontes que escrevem a chain (ver ExposureNow):
+	// uma tela com a própria cópia da verdade divergiria em silêncio, que é o
+	// defeito que a fase 3 existe para fechar.
+	exp := h.svc.ExposureNow()
+	writeJSON(w, http.StatusOK, policyResponse{
+		Policy: string(p), Forward: string(fw), Survival: sv, Exposure: &exp,
+	})
 }
 
 // SetInputPolicy troca a postura, sob a janela de confirmação.

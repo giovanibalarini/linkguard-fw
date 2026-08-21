@@ -33,10 +33,21 @@ import type { Policy, PostureChain } from '../../lib/posture';
 import { useI18n } from '../../i18n';
 import type { MsgLevel } from '../../types';
 
+interface Exposure {
+  management_open_on_wan: boolean;
+  management_ports?: number[] | null;
+  wan_interfaces?: string[] | null;
+  ipv6_forwarding: 'on' | 'off' | 'unknown';
+  address_rules_ipv4_only: boolean;
+  host_block_covers_ipv6: boolean;
+  error?: string;
+}
+
 interface PolicyResponse {
   policy: Policy;
   forward: Policy;
   survival?: { input: string[] | null; forward: string[] | null; error?: string };
+  exposure?: Exposure;
 }
 
 interface Props {
@@ -234,6 +245,76 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
           </Panel>
         );
       })}
+
+      {data?.exposure && <CartaoExposicao e={data.exposure} />}
     </div>
+  );
+}
+
+/**
+ * CartaoExposicao conta o que o firewall deixa passar (issue #119, fase 3).
+ *
+ * As duas primeiras fases mexeram em regra; esta mexe em AFIRMAÇÃO. O ruleset
+ * passou a proteger mais e a tela continuou descrevendo um firewall que não é o
+ * que está rodando — e num produto cujo valor é o operador confiar no que lê,
+ * omissão e mentira custam igual.
+ *
+ * Fica DEPOIS dos cartões de postura de propósito: quem chega aqui já leu
+ * "bloquear" ou "aceitar" e formou uma impressão. Este cartão é onde ela é
+ * corrigida.
+ */
+function CartaoExposicao({ e }: { e: Exposure }) {
+  const { t } = useI18n();
+  const itens: { texto: string; detalhe?: string; nivel: 'aviso' | 'neutro' }[] = [];
+
+  if (e.error) {
+    itens.push({ texto: t('fw.exposure.unknown', { erro: e.error }), nivel: 'aviso' });
+  } else if (e.management_open_on_wan) {
+    itens.push({
+      texto: t('fw.exposure.mgmtOpen', {
+        portas: (e.management_ports ?? []).join(', '),
+        wans: (e.wan_interfaces ?? []).join(', '),
+      }),
+      detalhe: t('fw.exposure.mgmtOpen.why'),
+      nivel: 'aviso',
+    });
+  }
+
+  if (e.ipv6_forwarding === 'off') {
+    itens.push({ texto: t('fw.exposure.ipv6Off'), detalhe: t('fw.exposure.ipv6Off.why'), nivel: 'neutro' });
+  } else if (e.ipv6_forwarding === 'on') {
+    // Roteando IPv6 com as regras por endereço valendo só IPv4, o que o admin
+    // acha que bloqueou está metade aberto. Aqui o aviso é forte de propósito.
+    itens.push({ texto: t('fw.exposure.ipv6On'), detalhe: t('fw.exposure.ipv6On.why'), nivel: 'aviso' });
+  } else {
+    itens.push({ texto: t('fw.exposure.ipv6Unknown'), nivel: 'neutro' });
+  }
+
+  if (e.address_rules_ipv4_only) {
+    itens.push({
+      texto: t('fw.exposure.addrIPv4Only'),
+      detalhe: e.host_block_covers_ipv6 ? t('fw.exposure.addrIPv4Only.exception') : undefined,
+      nivel: 'neutro',
+    });
+  }
+
+  return (
+    <Panel title={<span className="text-white font-semibold">{t('fw.exposure.title')}</span>}>
+      <p className="text-gray-500 text-xs mb-4">{t('fw.exposure.subtitle')}</p>
+      <ul className="space-y-3">
+        {itens.map((i, n) => (
+          <li key={n} className="flex gap-2.5 text-sm">
+            <AlertTriangle
+              className={`w-4 h-4 mt-0.5 shrink-0 ${i.nivel === 'aviso' ? 'text-amber-400' : 'text-gray-500'}`}
+              aria-hidden="true"
+            />
+            <div className="min-w-0 flex-1">
+              <span className="text-gray-200">{i.texto}</span>
+              {i.detalhe && <p className="text-xs text-gray-500 mt-0.5">{i.detalhe}</p>}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   );
 }

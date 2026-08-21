@@ -200,29 +200,42 @@ func WANInputRules(wanIfaces []string, access AdminAccess) [][]string {
 // põe proxy usa outra. Fixá-la aqui deixaria justamente quem não usa o padrão
 // trancado do lado de fora, que é o cenário que esta função existe para
 // impedir. Mesma razão registrada em SurvivalRules.
-func portasDeGerencia(a AdminAccess) string {
+// portasDeGerenciaLista é a MESMA decisão de portasDeGerencia, em número em vez
+// de texto — a tela precisa da lista para dizer quais portas estão abertas, e
+// duas listas que pudessem discordar seriam a divergência silenciosa que a fase
+// 3 existe para fechar.
+func portasDeGerenciaLista(a AdminAccess) []int {
 	portas := append([]int(nil), a.SSHPorts...)
 	if len(portas) == 0 {
-		// Não saber onde o sshd escuta cai no padrão — a alternativa seria não
-		// liberar porta nenhuma, que é justamente trancar o admin do lado de
-		// fora. Ver SSHPorts em internal/system.
 		portas = []int{22}
 	}
 	if a.PanelPort > 0 {
 		portas = append(portas, a.PanelPort)
 	}
 	sort.Ints(portas)
-	partes := make([]string, 0, len(portas))
+	out := make([]int, 0, len(portas))
 	vista := map[int]bool{}
 	for _, p := range portas {
 		if p <= 0 || vista[p] {
 			continue
 		}
 		vista[p] = true
-		partes = append(partes, strconv.Itoa(p))
+		out = append(out, p)
 	}
-	if len(partes) == 0 {
+	return out
+}
+
+func portasDeGerencia(a AdminAccess) string {
+	// Não saber onde o sshd escuta cai no padrão — a alternativa seria não
+	// liberar porta nenhuma, que é justamente trancar o admin do lado de fora.
+	// Ver SSHPorts em internal/system.
+	portas := portasDeGerenciaLista(a)
+	if len(portas) == 0 {
 		return ""
+	}
+	partes := make([]string, 0, len(portas))
+	for _, p := range portas {
+		partes = append(partes, strconv.Itoa(p))
 	}
 	return "{ " + strings.Join(partes, ", ") + " }"
 }
