@@ -62,11 +62,33 @@ func (s *Service) EnsureReplyRouting(ctx context.Context, rotas []ReplyRoute) er
 			continue
 		}
 		if r.Gateway != "" && r.Interface != "" {
+			// O GATEWAY VEM DO KERNEL, E NÃO DO BANCO (issue #154).
+			//
+			// r.Gateway é uma cópia de storage.Link.Gateway, e o único caminho
+			// que reescreve esse campo é o admin clicar em "detectar links" ou
+			// editar o link à mão. Nenhum timer, nenhum boot e nenhum monitor o
+			// refrescam. Troque-se o modem do provedor, ou o DHCP entregue outro
+			// router: o dhclient conserta a tabela `main`, e esta função
+			// continuava gravando o gateway ANTIGO na tabela do link — com
+			// `onlink`, que faz o kernel aceitar sem reclamar mesmo fora da
+			// sub-rede.
+			//
+			// O efeito é seletivo e por isso enganoso: a navegação da LAN
+			// continua funcionando pela `main`, mas tudo que CHEGA por aquela
+			// WAN deixa de ser respondido. É literalmente a "forma silenciosa
+			// de mandar a resposta para o vazio" que o comentário abaixo diz
+			// estar impedindo — impedida só para o caso em que alguém clicou.
+			gw := r.Gateway
+			if vivo := s.gatewayVivo(ctx, r.Interface); vivo != "" && vivo != gw {
+				slog.Warn("o gateway gravado do link está desatualizado; usando o que o kernel tem",
+					"interface", r.Interface, "gravado", gw, "vivo", vivo)
+				gw = vivo
+			}
 			// `replace`, e não `add`: o gateway do link muda (DHCP do
 			// provedor, troca de modem) e um `add` falharia com "File exists"
 			// deixando a tabela apontando para o gateway antigo — que é uma
 			// forma silenciosa de mandar a resposta para o vazio.
-			if out, err := s.ReplaceRoute(ctx, "default", r.Gateway, r.Interface, r.Table); err != nil {
+			if out, err := s.ReplaceRoute(ctx, "default", gw, r.Interface, r.Table); err != nil {
 				falhas = append(falhas, fmt.Sprintf("tabela %s: %v (%s)", r.Table, err, strings.TrimSpace(out)))
 				continue
 			}
@@ -146,4 +168,27 @@ func (s *Service) ReplaceRoute(ctx context.Context, dest, gw, iface, table strin
 		args = append(args, "table", table)
 	}
 	return s.exec.Execute(ctx, "ip", args...)
+}
+
+// gatewayVivo devolve o gateway padrão que o kernel tem AGORA naquela interface,
+// ou "" quando não há (link caído, endereçamento estático sem default).
+//
+// Vazio não é erro: cai no valor gravado, que é o último conhecido bom. Trocar
+// um gateway possivelmente velho por nenhum gateway deixaria a tabela do link
+// sem rota de volta, o que é pior do que uma rota velha.
+func (s *Service) gatewayVivo(ctx context.Context, iface string) string {
+	if iface == "" {
+		return ""
+	}
+	out, err := s.exec.ExecuteRead(ctx, "ip", "-4", "route", "show", "default", "dev", iface)
+	if err != nil {
+		return ""
+	}
+	campos := strings.Fields(out)
+	for i, c := range campos {
+		if c == "via" && i+1 < len(campos) {
+			return campos[i+1]
+		}
+	}
+	return ""
 }
