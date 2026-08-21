@@ -582,7 +582,7 @@ func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool
 	// decisão (#119): um grupo de escopo input que libere algo vindo da WAN
 	// precisa ser avaliado antes, senão o produto anularia em silêncio uma
 	// decisão explícita do admin. Ver waninput.go.
-	rules = append(rules, WANInputRules(wanIfaces)...)
+	rules = append(rules, WANInputRules(wanIfaces, access)...)
 	return rules
 }
 
@@ -667,6 +667,21 @@ func (s *Service) reconcileInputChain(ctx context.Context, groups []StoredGroup,
 	wans, err := s.wanInterfaces()
 	if err != nil {
 		return err
+	}
+	// AS PORTAS DE GERÊNCIA PRECISAM SER CONHECIDAS ANTES DE EMITIR O DESCARTE,
+	// e não saber quais são elas CANCELA a proteção em vez de emiti-la sem a
+	// liberação. É fail-open deliberado, na direção que este produto já
+	// escolheu: um firewall permissivo por meia hora é um problema; uma caixa
+	// que descarta a própria porta do painel não tem caminho de volta. Ver o
+	// comentário em waninput.go sobre o que a VM mostrou.
+	if len(wans) > 0 && policy != PolicyDrop {
+		a, aerr := s.adminAccess()
+		if aerr != nil {
+			slog.Error("não foi possível ler as portas de gerência; a proteção de entrada das WANs NÃO será aplicada nesta reconciliação (emiti-la sem a liberação trancaria o admin do lado de fora)", "err", aerr)
+			wans = nil
+		} else {
+			access = a
+		}
 	}
 	if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, InputChain,
 		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", string(policy), ";", "}"); err != nil {

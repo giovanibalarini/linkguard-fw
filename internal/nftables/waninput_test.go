@@ -12,11 +12,15 @@ import (
 // O primeiro teste é o que mais importa, e ele afirma uma NÃO-MUDANÇA: sem WAN
 // conhecida, a chain é byte a byte a de antes. Toda instalação nova nasce assim.
 
+// gerencia é o acesso administrativo típico: SSH no padrão e painel na porta do
+// .deb. As portas de gerência NUNCA podem ser descartadas sem o admin mandar.
+var gerencia = AdminAccess{PanelPort: 9997}
+
 func TestSemWANConhecidaNadaEhEmitido(t *testing.T) {
-	if r := WANInputRules(nil); r != nil {
+	if r := WANInputRules(nil, gerencia); r != nil {
 		t.Errorf("lista vazia gerou regras: %v", linhas(r))
 	}
-	if r := WANInputRules([]string{"", ""}); r != nil {
+	if r := WANInputRules([]string{"", ""}, gerencia); r != nil {
 		t.Errorf("só nomes vazios geraram regras: %v", linhas(r))
 	}
 
@@ -35,7 +39,7 @@ func TestODescarteCasaSomenteConexaoNova(t *testing.T) {
 	// morrem todos de uma vez, sem nada no ruleset dizendo por quê. É
 	// exatamente o problema que trava a issue #78, e a razão de esta entrega
 	// não precisar resolvê-lo.
-	regras := linhas(WANInputRules([]string{"wan0"}))
+	regras := linhas(WANInputRules([]string{"wan0"}, gerencia))
 	drop := regras[len(regras)-1]
 	if !strings.Contains(drop, "ct state new") {
 		t.Fatalf("o descarte não está limitado a conexão nova: %q", drop)
@@ -52,7 +56,7 @@ func TestOAdminNaoPodeSerTrancadoForaPelaLAN(t *testing.T) {
 	// Nenhuma regra desta lista pode casar tráfego que não venha de uma WAN.
 	// É esta propriedade — e não um teste de 90 segundos — que torna seguro
 	// ligar a proteção sem o admin pedir.
-	for _, r := range linhas(WANInputRules([]string{"wan0", "wan1"})) {
+	for _, r := range linhas(WANInputRules([]string{"wan0", "wan1"}, gerencia)) {
 		if !strings.HasPrefix(r, "iifname {") {
 			t.Errorf("regra sem escopo de interface, alcança a LAN: %q", r)
 		}
@@ -60,7 +64,7 @@ func TestOAdminNaoPodeSerTrancadoForaPelaLAN(t *testing.T) {
 }
 
 func TestLiberacoesQueEvitamQuebraDiasDepois(t *testing.T) {
-	regras := strings.Join(linhas(WANInputRules([]string{"wan0"})), "\n")
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, gerencia)), "\n")
 	obrigatorias := map[string]string{
 		"nd-router-advert":   "sem RA a rota padrão IPv6 expira e o IPv6 morre ~30min depois do deploy",
 		"nd-neighbor-advert": "sem vizinhança IPv6 nada de IPv6 funciona",
@@ -104,7 +108,7 @@ func TestODescarteVemDepoisDeTudo(t *testing.T) {
 
 func TestNomeDeInterfaceInseguroEhIgnorado(t *testing.T) {
 	// O nome sai do banco e é interpolado no argv do nft.
-	regras := linhas(WANInputRules([]string{"wan0; drop", "wan1"}))
+	regras := linhas(WANInputRules([]string{"wan0; drop", "wan1"}, gerencia))
 	junto := strings.Join(regras, "\n")
 	if strings.Contains(junto, "drop; ") || strings.Contains(junto, "wan0") {
 		t.Errorf("nome inseguro chegou ao ruleset:\n%s", junto)
@@ -114,13 +118,13 @@ func TestNomeDeInterfaceInseguroEhIgnorado(t *testing.T) {
 	}
 	// Só nomes ruins não pode virar uma chain sem proteção NEM uma regra torta:
 	// vira lista vazia, e o log já registrou o motivo.
-	if r := WANInputRules([]string{"wan0; drop"}); r != nil {
+	if r := WANInputRules([]string{"wan0; drop"}, gerencia); r != nil {
 		t.Errorf("nome inseguro sozinho gerou regra: %v", linhas(r))
 	}
 }
 
 func TestInterfaceRepetidaNaoViraRegraRepetida(t *testing.T) {
-	regras := linhas(WANInputRules([]string{"wan0", "wan0"}))
+	regras := linhas(WANInputRules([]string{"wan0", "wan0"}, gerencia))
 	if n := strings.Count(regras[0], `"wan0"`); n != 1 {
 		t.Errorf("a interface aparece %d vezes no set: %q", n, regras[0])
 	}
@@ -148,6 +152,7 @@ func TestFonteLigadaEmiteAProtecao(t *testing.T) {
 	e := &execGravador{}
 	s := servicoComExec(e)
 	s.SetWANInterfacesSource(func() ([]string, error) { return []string{"wan0"}, nil })
+	s.SetAdminAccessSource(func() (AdminAccess, error) { return gerencia, nil })
 
 	if err := s.reconcileInputChain(context.Background(), nil, nil, false); err != nil {
 		t.Fatalf("reconcileInputChain: %v", err)
@@ -160,5 +165,67 @@ func TestFonteLigadaEmiteAProtecao(t *testing.T) {
 	}
 	if !achou {
 		t.Errorf("a proteção não chegou ao nft; comandos: %v", e.comandos)
+	}
+}
+
+func TestPortasDeGerenciaNuncaSaoDescartadas(t *testing.T) {
+	// O DEFEITO QUE ESTE TESTE PRENDE, E QUE UMA MÁQUINA DE VERDADE ACHOU.
+	// A primeira versão desta lista não liberava porta nenhuma. Numa instalação
+	// nova, o admin clica em "detectar links" — o caminho normal do produto —,
+	// o auto-detect cadastra como WAN a interface que tem a rota padrão, e a
+	// reconciliação seguinte descarta a porta 22 e a do painel. SSH e painel
+	// mortos, sem nada na tela e sem caminho de volta.
+	regras := linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997}))
+	var libera string
+	for _, r := range regras {
+		if strings.Contains(r, "tcp dport") {
+			libera = r
+		}
+	}
+	if libera == "" {
+		t.Fatalf("nenhuma liberação de porta de gerência:\n%s", strings.Join(regras, "\n"))
+	}
+	for _, porta := range []string{"22", "9997"} {
+		if !strings.Contains(libera, porta) {
+			t.Errorf("a porta %s não está liberada: %q", porta, libera)
+		}
+	}
+	// E ela tem de vir ANTES do descarte, senão não serve para nada.
+	if !strings.Contains(regras[len(regras)-1], "drop") {
+		t.Errorf("o descarte deixou de ser a última linha: %v", regras)
+	}
+}
+
+func TestPortaDoPainelNaoEhFixa(t *testing.T) {
+	// 8080 é o default do binário, 9997 o do .deb, e quem põe proxy usa outra.
+	// Fixá-la trancaria do lado de fora justamente quem não usa o padrão.
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPort: 2222, PanelPort: 8443})), "\n")
+	if !strings.Contains(regras, "{ 2222, 8443 }") {
+		t.Errorf("as portas configuradas não foram usadas:\n%s", regras)
+	}
+	// SSH e painel na MESMA porta não pode gerar um set com a porta repetida.
+	uma := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPort: 9997, PanelPort: 9997})), "\n")
+	if !strings.Contains(uma, "{ 9997 }") {
+		t.Errorf("porta repetida no set: %s", uma)
+	}
+}
+
+func TestSemSaberAsPortasAProtecaoNaoEhEmitida(t *testing.T) {
+	// FAIL-OPEN DELIBERADO, e na direção que este produto já escolheu: um
+	// firewall permissivo por meia hora é um problema; uma caixa que descarta a
+	// própria porta do painel não tem caminho de volta. Emitir o descarte sem
+	// saber o que liberar é exatamente o defeito que a VM achou.
+	e := &execGravador{}
+	s := servicoComExec(e)
+	s.SetWANInterfacesSource(func() ([]string, error) { return []string{"wan0"}, nil })
+	s.SetAdminAccessSource(func() (AdminAccess, error) { return AdminAccess{}, errors.New("banco fora") })
+
+	if err := s.reconcileInputChain(context.Background(), nil, nil, false); err != nil {
+		t.Fatalf("a reconciliação abortou em vez de seguir sem a proteção: %v", err)
+	}
+	for _, c := range e.comandos {
+		if strings.Contains(strings.Join(c, " "), "counter drop") {
+			t.Errorf("o descarte foi emitido sem a liberação de gerência: %v", c)
+		}
 	}
 }

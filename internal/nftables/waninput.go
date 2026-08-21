@@ -86,7 +86,7 @@ import (
 // nasce sem link nenhum, o resultado é byte a byte o de antes. Um firewall que
 // descartasse "tudo que vem da WAN" sem saber quais são as WANs descartaria
 // nada ou tudo, e as duas respostas estão erradas.
-func WANInputRules(wanIfaces []string) [][]string {
+func WANInputRules(wanIfaces []string, access AdminAccess) [][]string {
 	nomes := make([]string, 0, len(wanIfaces))
 	vistos := map[string]bool{}
 	for _, iface := range wanIfaces {
@@ -109,7 +109,7 @@ func WANInputRules(wanIfaces []string) [][]string {
 	}
 	set := "{ " + strings.Join(nomes, ", ") + " }"
 
-	return [][]string{
+	regras := [][]string{
 		// Vizinhança e descoberta de roteador. Primeiro porque, sem isto, nada
 		// de IPv6 funciona depois — inclusive as liberações abaixo, que seriam
 		// aceitas e nunca alcançadas.
@@ -128,10 +128,58 @@ func WANInputRules(wanIfaces []string) [][]string {
 
 		// Encaminhamento de porta que aponta para a própria máquina.
 		{"iifname", set, "ct", "status", "dnat", "counter", "accept"},
-
-		// O QUE ESTA LINHA FAZ: descarta o que chega pelas WANs sem ter sido
-		// pedido de dentro. `ct state new` é o que garante que ela não toca em
-		// resposta de conexão de saída.
-		{"iifname", set, "ct", "state", "new", "counter", "drop"},
 	}
+
+	// AS PORTAS DE GERÊNCIA FICAM ABERTAS, E ISTO É UMA CORREÇÃO, NÃO UM
+	// DESCUIDO.
+	//
+	// A primeira versão desta lista não tinha esta linha, e a VM de validação
+	// mostrou o custo em quinze minutos: instalação nova, o admin clica em
+	// "detectar links" — o caminho normal do produto —, o auto-detect cadastra
+	// como WAN a interface que tem a rota padrão, a reconciliação aplica o
+	// descarte, e a máquina descarta a porta 22 e a do painel. SSH e painel
+	// mortos, sem nada na tela, sem caminho de volta. Numa caixa de uma NIC só
+	// isso não é caso de canto: é o comportamento.
+	//
+	// O produto já tinha decidido esta questão, e eu tinha decidido diferente
+	// sem perceber. O survival.go recusa ligar `policy drop` exatamente para
+	// não trancar o admin do lado de fora, mesmo ao custo de o firewall ficar
+	// permissivo — "não trancar o admin" vale mais do que "fechar tudo". Uma
+	// regra que se aplica sozinha, na reconciliação, sem ninguém pedir, não
+	// pode ser a exceção a esse princípio: quem apanha dela não tem nem o
+	// consolo de saber o que apertou.
+	//
+	// O que sobra ainda vale: tudo que passar a escutar nesta máquina nasce
+	// protegido pela WAN, nas duas famílias. O que fica exposto são duas portas
+	// conhecidas — e a fase 3 desta issue mostra isso na tela, com um botão para
+	// fechá-las, passando pela janela de confirmação de 90 segundos. Aí, sim: se
+	// fechar cortar o acesso de quem apertou, reverte sozinho. É a diferença
+	// entre uma exposição VISÍVEL e uma exposição ACIDENTAL, que é a única que
+	// este produto não pode ter.
+	if portas := portasDeGerencia(access); portas != "" {
+		regras = append(regras, []string{"iifname", set, "tcp", "dport", portas, "counter", "accept"})
+	}
+
+	// O QUE ESTA LINHA FAZ: descarta o que chega pelas WANs sem ter sido
+	// pedido de dentro. `ct state new` é o que garante que ela não toca em
+	// resposta de conexão de saída.
+	return append(regras, []string{"iifname", set, "ct", "state", "new", "counter", "drop"})
+}
+
+// portasDeGerencia devolve o set de portas que não podem ser fechadas sem o
+// admin mandar: a do SSH e a do painel.
+//
+// A do painel NÃO é fixa — 8080 é o default do binário, 9997 o do .deb, e quem
+// põe proxy usa outra. Fixá-la aqui deixaria justamente quem não usa o padrão
+// trancado do lado de fora, que é o cenário que esta função existe para
+// impedir. Mesma razão registrada em SurvivalRules.
+func portasDeGerencia(a AdminAccess) string {
+	ssh := a.SSHPort
+	if ssh == 0 {
+		ssh = 22
+	}
+	if a.PanelPort > 0 && a.PanelPort != ssh {
+		return fmt.Sprintf("{ %d, %d }", ssh, a.PanelPort)
+	}
+	return fmt.Sprintf("{ %d }", ssh)
 }
