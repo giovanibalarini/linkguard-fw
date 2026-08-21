@@ -50,16 +50,19 @@ package nftables
 // pela conexão antiga — o handler alcança o net.Conn via ConnContext. Enquanto
 // isso não existir, esta lista NÃO deve ser ligada com uma política restritiva.
 
-import "fmt"
-
 // AdminAccess é o que precisa continuar alcançando o próprio firewall.
 //
 // Os campos são o que o chamador sabe e este pacote não pode descobrir sozinho
 // (internal/nftables não importa internal/storage — ver o comentário em
 // groups.go:219-230).
 type AdminAccess struct {
-	// SSHPort é a porta do SSH. Zero cai em 22.
-	SSHPort int
+	// SSHPorts são as portas em que o sshd está escutando. VAZIO cai em 22.
+	//
+	// É uma lista, e não um número, porque sshd com mais de um `Port` é
+	// configuração comum em quem está migrando de porta: liberar só uma das
+	// duas tranca metade das sessões — e a metade que fica de fora é
+	// exatamente a que o admin ainda não terminou de migrar.
+	SSHPorts []int
 	// PanelPort é a porta do painel. Vem da config, e NÃO é fixa: o default do
 	// binário é 8080 e o do pacote .deb é 9997. Zero deixa o painel de fora.
 	PanelPort int
@@ -104,16 +107,8 @@ func SurvivalRules(a AdminAccess) [][]string {
 	// `iifname` aqui é o que a issue #83 mostra que não sobrevive a um rename de
 	// NIC — e um anti-lockout que fica mudo depois de um reshuffle de PCI é pior
 	// do que nenhum, porque dá a impressão de que existe.
-	ssh := a.SSHPort
-	if ssh == 0 {
-		ssh = 22
-	}
-	if a.PanelPort > 0 && a.PanelPort != ssh {
-		rules = append(rules, []string{
-			"tcp", "dport", fmt.Sprintf("{ %d, %d }", ssh, a.PanelPort), "counter", "accept",
-		})
-	} else {
-		rules = append(rules, []string{"tcp", "dport", fmt.Sprintf("%d", ssh), "counter", "accept"})
+	if set := portasDeGerencia(a); set != "" {
+		rules = append(rules, []string{"tcp", "dport", set, "counter", "accept"})
 	}
 
 	// DHCP e DNS servidos à LAN. Sem estas, os aparelhos param de pegar IP e de

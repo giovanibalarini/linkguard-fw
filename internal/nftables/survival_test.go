@@ -72,8 +72,11 @@ func TestSurvivalSempreTemLoopbackESSH(t *testing.T) {
 	if !contem(rs, "iif lo counter accept") {
 		t.Error("sem loopback: o painel em 127.0.0.1 ficaria inalcançável até por túnel SSH")
 	}
-	if !contem(rs, "tcp dport 22") {
-		t.Error("sem SSH na porta padrão")
+	// O formato passou a ser sempre um SET (`{ 22 }`), porque a lista de portas
+	// de gerência virou fonte única com a proteção de entrada das WANs (#119):
+	// uma forma só evita que quem lê a chain tenha de reconhecer duas.
+	if !contem(rs, "tcp dport { 22 } counter accept") {
+		t.Errorf("sem SSH na porta padrão: %v", linhas(rs))
 	}
 }
 
@@ -110,7 +113,7 @@ func TestSurvivalPortaDoPainelNaoEFixa(t *testing.T) {
 		t.Error("emitiu 9997 sem ninguém ter pedido")
 	}
 	// Painel na mesma porta do SSH não pode virar um set com o número repetido.
-	ls := linhas(SurvivalRules(AdminAccess{SSHPort: 22, PanelPort: 22}))
+	ls := linhas(SurvivalRules(AdminAccess{SSHPorts: []int{22}, PanelPort: 22}))
 	for _, l := range ls {
 		if strings.Contains(l, "{ 22, 22 }") {
 			t.Errorf("porta repetida no set: %q", l)

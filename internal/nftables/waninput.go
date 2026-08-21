@@ -3,6 +3,8 @@ package nftables
 import (
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -199,12 +201,28 @@ func WANInputRules(wanIfaces []string, access AdminAccess) [][]string {
 // trancado do lado de fora, que é o cenário que esta função existe para
 // impedir. Mesma razão registrada em SurvivalRules.
 func portasDeGerencia(a AdminAccess) string {
-	ssh := a.SSHPort
-	if ssh == 0 {
-		ssh = 22
+	portas := append([]int(nil), a.SSHPorts...)
+	if len(portas) == 0 {
+		// Não saber onde o sshd escuta cai no padrão — a alternativa seria não
+		// liberar porta nenhuma, que é justamente trancar o admin do lado de
+		// fora. Ver SSHPorts em internal/system.
+		portas = []int{22}
 	}
-	if a.PanelPort > 0 && a.PanelPort != ssh {
-		return fmt.Sprintf("{ %d, %d }", ssh, a.PanelPort)
+	if a.PanelPort > 0 {
+		portas = append(portas, a.PanelPort)
 	}
-	return fmt.Sprintf("{ %d }", ssh)
+	sort.Ints(portas)
+	partes := make([]string, 0, len(portas))
+	vista := map[int]bool{}
+	for _, p := range portas {
+		if p <= 0 || vista[p] {
+			continue
+		}
+		vista[p] = true
+		partes = append(partes, strconv.Itoa(p))
+	}
+	if len(partes) == 0 {
+		return ""
+	}
+	return "{ " + strings.Join(partes, ", ") + " }"
 }
