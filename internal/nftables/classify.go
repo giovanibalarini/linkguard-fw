@@ -75,7 +75,7 @@ func classifyRule(chain, expr string) (managed bool, owner RuleOwner) {
 		}
 	case ForwardChain:
 		switch {
-		case strings.Contains(expr, "@blocked_hosts"):
+		case strings.Contains(expr, "@blocked_hosts"), strings.Contains(expr, "@blocked_macs"):
 			return true, RuleOwner{Key: "host_block", Label: "Hosts bloqueados"}
 		case strings.Contains(expr, "@blocklist"):
 			return true, RuleOwner{Key: "blocklist", Label: "Destinos bloqueados"}
@@ -184,6 +184,8 @@ func describeRule(chain, expr string) string {
 		// legítimo parecer a duplicação de chain que motivou esta tela
 		// (spec §1) — justamente o defeito que ela existe para o admin
 		// conseguir enxergar.
+		case strings.Contains(expr, "@blocked_macs"):
+			return "Descarta todo tráfego iniciado por hosts bloqueados, em qualquer família"
 		case strings.Contains(expr, "@blocked_hosts"):
 			if strings.Contains(expr, "ip daddr") {
 				return "Descarta tráfego indo para hosts bloqueados"
@@ -253,6 +255,8 @@ func descStructured(chain, expr string, managed bool) RuleDesc {
 		switch {
 		case expr == "jump user_rules":
 			return RuleDesc{Key: "desc.jumpUserRules"}
+		case strings.Contains(expr, "@blocked_macs"):
+			return RuleDesc{Key: "desc.blockedHosts.byMAC"}
 		case strings.Contains(expr, "@blocked_hosts"):
 			if strings.Contains(expr, "ip daddr") {
 				return RuleDesc{Key: "desc.blockedHosts.to"}

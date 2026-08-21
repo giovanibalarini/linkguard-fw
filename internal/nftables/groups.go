@@ -168,6 +168,20 @@ var systemGroupForwardRules = map[string]func(logar bool) [][]string{
 		return comLog(logar, BlockLogPrefixHost,
 			[]string{"ip", "saddr", "@" + BlockedSet},
 			[]string{"ip", "daddr", "@" + BlockedSet},
+			// O CASAMENTO QUE FAZ "BLOQUEADO" DEIXAR DE SER MENTIRA EM IPv6.
+			//
+			// Só `ether saddr`, e não `ether daddr`: no hook forward o pacote
+			// ainda carrega o cabeçalho de camada 2 de ENTRADA, então o
+			// endereço físico de destino ali é o do próprio firewall, não o do
+			// host. Casar por ele não bloquearia nada e daria a impressão de
+			// cobertura.
+			//
+			// O que isto cobre, dito com precisão: TODO tráfego que o host
+			// bloqueado INICIA, em qualquer família. O que não cobre é tráfego
+			// não solicitado vindo da internet PARA ele em IPv6 — que hoje
+			// atravessa sem regra nenhuma de qualquer jeito, para host
+			// bloqueado ou não, e é o assunto da fase 3.
+			[]string{"ether", "saddr", "@" + BlockedMACSet},
 		)
 	},
 	GroupKindBlocklist: func(logar bool) [][]string {

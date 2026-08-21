@@ -182,16 +182,16 @@ func TestForwardChainNoLongerLetsUserRulesShadowTheBlocks(t *testing.T) {
 			adds = append(adds, c)
 		}
 	}
-	if len(adds) != 5 {
-		t.Fatalf("expected 5 rules added to forward (4 blocks + 1 group jump), got %d: %v", len(adds), adds)
+	if len(adds) != 6 {
+		t.Fatalf("expected 6 rules added to forward (5 blocks + 1 group jump), got %d: %v", len(adds), adds)
 	}
-	for i, want := range []string{"@blocked_hosts", "@blocked_hosts", "@blocklist", "@blocklist"} {
+	for i, want := range []string{"@blocked_hosts", "@blocked_hosts", "@blocked_macs", "@blocklist", "@blocklist"} {
 		if !strings.Contains(adds[i], want) {
 			t.Errorf("forward rule %d = %q, want it to contain %q", i, adds[i], want)
 		}
 	}
-	if !strings.Contains(adds[4], "jump grp_aaa") {
-		t.Errorf("last forward rule must be the group jump, got %q", adds[4])
+	if !strings.Contains(adds[5], "jump grp_aaa") {
+		t.Errorf("last forward rule must be the group jump, got %q", adds[5])
 	}
 	for _, c := range adds {
 		if strings.Contains(c, "jump "+UserChain) {

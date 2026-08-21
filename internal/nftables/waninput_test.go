@@ -257,3 +257,54 @@ func TestPingNaWANTemTaxaLimitadaENaoEnfeite(t *testing.T) {
 		t.Errorf("o descarte deixou de ser a última linha: %v", regras)
 	}
 }
+
+func TestBloqueioDeHostCasaEnderecoFisico(t *testing.T) {
+	// #119, fase 2: o grupo do sistema tem de casar também por endereço físico,
+	// que é a identidade sem família. Sem esta linha, "bloqueado" é uma
+	// afirmação falsa na tela assim que a LAN ganhar IPv6.
+	regras := linhas(systemGroupForwardRules[GroupKindBlockedHosts](false))
+	var temEther, temV4 bool
+	for _, r := range regras {
+		if strings.Contains(r, "ether saddr @"+BlockedMACSet) {
+			temEther = true
+		}
+		if strings.Contains(r, "ip saddr @"+BlockedSet) {
+			temV4 = true
+		}
+	}
+	if !temEther {
+		t.Errorf("o bloqueio de host não casa endereço físico: %v", regras)
+	}
+	if !temV4 {
+		t.Errorf("o casamento por IPv4 sumiu junto: %v", regras)
+	}
+	// `ether daddr` NÃO pode aparecer: no hook forward o endereço físico de
+	// destino é o do próprio firewall, então casar por ele não bloquearia nada
+	// e daria impressão de cobertura.
+	for _, r := range regras {
+		if strings.Contains(r, "ether daddr") {
+			t.Errorf("casamento por ether daddr não bloqueia nada no hook forward: %q", r)
+		}
+	}
+}
+
+func TestEnderecoFisicoTortoNaoChegaAoNft(t *testing.T) {
+	// net.ParseMAC aceita formas que o nft não escreve — traço, ponto e
+	// endereços InfiniBand de 20 bytes. O valor sai do banco e é interpolado no
+	// argv do nft.
+	for _, ruim := range []string{
+		"aa-bb-cc-dd-ee-ff",
+		"aabb.ccdd.eeff",
+		"00:00:00:00:fe:80:00:00:00:00:00:00:02:00:5e:10:00:00:00:01",
+		"aa:bb:cc:dd:ee",
+		"; drop",
+		"",
+	} {
+		if _, err := macParaNft(ruim); err == nil {
+			t.Errorf("endereço físico %q foi aceito", ruim)
+		}
+	}
+	if got, err := macParaNft("AA:BB:CC:DD:EE:FF"); err != nil || got != "aa:bb:cc:dd:ee:ff" {
+		t.Errorf("maiúsculas: got %q, err %v", got, err)
+	}
+}

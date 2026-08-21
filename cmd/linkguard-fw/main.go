@@ -929,6 +929,12 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 				slog.Warn("não foi possível reconciliar o ajuste de MSS no boot", "err", err)
 			}
 
+			// Bloqueio por endereço físico (#119, fase 2). O set nasce vazio,
+			// então numa caixa já instalada os hosts bloqueados precisam ser
+			// recolocados nele — senão o bloqueio deles continuaria valendo só
+			// para IPv4, com a tela dizendo "bloqueado".
+			s.hostSvc.SincronizaBloqueiosPorMAC(ctx)
+
 			// Proteção de entrada das WANs (#119). Reconciliada em todo boot
 			// pela mesma razão da contabilidade: EnsureTable é no-op em máquina
 			// já provisionada, então sem isto uma instalação existente nunca

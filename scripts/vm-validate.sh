@@ -1881,6 +1881,120 @@ for l in json.load(sys.stdin):
   vm "pkill -f wanecho >/dev/null 2>&1; pkill -f wanserv >/dev/null 2>&1; ip netns del lgwan 2>/dev/null; ip link del lg-win 2>/dev/null; rm -f /tmp/wanecho.py /tmp/wanserv.py; true" >/dev/null 2>&1
 }
 
+# ─── O. Bloqueio de host nas duas famílias (issue #119, fase 2) ──────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. O bloqueio de host era `ip saddr
+# @blocked_hosts` — só IPv4. A tabela é `inet`: o MESMO host, falando IPv6,
+# atravessa a chain forward sem casar com nada e é encaminhado, com o painel
+# dizendo "bloqueado". Não é proteção incompleta; é afirmação falsa na tela.
+#
+# HOJE ISSO NÃO APARECE, E É POR ISSO QUE PRECISA DE BATERIA. Medido em
+# produção: `net.ipv6.conf.all.forwarding = 0`. O produto só liga o forwarding
+# IPv4, então a caixa não roteia IPv6 para a LAN e o furo fica latente — ele
+# nasce no dia em que alguém ligar delegação de prefixo. Esta bateria LIGA o
+# forwarding IPv6 de propósito: ela encena esse dia, para o defeito ser
+# encontrado antes dele.
+#
+# O A/B é a parte que dá valor: com o bloqueio por endereço físico o IPv6 morre;
+# tirando SÓ esse set (e deixando o de IPv4 intacto), o IPv6 volta a passar
+# enquanto o IPv4 continua bloqueado — que é exatamente o defeito, reproduzido.
+battery_bloqueio_familias() {
+  head_ "O. Bloqueio de host nas duas famílias"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria O não roda"; return; }
+
+  status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
+
+  # Cliente e servidor, cada um do seu lado do firewall, com IPv4 e IPv6.
+  vm "pkill -f duasfam >/dev/null 2>&1
+      ip netns del lgcli 2>/dev/null; ip netns del lgsrv 2>/dev/null
+      ip link del veth-cli 2>/dev/null; ip link del veth-srv 2>/dev/null; true" >/dev/null 2>&1
+  vm "sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
+      ip netns add lgcli && ip netns add lgsrv && \
+      ip link add veth-cli type veth peer name veth-cli-p && \
+      ip link add veth-srv type veth peer name veth-srv-p && \
+      ip link set veth-cli-p netns lgcli && ip link set veth-srv-p netns lgsrv && \
+      ip addr add 192.168.77.1/24 dev veth-cli && ip -6 addr add fd00:77::1/64 dev veth-cli nodad && ip link set veth-cli up && \
+      ip addr add 192.168.88.1/24 dev veth-srv && ip -6 addr add fd00:88::1/64 dev veth-srv nodad && ip link set veth-srv up && \
+      ip netns exec lgcli sh -c 'ip link set lo up; ip addr add 192.168.77.2/24 dev veth-cli-p; ip -6 addr add fd00:77::2/64 dev veth-cli-p nodad; ip link set veth-cli-p up; ip route add default via 192.168.77.1; ip -6 route add default via fd00:77::1' && \
+      ip netns exec lgsrv sh -c 'ip link set lo up; ip addr add 192.168.88.2/24 dev veth-srv-p; ip -6 addr add fd00:88::2/64 dev veth-srv-p nodad; ip link set veth-srv-p up; ip route add default via 192.168.88.1; ip -6 route add default via fd00:88::1'" >/dev/null 2>&1
+
+  # Servidor de mentira, escutando nas duas famílias.
+  vm "cat > /tmp/duasfam.py <<'PYEOF'
+import http.server, socketserver, socket
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.send_header('Content-Length','2'); self.end_headers(); self.wfile.write(b'ok')
+    def log_message(self, *a): pass
+class S(socketserver.TCPServer):
+    address_family = socket.AF_INET6
+    allow_reuse_address = True
+S(('::', 18090), H).serve_forever()
+PYEOF
+      ip netns exec lgsrv setsid python3 /tmp/duasfam.py >/dev/null 2>&1 < /dev/null &
+      sleep 1" >/dev/null 2>&1
+
+  # alcanca FAMILIA → código HTTP do cliente até o servidor.
+  alcanca() {
+    if [[ "$1" == "6" ]]; then
+      vm "ip netns exec lgcli curl -s -o /dev/null -w '%{http_code}' --max-time 4 'http://[fd00:88::2]:18090/' 2>/dev/null" | tr -d '\r'
+    else
+      vm "ip netns exec lgcli curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://192.168.88.2:18090/ 2>/dev/null" | tr -d '\r'
+    fi
+  }
+
+  # O1 — linha de base: sem bloqueio, as duas famílias atravessam. Sem isto o
+  # resto da bateria não distingue "bloqueado" de "nunca funcionou".
+  local v4 v6
+  v4=$(alcanca 4); v6=$(alcanca 6)
+  if [[ "$v4" == "200" && "$v6" == "200" ]]; then ok "sem bloqueio o host atravessa em IPv4 e IPv6"
+  else bad "a linha de base não funciona (v4 '$v4', v6 '$v6'); a bateria O não prova nada"; return; fi
+
+  # O2 — bloqueia pelo caminho do produto, com o endereço físico do cliente.
+  local mac
+  mac=$(vm "ip netns exec lgcli cat /sys/class/net/veth-cli-p/address" | tr -d '\r')
+  [[ -n "$mac" ]] || { bad "não consegui ler o endereço físico do cliente"; return; }
+  local st
+  st=$(status POST /api/hosts/block "$tok" "{\"mac\":\"$mac\",\"blocked\":true}")
+  if [[ "$st" == "200" ]]; then ok "host bloqueado pelo painel ($mac)"
+  else bad "não consegui bloquear o host: $st"; return; fi
+  sleep 2
+
+  # O3 — A ASSERÇÃO CENTRAL: bloqueado é bloqueado nas DUAS famílias.
+  v4=$(alcanca 4); v6=$(alcanca 6)
+  if [[ "$v4" != "200" ]]; then ok "host bloqueado não atravessa em IPv4"
+  else bad "o host bloqueado continua atravessando em IPv4"; fi
+  if [[ "$v6" != "200" ]]; then ok "host bloqueado não atravessa em IPv6 — a tela deixou de mentir"
+  else bad "O HOST BLOQUEADO ATRAVESSA EM IPv6: o painel diz bloqueado e ele não está"; fi
+
+  # O4 — O DEFEITO, REPRODUZIDO. Tirando SÓ o set de endereços físicos, o IPv6
+  # volta a passar enquanto o IPv4 continua bloqueado. É a prova de que a
+  # asserção acima mede o que diz medir, e não outra coisa.
+  vm "nft flush set inet linkguard blocked_macs" >/dev/null 2>&1
+  sleep 1
+  v4=$(alcanca 4); v6=$(alcanca 6)
+  if [[ "$v6" == "200" && "$v4" != "200" ]]; then
+    ok "sem o set de endereços físicos o IPv6 volta a passar e o IPv4 não (o defeito, reproduzido)"
+  else bad "o A/B não separou as famílias (v4 '$v4', v6 '$v6'): a asserção anterior pode estar medindo outra coisa"; fi
+
+  # O5 — e desbloquear devolve as duas.
+  status POST /api/hosts/block "$tok" "{\"mac\":\"$mac\",\"blocked\":false}" >/dev/null
+  sleep 2
+  v4=$(alcanca 4); v6=$(alcanca 6)
+  if [[ "$v4" == "200" && "$v6" == "200" ]]; then ok "desbloquear devolve as duas famílias"
+  else bad "depois de desbloquear o host continua cortado (v4 '$v4', v6 '$v6')"; fi
+
+  vm "pkill -f duasfam >/dev/null 2>&1
+      ip netns del lgcli 2>/dev/null; ip netns del lgsrv 2>/dev/null
+      ip link del veth-cli 2>/dev/null; ip link del veth-srv 2>/dev/null
+      sysctl -w net.ipv6.conf.all.forwarding=0 >/dev/null
+      rm -f /tmp/duasfam.py; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -1895,6 +2009,7 @@ battery_schedule
 battery_blocklog
 battery_ddns
 battery_waninput
+battery_bloqueio_familias
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

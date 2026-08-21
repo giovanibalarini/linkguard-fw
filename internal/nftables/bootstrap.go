@@ -78,6 +78,9 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	b.WriteString("\tmap host_wan {\n\t\ttype ipv4_addr : mark\n\t}\n\n")
 	b.WriteString("\tset blocklist {\n\t\ttype ipv4_addr\n\t\tflags interval\n\t}\n\n")
 	b.WriteString("\tset blocked_hosts {\n\t\ttype ipv4_addr\n\t}\n\n")
+	// O mesmo host, pela identidade que não tem família (#119, fase 2). Ver o
+	// comentário de BlockedMACSet.
+	b.WriteString("\tset blocked_macs {\n\t\ttype ether_addr\n\t}\n\n")
 	b.WriteString("\tchain user_rules {\n\t}\n\n")
 	// mark_hosts/forward's rules carry `counter` from the very first boot —
 	// each is reconciled on every subsequent boot from its own canonical

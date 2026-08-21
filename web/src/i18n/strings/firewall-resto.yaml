@@ -414,6 +414,11 @@ desc.blockedHosts.to:
 desc.blockedHosts.from:
   pt: "Descarta tráfego vindo de hosts bloqueados"
   en: "Drops traffic coming from blocked hosts"
+# Esta é a linha que faz "bloqueado" valer também em IPv6 (#119, fase 2): o
+# endereço físico não tem família. As duas acima só casam IPv4.
+desc.blockedHosts.byMAC:
+  pt: "Descarta tudo que hosts bloqueados iniciam, em IPv4 e IPv6"
+  en: "Drops everything blocked hosts initiate, over IPv4 and IPv6"
 desc.blocklist.to:
   pt: "Descarta tráfego indo para destinos bloqueados"
   en: "Drops traffic going to blocked destinations"
