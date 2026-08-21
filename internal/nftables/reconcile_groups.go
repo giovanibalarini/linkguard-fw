@@ -641,5 +641,14 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 		slog.Warn("não foi possível ler as WANs para o pré-voo da chain input; os jumps continuam sendo validados, a proteção de entrada não", "err", err)
 		wans = nil
 	}
+	// Mesmo cancelamento do caminho que aplica: sem saber as portas de gerência
+	// a proteção não é emitida, e o pré-voo tem de validar a MESMA forma.
+	if len(wans) > 0 && policy != PolicyDrop {
+		if a, aerr := s.adminAccess(); aerr == nil {
+			access = a
+		} else {
+			wans = nil
+		}
+	}
 	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans), ensureInput)
 }

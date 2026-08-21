@@ -1705,28 +1705,23 @@ for r in json.load(sys.stdin):
 
 # ─── N. Proteção de entrada das WANs (issue #119, fase 1) ────────────────────
 #
-# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Esta é a primeira regra do produto que
-# pode TRANCAR O ADMIN DO LADO DE FORA, e o desenho depende de duas
-# propriedades que só uma máquina de verdade demonstra:
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA, E ELA MUDOU DEPOIS DE A VM FALAR.
 #
-#  1. o descarte casa `ct state new`, e por isso NÃO toca no retorno das
-#     conexões que a própria caixa abriu. Se essa condição se perder, o apt, o
-#     atualizador, o unbound e o chrony morrem todos juntos — sem nada no
-#     ruleset dizendo por quê;
-#  2. o descarte é a ÚLTIMA linha da chain, depois dos jumps dos grupos. É isso,
-#     e só isso, que devolve ao admin o poder de reabrir o que ele precisar. Um
-#     descarte emitido acima dos jumps anularia a decisão dele em silêncio.
+# A primeira versão desta proteção descartava TUDO que chegasse como conexão
+# nova pelas WANs. Esta bateria foi escrita para contornar o efeito colateral —
+# e o efeito colateral chegou antes dela: a bateria F chama
+# `POST /api/links/auto-detect`, o caminho normal do produto, o auto-detect
+# cadastrou como WAN a interface por onde o arnês fala com a VM, e a máquina
+# descartou a porta 22 e a do painel. SSH e painel mortos na bateria F; as
+# baterias de G a M falharam todas por não ter mais com quem falar.
 #
-# A bateria prova as duas COM TRÁFEGO, dos dois lados: de fora para dentro
-# (tem de morrer), de dentro para fora e de volta (tem de viver), e de fora para
-# dentro de novo depois de o admin abrir um grupo (tem de reviver).
+# Não é caso de canto: numa caixa de uma NIC só, "detectar links" é a primeira
+# coisa que se faz numa instalação nova.
 #
-# POR QUE A WAN É SIMULADA. O painel desta VM é alcançado pelo encaminhamento do
-# qemu, que entra pela primeira NIC — a mesma que o auto-detect cadastra como
-# link. Ligar a proteção com ela na lista mataria o próprio arnês no meio da
-# execução. Isso não é artefato de teste: é EXATAMENTE o que acontece com quem
-# administra pela WAN, e está dito no PR. Aqui a bateria desliga os links
-# detectados, monta uma WAN de mentira e trabalha só nela.
+# Por isso a asserção central desta bateria hoje é o CONTRÁRIO da que ela
+# nasceu: a gerência tem de continuar respondendo pela WAN, e o descarte tem de
+# valer para todo o resto. E o fato de as baterias G a N rodarem depois de a F
+# ter chamado o auto-detect é, sozinho, metade da prova.
 battery_waninput() {
   head_ "N. Proteção de entrada das WANs"
 
@@ -1736,25 +1731,16 @@ battery_waninput() {
   [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
   [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria N não roda"; return; }
 
-  # Os links detectados saem da lista de WANs, para o arnês não se matar.
-  local detectados
-  detectados=$(body GET /api/links "$tok" | python3 -c "
-import json,sys
-for l in json.load(sys.stdin):
-    if l.get('enabled'): print(l['id'])" 2>/dev/null)
-  local id
-  for id in $detectados; do
-    local atual
-    atual=$(body GET "/api/links/$id" "$tok")
-    python3 -c "
-import json,sys
-d=json.loads(sys.argv[1]); d['enabled']=False
-print(json.dumps(d))" "$atual" > /tmp/lgv_link.json 2>/dev/null
-    status PUT "/api/links/$id" "$tok" "$(cat /tmp/lgv_link.json)" >/dev/null 2>&1
-  done
+  # N0 — A PROVA QUE VALE MAIS: chegamos aqui. A bateria F cadastrou a NIC de
+  # gerência como WAN e o arnês continua conversando com a máquina.
+  local wans
+  wans=$(vm "nft list chain inet linkguard input 2>/dev/null" | grep -oE 'iifname \{[^}]*\}' | head -1 | tr -d '\r')
+  if [[ -n "$wans" ]]; then
+    ok "a proteção está ligada nas WANs detectadas e o painel continua respondendo ($wans)"
+  else bad "a proteção não está na chain input; o resto da bateria não significa nada"; return; fi
 
-  # A "internet" do outro lado da WAN de mentira.
-  vm "ip netns del lgwan 2>/dev/null; ip link del lg-win 2>/dev/null; true" >/dev/null 2>&1
+  # A "internet" do outro lado de uma WAN de mentira, para testar de FORA.
+  vm "pkill -f wanecho >/dev/null 2>&1; ip netns del lgwan 2>/dev/null; ip link del lg-win 2>/dev/null; true" >/dev/null 2>&1
   vm "ip netns add lgwan && \
       ip link add lg-win type veth peer name lg-win-net && \
       ip link set lg-win-net netns lgwan && \
@@ -1771,41 +1757,57 @@ print(json.dumps(d))" "$atual" > /tmp/lgv_link.json 2>/dev/null
   local chain
   chain=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
 
-  # N1 — o descarte existe, escopado pela WAN, e é a ÚLTIMA linha.
+  # N1 — o descarte é a ÚLTIMA linha, e a liberação da gerência vem ANTES dele.
   local ultima
   ultima=$(grep -vE '^\s*$|^table |^\s*chain |^\s*type filter|^\s*\}' <<<"$chain" | tail -1)
-  if grep -q 'ct state new counter.*drop' <<<"$ultima" && grep -q 'lg-win' <<<"$ultima"; then
-    ok "o descarte da WAN é a última linha da chain input"
-  else bad "a última linha da chain não é o descarte da WAN" "$ultima"; fi
+  if grep -q 'ct state new counter.*drop' <<<"$ultima"; then ok "o descarte é a última linha da chain input"
+  else bad "a última linha da chain não é o descarte" "$ultima"; fi
+  if grep -q 'tcp dport {.*9997' <<<"$chain"; then ok "a porta do painel está liberada nas WANs"
+  else bad "a porta do painel NÃO está liberada — a caixa se tranca no próximo reboot" "$(grep 'tcp dport' <<<"$chain" | tr '\n' ' ')"; fi
 
-  # N2 — as liberações que evitam quebra dias depois estão ACIMA do descarte.
-  local faltando=""
-  local token
+  # N2 — as liberações que evitam quebra dias depois.
+  local faltando="" token
   for token in "nd-router-advert" "nd-neighbor-advert" "packet-too-big" "udp dport 68" "udp dport 546" "ct status dnat"; do
     grep -q "$token" <<<"$chain" || faltando="$faltando $token"
   done
   if [[ -z "$faltando" ]]; then ok "as liberações de DHCP, vizinhança IPv6, PMTUD e DNAT estão na chain"
-  else bad "faltam liberações na chain:$faltando" "$(tr '\n' ' ' <<<"$chain" | head -c 250)"; fi
+  else bad "faltam liberações na chain:$faltando"; fi
 
-  # N3 — A ASSERÇÃO CENTRAL, LADO DE FORA: o painel não responde pela WAN.
+  # N3 — A ASSERÇÃO ANTI-TRANCA: o painel responde pela WAN.
   local code
-  code=$(vm "ip netns exec lgwan curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://198.51.100.1:9997/api/health 2>/dev/null" | tr -d '\r')
-  if [[ "$code" != "200" ]]; then ok "o painel não é alcançável pela WAN (curl devolveu '${code:-nada}')"
-  else bad "O PAINEL RESPONDEU PELA WAN — a proteção não está valendo"; fi
+  code=$(vm "ip netns exec lgwan curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://198.51.100.1:9997/api/health 2>/dev/null" | tr -d '\r')
+  if [[ "$code" == "200" ]]; then ok "o painel responde pela WAN: ninguém é trancado do lado de fora"
+  else bad "O PAINEL NÃO RESPONDE PELA WAN (curl '${code:-nada}') — é a tranca que a bateria F sofreu"; fi
 
-  # N4 — A OUTRA ASSERÇÃO CENTRAL: conexão aberta de DENTRO continua viva. Se o
-  # descarte deixar de casar só `ct state new`, é aqui que aparece — e é o
-  # defeito que mataria o apt e o próprio atualizador do painel.
-  vm "pkill -f wanecho >/dev/null 2>&1; true" >/dev/null 2>&1
+  # N4 — E o descarte vale para todo o resto: uma porta que não é de gerência,
+  # escutando no MESMO endereço, não pode responder.
+  vm "cat > /tmp/wanserv.py <<'PYEOF'
+import http.server, socketserver
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.send_header('Content-Length','2'); self.end_headers(); self.wfile.write(b'ok')
+    def log_message(self, *a): pass
+socketserver.TCPServer.allow_reuse_address = True
+socketserver.TCPServer(('0.0.0.0', 18082), H).serve_forever()
+PYEOF
+      setsid python3 /tmp/wanserv.py >/dev/null 2>&1 < /dev/null &
+      sleep 1" >/dev/null 2>&1
+  local interno externo
+  interno=$(vm "curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://198.51.100.1:18082/ 2>/dev/null" | tr -d '\r')
+  externo=$(vm "ip netns exec lgwan curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://198.51.100.1:18082/ 2>/dev/null" | tr -d '\r')
+  if [[ "$interno" == "200" && "$externo" != "200" ]]; then
+    ok "porta que não é de gerência escuta, responde localmente e é descartada na WAN"
+  else bad "o descarte não está valendo (local '$interno', da WAN '$externo')"; fi
+
+  # N5 — conexão aberta de DENTRO continua viva. Se o descarte deixar de casar
+  # só `ct state new`, é aqui que aparece — e é o defeito que mataria o apt e o
+  # próprio atualizador do painel.
   vm "cat > /tmp/wanecho.py <<'PYEOF'
 import http.server, socketserver
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         corpo = b'de fora'
-        self.send_response(200)
-        self.send_header('Content-Length', str(len(corpo)))
-        self.end_headers()
-        self.wfile.write(corpo)
+        self.send_response(200); self.send_header('Content-Length', str(len(corpo))); self.end_headers(); self.wfile.write(corpo)
     def log_message(self, *a): pass
 socketserver.TCPServer.allow_reuse_address = True
 socketserver.TCPServer(('198.51.100.2', 18081), H).serve_forever()
@@ -1815,26 +1817,24 @@ PYEOF
   local saida
   saida=$(vm "curl -s --max-time 5 http://198.51.100.2:18081/ 2>/dev/null" | tr -d '\r')
   if [[ "$saida" == "de fora" ]]; then
-    ok "conexão aberta de dentro para fora continua respondendo (o descarte não pega conexão estabelecida)"
-  else bad "a resposta de uma conexão de SAÍDA foi bloqueada ('$saida') — o descarte está pegando estabelecida"; fi
+    ok "conexão aberta de dentro para fora continua respondendo (o descarte não pega estabelecida)"
+  else bad "a resposta de uma conexão de SAÍDA foi bloqueada ('$saida')"; fi
 
-  # N5 — A SAÍDA DE EMERGÊNCIA: um grupo de escopo input reabre o painel pela
-  # WAN. É esta asserção que prova que o descarte estar por último não é
-  # detalhe de arrumação — é o que devolve o controle ao admin.
+  # N6 — a saída de emergência ao contrário: um grupo de escopo input FECHA a
+  # gerência na WAN, porque os jumps são avaliados antes das nossas linhas. É o
+  # que a fase 3 vai oferecer com um botão.
   local grupo
-  grupo=$(body POST /api/nftables/groups "$tok" '{"name":"Acesso remoto N","scope":"input","fallthrough":"continue","conn_state":"any"}' | jqk id)
-  if [[ -z "$grupo" ]]; then bad "não consegui criar o grupo de escopo input"; else
-    status POST /api/nftables/rules "$tok" "{\"group_id\":\"$grupo\",\"action\":\"accept\",\"saddr\":\"198.51.100.2\",\"proto\":\"tcp\",\"dport\":\"9997\",\"enabled\":true,\"description\":\"acesso remoto da bateria N\"}" >/dev/null
+  grupo=$(body POST /api/nftables/groups "$tok" '{"name":"Fecha gerencia N","scope":"input","fallthrough":"continue","conn_state":"any"}' | jqk id)
+  if [[ -n "$grupo" ]]; then
+    status POST /api/nftables/rules "$tok" "{\"group_id\":\"$grupo\",\"action\":\"drop\",\"saddr\":\"198.51.100.2\",\"proto\":\"tcp\",\"dport\":\"9997\",\"enabled\":true,\"description\":\"fecha gerencia da bateria N\"}" >/dev/null
     sleep 2
     code=$(vm "ip netns exec lgwan curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://198.51.100.1:9997/api/health 2>/dev/null" | tr -d '\r')
-    if [[ "$code" == "200" ]]; then
-      ok "um grupo de escopo input reabre o painel pela WAN (o admin mantém o controle)"
-    else bad "o grupo do admin não conseguiu reabrir o acesso (curl '${code:-nada}') — o descarte está acima dos jumps"; fi
+    if [[ "$code" != "200" ]]; then ok "um grupo de escopo input fecha a gerência na WAN (o admin manda mais que a nossa liberação)"
+    else bad "o grupo do admin não conseguiu fechar a gerência — as nossas linhas estão acima dos jumps"; fi
     status DELETE /api/nftables/groups "$tok" "{\"id\":\"$grupo\"}" >/dev/null 2>&1
-  fi
+  else bad "não consegui criar o grupo de escopo input"; fi
 
-  # N6 — tirar a WAN da lista tira a proteção junto: o `iifname` não pode ficar
-  # apontando para interface que não existe mais (o defeito da bateria G).
+  # N7 — apagar o link tira a proteção dele da chain na hora.
   local linkid
   linkid=$(body GET /api/links "$tok" | python3 -c "
 import json,sys
@@ -1848,11 +1848,7 @@ for l in json.load(sys.stdin):
     else bad "a chain continua casando uma interface que não é mais WAN"; fi
   fi
 
-  # Limpeza. Os links detectados FICAM DESLIGADOS de propósito: religá-los aqui
-  # devolveria a proteção à NIC por onde o painel e o SSH desta VM entram, e
-  # deixaria a máquina inacessível para quem for depurar depois.
-  vm "pkill -f wanecho >/dev/null 2>&1; ip netns del lgwan 2>/dev/null; ip link del lg-win 2>/dev/null; rm -f /tmp/wanecho.py; true" >/dev/null 2>&1
-  printf '       (os links detectados ficaram desligados: religá-los trancaria o SSH desta VM)\n'
+  vm "pkill -f wanecho >/dev/null 2>&1; pkill -f wanserv >/dev/null 2>&1; ip netns del lgwan 2>/dev/null; ip link del lg-win 2>/dev/null; rm -f /tmp/wanecho.py /tmp/wanserv.py; true" >/dev/null 2>&1
 }
 
 battery_fresh
