@@ -214,8 +214,18 @@ export default function GroupModal({ state, setState, ifaces, cor, onClose, onCr
               <input className="input w-full" placeholder={t('fw.group.anyPlaceholder')} value={state.cond_daddr} onChange={(e) => setState({ ...state, cond_daddr: e.target.value })} />
             </div>
           </div>
+          {/* A FRASE MUDA COM O QUE O GRUPO REALMENTE TEM (issue #155).
+              Ela dizia "Só IPv4 por enquanto" sempre — e era falsa justamente
+              nos dois casos que ela própria descreve. groupJumpTokens só emite
+              `ip saddr`/`ip daddr` quando há endereço na condição: sem endereço,
+              o jump é `counter jump grp_x`, que na tabela inet casa as DUAS
+              famílias. Um grupo "e o que sobrar? descartar" sem endereço era
+              criado sob a garantia escrita aqui de que não alcançaria IPv6. */}
           <p className="text-[11px] text-gray-600 mt-1.5">
-            {t(state.scope === 'input' ? 'fw.group.noCondition.input' : 'fw.group.noCondition.forward')}
+            {t(state.scope === 'input' ? 'fw.group.noCondition.input' : 'fw.group.noCondition.forward')}{' '}
+            {state.cond_saddr || state.cond_daddr
+              ? t('fw.group.family.address')
+              : t('fw.group.family.all')}
           </p>
         </div>
 

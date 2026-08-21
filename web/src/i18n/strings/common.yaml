@@ -481,11 +481,20 @@ fw.group.anyPlaceholder:
   pt: "qualquer"
   en: "any"
 fw.group.noCondition.input:
-  pt: "Sem condição, todo o tráfego destinado ao firewall entra no grupo. Só IPv4 por enquanto."
-  en: "With no condition, all traffic addressed to the firewall enters the group. IPv4 only for now."
+  pt: "Sem condição, todo o tráfego destinado ao firewall entra no grupo."
+  en: "With no condition, all traffic addressed to the firewall enters the group."
 fw.group.noCondition.forward:
-  pt: "Sem condição, todo o tráfego que atravessa o firewall entra no grupo. Só IPv4 por enquanto."
-  en: "With no condition, all traffic crossing the firewall enters the group. IPv4 only for now."
+  pt: "Sem condição, todo o tráfego que atravessa o firewall entra no grupo."
+  en: "With no condition, all traffic crossing the firewall enters the group."
+# A frase de família é escolhida pelo que o grupo TEM (issue #155). Dizer "só
+# IPv4" sempre era falso justamente quando não havia condição de endereço: o
+# jump vira `counter jump grp_x`, que na tabela inet casa as duas famílias.
+fw.group.family.address:
+  pt: "A condição por endereço vale só para IPv4 — o mesmo aparelho falando IPv6 não casa."
+  en: "The address condition applies to IPv4 only — the same device speaking IPv6 does not match."
+fw.group.family.all:
+  pt: "Sem endereço na condição, o grupo alcança IPv4 e IPv6."
+  en: "With no address in the condition, the group reaches both IPv4 and IPv6."
 fw.group.whichConnections:
   pt: "Para quais conexões este grupo vale"
   en: "Which connections this group applies to"
