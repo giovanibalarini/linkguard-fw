@@ -56,10 +56,34 @@ func TestOAdminNaoPodeSerTrancadoForaPelaLAN(t *testing.T) {
 	// Nenhuma regra desta lista pode casar tráfego que não venha de uma WAN.
 	// É esta propriedade — e não um teste de 90 segundos — que torna seguro
 	// ligar a proteção sem o admin pedir.
-	for _, r := range linhas(WANInputRules([]string{"wan0", "wan1"}, gerencia, false)) {
-		if !strings.HasPrefix(r, "iifname {") {
-			t.Errorf("regra sem escopo de interface, alcança a LAN: %q", r)
+	regras := linhas(WANInputRules([]string{"wan0", "wan1"}, gerencia, false))
+	for _, r := range regras {
+		if strings.HasPrefix(r, "iifname {") {
+			continue
 		}
+		// A ÚNICA EXCEÇÃO, e ela é segura POR CONSTRUÇÃO (#127): o descarte de
+		// quem está contido é global, mas só origem que chega pelas WANs pode
+		// ENTRAR no set — a regra que adiciona casa `iifname`. Quem entra pela
+		// LAN não pode ser contido por caminho nenhum, então um descarte global
+		// não alcança o admin.
+		if strings.HasPrefix(r, "ip saddr @"+AbusersSet) {
+			continue
+		}
+		t.Errorf("regra sem escopo de interface, alcança a LAN: %q", r)
+	}
+
+	// E a prova de que a exceção se sustenta: a regra que ADICIONA é escopada.
+	var achouAdd bool
+	for _, r := range regras {
+		if strings.Contains(r, "add @"+AbusersSet) {
+			achouAdd = true
+			if !strings.HasPrefix(r, "iifname {") {
+				t.Errorf("a regra que contém não é escopada por WAN: %q — o admin da LAN poderia ser contido", r)
+			}
+		}
+	}
+	if !achouAdd {
+		t.Error("nenhuma regra alimenta a contenção: o descarte seria enfeite")
 	}
 }
 
@@ -325,6 +349,11 @@ func TestAPortaDoSSHNaoEhFixaEmVinteEDois(t *testing.T) {
 	// "22," casaria dentro de "2222," e o teste passaria a mentir sobre si
 	// mesmo. Foi o que aconteceu na primeira versão desta asserção.
 	for _, r := range linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997}, false)) {
+		// Só a linha de LIBERAÇÃO. A de contenção (#127) também casa
+		// `tcp dport`, e compará-la aqui mediria outra coisa.
+		if !strings.HasSuffix(r, "counter accept") {
+			continue
+		}
 		i := strings.Index(r, "tcp dport ")
 		if i < 0 {
 			continue

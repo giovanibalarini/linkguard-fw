@@ -953,3 +953,25 @@ fw.exposure.opened.ok:
 fw.exposure.error:
   pt: "Não foi possível mudar o acesso de gerência."
   en: "Could not change management access."
+
+# ─── Contenção de tentativa repetida (issue #127) ────────────────────────────
+# Bloqueio invisível é o pior tipo de suporte: quem está contido aparece, com
+# prazo, e pode ser liberado num clique.
+fw.contained.title:
+  pt: "Contidos por tentativa repetida"
+  en: "Contained for repeated attempts"
+fw.contained.subtitle:
+  pt: "Origens da internet que bateram nas portas de gerência mais rápido do que qualquer pessoa digitaria. A contenção expira sozinha, e nunca alcança quem entra pela rede interna."
+  en: "Sources from the internet that hit the management ports faster than any person would type. Containment expires on its own, and never reaches anyone coming from the internal network."
+fw.contained.expires:
+  pt: "libera em ~{min} min"
+  en: "releases in ~{min} min"
+fw.contained.release:
+  pt: "Liberar agora"
+  en: "Release now"
+fw.contained.released:
+  pt: "{ip} liberado."
+  en: "{ip} released."
+fw.contained.error:
+  pt: "Não foi possível liberar essa origem."
+  en: "Could not release that source."

@@ -968,3 +968,33 @@ func (h *NftablesHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "rollback completed", "output": out})
 }
+
+// ContidosView é a lista de origens sob contenção (issue #127).
+//
+// Bloqueio invisível é o pior tipo de suporte: quem está contido aparece, com
+// o prazo restante, e pode ser liberado num clique.
+func (h *NftablesHandler) Contidos(w http.ResponseWriter, r *http.Request) {
+	lista, err := h.svc.Contidos(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"contidos": lista})
+}
+
+// LiberarContido tira uma origem da contenção — o "foi engano" da tela.
+func (h *NftablesHandler) LiberarContido(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		IP string `json:"ip"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	if err := h.svc.Liberar(r.Context(), b.IP); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auditAction(h.db, r, "nft.abusers.release", "input", b.IP)
+	writeJSON(w, http.StatusOK, map[string]bool{"liberado": true})
+}

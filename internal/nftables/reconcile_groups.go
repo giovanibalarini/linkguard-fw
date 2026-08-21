@@ -193,6 +193,12 @@ func (s *Service) reconcileGroups(ctx context.Context, groups []StoredGroup) err
 	// É exatamente o mesmo defeito que a bateria G pegou na contabilidade por
 	// host, pela mesma causa: coisa nova que precisa existir em instalação
 	// EXISTENTE tem de ser garantida a cada reconciliação, não no bootstrap.
+	// A set da contenção (#127) nasce aqui pela mesma razão da de endereços
+	// físicos: EnsureTable é no-op em máquina já provisionada, e uma regra que
+	// referencia set inexistente some em silêncio da chain.
+	if err := s.EnsureAbusersSet(ctx); err != nil {
+		slog.Warn("não foi possível garantir a set de contenção; a proteção contra tentativa repetida pode não estar valendo", "err", err)
+	}
 	if err := s.EnsureBlockedMACSet(ctx); err != nil {
 		slog.Warn("não foi possível garantir a set de endereços físicos bloqueados; o bloqueio pode valer só para IPv4 nesta reconciliação", "err", err)
 	}
