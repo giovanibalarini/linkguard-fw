@@ -130,8 +130,34 @@ func outputMarkChainRules() [][]string {
 // restoreMarkRule devolve a marca guardada na conexão ao pacote. O `!= 0x0` é
 // o que mantém intacto todo o tráfego que nasceu na LAN: conexão que não entrou
 // por WAN nenhuma tem marca zero e não casa aqui.
+//
+// `ct direction reply` É O QUE IMPEDE ESTA REGRA DE QUEBRAR ENCAMINHAMENTO DE
+// PORTA, e a falta dele era um defeito meu, entregue na #120.
+//
+// A chain de prerouting está em `priority mangle + 10` (-140), ANTES do dstnat
+// (-100), e vê as DUAS direções da conexão. Sem a condição, o pacote que CHEGA
+// da internet para um host da LAN — a direção original — também recebia a marca.
+// Aí o DNAT reescrevia o destino para 192.168.3.50, o kernel decidia a rota já
+// com a marca posta, casava a `ip rule fwmark N lookup N` (prioridade 32700,
+// antes da main) e caía na tabela do link — que contém APENAS `default via
+// <gateway da WAN>`. O SYN destinado ao host da LAN voltava para o provedor.
+//
+// O sintoma para quem opera: o painel mostra o encaminhamento aplicado, a chain
+// de DNAT está lá com a tradução certa, e a câmera/NVR/servidor interno
+// simplesmente não responde de fora. Exatamente o que a #120 existe para
+// consertar, causado pela #120.
+//
+// A direção de RESPOSTA continua marcada, que é o ponto da issue: o pacote que
+// o host da LAN devolve precisa sair pela mesma WAN por onde a conexão entrou.
+//
+// Na chain de output a condição é no-op — lá só passam pacotes gerados
+// localmente, e conexão nascida aqui nunca recebeu marca (a marca só é gravada
+// em `iifname "wanX" ct state new`, que é entrada). Fica na regra única para as
+// duas chains dizerem a mesma coisa, em vez de duas formas que alguém precise
+// comparar.
 func restoreMarkRule() []string {
-	return []string{"ct", "mark", "!=", "0x0", "counter", "meta", "mark", "set", "ct", "mark"}
+	return []string{"ct", "mark", "!=", "0x0", "ct", "direction", "reply",
+		"counter", "meta", "mark", "set", "ct", "mark"}
 }
 
 // sanitizeWANMarks descarta entrada inválida e duplicada, preservando ordem

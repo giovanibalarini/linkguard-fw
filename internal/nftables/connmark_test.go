@@ -20,8 +20,31 @@ func TestConnMarkChainRules(t *testing.T) {
 	if got := strings.Join(regras[1], " "); got != `iifname "wan2" ct state new counter ct mark set 0x65` {
 		t.Errorf("memória da wan2: %q", got)
 	}
-	if got := strings.Join(regras[2], " "); got != `ct mark != 0x0 counter meta mark set ct mark` {
+	if got := strings.Join(regras[2], " "); got != `ct mark != 0x0 ct direction reply counter meta mark set ct mark` {
 		t.Errorf("restauração: %q", got)
+	}
+}
+
+func TestARestauracaoSoValeParaADirecaoDeResposta(t *testing.T) {
+	// O DEFEITO QUE ESTE TESTE PRENDE, e que era meu, entregue na #120.
+	//
+	// A chain de prerouting está antes do dstnat e vê as DUAS direções. Sem
+	// `ct direction reply`, o pacote que CHEGA da internet para um host da LAN
+	// também recebia a marca; o DNAT reescrevia o destino, o kernel decidia a
+	// rota já com a marca, casava a `ip rule fwmark` e caía na tabela do link —
+	// que só tem `default via <gateway da WAN>`. O SYN destinado ao host da LAN
+	// voltava para o provedor.
+	//
+	// Sintoma: o painel mostra o encaminhamento aplicado, a tradução está na
+	// chain de DNAT, e o servidor interno não responde de fora.
+	for _, r := range [][]string{restoreMarkRule(), outputMarkChainRules()[0]} {
+		got := strings.Join(r, " ")
+		if !strings.Contains(got, "ct direction reply") {
+			t.Errorf("restauração sem direção: %q — encaminhamento de porta volta pela WAN", got)
+		}
+		if strings.Contains(got, "ct direction original") {
+			t.Errorf("restauração casando a direção original: %q", got)
+		}
 	}
 }
 

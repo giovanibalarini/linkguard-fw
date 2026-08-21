@@ -2042,6 +2042,126 @@ PYEOF
       rm -f /tmp/duasfam.py; true" >/dev/null 2>&1
 }
 
+# ─── P. Encaminhamento de porta por WAN secundária (issues #120 e #82) ───────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA, E A LACUNA QUE ELA FECHA. A bateria H
+# valida o roteamento de resposta pingando o endereço da PRÓPRIA caixa
+# (10.66.0.1). Esse pacote é resolvido pela tabela `local`, de prioridade 0, e
+# nunca chega na `ip rule fwmark` — então H nunca exercitou TRAVESSIA.
+#
+# O defeito que passou por essa lacuna era meu, entregue na #120: a chain de
+# prerouting está em `priority mangle + 10` (-140), ANTES do dstnat (-100), e a
+# regra de restauração de marca não distinguia direção. O pacote que CHEGA da
+# internet para um host da LAN recebia a marca da WAN; o DNAT reescrevia o
+# destino; o kernel decidia a rota já com a marca posta, casava a
+# `ip rule fwmark N lookup N` e caía na tabela do link — que contém APENAS
+# `default via <gateway da WAN>`. O SYN destinado ao host da LAN voltava para o
+# provedor.
+#
+# Sintoma para quem opera: o painel mostra o encaminhamento aplicado, a tradução
+# está na chain de DNAT, e a câmera/NVR/servidor interno não responde de fora.
+# Nada no ruleset parece errado.
+battery_portforward_wan2() {
+  head_ "P. Encaminhamento de porta por WAN secundária"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria P não roda"; return; }
+
+  status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
+
+  # "Internet" de um lado (wanp), host da LAN do outro (lanp).
+  vm "pkill -f alvopf >/dev/null 2>&1
+      ip netns del wanp 2>/dev/null; ip netns del lanp 2>/dev/null
+      ip link del lg-wanp 2>/dev/null; ip link del lg-lanp 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add wanp && ip netns add lanp && \
+      ip link add lg-wanp type veth peer name wanp-far && \
+      ip link add lg-lanp type veth peer name lanp-far && \
+      ip link set wanp-far netns wanp && ip link set lanp-far netns lanp && \
+      ip addr add 10.77.0.1/24 dev lg-wanp && ip link set lg-wanp up && \
+      ip addr add 192.168.99.1/24 dev lg-lanp && ip link set lg-lanp up && \
+      ip netns exec wanp sh -c 'ip link set lo up; ip addr add 10.77.0.2/24 dev wanp-far; ip link set wanp-far up; ip route add default via 10.77.0.1' && \
+      ip netns exec lanp sh -c 'ip link set lo up; ip addr add 192.168.99.2/24 dev lanp-far; ip link set lanp-far up; ip route add default via 192.168.99.1'" >/dev/null 2>&1
+
+  # Servidor interno, o que o encaminhamento deve alcançar.
+  vm "cat > /tmp/alvopf.py <<'PYEOF'
+import http.server, socketserver
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        corpo = b'servidor interno'
+        self.send_response(200); self.send_header('Content-Length', str(len(corpo))); self.end_headers(); self.wfile.write(corpo)
+    def log_message(self, *a): pass
+socketserver.TCPServer.allow_reuse_address = True
+socketserver.TCPServer(('192.168.99.2', 18095), H).serve_forever()
+PYEOF
+      ip netns exec lanp setsid python3 /tmp/alvopf.py >/dev/null 2>&1 < /dev/null &
+      sleep 1" >/dev/null 2>&1
+
+  # P1 — a WAN entra pelo painel, e com ela a marcação de conexão e a tabela.
+  local st
+  st=$(status POST /api/links "$tok" '{"name":"WAN P","interface":"lg-wanp","gateway":"10.77.0.2","ip_address":"10.77.0.1","weight":1,"enabled":true,"monitor_hosts":"10.77.0.2","dns_test":"10.77.0.2"}')
+  if [[ "$st" == "200" || "$st" == "201" ]]; then ok "WAN de teste cadastrada pelo painel"
+  else bad "não consegui cadastrar a WAN de teste: $st"; return; fi
+  sleep 2
+  if vm "nft list chain inet linkguard conn_mark 2>/dev/null" | grep -q 'lg-wanp'; then
+    ok "a marcação de conexão pegou a WAN nova"
+  else bad "sem marcação de conexão para a WAN nova; a bateria não testaria o que quer"; fi
+
+  # P2 — sanidade ANTES do encaminhamento: sem regra de DNAT, não responde.
+  # Sem isto, um "responde" no P3 poderia ser qualquer outra coisa.
+  local antes
+  antes=$(vm "ip netns exec wanp curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://10.77.0.1:18095/ 2>/dev/null" | tr -d '\r')
+  if [[ "$antes" != "200" ]]; then ok "sem encaminhamento, a porta não responde de fora ('${antes:-nada}')"
+  else bad "a porta já respondia ANTES do encaminhamento: o P3 não prova nada"; fi
+
+  # P3 — A ASSERÇÃO CENTRAL: o encaminhamento entrega ao host da LAN.
+  st=$(status POST /api/portforward "$tok" '{"name":"servidor interno P","enabled":true,"proto":"tcp","interface":"lg-wanp","ext_port":18095,"dest_ip":"192.168.99.2","dest_port":18095}')
+  if [[ "$st" != "200" && "$st" != "201" ]]; then bad "não consegui criar o encaminhamento: $st"; return; fi
+  sleep 2
+  if ! vm "nft list chain inet linkguard dnat 2>/dev/null" | grep -q '192.168.99.2'; then
+    bad "a tradução não chegou na chain de DNAT" "$(vm "nft list chain inet linkguard dnat 2>/dev/null" | tr '\n' ' ' | head -c 200)"
+  fi
+  local corpo
+  corpo=$(vm "ip netns exec wanp curl -s --max-time 5 http://10.77.0.1:18095/ 2>/dev/null" | tr -d '\r')
+  if [[ "$corpo" == "servidor interno" ]]; then
+    ok "o encaminhamento entrega ao host da LAN pela WAN secundária"
+  else
+    bad "o encaminhamento não entregou ao host da LAN (resposta: '${corpo:-vazia}')" \
+        "marca restaurada na direção original manda o pacote de volta pela WAN; conn_mark: $(vm "nft list chain inet linkguard conn_mark 2>/dev/null" | tr -d '\r' | tr '\n' ' ' | head -c 220)"
+  fi
+
+  # P4 — e a regra de restauração casa SÓ a direção de resposta. É a asserção
+  # estrutural que explica o P3: se ela voltar a casar as duas direções, o P3
+  # quebra e esta linha diz por quê.
+  local restaura
+  restaura=$(vm "nft list chain inet linkguard conn_mark 2>/dev/null" | grep 'meta mark set ct mark' | tr -d '\r')
+  if grep -q 'ct direction reply' <<<"$restaura"; then
+    ok "a restauração de marca está limitada à direção de resposta"
+  else bad "a restauração de marca casa as duas direções" "$restaura"; fi
+
+  # Limpeza.
+  local pfid
+  pfid=$(body GET /api/portforward "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+ls=d if isinstance(d,list) else d.get('forwards',[])
+for f in ls:
+    if f.get('dest_ip')=='192.168.99.2': print(f.get('id',''))" 2>/dev/null)
+  [[ -n "$pfid" ]] && status DELETE /api/portforward "$tok" "{\"id\":\"$pfid\"}" >/dev/null 2>&1
+  local lid
+  lid=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l['interface']=='lg-wanp': print(l['id'])" 2>/dev/null)
+  [[ -n "$lid" ]] && status DELETE "/api/links/$lid" "$tok" >/dev/null 2>&1
+  vm "pkill -f alvopf >/dev/null 2>&1
+      ip netns del wanp 2>/dev/null; ip netns del lanp 2>/dev/null
+      ip link del lg-wanp 2>/dev/null; ip link del lg-lanp 2>/dev/null
+      rm -f /tmp/alvopf.py; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -2057,6 +2177,7 @@ battery_blocklog
 battery_ddns
 battery_waninput
 battery_bloqueio_familias
+battery_portforward_wan2
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"
