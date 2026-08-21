@@ -120,3 +120,33 @@ func TestEnsureDNSGuardDryRunNaoExecuta(t *testing.T) {
 		t.Errorf("dry-run executou: %v", ex.comandos)
 	}
 }
+
+func TestLigadoSemONecessarioEhErroENaoSucessoSilencioso(t *testing.T) {
+	// A ASSERÇÃO DA ISSUE #153. Sem interface da LAN ou sem resolver, nenhuma
+	// regra de captura era emitida — e EnsureDNSGuard devolvia SUCESSO. O admin
+	// ficava com "Forçar DNS local" marcado na tela e nenhuma captura no
+	// firewall: a confiança falsa que o comentário no topo deste arquivo diz ser
+	// pior do que não ter o recurso.
+	casos := map[string]DNSGuardConfig{
+		"sem interface": {ForceLocal: true, Resolver: "192.168.3.3"},
+		"sem resolver":  {ForceLocal: true, LANInterface: "br10"},
+		"resolver IPv6": {ForceLocal: true, LANInterface: "br10", Resolver: "fd00::3"},
+	}
+	for nome, cfg := range casos {
+		if err := PrerequisitosDoRedirecionamento(cfg); err == nil {
+			t.Errorf("%s: aceito em silêncio — a tela mostraria o controle ligado sem regra nenhuma", nome)
+		}
+	}
+	ok := DNSGuardConfig{ForceLocal: true, LANInterface: "br10", Resolver: "192.168.3.3"}
+	if err := PrerequisitosDoRedirecionamento(ok); err != nil {
+		t.Errorf("configuração completa recusada: %v", err)
+	}
+}
+
+func TestDesligadoNaoExigeNada(t *testing.T) {
+	// Desligar não pode exigir consertar o que está sendo desligado — mesma
+	// regra do DDNS (#129).
+	if r := dnsRedirectRules(DNSGuardConfig{ForceLocal: false}); r != nil {
+		t.Errorf("desligado emitiu regra: %v", r)
+	}
+}

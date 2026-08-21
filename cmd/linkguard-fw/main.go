@@ -955,6 +955,14 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			}
 			s.hostSvc.SincronizaBloqueiosPorMAC(ctx)
 
+			// Controle de fuga de DNS (#124), reconciliado no boot (#153). Era
+			// a única feature de firewall fora desta lista: o estado dela mora
+			// no banco e a tela lê de lá, então os toggles ficavam marcados
+			// mesmo quando as chains não existiam no kernel.
+			if err := handlers.ReconcileDNSGuardOnBoot(ctx, db, nftSvc); err != nil {
+				slog.Warn("não foi possível reconciliar o controle de fuga de DNS no boot", "err", err)
+			}
+
 			// Proteção de entrada das WANs (#119). Reconciliada em todo boot
 			// pela mesma razão da contabilidade: EnsureTable é no-op em máquina
 			// já provisionada, então sem isto uma instalação existente nunca
