@@ -936,8 +936,8 @@ fw.exposure.close:
   pt: "Fechar a gerência na internet"
   en: "Close management on the internet"
 fw.exposure.close.warn:
-  pt: "Se você depende de entrar por fora, vai perder o acesso — e é justamente por isso que esta mudança pede confirmação em 90 segundos. Sem a confirmação, ela se desfaz sozinha."
-  en: "If you rely on getting in from outside, you will lose access — which is exactly why this change asks for confirmation within 90 seconds. Without it, it undoes itself."
+  pt: "Fecha o painel E o SSH pela internet. Se você depende de entrar por fora, vai perder o acesso — e é por isso que esta mudança pede confirmação em 90 segundos. Sem a confirmação, ela se desfaz sozinha."
+  en: "This closes the panel AND SSH from the internet. If you rely on getting in from outside, you will lose access — which is why this change asks for confirmation within 90 seconds. Without it, it undoes itself."
 fw.exposure.open:
   pt: "Reabrir a gerência na internet"
   en: "Reopen management on the internet"

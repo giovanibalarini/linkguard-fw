@@ -2236,19 +2236,35 @@ print((json.loads(sys.stdin.read()).get('exposure') or {}).get('management_open_
 
   # Q2 — fechar. A resposta volta pela conexão já estabelecida, então o 200
   # chega mesmo com a porta fechando para conexões NOVAS.
+  # Q2b — a estrutura é afirmada ENQUANTO AINDA DÁ PARA PERGUNTAR.
+  local antes
+  antes=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
+  if grep -q 'tcp dport' <<<"$antes" && grep -q 'ct state new counter.*drop' <<<"$antes"; then
+    ok "antes de fechar: liberação e descarte estão os dois na chain"
+  else bad "a chain não está no estado esperado antes de fechar" "$(tr '\n' ' ' <<<"$antes" | head -c 200)"; fi
+
   local st
   st=$(status PUT /api/nftables/wan-management "$tok" '{"closed":true}')
   if [[ "$st" == "200" ]]; then ok "o painel aceitou fechar a gerência ($st)"
   else bad "não consegui fechar a gerência: $st"; return; fi
   sleep 2
 
-  # Q3 — a liberação sumiu da chain, e o descarte continua lá.
-  local chain
-  chain=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
-  if ! grep -q 'tcp dport' <<<"$chain"; then ok "a liberação de gerência saiu da chain"
-  else bad "a liberação continua na chain depois de fechar" "$(grep 'tcp dport' <<<"$chain")"; fi
-  if grep -q 'ct state new counter.*drop' <<<"$chain"; then ok "o descarte da WAN continua no lugar"
-  else bad "o descarte sumiu junto com a liberação"; fi
+  # Q3 — NÃO EXISTE, E A RAZÃO É A DESCOBERTA DESTA BATERIA.
+  #
+  # A primeira versão lia a chain aqui, com a gerência já fechada, para afirmar
+  # que a liberação saiu e o descarte ficou. Só que "gerência" inclui o SSH: o
+  # `vm` desta bateria entra pela porta 22 da MESMA WAN, e ele morre junto. A
+  # leitura devolvia string vazia, e sobre string vazia o `! grep -q 'tcp dport'`
+  # PASSA — a asserção "a liberação saiu" ficava verde por não ter medido nada,
+  # enquanto a irmã dela falhava e denunciava as duas.
+  #
+  # Ou seja: enquanto está fechado, esta bateria não alcança a máquina para
+  # perguntar nada. É por isso que a estrutura da chain é afirmada ANTES (Q2b) e
+  # DEPOIS da reversão (Q6b), e o que se mede DURANTE é só o comportamento — que
+  # é justamente o que não depende de alcançar a máquina.
+  #
+  # Isso também é um fato do produto, e não um detalhe de teste: fechar a
+  # gerência fecha o SSH junto. A tela diz isso com todas as letras.
 
   # Q4 — A TRANCA, MEDIDA: uma conexão NOVA ao painel não passa mais.
   local code
@@ -2285,6 +2301,14 @@ import json,sys
 print((json.loads(sys.stdin.read()).get('exposure') or {}).get('management_open_on_wan'))" 2>/dev/null)
   if [[ "$depois" == "True" ]]; then ok "a tela voltou a dizer que a gerência está aberta"
   else bad "a chain voltou mas a tela ainda diz fechada ('$depois'): banco e firewall discordam"; fi
+
+  # Q6b — e a chain voltou INTEIRA, não só a liberação. Agora dá para perguntar
+  # de novo, que é o motivo de esta asserção estar aqui e não lá em cima.
+  local final
+  final=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
+  if grep -q 'tcp dport' <<<"$final" && grep -q 'ct state new counter.*drop' <<<"$final"; then
+    ok "depois da reversão: liberação de volta E descarte preservado"
+  else bad "a chain não voltou inteira depois da reversão" "$(tr '\n' ' ' <<<"$final" | head -c 200)"; fi
 }
 
 battery_fresh
