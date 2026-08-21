@@ -327,3 +327,38 @@ func TestApplyReportaFalhaQuandoNaoConsegueVerificar(t *testing.T) {
 		t.Fatal("não deu para verificar a instalação e Apply respondeu sucesso")
 	}
 }
+
+// TestVersaoNovaSemPacoteNaoEhEstarAtualizado é a regressão do que o admin
+// encontrou na prática.
+//
+// "Não há versão nova" e "há versão nova, mas o pacote para esta arquitetura
+// ainda não subiu" davam os dois `update_available: false` — e a tela respondia
+// "está atualizado", em verde, LOGO ABAIXO de mostrar "atual v1.0.140 / última
+// v1.0.141". Duas afirmações contraditórias na mesma tela, e nada para clicar.
+//
+// A janela é curta e é justamente a que o admin pega: entre o release ser criado
+// e os .deb terminarem de subir.
+func TestVersaoNovaSemPacoteNaoEhEstarAtualizado(t *testing.T) {
+	rel := Release{TagName: "v1.0.141", HTMLURL: "https://exemplo/rel"}
+	s := &Service{current: "v1.0.140"}
+
+	// Sem asset nenhum: versão nova existe, pacote não.
+	res := CheckResult{
+		Current:         normalize(s.current),
+		Latest:          normalize(rel.TagName),
+		UpdateAvailable: compareVersions(normalize(rel.TagName), normalize(s.current)) > 0 && s.debURL(rel) != "",
+		PackageMissing:  compareVersions(normalize(rel.TagName), normalize(s.current)) > 0 && s.debURL(rel) == "",
+	}
+	if res.UpdateAvailable {
+		t.Error("ofereceu instalar sem pacote publicado")
+	}
+	if !res.PackageMissing {
+		t.Error("a tela diria 'está atualizado' com uma versão mais nova disponível")
+	}
+
+	// Já na última versão: nenhum dos dois.
+	mesma := &Service{current: "v1.0.141"}
+	if compareVersions(normalize(rel.TagName), normalize(mesma.current)) > 0 {
+		t.Error("versão igual foi tratada como mais nova")
+	}
+}

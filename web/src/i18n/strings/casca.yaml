@@ -152,6 +152,14 @@ shell.update.notes:
 shell.update.upToDate:
   pt: "Você está na versão mais recente."
   en: "You are running the latest version."
+# O terceiro estado do verificador de atualização: existe versão nova, mas o
+# pacote para esta arquitetura ainda não foi publicado. Sem esta mensagem, a
+# tela dizia "está atualizado" em verde logo abaixo de mostrar duas versões
+# diferentes — e o admin ficava sem nada para clicar e sem saber por quê.
+shell.update.packageMissing:
+  pt: "Existe uma versão mais nova, mas o pacote para esta arquitetura ainda não foi publicado. Isso costuma durar poucos minutos depois de um lançamento — verifique de novo em instantes."
+  en: "A newer version exists, but the package for this architecture has not been published yet. This usually lasts a few minutes after a release — check again shortly."
+
 shell.update.confirmApply:
   pt: "Atualizar para {version}? O serviço vai reiniciar (alguns segundos de indisponibilidade)."
   en: "Update to {version}? The service restarts, so the panel is unavailable for a few seconds."

@@ -48,6 +48,9 @@ type CheckResult struct {
 	UpdateAvailable bool   `json:"update_available"`
 	NotesURL        string `json:"notes_url"`
 	DebURL          string `json:"deb_url"`
+	// PackageMissing diz que existe versão mais nova sem pacote para esta
+	// arquitetura. Ver Check.
+	PackageMissing bool `json:"package_missing"`
 }
 
 // spoolDir é onde o .deb baixado é gravado, e NÃO é /tmp de propósito.
@@ -135,12 +138,26 @@ func (s *Service) Check(ctx context.Context) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 	deb := s.debURL(rel)
+	maisNova := compareVersions(normalize(rel.TagName), normalize(s.current)) > 0
 	res := CheckResult{
 		Current:         normalize(s.current),
 		Latest:          normalize(rel.TagName),
-		UpdateAvailable: compareVersions(normalize(rel.TagName), normalize(s.current)) > 0 && deb != "",
+		UpdateAvailable: maisNova && deb != "",
 		NotesURL:        rel.HTMLURL,
 		DebURL:          deb,
+		// AS DUAS RAZÕES DE NÃO HAVER O QUE INSTALAR SÃO DIFERENTES, e colapsá-las
+		// num booleano só fazia a tela mentir.
+		//
+		// "Não há versão nova" e "há versão nova, mas o pacote para esta
+		// arquitetura ainda não foi publicado" davam os dois `false` — e o
+		// painel respondia "está atualizado", em verde, LOGO ABAIXO de mostrar
+		// "atual v1.0.140 / última v1.0.141". Duas afirmações contraditórias na
+		// mesma tela.
+		//
+		// A janela em que isso acontece é curta e é justamente a que o admin
+		// pega: entre o release ser criado e os .deb terminarem de subir. Foi o
+		// que aconteceu quando pedi para clicarem no botão.
+		PackageMissing: maisNova && deb == "",
 	}
 	return res, nil
 }

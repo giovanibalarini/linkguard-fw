@@ -10,6 +10,7 @@ interface CheckResult {
   update_available: boolean;
   notes_url: string;
   deb_url: string;
+  package_missing: boolean;
 }
 
 /**
@@ -145,6 +146,24 @@ export default function UpdateChecker() {
                   </a>
                 )}
               </div>
+            </div>
+          ) : res.package_missing ? (
+            /* TRÊS ESTADOS, E NÃO DOIS. "Não há versão nova" e "há versão nova
+               sem pacote para esta arquitetura" davam os dois o mesmo `false`,
+               e a tela respondia "está atualizado" em verde LOGO ABAIXO de
+               mostrar duas versões diferentes. A janela em que isso acontece é
+               curta e é justamente a que o admin pega: entre o release ser
+               criado e os pacotes terminarem de subir. */
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+              <p className="text-amber-300 text-sm flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                {t('shell.update.packageMissing')}
+              </p>
+              {res.notes_url && (
+                <a href={res.notes_url} target="_blank" rel="noreferrer" className="text-blue-400 text-sm inline-flex items-center gap-1 hover:underline mt-2">
+                  {t('shell.update.notes')} <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
             </div>
           ) : (
             <p className="text-green-400 text-sm flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> {t('shell.update.upToDate')}</p>
