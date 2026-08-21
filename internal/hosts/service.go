@@ -218,10 +218,25 @@ func (s *Service) SetBlocked(ctx context.Context, mac string, blocked bool) erro
 	//
 	// Best-effort como o resto: elemento duplicado ou ausente não é falha dura,
 	// porque a flag no banco é a fonte da verdade.
+	// O ERRO AQUI NÃO PODE SER ENGOLIDO. Desde a fase 2 da #119 esta é a ÚNICA
+	// aplicação para um host sem IPv4 conhecido, e a única que vale em IPv6
+	// para todos os outros. Um `_, _ =` aqui é a tela dizendo "bloqueado" sobre
+	// um elemento que o nft recusou — que é exatamente o defeito que a fase 2
+	// existe para matar, cometido no caminho que a corrige.
+	var errMAC error
+	benigno := func(error) bool { return false }
 	if blocked {
-		_, _ = s.nft.BlockMAC(ctx, mac)
+		_, errMAC = s.nft.BlockMAC(ctx, mac)
+		// Somar o que já está lá é no-op, não falha.
+		benigno = func(e error) bool { return strings.Contains(strings.ToLower(e.Error()), "file exists") }
 	} else {
-		_, _ = s.nft.UnblockMAC(ctx, mac)
+		_, errMAC = s.nft.UnblockMAC(ctx, mac)
+		// Tirar o que já não está é no-op, não falha.
+		benigno = func(e error) bool { return strings.Contains(strings.ToLower(e.Error()), "no such file") }
+	}
+	if errMAC != nil && !benigno(errMAC) {
+		slog.Error("não foi possível aplicar o bloqueio por endereço físico no firewall; a tela vai mostrar um bloqueio que não está valendo em IPv6",
+			"mac", mac, "bloqueado", blocked, "err", errMAC)
 	}
 
 	ip := s.ipForMAC(mac)
@@ -328,3 +343,15 @@ func hostDeVizinho(n Neighbor, meta map[string]storage.HostMetadata) Host {
 	}
 	return h
 }
+
+// O RUÍDO BENIGNO É SEPARADO POR OPERAÇÃO, E NÃO PELA MENSAGEM, e a diferença
+// é o defeito de hoje.
+//
+// O nft responde "No such file or directory" tanto para "esse elemento não está
+// no set" — no-op legítimo de um desbloqueio repetido — quanto para "esse SET
+// não existe", que foi exatamente a falha que escapou para produção na v1.0.147.
+// Tratar a mensagem como benigna nos dois casos silenciaria de novo o bug que
+// este trecho existe para denunciar.
+//
+// Somar já-existente só acontece no bloqueio; tirar já-ausente só no
+// desbloqueio. Cada caminho aceita a sua, e nada mais.

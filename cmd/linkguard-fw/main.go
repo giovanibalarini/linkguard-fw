@@ -555,8 +555,14 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		// A porta do painel NÃO é fixa: 8080 é o default do binário, 9997 o do
 		// .deb, e quem põe proxy usa outra. Fixá-la aqui deixaria o anti-lockout
 		// mudo justamente em quem não usa o padrão.
+		// A porta do SSH sai de onde o sshd está ESCUTANDO, não de um literal.
+		// Fixá-la em 22 era o mesmo erro que o comentário acima denuncia para a
+		// porta do painel, cometido para o outro serviço: numa caixa com
+		// `Port 2222`, a regra que existe para não trancar o admin descartaria
+		// exatamente a porta por onde ele entra.
 		return nftables.AdminAccess{
 			PanelPort:   cfg.Port,
+			SSHPorts:    system.SSHPorts(context.Background(), exec),
 			LANNetworks: redes,
 			WANIsDHCP:   anyWANIsDHCP(db),
 		}, nil
@@ -933,6 +939,15 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// então numa caixa já instalada os hosts bloqueados precisam ser
 			// recolocados nele — senão o bloqueio deles continuaria valendo só
 			// para IPv4, com a tela dizendo "bloqueado".
+			// A set precisa existir ANTES da sincronização: quem a cria no
+			// caminho normal é reconcileGroups, que só roda mais adiante neste
+			// mesmo boot. Sem esta linha, no primeiro boot depois do upgrade
+			// TODOS os elementos são recusados pelo nft e o erro é engolido —
+			// a set fica vazia e o bloqueio volta a valer só para IPv4, sem uma
+			// linha no journal dizendo por quê.
+			if err := s.nftSvc.EnsureBlockedMACSet(ctx); err != nil {
+				slog.Warn("não foi possível garantir a set de endereços físicos bloqueados no boot", "err", err)
+			}
 			s.hostSvc.SincronizaBloqueiosPorMAC(ctx)
 
 			// Proteção de entrada das WANs (#119). Reconciliada em todo boot

@@ -199,12 +199,12 @@ func TestPortasDeGerenciaNuncaSaoDescartadas(t *testing.T) {
 func TestPortaDoPainelNaoEhFixa(t *testing.T) {
 	// 8080 é o default do binário, 9997 o do .deb, e quem põe proxy usa outra.
 	// Fixá-la trancaria do lado de fora justamente quem não usa o padrão.
-	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPort: 2222, PanelPort: 8443})), "\n")
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 8443})), "\n")
 	if !strings.Contains(regras, "{ 2222, 8443 }") {
 		t.Errorf("as portas configuradas não foram usadas:\n%s", regras)
 	}
 	// SSH e painel na MESMA porta não pode gerar um set com a porta repetida.
-	uma := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPort: 9997, PanelPort: 9997})), "\n")
+	uma := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{9997}, PanelPort: 9997})), "\n")
 	if !strings.Contains(uma, "{ 9997 }") {
 		t.Errorf("porta repetida no set: %s", uma)
 	}
@@ -306,5 +306,47 @@ func TestEnderecoFisicoTortoNaoChegaAoNft(t *testing.T) {
 	}
 	if got, err := macParaNft("AA:BB:CC:DD:EE:FF"); err != nil || got != "aa:bb:cc:dd:ee:ff" {
 		t.Errorf("maiúsculas: got %q, err %v", got, err)
+	}
+}
+
+func TestAPortaDoSSHNaoEhFixaEmVinteEDois(t *testing.T) {
+	// O DEFEITO QUE ESTE TESTE PRENDE. A liberação de gerência existe para a
+	// proteção de entrada não trancar o admin do lado de fora. Ela usava o
+	// literal 22 — o MESMO erro que o comentário de SurvivalRules já denuncia
+	// para a porta do painel ("fixá-la deixaria o anti-lockout mudo justamente
+	// em quem não usa o padrão"), cometido na linha de baixo para o outro
+	// serviço. Numa caixa com `Port 2222` no sshd_config, a regra que existe
+	// para não trancar ninguém descartava a porta por onde o admin entra.
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997})), "\n")
+	if !strings.Contains(regras, "{ 2222, 9997 }") {
+		t.Errorf("a porta real do SSH não foi liberada:\n%s", regras)
+	}
+	// A comparação é sobre o SET INTEIRO, e não sobre o texto solto: procurar
+	// "22," casaria dentro de "2222," e o teste passaria a mentir sobre si
+	// mesmo. Foi o que aconteceu na primeira versão desta asserção.
+	for _, r := range linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997})) {
+		i := strings.Index(r, "tcp dport ")
+		if i < 0 {
+			continue
+		}
+		if depois := r[i+len("tcp dport "):]; depois != "{ 2222, 9997 } counter accept" {
+			t.Errorf("o set de portas de gerência não é exatamente o esperado: %q", depois)
+		}
+	}
+
+	// sshd com mais de uma porta: as duas entram. Liberar só uma tranca metade
+	// das sessões, e a metade de fora é a que o admin ainda não migrou.
+	duas := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{22, 2222}, PanelPort: 9997})), "\n")
+	for _, p := range []string{"22", "2222", "9997"} {
+		if !strings.Contains(duas, p) {
+			t.Errorf("porta %s não foi liberada com sshd em duas portas:\n%s", p, duas)
+		}
+	}
+
+	// Não saber onde o sshd escuta cai no padrão: não liberar nada seria
+	// exatamente trancar o admin.
+	vazio := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997})), "\n")
+	if !strings.Contains(vazio, "{ 22, 9997 }") {
+		t.Errorf("sem saber a porta do SSH, o padrão não foi liberado:\n%s", vazio)
 	}
 }
