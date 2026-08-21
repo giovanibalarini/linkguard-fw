@@ -87,7 +87,7 @@ import (
 // nasce sem link nenhum, o resultado é byte a byte o de antes. Um firewall que
 // descartasse "tudo que vem da WAN" sem saber quais são as WANs descartaria
 // nada ou tudo, e as duas respostas estão erradas.
-func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada bool) [][]string {
+func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada, contencaoLigada bool) [][]string {
 	nomes := make([]string, 0, len(wanIfaces))
 	vistos := map[string]bool{}
 	for _, iface := range wanIfaces {
@@ -205,7 +205,16 @@ func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada bool)
 			// WAN já cuida de tudo, e um set que nada alimenta é enfeite com
 			// cara de proteção. Foi um teste que apontou isso — a asserção de
 			// que fechar a gerência tira TODA linha de `tcp dport` da chain.
-			regras = append(regras, abuseRules(wanIfaces, portas)...)
+			// A CONTENÇÃO É OPT-IN (#127), e o padrão desligado é correção.
+			//
+			// Ligada por padrão, ela trancou a VM de validação em uma execução:
+			// o próprio arnês faz centenas de chamadas de API, uma conexão nova
+			// cada, e excedeu a taxa. No nível do firewall não dá para
+			// distinguir automação legítima de varredura só pela taxa — quem usa
+			// a API de fora parece igual a um scanner.
+			if contencaoLigada {
+				regras = append(regras, abuseRules(wanIfaces, portas)...)
+			}
 			regras = append(regras, []string{"iifname", set, "tcp", "dport", portas, "counter", "accept"})
 		}
 	}

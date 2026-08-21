@@ -42,6 +42,20 @@ const (
 	// dizendo o que ele está fechando — e desfeita sozinha se ele perder o
 	// acesso ao fechar.
 	WANMgmtClosedSettingKey = "firewall_wan_mgmt_closed"
+	// EdgeContainmentSettingKey liga a contenção de tentativa repetida na
+	// borda (#127). PADRÃO DESLIGADO, e isso é uma correção.
+	//
+	// Ela nasceu ligada, e a VM mostrou o custo em uma execução: o próprio
+	// arnês de validação — centenas de chamadas de API, uma conexão nova cada —
+	// excedeu a taxa e se conteve sozinho. SSH e painel mortos, e a suíte
+	// inteira caiu junto.
+	//
+	// A lição não é "a taxa estava baixa". É que NO NÍVEL DO FIREWALL não dá
+	// para distinguir automação legítima de varredura só pela taxa: quem usa a
+	// API de fora, um script de inventário, um monitor externo — todos parecem
+	// iguais a um scanner. E este produto já decidiu, no survival.go, que não
+	// trancar o admin vale mais do que fechar tudo.
+	EdgeContainmentSettingKey = "firewall_edge_containment"
 )
 
 // InputPolicy devolve a política padrão configurada da chain input.
@@ -101,6 +115,28 @@ func (s *Service) SetWANMgmtClosed(fechado bool) error {
 		v = "1"
 	}
 	return s.db.SetSetting(WANMgmtClosedSettingKey, v)
+}
+
+// EdgeContainment diz se a contenção de tentativa repetida está ligada.
+//
+// Chave ausente é DESLIGADO. Erro de leitura propaga, como nas outras: um SELECT
+// que falhou não é "o admin não ligou", e obedecer a esse silêncio tiraria uma
+// proteção que ele pediu.
+func (s *Service) EdgeContainment() (bool, error) {
+	raw, err := s.db.GetSetting(EdgeContainmentSettingKey)
+	if err != nil {
+		return false, fmt.Errorf("ler a contenção de borda: %w", err)
+	}
+	return raw == "1", nil
+}
+
+// SetEdgeContainment grava a decisão.
+func (s *Service) SetEdgeContainment(ligada bool) error {
+	v := "0"
+	if ligada {
+		v = "1"
+	}
+	return s.db.SetSetting(EdgeContainmentSettingKey, v)
 }
 
 // ForwardPolicy devolve a política padrão da chain forward — o tráfego que

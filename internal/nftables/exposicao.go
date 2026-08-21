@@ -56,6 +56,9 @@ type Exposure struct {
 	AddressRulesIPv4Only bool `json:"address_rules_ipv4_only"`
 	// HostBlockCoversIPv6 é a exceção da fase 2, dita junto de propósito.
 	HostBlockCoversIPv6 bool `json:"host_block_covers_ipv6"`
+	// EdgeContainment diz se a contenção de tentativa repetida está ligada
+	// (#127). Desligada por padrão — ver EdgeContainmentSettingKey.
+	EdgeContainment bool `json:"edge_containment"`
 	// Error explica por que o retrato veio incompleto. A tela mostra o aviso em
 	// vez de desenhar meia verdade como se fosse a inteira — mesmo contrato de
 	// survivalView.Error.
@@ -107,6 +110,9 @@ func (s *Service) ExposureNow() Exposure {
 	if err != nil {
 		e.Error = err.Error()
 		return e
+	}
+	if lig, err := s.edgeContainment(); err == nil {
+		e.EdgeContainment = lig
 	}
 	e.ManagementOpenOnWAN = !fechada
 	// As portas saem MESMO FECHADAS: é o que a tela usa para dizer "estas

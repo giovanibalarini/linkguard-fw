@@ -40,6 +40,7 @@ interface Exposure {
   ipv6_forwarding: 'on' | 'off' | 'unknown';
   address_rules_ipv4_only: boolean;
   host_block_covers_ipv6: boolean;
+  edge_containment: boolean;
   error?: string;
 }
 
@@ -362,6 +363,29 @@ function CartaoExposicao({ e, canWrite, onMsg, onMudou }: {
           <p className="text-[11px] text-gray-500 mt-2">
             {t(e.management_open_on_wan ? 'fw.exposure.close.warn' : 'fw.exposure.open.warn')}
           </p>
+
+          {/* A contenção só faz sentido com a gerência ABERTA: fechada, não há
+              o que conter — o descarte genérico da WAN já cuida de tudo. */}
+          {e.management_open_on_wan && (
+            <div className="mt-3 pt-3 border-t border-gray-800">
+              <button
+                onClick={async () => {
+                  setSalvando(true);
+                  try {
+                    await client.put('/api/nftables/edge-containment', { enabled: !e.edge_containment });
+                    onMudou();
+                  } catch { onMsg(t('fw.exposure.error'), 'error'); } finally { setSalvando(false); }
+                }}
+                disabled={salvando}
+                className="btn-secondary text-xs disabled:opacity-50"
+              >
+                {t(e.edge_containment ? 'fw.containment.off' : 'fw.containment.on')}
+              </button>
+              <p className="text-[11px] text-gray-500 mt-2">
+                {t(e.edge_containment ? 'fw.containment.on.warn' : 'fw.containment.off.warn')}
+              </p>
+            </div>
+          )}
         </div>
       )}
     </Panel>

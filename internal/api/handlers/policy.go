@@ -230,3 +230,34 @@ func (h *NftablesHandler) SetWANManagement(w http.ResponseWriter, r *http.Reques
 	}
 	h.GetInputPolicy(w, r)
 }
+
+// SetEdgeContainment liga ou desliga a contenção de tentativa repetida na borda
+// (#127).
+//
+// NÃO passa pela janela de confirmação, e a diferença em relação ao fechamento
+// da gerência é real: fechar corta o acesso na hora, e a janela existe para
+// desfazer isso. A contenção só corta SE alguém exceder a taxa depois — a janela
+// de 90 segundos teria vencido muito antes, e pedir confirmação de um risco que
+// ainda não se manifestou ensina a confirmar sem ler.
+//
+// A saída de emergência aqui é outra: quem está contido aparece no painel e pode
+// ser liberado num clique, e a contenção expira sozinha em uma hora.
+func (h *NftablesHandler) SetEdgeContainment(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	if err := h.fr.SetEdgeContainment(b.Enabled); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if err := h.svc.ReconcileInputProtection(r.Context()); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	auditAction(h.db, r, "nft.edge_containment.set", "input", map[bool]string{true: "ligada", false: "desligada"}[b.Enabled])
+	h.GetInputPolicy(w, r)
+}

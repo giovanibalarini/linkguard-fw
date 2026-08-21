@@ -156,6 +156,26 @@ func (s *Service) wanMgmtClosed() (bool, error) {
 	return fechada, nil
 }
 
+// SetEdgeContainmentSource liga a fonte da contenção de tentativa repetida.
+//
+// Ausente resolve para DESLIGADA, sem erro: é o estado de todo binário anterior
+// e o que não tranca ninguém. Erro de leitura PROPAGA — um SELECT que falhou não
+// é "o admin não ligou", e obedecê-lo tiraria a proteção de quem a pediu.
+func (s *Service) SetEdgeContainmentSource(src func() (bool, error)) {
+	s.edgeContainmentSource = src
+}
+
+func (s *Service) edgeContainment() (bool, error) {
+	if s.edgeContainmentSource == nil {
+		return false, nil
+	}
+	ligada, err := s.edgeContainmentSource()
+	if err != nil {
+		return false, fmt.Errorf("ler a contenção de borda: %w", err)
+	}
+	return ligada, nil
+}
+
 // SetAdminAccessSource liga a fonte do acesso administrativo — as portas, as
 // redes da LAN e se alguma WAN é por DHCP.
 //

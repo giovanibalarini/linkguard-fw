@@ -17,15 +17,15 @@ import (
 var gerencia = AdminAccess{PanelPort: 9997}
 
 func TestSemWANConhecidaNadaEhEmitido(t *testing.T) {
-	if r := WANInputRules(nil, gerencia, false); r != nil {
+	if r := WANInputRules(nil, gerencia, false, true); r != nil {
 		t.Errorf("lista vazia gerou regras: %v", linhas(r))
 	}
-	if r := WANInputRules([]string{"", ""}, gerencia, false); r != nil {
+	if r := WANInputRules([]string{"", ""}, gerencia, false, true); r != nil {
 		t.Errorf("só nomes vazios geraram regras: %v", linhas(r))
 	}
 
 	// E a chain inteira continua a de sempre.
-	got := linhas(inputChainRules(nil, nil, false, PolicyAccept, AdminAccess{}, nil, false))
+	got := linhas(inputChainRules(nil, nil, false, PolicyAccept, AdminAccess{}, nil, false, true))
 	querida := []string{"ct state related counter accept"}
 	if len(got) != 1 || got[0] != querida[0] {
 		t.Errorf("a chain input mudou para quem não tem WAN cadastrada:\n  veio     %v\n  esperada %v", got, querida)
@@ -39,7 +39,7 @@ func TestODescarteCasaSomenteConexaoNova(t *testing.T) {
 	// morrem todos de uma vez, sem nada no ruleset dizendo por quê. É
 	// exatamente o problema que trava a issue #78, e a razão de esta entrega
 	// não precisar resolvê-lo.
-	regras := linhas(WANInputRules([]string{"wan0"}, gerencia, false))
+	regras := linhas(WANInputRules([]string{"wan0"}, gerencia, false, true))
 	drop := regras[len(regras)-1]
 	if !strings.Contains(drop, "ct state new") {
 		t.Fatalf("o descarte não está limitado a conexão nova: %q", drop)
@@ -56,7 +56,7 @@ func TestOAdminNaoPodeSerTrancadoForaPelaLAN(t *testing.T) {
 	// Nenhuma regra desta lista pode casar tráfego que não venha de uma WAN.
 	// É esta propriedade — e não um teste de 90 segundos — que torna seguro
 	// ligar a proteção sem o admin pedir.
-	regras := linhas(WANInputRules([]string{"wan0", "wan1"}, gerencia, false))
+	regras := linhas(WANInputRules([]string{"wan0", "wan1"}, gerencia, false, true))
 	for _, r := range regras {
 		if strings.HasPrefix(r, "iifname {") {
 			continue
@@ -88,7 +88,7 @@ func TestOAdminNaoPodeSerTrancadoForaPelaLAN(t *testing.T) {
 }
 
 func TestLiberacoesQueEvitamQuebraDiasDepois(t *testing.T) {
-	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, gerencia, false)), "\n")
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, gerencia, false, true)), "\n")
 	obrigatorias := map[string]string{
 		"nd-router-advert":   "sem RA a rota padrão IPv6 expira e o IPv6 morre ~30min depois do deploy",
 		"nd-neighbor-advert": "sem vizinhança IPv6 nada de IPv6 funciona",
@@ -110,7 +110,7 @@ func TestODescarteVemDepoisDeTudo(t *testing.T) {
 	// algo vindo da WAN seja avaliado antes. Emiti-lo acima anularia em
 	// silêncio uma decisão explícita do admin.
 	g := StoredGroup{ID: "g1", Name: "libera", ChainName: "grp_libera", Enabled: true, Position: 1, Scope: ScopeInput}
-	regras := linhas(inputChainRules([]StoredGroup{g}, nil, false, PolicyAccept, AdminAccess{}, []string{"wan0"}, false))
+	regras := linhas(inputChainRules([]StoredGroup{g}, nil, false, PolicyAccept, AdminAccess{}, []string{"wan0"}, false, true))
 
 	ultima := regras[len(regras)-1]
 	if !strings.Contains(ultima, "ct state new counter drop") {
@@ -132,7 +132,7 @@ func TestODescarteVemDepoisDeTudo(t *testing.T) {
 
 func TestNomeDeInterfaceInseguroEhIgnorado(t *testing.T) {
 	// O nome sai do banco e é interpolado no argv do nft.
-	regras := linhas(WANInputRules([]string{"wan0; drop", "wan1"}, gerencia, false))
+	regras := linhas(WANInputRules([]string{"wan0; drop", "wan1"}, gerencia, false, true))
 	junto := strings.Join(regras, "\n")
 	if strings.Contains(junto, "drop; ") || strings.Contains(junto, "wan0") {
 		t.Errorf("nome inseguro chegou ao ruleset:\n%s", junto)
@@ -142,13 +142,13 @@ func TestNomeDeInterfaceInseguroEhIgnorado(t *testing.T) {
 	}
 	// Só nomes ruins não pode virar uma chain sem proteção NEM uma regra torta:
 	// vira lista vazia, e o log já registrou o motivo.
-	if r := WANInputRules([]string{"wan0; drop"}, gerencia, false); r != nil {
+	if r := WANInputRules([]string{"wan0; drop"}, gerencia, false, true); r != nil {
 		t.Errorf("nome inseguro sozinho gerou regra: %v", linhas(r))
 	}
 }
 
 func TestInterfaceRepetidaNaoViraRegraRepetida(t *testing.T) {
-	regras := linhas(WANInputRules([]string{"wan0", "wan0"}, gerencia, false))
+	regras := linhas(WANInputRules([]string{"wan0", "wan0"}, gerencia, false, true))
 	if n := strings.Count(regras[0], `"wan0"`); n != 1 {
 		t.Errorf("a interface aparece %d vezes no set: %q", n, regras[0])
 	}
@@ -199,7 +199,7 @@ func TestPortasDeGerenciaNuncaSaoDescartadas(t *testing.T) {
 	// o auto-detect cadastra como WAN a interface que tem a rota padrão, e a
 	// reconciliação seguinte descarta a porta 22 e a do painel. SSH e painel
 	// mortos, sem nada na tela e sem caminho de volta.
-	regras := linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997}, false))
+	regras := linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997}, false, true))
 	var libera string
 	for _, r := range regras {
 		if strings.Contains(r, "tcp dport") {
@@ -223,12 +223,12 @@ func TestPortasDeGerenciaNuncaSaoDescartadas(t *testing.T) {
 func TestPortaDoPainelNaoEhFixa(t *testing.T) {
 	// 8080 é o default do binário, 9997 o do .deb, e quem põe proxy usa outra.
 	// Fixá-la trancaria do lado de fora justamente quem não usa o padrão.
-	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 8443}, false)), "\n")
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 8443}, false, true)), "\n")
 	if !strings.Contains(regras, "{ 2222, 8443 }") {
 		t.Errorf("as portas configuradas não foram usadas:\n%s", regras)
 	}
 	// SSH e painel na MESMA porta não pode gerar um set com a porta repetida.
-	uma := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{9997}, PanelPort: 9997}, false)), "\n")
+	uma := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{9997}, PanelPort: 9997}, false, true)), "\n")
 	if !strings.Contains(uma, "{ 9997 }") {
 		t.Errorf("porta repetida no set: %s", uma)
 	}
@@ -258,7 +258,7 @@ func TestPingNaWANTemTaxaLimitadaENaoEnfeite(t *testing.T) {
 	// `limit rate` é um CASAMENTO, não um modificador (lição da #122). Se o
 	// limite estiver na regra errada, ou o ping fica sem limite nenhum, ou o
 	// excedente é aceito em vez de cair no descarte.
-	regras := linhas(WANInputRules([]string{"wan0"}, gerencia, false))
+	regras := linhas(WANInputRules([]string{"wan0"}, gerencia, false, true))
 	var echos []string
 	for _, r := range regras {
 		if strings.Contains(r, "echo-request") {
@@ -341,14 +341,14 @@ func TestAPortaDoSSHNaoEhFixaEmVinteEDois(t *testing.T) {
 	// em quem não usa o padrão"), cometido na linha de baixo para o outro
 	// serviço. Numa caixa com `Port 2222` no sshd_config, a regra que existe
 	// para não trancar ninguém descartava a porta por onde o admin entra.
-	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997}, false)), "\n")
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997}, false, true)), "\n")
 	if !strings.Contains(regras, "{ 2222, 9997 }") {
 		t.Errorf("a porta real do SSH não foi liberada:\n%s", regras)
 	}
 	// A comparação é sobre o SET INTEIRO, e não sobre o texto solto: procurar
 	// "22," casaria dentro de "2222," e o teste passaria a mentir sobre si
 	// mesmo. Foi o que aconteceu na primeira versão desta asserção.
-	for _, r := range linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997}, false)) {
+	for _, r := range linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997}, false, true)) {
 		// Só a linha de LIBERAÇÃO. A de contenção (#127) também casa
 		// `tcp dport`, e compará-la aqui mediria outra coisa.
 		if !strings.HasSuffix(r, "counter accept") {
@@ -365,7 +365,7 @@ func TestAPortaDoSSHNaoEhFixaEmVinteEDois(t *testing.T) {
 
 	// sshd com mais de uma porta: as duas entram. Liberar só uma tranca metade
 	// das sessões, e a metade de fora é a que o admin ainda não migrou.
-	duas := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{22, 2222}, PanelPort: 9997}, false)), "\n")
+	duas := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{22, 2222}, PanelPort: 9997}, false, true)), "\n")
 	for _, p := range []string{"22", "2222", "9997"} {
 		if !strings.Contains(duas, p) {
 			t.Errorf("porta %s não foi liberada com sshd em duas portas:\n%s", p, duas)
@@ -374,7 +374,7 @@ func TestAPortaDoSSHNaoEhFixaEmVinteEDois(t *testing.T) {
 
 	// Não saber onde o sshd escuta cai no padrão: não liberar nada seria
 	// exatamente trancar o admin.
-	vazio := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997}, false)), "\n")
+	vazio := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997}, false, true)), "\n")
 	if !strings.Contains(vazio, "{ 22, 9997 }") {
 		t.Errorf("sem saber a porta do SSH, o padrão não foi liberado:\n%s", vazio)
 	}
@@ -389,8 +389,8 @@ func TestFecharAGerenciaTiraSoALiberacaoDaWAN(t *testing.T) {
 	// internet e perdendo o acesso pela LAN junto.
 	acesso := AdminAccess{SSHPorts: []int{22}, PanelPort: 9997}
 
-	aberta := linhas(WANInputRules([]string{"wan0"}, acesso, false))
-	fechada := linhas(WANInputRules([]string{"wan0"}, acesso, true))
+	aberta := linhas(WANInputRules([]string{"wan0"}, acesso, false, true))
+	fechada := linhas(WANInputRules([]string{"wan0"}, acesso, true, true))
 
 	var temAberta, temFechada bool
 	for _, r := range aberta {

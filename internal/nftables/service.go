@@ -77,6 +77,9 @@ type Service struct {
 	// nas WANs (#119, fase 3b). Ausente resolve para aberto — o estado que não
 	// tranca ninguém. Ver wanMgmtClosed.
 	wanMgmtClosedSource func() (bool, error)
+	// edgeContainmentSource liga a contenção de tentativa repetida (#127).
+	// Ausente resolve para DESLIGADA — ver EdgeContainmentSettingKey.
+	edgeContainmentSource func() (bool, error)
 
 	// ipv6FwdPath é o sysctl que a tela lê para dizer se IPv6 é roteado
 	// (#119, fase 3). Campo, e não const, pelo mesmo motivo de
