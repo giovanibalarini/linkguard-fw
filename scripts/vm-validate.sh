@@ -1823,15 +1823,26 @@ PYEOF
   # N6 — a saída de emergência ao contrário: um grupo de escopo input FECHA a
   # gerência na WAN, porque os jumps são avaliados antes das nossas linhas. É o
   # que a fase 3 vai oferecer com um botão.
+  #
+  # ATENÇÃO AO CONFIRMAR: mutação de escopo INPUT abre a janela de
+  # confirmação-ou-reverte (bateria C), e enquanto ela está aberta o produto
+  # RECUSA a mutação seguinte. A primeira versão desta bateria criava o grupo e
+  # tentava criar a regra em seguida, tomava 400 e concluía que o descarte
+  # estava acima dos jumps — diagnóstico errado a partir de um sintoma real. A
+  # janela é justamente o mecanismo que a fase 3 vai usar para fechar a
+  # gerência com segurança.
   local grupo
   grupo=$(body POST /api/nftables/groups "$tok" '{"name":"Fecha gerencia N","scope":"input","fallthrough":"continue","conn_state":"any"}' | jqk id)
   if [[ -n "$grupo" ]]; then
+    status POST /api/nftables/pending/confirm "$tok" >/dev/null 2>&1
     status POST /api/nftables/rules "$tok" "{\"group_id\":\"$grupo\",\"action\":\"drop\",\"saddr\":\"198.51.100.2\",\"proto\":\"tcp\",\"dport\":\"9997\",\"enabled\":true,\"description\":\"fecha gerencia da bateria N\"}" >/dev/null
+    status POST /api/nftables/pending/confirm "$tok" >/dev/null 2>&1
     sleep 2
     code=$(vm "ip netns exec lgwan curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://198.51.100.1:9997/api/health 2>/dev/null" | tr -d '\r')
     if [[ "$code" != "200" ]]; then ok "um grupo de escopo input fecha a gerência na WAN (o admin manda mais que a nossa liberação)"
     else bad "o grupo do admin não conseguiu fechar a gerência — as nossas linhas estão acima dos jumps"; fi
     status DELETE /api/nftables/groups "$tok" "{\"id\":\"$grupo\"}" >/dev/null 2>&1
+    status POST /api/nftables/pending/confirm "$tok" >/dev/null 2>&1
   else bad "não consegui criar o grupo de escopo input"; fi
 
   # N7 — apagar o link tira a proteção dele da chain na hora.

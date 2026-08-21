@@ -74,10 +74,9 @@ import (
 //     máquina vira tráfego de input depois do DNAT. Mesma linha e mesma razão
 //     de ForwardSurvivalRules.
 //
-// O QUE FICA DE FORA, DE PROPÓSITO: `echo-request`. Responder ping na WAN é
-// escolha, não necessidade — o monitor de link deste produto pinga para FORA, e
-// a resposta dele é `established`. Quem quiser responder cria um grupo de
-// escopo input, que é avaliado antes desta lista.
+// O QUE FICA DE FORA: nada além do que não foi listado. `echo-request` chegou a
+// ficar de fora e VOLTOU com taxa limitada — ver o comentário na regra sobre o
+// que a bateria H mostrou.
 
 // WANInputRules devolve as liberações e o descarte do que chega às WANs sem ter
 // sido pedido.
@@ -156,6 +155,32 @@ func WANInputRules(wanIfaces []string, access AdminAccess) [][]string {
 	// fechar cortar o acesso de quem apertou, reverte sozinho. É a diferença
 	// entre uma exposição VISÍVEL e uma exposição ACIDENTAL, que é a única que
 	// este produto não pode ter.
+	// PING NA WAN CONTINUA RESPONDENDO, COM TAXA LIMITADA — e isto é uma
+	// reversão da primeira versão desta lista, que o deixava de fora "de
+	// propósito".
+	//
+	// O argumento para tirá-lo era bom no papel: o monitor de link deste
+	// produto pinga para FORA, e a resposta dele é `established`, então nada do
+	// produto precisa de echo-request de entrada. O que o papel não continha era
+	// a bateria H: o roteamento de resposta por WAN (#120) é verificado com um
+	// ping ao endereço da WAN secundária, e existe para que quem chega por uma
+	// WAN seja respondido por ela. Sem echo-request, esse ping morre — e o
+	// sintoma não é "o firewall parou de responder ping", é "a WAN2 parou de
+	// funcionar", investigado no lugar errado.
+	//
+	// Vale para quem opera também: pingar o endereço da WAN é o primeiro
+	// diagnóstico que um operador ou o suporte do provedor faz. Uma caixa que
+	// deixa de responder num upgrade, sem ninguém ter mexido nisso, é o tipo de
+	// mudança silenciosa que este projeto trata como o pior defeito possível.
+	//
+	// `limit rate` é um CASAMENTO, não um modificador (a lição da #122): o
+	// pacote que EXCEDE a taxa não casa esta regra e cai no descarte abaixo. É
+	// isso que torna o limite um limite de verdade, e não um enfeite.
+	regras = append(regras,
+		[]string{"iifname", set, "icmp", "type", "echo-request", "limit", "rate", "5/second", "counter", "accept"},
+		[]string{"iifname", set, "icmpv6", "type", "echo-request", "limit", "rate", "5/second", "counter", "accept"},
+	)
+
 	if portas := portasDeGerencia(access); portas != "" {
 		regras = append(regras, []string{"iifname", set, "tcp", "dport", portas, "counter", "accept"})
 	}
