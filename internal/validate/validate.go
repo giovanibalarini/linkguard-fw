@@ -16,6 +16,7 @@ package validate
 
 import (
 	"net"
+	"net/netip"
 	"regexp"
 	"strings"
 )
@@ -75,6 +76,18 @@ func Iface(s string) bool {
 
 // NTPServer reports whether s is acceptable as a chrony server entry.
 func NTPServer(s string) bool { return reNTPServer.MatchString(s) }
+
+// IPv4 diz se s é um endereço IPv4.
+//
+// Existe porque net.ParseIP NÃO serve para esta pergunta: ele aceita IPv6 com o
+// mesmo sucesso, e quem chama costuma querer só IPv4 — reserva de DHCPv4,
+// elemento de set `ipv4_addr`, gateway de rota v4. Aceitar IPv6 nesses lugares
+// não devolve erro na hora: devolve um valor que só é recusado mais tarde, por
+// outro processo, com a mensagem dele e não a nossa (issue #152).
+func IPv4(s string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(s))
+	return err == nil && addr.Is4()
+}
 
 // NormalizeMAC lowercases and trims s, returning "" if it is not a valid MAC
 // address. O retorno vazio é o sinal de rejeição — quem chama compara com "".

@@ -2311,6 +2311,59 @@ print((json.loads(sys.stdin.read()).get('exposure') or {}).get('management_open_
   else bad "a chain não voltou inteira depois da reversão" "$(tr '\n' ' ' <<<"$final" | head -c 200)"; fi
 }
 
+# ─── R. Reserva de DHCP que trava tudo (issue #152) ──────────────────────────
+#
+# A FORMA DO DEFEITO, e é a que interessa mais que o campo: a API aceitava um
+# valor que o `kea-dhcp4` recusa depois. Como o apply é assíncrono, o handler já
+# tinha respondido 200 — e o valor FICAVA no banco, refeito em todo apply
+# seguinte. O estrago não era uma requisição perdida: era o subsistema de
+# DHCP/DNS inteiro parado, com a única mensagem disponível sendo a do kea, que
+# não nomeia a reserva culpada.
+#
+# Ficou mais provável por causa da #119: a tela de Hosts passou a mostrar o
+# endereço IPv6 de um aparelho, e é de lá que o admin copia o endereço.
+battery_reserva_dhcp() {
+  head_ "R. Reserva de DHCP que trava tudo"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria R não roda"; return; }
+
+  # R1 — o endereço IPv6 é recusado NA HORA, com 400.
+  local st
+  st=$(status POST /api/dhcp/reservations "$tok" '{"mac":"aa:bb:cc:dd:ee:52","ip":"fd00::52","hostname":"teste152"}')
+  if [[ "$st" == "400" ]]; then ok "reserva com endereço IPv6 é recusada na hora (400)"
+  else bad "reserva IPv6 aceita com HTTP $st — o apply de DHCP/DNS travaria a partir daqui"; fi
+
+  # R2 — e a mensagem diz POR QUE, não só "inválido". O admin acabou de copiar
+  # esse endereço da tela de Hosts; "IP inválido" o mandaria conferir a digitação.
+  local corpo
+  corpo=$(body POST /api/dhcp/reservations "$tok" '{"mac":"aa:bb:cc:dd:ee:52","ip":"fd00::52","hostname":"teste152"}')
+  if grep -qi "IPv4" <<<"$corpo"; then ok "a mensagem explica que a reserva precisa ser IPv4"
+  else bad "a mensagem não explica o motivo" "$(head -c 160 <<<"$corpo")"; fi
+
+  # R3 — o IPv4 continua entrando. Sem isto, a guarda poderia estar recusando
+  # tudo e as duas asserções acima passariam do mesmo jeito.
+  st=$(status POST /api/dhcp/reservations "$tok" '{"mac":"aa:bb:cc:dd:ee:53","ip":"192.168.3.153","hostname":"ok152"}')
+  if [[ "$st" == "200" || "$st" == "201" ]]; then ok "reserva IPv4 continua sendo aceita ($st)"
+  else bad "a guarda recusou também o IPv4: $st"; fi
+
+  # R4 — e o DHCP continua aplicando depois de tudo isso. É a asserção que mede
+  # o dano real do defeito: não é a requisição recusada, é o subsistema parado.
+  sleep 4
+  local kea
+  kea=$(vm "systemctl is-active kea-dhcp4-server 2>/dev/null" | tr -d '\r')
+  if [[ "$kea" == "active" ]]; then ok "o servidor de DHCP continua de pé depois das tentativas"
+  else bad "o DHCP não está ativo depois da bateria ('$kea')"; fi
+  if vm "grep -q '192.168.3.153' /etc/kea/kea-dhcp4.conf 2>/dev/null" && echo ok | grep -q ok; then
+    ok "a reserva boa chegou na config do Kea"
+  else bad "a reserva IPv4 não foi aplicada" "$(vm "grep -c reservations /etc/kea/kea-dhcp4.conf 2>/dev/null" | tr -d '\r')"; fi
+
+  status DELETE /api/dhcp/reservations "$tok" '{"mac":"aa:bb:cc:dd:ee:53"}' >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -2327,6 +2380,7 @@ battery_ddns
 battery_waninput
 battery_bloqueio_familias
 battery_portforward_wan2
+battery_reserva_dhcp
 battery_fechar_gerencia
 
 head_ "Resumo"

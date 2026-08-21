@@ -132,3 +132,21 @@ func TestNormalizeMAC(t *testing.T) {
 		}
 	}
 }
+
+func TestIPv4NaoAceitaIPv6(t *testing.T) {
+	// A razão de existir: net.ParseIP responde "sim" para IPv6, e quem pergunta
+	// nestes lugares quer só IPv4 — reserva de DHCPv4, elemento de set
+	// `ipv4_addr`, gateway de rota v4. Aceitar IPv6 aqui não devolve erro na
+	// hora: devolve um valor recusado depois, por outro processo, com a mensagem
+	// dele e não a nossa (issue #152).
+	for _, bom := range []string{"192.168.3.10", " 10.0.0.1 ", "8.8.8.8"} {
+		if !IPv4(bom) {
+			t.Errorf("IPv4(%q) devia aceitar", bom)
+		}
+	}
+	for _, ruim := range []string{"fd00::50", "::1", "2804:56c::1", "", "casa", "192.168.3.999", "192.168.3.0/24"} {
+		if IPv4(ruim) {
+			t.Errorf("IPv4(%q) devia recusar", ruim)
+		}
+	}
+}

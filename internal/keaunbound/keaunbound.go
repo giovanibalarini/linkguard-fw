@@ -26,6 +26,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/sysprep"
+	"github.com/giovanibalarini/linkguard-fw/internal/validate"
 )
 
 const (
@@ -435,6 +436,18 @@ func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blo
 // dropped as invalid), which the Provider interface's preview signature has
 // no use for but ReloadConfigs has to report to the admin.
 func (s *Service) generateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) ([]netsvc.ConfigFile, []string, error) {
+	// A RESERVA CULPADA É NOMEADA AQUI, e é por isso que esta checagem existe
+	// mesmo depois de o handler passar a recusar endereço não-IPv4 (#152).
+	//
+	// O handler protege o que entra de hoje em diante. Uma caixa que já tem uma
+	// reserva IPv6 gravada por uma versão anterior continua com TODO apply de
+	// DHCP/DNS falhando — e a única mensagem que sobrava era a do `kea-dhcp4`,
+	// que diz que a config é inválida e não diz QUAL reserva a invalidou. O
+	// admin ficava com o subsistema travado e sem o nome do culpado.
+	if err := reservasSemIPv4(res); err != nil {
+		return nil, nil, err
+	}
+
 	unbound, warnings, err := GenerateUnboundConfig(c, blocked)
 	if err != nil {
 		return nil, warnings, err
@@ -598,6 +611,21 @@ func readFileOrEmpty(path string) string {
 		return ""
 	}
 	return string(b)
+}
+
+// reservasSemIPv4 recusa a geração quando alguma reserva não é IPv4, com o MAC
+// e o endereço na mensagem.
+//
+// Nomear o MAC segue a mesma decisão da #59 (conflito de IP já nomeia o dono):
+// a lista da tela é por MAC, então dizer só o endereço deixa o admin sabendo que
+// há um problema e sem saber qual linha apagar.
+func reservasSemIPv4(res []netsvc.Reservation) error {
+	for _, r := range res {
+		if !validate.IPv4(r.IP) {
+			return fmt.Errorf("a reserva de DHCP do aparelho %s tem o endereço %q, que não é IPv4; o servidor de DHCP desta caixa é IPv4, e enquanto essa reserva existir nenhuma alteração de DHCP/DNS é aplicada", r.MAC, r.IP)
+		}
+	}
+	return nil
 }
 
 // validateKea writes the candidate config to a temp file and runs the Kea

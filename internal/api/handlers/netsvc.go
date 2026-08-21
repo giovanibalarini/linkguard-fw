@@ -364,8 +364,19 @@ func (h *NetsvcHandler) UpsertReservation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "MAC inválido")
 		return
 	}
-	if net.ParseIP(strings.TrimSpace(b.IP)) == nil {
-		writeError(w, http.StatusBadRequest, "IP inválido")
+	// IPv4 E NÃO net.ParseIP, e a diferença é a issue #152.
+	//
+	// net.ParseIP aceita IPv6, e o endereço ia para o banco com um 200 na
+	// resposta — o apply é assíncrono, então o handler responde antes de alguém
+	// tentar usar o valor. Depois, o `kea-dhcp4 -t` recusa a config inteira e
+	// NADA é aplicado: nem faixa nova, nem DNS aos clientes, nem outra reserva.
+	// E a linha ruim continua no banco, re-renderizada em todo apply seguinte.
+	//
+	// O caminho ficou mais provável com a #119: a tela de Hosts passou a mostrar
+	// o endereço IPv6 de um aparelho, e é de lá que o admin copia.
+	if !validate.IPv4(b.IP) {
+		writeError(w, http.StatusBadRequest,
+			"reserva de DHCP precisa de um endereço IPv4: o servidor de DHCP desta caixa é IPv4, e um endereço IPv6 aqui faria toda alteração de DHCP/DNS parar de ser aplicada")
 		return
 	}
 	if err := h.db.UpsertDHCPReservation(mac, strings.TrimSpace(b.IP), strings.TrimSpace(b.Hostname)); err != nil {
