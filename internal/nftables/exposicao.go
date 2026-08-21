@@ -103,7 +103,14 @@ func (s *Service) ExposureNow() Exposure {
 		e.Error = err.Error()
 		return e
 	}
-	e.ManagementOpenOnWAN = true
+	fechada, err := s.wanMgmtClosed()
+	if err != nil {
+		e.Error = err.Error()
+		return e
+	}
+	e.ManagementOpenOnWAN = !fechada
+	// As portas saem MESMO FECHADAS: é o que a tela usa para dizer "estas
+	// deixaram de responder", e para o botão de reabrir saber o que promete.
 	e.ManagementPorts = portasDeGerenciaLista(acesso)
 	return e
 }

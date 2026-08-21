@@ -667,5 +667,12 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 			wans = nil
 		}
 	}
-	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans), ensureInput)
+	// O pré-voo valida a MESMA forma que o apply escreve: uma chain validada
+	// sem a decisão de fechamento é outra chain.
+	fechada, ferr := s.wanMgmtClosed()
+	if ferr != nil {
+		slog.Warn("não foi possível ler o fechamento da gerência para o pré-voo; os jumps continuam sendo validados", "err", ferr)
+		fechada = false
+	}
+	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans, fechada), ensureInput)
 }

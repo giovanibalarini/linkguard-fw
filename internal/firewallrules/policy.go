@@ -33,6 +33,15 @@ import (
 const (
 	PolicySettingKey        = "firewall_input_policy"
 	ForwardPolicySettingKey = "firewall_forward_policy"
+	// WANMgmtClosedSettingKey guarda a decisão de FECHAR as portas de gerência
+	// no que chega pelas WANs (#119, fase 3b).
+	//
+	// Chave ausente é "aberto", e isso é deliberado: é o estado de toda máquina
+	// que recebeu a fase 1, e é o estado que impede a caixa de se trancar
+	// sozinha ao cadastrar um link. Fechar é escolha do admin, feita com a tela
+	// dizendo o que ele está fechando — e desfeita sozinha se ele perder o
+	// acesso ao fechar.
+	WANMgmtClosedSettingKey = "firewall_wan_mgmt_closed"
 )
 
 // InputPolicy devolve a política padrão configurada da chain input.
@@ -67,6 +76,31 @@ func (s *Service) SetInputPolicy(p nftables.Policy) error {
 		return fmt.Errorf("política inválida: %q", p)
 	}
 	return s.db.SetSetting(PolicySettingKey, string(p))
+}
+
+// WANMgmtClosed diz se o admin fechou as portas de gerência nas WANs.
+//
+// Mesmo contrato da política: chave ausente é o padrão (aberto), e ERRO DE
+// LEITURA propaga. Resolver um SELECT que falhou para "fechado" trancaria o
+// admin por causa de um erro de banco; resolvê-lo para "aberto" abriria a caixa
+// que ele mandou fechar. Nenhuma das duas é resposta — a resposta é abortar e
+// deixar a chain como está.
+func (s *Service) WANMgmtClosed() (bool, error) {
+	raw, err := s.db.GetSetting(WANMgmtClosedSettingKey)
+	if err != nil {
+		return false, fmt.Errorf("ler o fechamento da gerência nas WANs: %w", err)
+	}
+	return raw == "1", nil
+}
+
+// SetWANMgmtClosed grava a decisão. Não aplica nada — quem aplica é a
+// reconciliação, e quem a protege é ApplyGuarded.
+func (s *Service) SetWANMgmtClosed(fechado bool) error {
+	v := "0"
+	if fechado {
+		v = "1"
+	}
+	return s.db.SetSetting(WANMgmtClosedSettingKey, v)
 }
 
 // ForwardPolicy devolve a política padrão da chain forward — o tráfego que

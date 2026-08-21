@@ -133,6 +133,29 @@ func (s *Service) wanInterfaces() ([]string, error) {
 	return ifaces, nil
 }
 
+// SetWANMgmtClosedSource liga a fonte da decisão de fechar as portas de
+// gerência nas WANs (#119, fase 3b).
+//
+// Fonte não ligada resolve para ABERTO, sem erro: é o estado de todo binário
+// anterior a esta entrega, e é o estado que não tranca ninguém. Erro de leitura
+// PROPAGA e o chamador aborta sem tocar na chain — um SELECT que falhou não é
+// "o admin não fechou", e obedecer a esse silêncio reabriria na WAN uma porta
+// que ele mandou fechar, com a tela continuando a dizer "fechado".
+func (s *Service) SetWANMgmtClosedSource(src func() (bool, error)) {
+	s.wanMgmtClosedSource = src
+}
+
+func (s *Service) wanMgmtClosed() (bool, error) {
+	if s.wanMgmtClosedSource == nil {
+		return false, nil
+	}
+	fechada, err := s.wanMgmtClosedSource()
+	if err != nil {
+		return false, fmt.Errorf("ler o fechamento da gerência nas WANs: %w", err)
+	}
+	return fechada, nil
+}
+
 // SetAdminAccessSource liga a fonte do acesso administrativo — as portas, as
 // redes da LAN e se alguma WAN é por DHCP.
 //

@@ -17,15 +17,15 @@ import (
 var gerencia = AdminAccess{PanelPort: 9997}
 
 func TestSemWANConhecidaNadaEhEmitido(t *testing.T) {
-	if r := WANInputRules(nil, gerencia); r != nil {
+	if r := WANInputRules(nil, gerencia, false); r != nil {
 		t.Errorf("lista vazia gerou regras: %v", linhas(r))
 	}
-	if r := WANInputRules([]string{"", ""}, gerencia); r != nil {
+	if r := WANInputRules([]string{"", ""}, gerencia, false); r != nil {
 		t.Errorf("só nomes vazios geraram regras: %v", linhas(r))
 	}
 
 	// E a chain inteira continua a de sempre.
-	got := linhas(inputChainRules(nil, nil, false, PolicyAccept, AdminAccess{}, nil))
+	got := linhas(inputChainRules(nil, nil, false, PolicyAccept, AdminAccess{}, nil, false))
 	querida := []string{"ct state related counter accept"}
 	if len(got) != 1 || got[0] != querida[0] {
 		t.Errorf("a chain input mudou para quem não tem WAN cadastrada:\n  veio     %v\n  esperada %v", got, querida)
@@ -39,7 +39,7 @@ func TestODescarteCasaSomenteConexaoNova(t *testing.T) {
 	// morrem todos de uma vez, sem nada no ruleset dizendo por quê. É
 	// exatamente o problema que trava a issue #78, e a razão de esta entrega
 	// não precisar resolvê-lo.
-	regras := linhas(WANInputRules([]string{"wan0"}, gerencia))
+	regras := linhas(WANInputRules([]string{"wan0"}, gerencia, false))
 	drop := regras[len(regras)-1]
 	if !strings.Contains(drop, "ct state new") {
 		t.Fatalf("o descarte não está limitado a conexão nova: %q", drop)
@@ -56,7 +56,7 @@ func TestOAdminNaoPodeSerTrancadoForaPelaLAN(t *testing.T) {
 	// Nenhuma regra desta lista pode casar tráfego que não venha de uma WAN.
 	// É esta propriedade — e não um teste de 90 segundos — que torna seguro
 	// ligar a proteção sem o admin pedir.
-	for _, r := range linhas(WANInputRules([]string{"wan0", "wan1"}, gerencia)) {
+	for _, r := range linhas(WANInputRules([]string{"wan0", "wan1"}, gerencia, false)) {
 		if !strings.HasPrefix(r, "iifname {") {
 			t.Errorf("regra sem escopo de interface, alcança a LAN: %q", r)
 		}
@@ -64,7 +64,7 @@ func TestOAdminNaoPodeSerTrancadoForaPelaLAN(t *testing.T) {
 }
 
 func TestLiberacoesQueEvitamQuebraDiasDepois(t *testing.T) {
-	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, gerencia)), "\n")
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, gerencia, false)), "\n")
 	obrigatorias := map[string]string{
 		"nd-router-advert":   "sem RA a rota padrão IPv6 expira e o IPv6 morre ~30min depois do deploy",
 		"nd-neighbor-advert": "sem vizinhança IPv6 nada de IPv6 funciona",
@@ -86,7 +86,7 @@ func TestODescarteVemDepoisDeTudo(t *testing.T) {
 	// algo vindo da WAN seja avaliado antes. Emiti-lo acima anularia em
 	// silêncio uma decisão explícita do admin.
 	g := StoredGroup{ID: "g1", Name: "libera", ChainName: "grp_libera", Enabled: true, Position: 1, Scope: ScopeInput}
-	regras := linhas(inputChainRules([]StoredGroup{g}, nil, false, PolicyAccept, AdminAccess{}, []string{"wan0"}))
+	regras := linhas(inputChainRules([]StoredGroup{g}, nil, false, PolicyAccept, AdminAccess{}, []string{"wan0"}, false))
 
 	ultima := regras[len(regras)-1]
 	if !strings.Contains(ultima, "ct state new counter drop") {
@@ -108,7 +108,7 @@ func TestODescarteVemDepoisDeTudo(t *testing.T) {
 
 func TestNomeDeInterfaceInseguroEhIgnorado(t *testing.T) {
 	// O nome sai do banco e é interpolado no argv do nft.
-	regras := linhas(WANInputRules([]string{"wan0; drop", "wan1"}, gerencia))
+	regras := linhas(WANInputRules([]string{"wan0; drop", "wan1"}, gerencia, false))
 	junto := strings.Join(regras, "\n")
 	if strings.Contains(junto, "drop; ") || strings.Contains(junto, "wan0") {
 		t.Errorf("nome inseguro chegou ao ruleset:\n%s", junto)
@@ -118,13 +118,13 @@ func TestNomeDeInterfaceInseguroEhIgnorado(t *testing.T) {
 	}
 	// Só nomes ruins não pode virar uma chain sem proteção NEM uma regra torta:
 	// vira lista vazia, e o log já registrou o motivo.
-	if r := WANInputRules([]string{"wan0; drop"}, gerencia); r != nil {
+	if r := WANInputRules([]string{"wan0; drop"}, gerencia, false); r != nil {
 		t.Errorf("nome inseguro sozinho gerou regra: %v", linhas(r))
 	}
 }
 
 func TestInterfaceRepetidaNaoViraRegraRepetida(t *testing.T) {
-	regras := linhas(WANInputRules([]string{"wan0", "wan0"}, gerencia))
+	regras := linhas(WANInputRules([]string{"wan0", "wan0"}, gerencia, false))
 	if n := strings.Count(regras[0], `"wan0"`); n != 1 {
 		t.Errorf("a interface aparece %d vezes no set: %q", n, regras[0])
 	}
@@ -175,7 +175,7 @@ func TestPortasDeGerenciaNuncaSaoDescartadas(t *testing.T) {
 	// o auto-detect cadastra como WAN a interface que tem a rota padrão, e a
 	// reconciliação seguinte descarta a porta 22 e a do painel. SSH e painel
 	// mortos, sem nada na tela e sem caminho de volta.
-	regras := linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997}))
+	regras := linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997}, false))
 	var libera string
 	for _, r := range regras {
 		if strings.Contains(r, "tcp dport") {
@@ -199,12 +199,12 @@ func TestPortasDeGerenciaNuncaSaoDescartadas(t *testing.T) {
 func TestPortaDoPainelNaoEhFixa(t *testing.T) {
 	// 8080 é o default do binário, 9997 o do .deb, e quem põe proxy usa outra.
 	// Fixá-la trancaria do lado de fora justamente quem não usa o padrão.
-	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 8443})), "\n")
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 8443}, false)), "\n")
 	if !strings.Contains(regras, "{ 2222, 8443 }") {
 		t.Errorf("as portas configuradas não foram usadas:\n%s", regras)
 	}
 	// SSH e painel na MESMA porta não pode gerar um set com a porta repetida.
-	uma := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{9997}, PanelPort: 9997})), "\n")
+	uma := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{9997}, PanelPort: 9997}, false)), "\n")
 	if !strings.Contains(uma, "{ 9997 }") {
 		t.Errorf("porta repetida no set: %s", uma)
 	}
@@ -234,7 +234,7 @@ func TestPingNaWANTemTaxaLimitadaENaoEnfeite(t *testing.T) {
 	// `limit rate` é um CASAMENTO, não um modificador (lição da #122). Se o
 	// limite estiver na regra errada, ou o ping fica sem limite nenhum, ou o
 	// excedente é aceito em vez de cair no descarte.
-	regras := linhas(WANInputRules([]string{"wan0"}, gerencia))
+	regras := linhas(WANInputRules([]string{"wan0"}, gerencia, false))
 	var echos []string
 	for _, r := range regras {
 		if strings.Contains(r, "echo-request") {
@@ -317,14 +317,14 @@ func TestAPortaDoSSHNaoEhFixaEmVinteEDois(t *testing.T) {
 	// em quem não usa o padrão"), cometido na linha de baixo para o outro
 	// serviço. Numa caixa com `Port 2222` no sshd_config, a regra que existe
 	// para não trancar ninguém descartava a porta por onde o admin entra.
-	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997})), "\n")
+	regras := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997}, false)), "\n")
 	if !strings.Contains(regras, "{ 2222, 9997 }") {
 		t.Errorf("a porta real do SSH não foi liberada:\n%s", regras)
 	}
 	// A comparação é sobre o SET INTEIRO, e não sobre o texto solto: procurar
 	// "22," casaria dentro de "2222," e o teste passaria a mentir sobre si
 	// mesmo. Foi o que aconteceu na primeira versão desta asserção.
-	for _, r := range linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997})) {
+	for _, r := range linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{2222}, PanelPort: 9997}, false)) {
 		i := strings.Index(r, "tcp dport ")
 		if i < 0 {
 			continue
@@ -336,7 +336,7 @@ func TestAPortaDoSSHNaoEhFixaEmVinteEDois(t *testing.T) {
 
 	// sshd com mais de uma porta: as duas entram. Liberar só uma tranca metade
 	// das sessões, e a metade de fora é a que o admin ainda não migrou.
-	duas := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{22, 2222}, PanelPort: 9997})), "\n")
+	duas := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{SSHPorts: []int{22, 2222}, PanelPort: 9997}, false)), "\n")
 	for _, p := range []string{"22", "2222", "9997"} {
 		if !strings.Contains(duas, p) {
 			t.Errorf("porta %s não foi liberada com sshd em duas portas:\n%s", p, duas)
@@ -345,8 +345,91 @@ func TestAPortaDoSSHNaoEhFixaEmVinteEDois(t *testing.T) {
 
 	// Não saber onde o sshd escuta cai no padrão: não liberar nada seria
 	// exatamente trancar o admin.
-	vazio := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997})), "\n")
+	vazio := strings.Join(linhas(WANInputRules([]string{"wan0"}, AdminAccess{PanelPort: 9997}, false)), "\n")
 	if !strings.Contains(vazio, "{ 22, 9997 }") {
 		t.Errorf("sem saber a porta do SSH, o padrão não foi liberado:\n%s", vazio)
+	}
+}
+
+func TestFecharAGerenciaTiraSoALiberacaoDaWAN(t *testing.T) {
+	// A ARMADILHA QUE ESTE TESTE PRENDE. portasDeGerencia é compartilhada com
+	// SurvivalRules, que emite a MESMA liberação na chain input inteira, sem
+	// escopo de interface, como anti-lockout de `policy drop`. Se o fechamento
+	// virasse um campo de AdminAccess, fechar a gerência na WAN apagaria também
+	// esse anti-lockout global — o admin pedindo para fechar uma porta na
+	// internet e perdendo o acesso pela LAN junto.
+	acesso := AdminAccess{SSHPorts: []int{22}, PanelPort: 9997}
+
+	aberta := linhas(WANInputRules([]string{"wan0"}, acesso, false))
+	fechada := linhas(WANInputRules([]string{"wan0"}, acesso, true))
+
+	var temAberta, temFechada bool
+	for _, r := range aberta {
+		if strings.Contains(r, "tcp dport") {
+			temAberta = true
+		}
+	}
+	for _, r := range fechada {
+		if strings.Contains(r, "tcp dport") {
+			temFechada = true
+		}
+	}
+	if !temAberta {
+		t.Error("com a gerência aberta a liberação sumiu da WAN")
+	}
+	if temFechada {
+		t.Error("com a gerência fechada a liberação continua na WAN")
+	}
+
+	// O anti-lockout GLOBAL não pode ser tocado por esta decisão: ele não sabe
+	// dela, e é isso que o mantém válido.
+	if !contem(SurvivalRules(acesso), "tcp dport { 22, 9997 } counter accept") {
+		t.Error("a liberação global do anti-lockout sumiu junto")
+	}
+
+	// E o descarte continua sendo a última linha nos dois casos.
+	for _, rs := range [][]string{aberta, fechada} {
+		if !strings.Contains(rs[len(rs)-1], "ct state new counter drop") {
+			t.Errorf("o descarte deixou de ser a última linha: %v", rs)
+		}
+	}
+}
+
+func TestGerenciaFechadaApareceNaExposicao(t *testing.T) {
+	s, _ := servicoComExposicao(t, "0\n")
+	s.SetWANInterfacesSource(func() ([]string, error) { return []string{"wan0"}, nil })
+	s.SetAdminAccessSource(func() (AdminAccess, error) {
+		return AdminAccess{SSHPorts: []int{22}, PanelPort: 9997}, nil
+	})
+	s.SetWANMgmtClosedSource(func() (bool, error) { return true, nil })
+
+	e := s.ExposureNow()
+	if e.ManagementOpenOnWAN {
+		t.Error("a gerência está fechada e a tela diria que está aberta")
+	}
+	// As portas saem mesmo fechadas: é o que a tela usa para dizer QUAIS
+	// deixaram de responder, e o que o botão de reabrir promete devolver.
+	if len(e.ManagementPorts) != 2 {
+		t.Errorf("as portas sumiram do retrato: %v", e.ManagementPorts)
+	}
+}
+
+func TestErroAoLerOFechamentoAbortaSemTocarNaChain(t *testing.T) {
+	// Um SELECT que falhou não é "o admin não fechou". Obedecer a esse silêncio
+	// reabriria na WAN uma porta que ele mandou fechar, com a tela continuando
+	// a dizer "fechado".
+	e := &execGravador{}
+	s := servicoComExec(e)
+	s.SetWANInterfacesSource(func() ([]string, error) { return []string{"wan0"}, nil })
+	s.SetAdminAccessSource(func() (AdminAccess, error) { return gerencia, nil })
+	s.SetWANMgmtClosedSource(func() (bool, error) { return false, errors.New("banco fora") })
+
+	if err := s.reconcileInputChain(context.Background(), nil, nil, false); err == nil {
+		t.Fatal("a reconciliação seguiu adiante com a leitura do fechamento falhando")
+	}
+	for _, c := range e.comandos {
+		if strings.Contains(strings.Join(c, " "), InputChain) {
+			t.Errorf("a chain foi tocada mesmo com a leitura falhando: %v", c)
+		}
 	}
 }

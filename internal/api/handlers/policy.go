@@ -172,3 +172,61 @@ type policyInvalidaErr struct{ v string }
 func (e *policyInvalidaErr) Error() string {
 	return "postura inválida: use \"accept\" (liberar por padrão) ou \"drop\" (bloquear por padrão); veio " + e.v
 }
+
+// SetWANManagement fecha ou reabre as portas de gerência no que chega pelas
+// WANs (#119, fase 3b).
+//
+// É A ÚNICA MUTAÇÃO DO PRODUTO QUE PODE CORTAR O ACESSO DE QUEM A FEZ SEM QUE
+// ELE PERCEBA NA HORA. Quem fecha a gerência estando na LAN não sente nada — a
+// sessão dele não passa pela regra — e descobre no dia em que precisar entrar de
+// fora, que costuma ser o dia em que já não dá para entrar de dentro.
+//
+// Por isso ela passa pela janela de confirmação como a troca de postura, e por
+// isso o flag entra no stateSnapshot (internal/firewallrules/confirm.go): sem
+// isso a janela armaria, o prazo venceria, e as portas continuariam fechadas
+// sem nada apontando para elas.
+func (h *NftablesHandler) SetWANManagement(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Closed bool `json:"closed"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	atual, err := h.fr.WANMgmtClosed()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if atual == b.Closed {
+		// Sem mudança, sem janela — mesma razão da troca de postura: armar 90
+		// segundos para uma troca que não muda nada tranca a edição do firewall
+		// à toa e pede confirmação de um acesso que ninguém perdeu.
+		h.GetInputPolicy(w, r)
+		return
+	}
+
+	if _, ok := h.applyGuarded(w, r, mutation{
+		window: func() (bool, string) {
+			// Só o FECHAMENTO é perigoso; reabrir devolve acesso. Mas a janela
+			// vale para os dois, porque reabrir também é mudança de postura de
+			// borda e o operador merece o mesmo aviso — e porque uma janela que
+			// aparece só às vezes ensina a ignorá-la.
+			if b.Closed {
+				return true, "fechamento das portas de gerência no que chega pelas WANs"
+			}
+			return true, "reabertura das portas de gerência no que chega pelas WANs"
+		},
+		write: func() error { return h.fr.SetWANMgmtClosed(b.Closed) },
+		audit: func() (string, string, string) {
+			de, para := "aberta", "fechada"
+			if !b.Closed {
+				de, para = "fechada", "aberta"
+			}
+			return "nft.wan_management.set", "input", de + " → " + para
+		},
+	}); !ok {
+		return
+	}
+	h.GetInputPolicy(w, r)
+}

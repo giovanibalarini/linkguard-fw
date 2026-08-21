@@ -513,7 +513,7 @@ func (s *Service) CheckChainEnsuring(ctx context.Context, chain string, tokenSet
 //
 // Grupo do sistema nunca entra aqui: o conteúdo dele é um named set de
 // bloqueio de tráfego atravessando, e o lugar dele é a forward.
-func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool, policy Policy, access AdminAccess, wanIfaces []string) [][]string {
+func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool, policy Policy, access AdminAccess, wanIfaces []string, gerenciaFechada bool) [][]string {
 	// Incondicional: sem toggle, sem depender de grupo nenhum. Um firewall
 	// que só quebra PMTUD depois que o admin cria o grupo errado é um
 	// firewall que guarda a armadilha armada esperando.
@@ -582,7 +582,7 @@ func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool
 	// decisão (#119): um grupo de escopo input que libere algo vindo da WAN
 	// precisa ser avaliado antes, senão o produto anularia em silêncio uma
 	// decisão explícita do admin. Ver waninput.go.
-	rules = append(rules, WANInputRules(wanIfaces, access)...)
+	rules = append(rules, WANInputRules(wanIfaces, access, gerenciaFechada)...)
 	return rules
 }
 
@@ -683,11 +683,20 @@ func (s *Service) reconcileInputChain(ctx context.Context, groups []StoredGroup,
 			access = a
 		}
 	}
+	// Lido AQUI DENTRO, sob reconcileMu, pelo mesmo motivo da política e das
+	// WANs (#81): os dois escritores da chain passam por esta função, e uma
+	// leitura feita fora do lock poderia gravar a decisão antiga por cima de
+	// uma reversão em curso — justamente na mudança cuja reversão é a rede de
+	// segurança contra tranca.
+	fechada, err := s.wanMgmtClosed()
+	if err != nil {
+		return err
+	}
 	if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, InputChain,
 		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", string(policy), ";", "}"); err != nil {
 		return fmt.Errorf("criar chain %s: %w", InputChain, err)
 	}
-	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans))
+	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans, fechada))
 }
 
 // ReconcileNTPInput reconcilia a chain input a partir do toggle "servir NTP

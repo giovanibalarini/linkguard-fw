@@ -73,6 +73,10 @@ type Service struct {
 	// emite regra nenhuma, o comportamento de toda máquina anterior a esta
 	// entrega. Erro de leitura ABORTA: ver wanInterfaces.
 	wanInterfacesSource func() ([]string, error)
+	// wanMgmtClosedSource é a decisão do admin de fechar as portas de gerência
+	// nas WANs (#119, fase 3b). Ausente resolve para aberto — o estado que não
+	// tranca ninguém. Ver wanMgmtClosed.
+	wanMgmtClosedSource func() (bool, error)
 
 	// ipv6FwdPath é o sysctl que a tela lê para dizer se IPv6 é roteado
 	// (#119, fase 3). Campo, e não const, pelo mesmo motivo de

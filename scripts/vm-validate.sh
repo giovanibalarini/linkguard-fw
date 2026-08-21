@@ -1930,7 +1930,8 @@ print(','.join(str(p) for p in (d.get('management_ports') or [])))" "$exp" 2>/de
   fwd_api=$(python3 -c "
 import json,sys
 print((json.loads(sys.argv[1]).get('exposure') or {}).get('ipv6_forwarding',''))" "$exp" 2>/dev/null)
-  fwd_sys=$(vm "cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null" | tr -d '')
+  fwd_sys=$(vm "cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null" | tr -d '
+')
   local esperado="unknown"
   [[ "$fwd_sys" == "0" ]] && esperado="off"
   [[ -n "$fwd_sys" && "$fwd_sys" != "0" ]] && esperado="on"
@@ -2196,6 +2197,96 @@ for l in json.load(sys.stdin):
       rm -f /tmp/alvopf.py; true" >/dev/null 2>&1
 }
 
+# ─── Q. Fechar a gerência na WAN, e a rede que impede isso de virar tranca ───
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA, e ela é literalmente a tranca. Fechar as
+# portas de gerência nas WANs é a única mutação do produto que corta o acesso de
+# quem a fez SEM que ele perceba na hora: quem fecha estando na LAN não sente
+# nada, porque a sessão dele não passa pela regra.
+#
+# Nesta VM o painel entra pela MESMA NIC que o auto-detect cadastra como WAN.
+# Isso faz do arnês a cobaia perfeita: fechar aqui derruba o próprio arnês, que é
+# exatamente o acidente que a janela de 90 segundos existe para desfazer.
+#
+# Por isso esta bateria é a ÚLTIMA: se a rede de segurança falhar, a VM fica
+# inacessível, e nenhuma outra bateria paga por isso.
+battery_fechar_gerencia() {
+  head_ "Q. Fechar a gerência na WAN"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria Q não roda"; return; }
+
+  # Precisa de pelo menos uma WAN cadastrada, senão a regra não existe.
+  status POST /api/links/auto-detect "$tok" >/dev/null 2>&1
+  sleep 2
+  if ! vm "nft list chain inet linkguard input 2>/dev/null" | grep -q 'tcp dport'; then
+    bad "sem liberação de gerência na chain; a bateria Q não tem o que fechar"; return
+  fi
+
+  # Q1 — a API confirma que a gerência está aberta antes de fechar.
+  local aberta
+  aberta=$(body GET /api/nftables/policy "$tok" | python3 -c "
+import json,sys
+print((json.loads(sys.stdin.read()).get('exposure') or {}).get('management_open_on_wan'))" 2>/dev/null)
+  if [[ "$aberta" == "True" ]]; then ok "a tela diz que a gerência está aberta na WAN"
+  else bad "a tela não reconhece a gerência aberta ('$aberta')"; return; fi
+
+  # Q2 — fechar. A resposta volta pela conexão já estabelecida, então o 200
+  # chega mesmo com a porta fechando para conexões NOVAS.
+  local st
+  st=$(status PUT /api/nftables/wan-management "$tok" '{"closed":true}')
+  if [[ "$st" == "200" ]]; then ok "o painel aceitou fechar a gerência ($st)"
+  else bad "não consegui fechar a gerência: $st"; return; fi
+  sleep 2
+
+  # Q3 — a liberação sumiu da chain, e o descarte continua lá.
+  local chain
+  chain=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
+  if ! grep -q 'tcp dport' <<<"$chain"; then ok "a liberação de gerência saiu da chain"
+  else bad "a liberação continua na chain depois de fechar" "$(grep 'tcp dport' <<<"$chain")"; fi
+  if grep -q 'ct state new counter.*drop' <<<"$chain"; then ok "o descarte da WAN continua no lugar"
+  else bad "o descarte sumiu junto com a liberação"; fi
+
+  # Q4 — A TRANCA, MEDIDA: uma conexão NOVA ao painel não passa mais.
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$API/api/health" 2>/dev/null)
+  if [[ "$code" != "200" ]]; then ok "conexão nova ao painel não passa mais pela WAN ('${code:-nada}')"
+  else bad "o painel continuou respondendo pela WAN: o fechamento não valeu"; fi
+
+  # Q5 — A REDE DE SEGURANÇA. Ninguém confirma, e a janela de 90 segundos tem
+  # de desfazer sozinha. Sem o flag no stateSnapshot da reversão, é aqui que a
+  # VM fica inacessível para sempre — que é exatamente o defeito que o campo
+  # WANMgmtClosed existe para impedir.
+  printf '       (esperando a janela de 90s vencer sem confirmar — a reversão é a asserção)\n'
+  local voltou=""
+  local i
+  for i in $(seq 1 24); do
+    sleep 10
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$API/api/health" 2>/dev/null)
+    if [[ "$code" == "200" ]]; then voltou="$((i*10))s"; break; fi
+  done
+  if [[ -n "$voltou" ]]; then
+    ok "a reversão automática devolveu o acesso sozinha (em ~$voltou)"
+  else
+    bad "A JANELA VENCEU E O ACESSO NÃO VOLTOU: a reversão não desfaz o fechamento" \
+        "é o defeito que o campo WANMgmtClosed no stateSnapshot existe para impedir; a VM está inacessível"
+    return
+  fi
+
+  # Q6 — e o estado no banco voltou junto, não só a chain.
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  local depois
+  depois=$(body GET /api/nftables/policy "$tok" | python3 -c "
+import json,sys
+print((json.loads(sys.stdin.read()).get('exposure') or {}).get('management_open_on_wan'))" 2>/dev/null)
+  if [[ "$depois" == "True" ]]; then ok "a tela voltou a dizer que a gerência está aberta"
+  else bad "a chain voltou mas a tela ainda diz fechada ('$depois'): banco e firewall discordam"; fi
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -2212,6 +2303,7 @@ battery_ddns
 battery_waninput
 battery_bloqueio_familias
 battery_portforward_wan2
+battery_fechar_gerencia
 
 head_ "Resumo"
 printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"

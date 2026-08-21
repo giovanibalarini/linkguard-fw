@@ -542,6 +542,11 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// manter aberto — e é assim que o admin se tranca fora. O renderizador
 	// aborta nesse caso, e esta ligação é o que faz o caso não acontecer.
 	nftSvc.SetInputPolicySource(frSvc.InputPolicy)
+	// A decisão de fechar a gerência nas WANs é lida a cada reconciliação, e não
+	// guardada em memória, pelo mesmo motivo da política: a reversão automática
+	// da janela de 90 s reescreve o valor no banco, e a reconciliação seguinte
+	// tem de obedecer ao que a reversão gravou — não ao que o processo lembrava.
+	nftSvc.SetWANMgmtClosedSource(frSvc.WANMgmtClosed)
 	nftSvc.SetForwardPolicySource(frSvc.ForwardPolicy)
 	nftSvc.SetAdminAccessSource(func() (nftables.AdminAccess, error) {
 		netCfg := netsvc.DefaultConfig()
