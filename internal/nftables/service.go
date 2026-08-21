@@ -641,6 +641,20 @@ func (s *Service) Managed(ctx context.Context) (*Managed, error) {
 	return m, nil
 }
 
+// EnsureBlockedMACSet cria a set de endereços físicos bloqueados se ela não
+// existir. Idempotente: o nft trata `add set` com a MESMA declaração como no-op.
+//
+// Existe separada do bootstrap porque o bootstrap não roda em máquina já
+// provisionada — ver o comentário em reconcileGroups.
+func (s *Service) EnsureBlockedMACSet(ctx context.Context) error {
+	_, err := s.exec.Execute(ctx, "nft", "add", "set", Family, Table, BlockedMACSet,
+		"{", "type", "ether_addr", ";", "}")
+	if err != nil {
+		return fmt.Errorf("criar a set %s: %w", BlockedMACSet, err)
+	}
+	return nil
+}
+
 // BlockMAC põe o endereço físico de um host no set de bloqueados. Diferente de
 // BlockHost, isto vale para todas as famílias.
 func (s *Service) BlockMAC(ctx context.Context, mac string) (string, error) {
