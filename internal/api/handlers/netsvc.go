@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -133,16 +134,28 @@ func (h *NetsvcHandler) doReload(ctx context.Context) error {
 			h.alertSvc.AutoResolve(alerts.TypeNetsvcDepsMissing, "")
 		}
 	}
-	if b, mErr := json.Marshal(st); mErr == nil {
-		_ = h.db.SetSetting(netsvcApplyStatusKey, string(b))
-	}
-
 	// O controle de fuga de DNS (#124) é firewall, não configuração de daemon,
 	// mas nasce da MESMA tela e da mesma configuração — então é reconciliado
 	// aqui, junto. Aplicado mesmo quando o reload do Kea/unbound falhou: as
 	// regras não dependem do daemon ter subido, e deixar o redirecionamento
 	// para trás porque o unbound reclamou de outra coisa seria surpresa.
-	h.reconcileDNSGuard(ctx)
+	//
+	// A RECONCILIAÇÃO VEM ANTES DE GRAVAR O STATUS, e isso é a issue #153. Ela
+	// rodava depois, com o erro indo só para o journal: o status "aplicado com
+	// sucesso" já estava no banco quando o redirecionamento falhava, e a tela
+	// mostrava os toggles marcados com um selo verde em cima de regras que não
+	// existiam no kernel.
+	if gErr := h.ReconcileDNSGuard(ctx); gErr != nil {
+		st.OK = false
+		if st.Error == "" {
+			st.Error = gErr.Error()
+		} else {
+			st.Error += "; " + gErr.Error()
+		}
+	}
+	if b, mErr := json.Marshal(st); mErr == nil {
+		_ = h.db.SetSetting(netsvcApplyStatusKey, string(b))
+	}
 	return err
 }
 
@@ -150,9 +163,22 @@ func (h *NetsvcHandler) doReload(ctx context.Context) error {
 //
 // O resolver é o próprio endereço que o DHCP anuncia aos clientes: se a caixa
 // diz "use este resolver", é para ele que a consulta capturada tem de ir.
-func (h *NetsvcHandler) reconcileDNSGuard(ctx context.Context) {
+// ReconcileDNSGuard é exportada porque o BOOT precisa dela (issue #153).
+//
+// Ela tinha um chamador só: o apply da tela. Era a única feature de firewall
+// fora da lista de reconciliação do boot — masquerade, contabilidade, MSS,
+// bloqueio por MAC, proteção de entrada, marcação de conexão, roteamento de
+// retorno e grupos são todos reconciliados a cada subida, e o controle de DNS
+// não.
+//
+// O que isso significava: o estado vive no banco e a tela lê de lá, então os
+// toggles continuavam marcados independentemente do que existe no kernel. Se a
+// tabela precisasse ser recriada — o caso de recuperação que o boot já cobre — o
+// snapshot restaurado podia não ter as chains, e NADA as recriava. Todo aparelho
+// configurado com 8.8.8.8 voltava a contornar a blocklist sem nada mudar na tela.
+func (h *NetsvcHandler) ReconcileDNSGuard(ctx context.Context) error {
 	if h.nftSvc == nil {
-		return
+		return nil
 	}
 	cfg := h.getConfig()
 	resolver := ""
@@ -169,8 +195,11 @@ func (h *NetsvcHandler) reconcileDNSGuard(ctx context.Context) {
 		Resolver:     resolver,
 		ExceptIPs:    cfg.DNSExceptIPs,
 	}); err != nil {
-		slog.Warn("não foi possível reconciliar o controle de fuga de DNS", "err", err)
+		// O ERRO SOBE, em vez de morrer no journal. Ele é a diferença entre a
+		// tela dizer "protegido" e a proteção existir.
+		return fmt.Errorf("o controle de fuga de DNS não pôde ser aplicado (a tela mostra os controles ligados, mas as regras não estão no firewall): %w", err)
 	}
+	return nil
 }
 
 // scheduleApply arms the debounced auto-apply after a mutation.
@@ -592,4 +621,24 @@ func (h *NetsvcHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	}
 	auditAction(h.db, r, "netsvc.apply", string(h.provider.Backend()), "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "aplicado"})
+}
+
+// ReconcileDNSGuardOnBoot reconcilia o controle de fuga de DNS na subida
+// (issue #153).
+//
+// Existe como função de pacote porque o handler só nasce quando as rotas são
+// montadas, e a reconciliação do boot acontece antes — mas a FONTE é a mesma
+// (a configuração no banco), e por isso reusa o mesmo caminho em vez de uma
+// segunda leitura que pudesse divergir.
+//
+// Sem isto, o controle de DNS era a única feature de firewall fora da lista de
+// reconciliação do boot: os toggles ficavam marcados na tela enquanto as chains
+// podiam não existir no kernel, e todo aparelho configurado com 8.8.8.8
+// contornava a blocklist de domínios sem nada mudar na tela.
+func ReconcileDNSGuardOnBoot(ctx context.Context, db *storage.DB, nftSvc *nftables.Service) error {
+	if db == nil || nftSvc == nil {
+		return nil
+	}
+	h := &NetsvcHandler{db: db, nftSvc: nftSvc}
+	return h.ReconcileDNSGuard(ctx)
 }

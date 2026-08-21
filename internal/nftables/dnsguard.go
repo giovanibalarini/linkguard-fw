@@ -73,6 +73,14 @@ func (s *Service) EnsureDNSGuard(ctx context.Context, cfg DNSGuardConfig) error 
 	if s.exec.IsDryRun() {
 		return nil
 	}
+	// LIGADO SEM O NECESSÁRIO É ERRO, e não sucesso silencioso (#153). As
+	// chains são reconstruídas do mesmo jeito logo abaixo — o admin desligou o
+	// recurso ou não pode ligá-lo, e nos dois casos o firewall tem de refletir
+	// isso —, mas quem pediu para ligar precisa saber que não ligou.
+	var faltando error
+	if cfg.ForceLocal {
+		faltando = PrerequisitosDoRedirecionamento(cfg)
+	}
 	if out, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, DNSRedirectChain, dnsRedirectChainSpec); err != nil {
 		return fmt.Errorf("criar chain %s: %w (%s)", DNSRedirectChain, err, out)
 	}
@@ -85,11 +93,34 @@ func (s *Service) EnsureDNSGuard(ctx context.Context, cfg DNSGuardConfig) error 
 	if err := s.rebuildChain(ctx, DNSGuardChain, dnsGuardRules(cfg)); err != nil {
 		return err
 	}
+	if faltando != nil {
+		slog.Warn("controle de fuga de DNS ligado sem o necessário; as regras de captura NÃO foram emitidas", "err", faltando)
+		return faltando
+	}
 	slog.Info("controle de fuga de DNS reconciliado",
 		"redireciona", cfg.ForceLocal, "recusa_dot", cfg.BlockDoT, "excecoes", len(cfg.ExceptIPs))
 
 	if err := s.Persist(ctx); err != nil {
 		slog.Warn("controle de DNS reconciliado, mas não foi possível persistir para o próximo boot", "err", err)
+	}
+	return nil
+}
+
+// PrerequisitosDoRedirecionamento diz o que falta para capturar a porta 53.
+//
+// ANTES ISTO ERA UM `return nil` SILENCIOSO, e o EnsureDNSGuard devolvia
+// SUCESSO (issue #153): sem interface da LAN ou sem resolver, nenhuma regra era
+// emitida, ninguém era avisado, e a tela seguia mostrando "Forçar DNS local"
+// ligado. O admin tinha um controle marcado e nenhuma captura — a confiança
+// falsa que o comentário no topo deste arquivo diz ser pior do que não ter o
+// recurso.
+func PrerequisitosDoRedirecionamento(cfg DNSGuardConfig) error {
+	if _, ok := dnsIface(cfg.LANInterface); !ok {
+		return fmt.Errorf("forçar DNS local precisa saber qual é a interface da rede interna, e ela não está configurada")
+	}
+	ip := net.ParseIP(cfg.Resolver)
+	if ip == nil || ip.To4() == nil {
+		return fmt.Errorf("forçar DNS local precisa de um resolver IPv4 para onde mandar as consultas capturadas (veio %q)", cfg.Resolver)
 	}
 	return nil
 }
@@ -101,13 +132,12 @@ func dnsRedirectRules(cfg DNSGuardConfig) [][]string {
 	if !cfg.ForceLocal {
 		return nil
 	}
-	iface, ok := dnsIface(cfg.LANInterface)
-	if !ok {
+	if err := PrerequisitosDoRedirecionamento(cfg); err != nil {
+		// Não deveria chegar aqui: EnsureDNSGuard já avisa. A guarda fica para
+		// o renderizador nunca produzir meia regra se alguém o chamar direto.
 		return nil
 	}
-	if net.ParseIP(cfg.Resolver) == nil || net.ParseIP(cfg.Resolver).To4() == nil {
-		return nil
-	}
+	iface, _ := dnsIface(cfg.LANInterface)
 	alvo := cfg.Resolver + ":53"
 	regras := make([][]string, 0, 2)
 	for _, proto := range []string{"udp", "tcp"} {
