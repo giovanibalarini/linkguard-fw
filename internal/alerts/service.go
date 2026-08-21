@@ -47,11 +47,23 @@ const (
 	TypeDNSResolverDrift       = "dns_resolver_drift"
 	TypeDNSResolverOK          = "dns_resolver_ok"
 	TypeSecurityUpdatesPending = "security_updates_pending"
-	TypeSecurityUpdatesNone    = "security_updates_none"
-	TypeBaseDepsMissing        = "base_deps_missing"
-	TypeBaseDepsOK             = "base_deps_ok"
-	TypeNetsvcDepsMissing      = "netsvc_deps_missing"
-	TypeNetsvcDepsOK           = "netsvc_deps_ok"
+	// TypeBalancerNoWAN é o balanceamento sem nenhuma WAN ativa (issue #147).
+	//
+	// Existe porque isto é um ESTADO, e estava sendo levantado como rule_error —
+	// um pega-tudo sem recuperação. Em produção um desses ficou seis dias
+	// vermelho numa caixa saudável: a condição durou minutos, o alerta não.
+	//
+	// Um vermelho que nunca apaga ensina quem opera a ignorar vermelho. Quando
+	// vier a crítica de verdade, ela vai estar embaixo de um alerta de seis dias
+	// atrás que todo mundo já aprendeu a pular — que é o oposto do que um
+	// alerta serve para fazer.
+	TypeBalancerNoWAN       = "balancer_no_wan"
+	TypeBalancerWANBack     = "balancer_wan_back"
+	TypeSecurityUpdatesNone = "security_updates_none"
+	TypeBaseDepsMissing     = "base_deps_missing"
+	TypeBaseDepsOK          = "base_deps_ok"
+	TypeNetsvcDepsMissing   = "netsvc_deps_missing"
+	TypeNetsvcDepsOK        = "netsvc_deps_ok"
 
 	TypeFirewallSystemGroupsMissing = "firewall_system_groups_missing"
 	TypeFirewallSystemGroupsOK      = "firewall_system_groups_ok"
@@ -117,6 +129,7 @@ var stateAlertTypes = []string{
 	TypeWANInterfaceMissing,
 	TypeDNSResolverDrift,
 	TypeSecurityUpdatesPending,
+	TypeBalancerNoWAN,
 	TypeBaseDepsMissing,
 	TypeNetsvcDepsMissing,
 	TypeFirewallSystemGroupsMissing,
@@ -374,6 +387,29 @@ func (s *Service) GhostIface(detalhe string, bloqueando bool) error {
 // deixar um alerta de estado nascer sem o par que o fecha.
 func (s *Service) GhostIfaceOK() {
 	s.AutoResolve(TypeFirewallGhostIface, "")
+}
+
+// BalancerNoWAN sobe quando o balanceamento não encontra nenhuma WAN ativa.
+//
+// Título próprio, e não "Firewall Rule Error": a mensagem é sobre
+// BALANCEAMENTO, e um título de firewall manda o admin abrir a tela errada. É a
+// mesma crítica que o doc-comment de NetsvcDepsMissing já fazia ao pega-tudo,
+// aplicada ao outro chamador dele.
+func (s *Service) BalancerNoWAN(detail string) error {
+	return s.Create(TypeBalancerNoWAN, SeverityCritical,
+		"Nenhuma WAN ativa para balancear", detail, "")
+}
+
+// BalancerWANBack fecha o alerta acima quando o balanceamento volta a encontrar
+// caminho.
+//
+// É a metade que faltava, e a falta dela é a issue #147: sem alguém observando
+// a transição "voltou", o alerta de estado vira permanente por construção. Ver
+// stateAlertTypes.
+func (s *Service) BalancerWANBack(detail string) error {
+	s.AutoResolve(TypeBalancerNoWAN, "")
+	return s.createRecovery(TypeBalancerWANBack, "Balanceamento voltou a ter WAN",
+		detail, "")
 }
 
 // RuleError raises a critical alert when a firewall rule fails.

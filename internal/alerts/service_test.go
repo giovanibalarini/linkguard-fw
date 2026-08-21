@@ -944,3 +944,26 @@ func TestResolveStaleOnStartupClosesPreFixServiceAlert(t *testing.T) {
 		t.Errorf("service_offline reaberto para kea-dhcp4-server = %d, quero 1", n)
 	}
 }
+
+// TestBalancerNoWANEhEstadoENaoPegaTudo é a regressão da issue #147.
+//
+// Em produção um `rule_error` com a mensagem "Balanceamento: nenhuma interface
+// WAN ativa" ficou SEIS DIAS vermelho numa caixa saudável — a condição durou
+// minutos, o alerta não. rule_error é um pega-tudo levantado de sete lugares
+// sem nada que observe a transição "resolvido", e o código já documentava isso.
+//
+// Um vermelho que nunca apaga ensina quem opera a ignorar vermelho.
+func TestBalancerNoWANEhEstadoENaoPegaTudo(t *testing.T) {
+	var achou bool
+	for _, tipo := range stateAlertTypes {
+		if tipo == TypeBalancerNoWAN {
+			achou = true
+		}
+		if tipo == TypeRuleError {
+			t.Error("rule_error entrou em stateAlertTypes: ele não tem quem o feche")
+		}
+	}
+	if !achou {
+		t.Error("balancer_no_wan não está em stateAlertTypes: ficaria vermelho para sempre")
+	}
+}

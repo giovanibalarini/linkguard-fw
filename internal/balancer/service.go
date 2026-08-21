@@ -339,8 +339,19 @@ func (s *Service) Rebuild(ctx context.Context) error {
 			return fmt.Errorf("no up interfaces")
 		}
 		s.lastSig = emptySig
-		_ = s.alertSvc.RuleError("Balanceamento: nenhuma interface WAN ativa — rota mantida")
+		// Tipo próprio, e não o pega-tudo (issue #147): isto é um ESTADO, e
+		// estado precisa de quem o feche. Como rule_error, ficava vermelho para
+		// sempre — em produção um desses durou seis dias numa caixa saudável,
+		// enquanto a condição real durou minutos.
+		_ = s.alertSvc.BalancerNoWAN("O balanceamento não encontrou nenhuma interface WAN ativa. A rota atual foi mantida, então a rede continua saindo pelo caminho de antes.")
 		return fmt.Errorf("no up interfaces")
+	}
+	// A TRANSIÇÃO DE VOLTA, que é a metade que faltava. Só quando vínhamos do
+	// estado vazio: chamar isto em toda reconciliação transformaria a
+	// recuperação em ruído, e ruído de recuperação ensina a ignorar recuperação
+	// tão bem quanto vermelho permanente ensina a ignorar vermelho.
+	if s.lastSig == emptySig {
+		_ = s.alertSvc.BalancerWANBack(fmt.Sprintf("O balanceamento voltou a encontrar caminho (%d saída(s) ativa(s)).", len(plan.Nexthops)))
 	}
 	if sig == s.lastSig {
 		return nil // nothing changed
