@@ -2397,6 +2397,112 @@ print(json.dumps(d))" "$atual")")
   status DELETE /api/dhcp/reservations "$tok" '{"mac":"aa:bb:cc:dd:ee:53"}' >/dev/null 2>&1
 }
 
+# ─── S. Contenção de tentativa repetida (issue #127) ─────────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Contenção por taxa que pega o próprio
+# admin é tranca com outro nome, e este projeto já pagou por uma hoje (a fase 1
+# da #119, que trancou a VM ao clicar em "detectar links").
+#
+# Aqui o risco não é mitigado, é ELIMINADO por construção: a regra que ADICIONA
+# ao set casa `iifname` das WANs, então origem que entra pela LAN não pode ser
+# contida por caminho nenhum. A bateria prova as duas metades — que quem
+# martela de fora é contido, e que quem vem de dentro não é, por mais que
+# martele.
+#
+# `limit rate over` casa o EXCEDENTE; `limit rate` sem o `over` casa o que CABE
+# na taxa. Trocar um pelo outro conteria exatamente quem se comporta.
+battery_contencao() {
+  head_ "S. Contenção de tentativa repetida"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria S não roda"; return; }
+
+  status POST /api/links/auto-detect "$tok" >/dev/null 2>&1
+  sleep 2
+
+  # S1 — o set existe e a regra que a alimenta está na chain, escopada por WAN.
+  local chain
+  chain=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
+  if vm "nft list set inet linkguard abusers" >/dev/null 2>&1; then ok "a set de contenção existe"
+  else bad "a set de contenção não existe: a regra que a referencia sumiria da chain"; fi
+  local add
+  add=$(grep 'add @abusers' <<<"$chain")
+  if [[ -n "$add" ]]; then ok "a regra que contém está na chain"
+  else bad "nenhuma regra alimenta a contenção" "$(tr '\n' ' ' <<<"$chain" | head -c 200)"; fi
+  if grep -q '^\s*iifname' <<<"$add"; then ok "a regra que contém é escopada por interface de WAN"
+  else bad "a regra que contém NÃO é escopada: o admin da LAN pode ser contido" "$add"; fi
+  if grep -q 'limit rate over' <<<"$add"; then ok "o limite casa o excedente, e não quem cabe na taxa"
+  else bad "o limite está invertido: conteria quem se comporta" "$add"; fi
+
+  # S2 — a ordem: o descarte de contido vem ANTES da liberação de gerência.
+  # Se viesse depois, o accept curto-circuitaria e a contenção não valeria nada.
+  local i_drop i_accept
+  i_drop=$(grep -n 'ip saddr @abusers' <<<"$chain" | head -1 | cut -d: -f1)
+  i_accept=$(grep -n 'tcp dport {.*} counter accept' <<<"$chain" | head -1 | cut -d: -f1)
+  if [[ -n "$i_drop" && -n "$i_accept" && "$i_drop" -lt "$i_accept" ]]; then
+    ok "o descarte de contido vem antes da liberação de gerência ($i_drop < $i_accept)"
+  else bad "a ordem está errada (descarte $i_drop, liberação $i_accept): o accept curto-circuita a contenção"; fi
+
+  # S3 — A ASSERÇÃO CENTRAL, LADO DE FORA: martelar pela WAN contém.
+  vm "ip netns del lgabus 2>/dev/null; ip link del lg-abus 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add lgabus && \
+      ip link add lg-abus type veth peer name abus-far && \
+      ip link set abus-far netns lgabus && \
+      ip addr add 198.18.0.1/24 dev lg-abus && ip link set lg-abus up && \
+      ip netns exec lgabus ip link set lo up && \
+      ip netns exec lgabus ip addr add 198.18.0.2/24 dev abus-far && \
+      ip netns exec lgabus ip link set abus-far up" >/dev/null 2>&1
+  local st
+  st=$(status POST /api/links "$tok" '{"name":"WAN abuso","interface":"lg-abus","gateway":"198.18.0.2","ip_address":"198.18.0.1","weight":1,"enabled":true,"monitor_hosts":"198.18.0.2","dns_test":"198.18.0.2"}')
+  if [[ "$st" != "200" && "$st" != "201" ]]; then bad "não consegui cadastrar a WAN de abuso: $st"; return; fi
+  sleep 2
+
+  # 25 conexões novas em rajada, muito acima de 10/minuto.
+  vm "ip netns exec lgabus sh -c 'for i in \$(seq 1 25); do timeout 1 bash -c \"exec 3<>/dev/tcp/198.18.0.1/9997\" 2>/dev/null; done'" >/dev/null 2>&1
+  sleep 2
+  if vm "nft list set inet linkguard abusers" | grep -q '198.18.0.2'; then
+    ok "quem martela pela WAN é contido"
+  else bad "a origem não foi contida depois de 25 conexões" "$(vm "nft list set inet linkguard abusers" | tr -d '\r' | tr '\n' ' ' | head -c 200)"; fi
+
+  # S4 — A OUTRA METADE, E A QUE IMPORTA MAIS: martelar pela LAN NÃO contém.
+  # É esta propriedade que torna seguro ligar a contenção sem o admin pedir.
+  local antes_lan
+  antes_lan=$(vm "nft list set inet linkguard abusers" | grep -c 'elements' || true)
+  vm "for i in \$(seq 1 40); do timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/9997' 2>/dev/null; done" >/dev/null 2>&1
+  sleep 2
+  if ! vm "nft list set inet linkguard abusers" | grep -qE '127\.0\.0\.1|192\.168\.'; then
+    ok "40 conexões pela rede interna e ninguém de dentro foi contido"
+  else bad "UMA ORIGEM INTERNA FOI CONTIDA: é tranca do admin com outro nome" "$(vm "nft list set inet linkguard abusers" | tr -d '\r' | tr '\n' ' ' | head -c 200)"; fi
+
+  # S5 — o painel mostra quem está contido, com prazo. Bloqueio invisível é o
+  # pior tipo de suporte.
+  local n
+  n=$(body GET /api/nftables/abusers "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin).get('contidos') or []
+print(len([c for c in d if c.get('ip')=='198.18.0.2' and c.get('expira_em_seg',0)>0]))" 2>/dev/null)
+  if [[ "${n:-0}" == "1" ]]; then ok "o painel mostra a origem contida com prazo restante"
+  else bad "o painel não mostra a contenção" "$(body GET /api/nftables/abusers "$tok" | head -c 200)"; fi
+
+  # S6 — e dá para liberar.
+  status DELETE /api/nftables/abusers "$tok" '{"ip":"198.18.0.2"}' >/dev/null
+  sleep 1
+  if ! vm "nft list set inet linkguard abusers" | grep -q '198.18.0.2'; then
+    ok "liberar tira a origem da contenção"
+  else bad "a origem continuou contida depois de liberar"; fi
+
+  local lid
+  lid=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l['interface']=='lg-abus': print(l['id'])" 2>/dev/null)
+  [[ -n "$lid" ]] && status DELETE "/api/links/$lid" "$tok" >/dev/null 2>&1
+  vm "ip netns del lgabus 2>/dev/null; ip link del lg-abus 2>/dev/null; true" >/dev/null 2>&1
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -2414,6 +2520,7 @@ battery_waninput
 battery_bloqueio_familias
 battery_portforward_wan2
 battery_reserva_dhcp
+battery_contencao
 battery_fechar_gerencia
 
 head_ "Resumo"

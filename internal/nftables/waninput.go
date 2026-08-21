@@ -194,6 +194,18 @@ func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada bool)
 	// junto, sem nada na tela sugerindo a ligação.
 	if !gerenciaFechada {
 		if portas := portasDeGerencia(access); portas != "" {
+			// A CONTENÇÃO VEM ANTES DA LIBERAÇÃO, e a ordem é a decisão
+			// (#127): a liberação é um `accept`, e accept curto-circuita a
+			// chain. Com o descarte de quem está contido DEPOIS dela, a
+			// contenção não valeria nada — quem está sendo contido bate
+			// exatamente nessas portas.
+			//
+			// E as duas andam JUNTAS com a liberação, não soltas: com a
+			// gerência fechada não há accept a proteger, o descarte genérico da
+			// WAN já cuida de tudo, e um set que nada alimenta é enfeite com
+			// cara de proteção. Foi um teste que apontou isso — a asserção de
+			// que fechar a gerência tira TODA linha de `tcp dport` da chain.
+			regras = append(regras, abuseRules(wanIfaces, portas)...)
 			regras = append(regras, []string{"iifname", set, "tcp", "dport", portas, "counter", "accept"})
 		}
 	}

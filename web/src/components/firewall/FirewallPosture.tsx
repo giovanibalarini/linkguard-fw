@@ -246,6 +246,8 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
         );
       })}
 
+      <CartaoContidos canWrite={canWrite} onMsg={onMsg} />
+
       {data?.exposure && (
         <CartaoExposicao e={data.exposure} canWrite={canWrite} onMsg={onMsg} onMudou={load} />
       )}
@@ -362,6 +364,70 @@ function CartaoExposicao({ e, canWrite, onMsg, onMudou }: {
           </p>
         </div>
       )}
+    </Panel>
+  );
+}
+
+/**
+ * CartaoContidos mostra quem está contido por tentativa repetida (issue #127).
+ *
+ * BLOQUEIO INVISÍVEL É O PIOR TIPO DE SUPORTE. Uma origem descartada sem
+ * aparecer em lugar nenhum vira "o cliente diz que não consegue conectar e o
+ * firewall diz que está tudo bem" — e a contenção expira sozinha em uma hora,
+ * então quando alguém for procurar, já não há o que encontrar.
+ *
+ * O painel some quando não há ninguém contido: um cartão vazio permanente
+ * ensina a ignorar o cartão.
+ */
+function CartaoContidos({ canWrite, onMsg }: { canWrite: boolean; onMsg: (m: string, level?: MsgLevel) => void }) {
+  const { t } = useI18n();
+  const [lista, setLista] = useState<{ ip: string; expira_em_seg: number }[]>([]);
+
+  const carregar = async () => {
+    try {
+      const { data } = await client.get<{ contidos: { ip: string; expira_em_seg: number }[] }>('/api/nftables/abusers');
+      setLista(data?.contidos ?? []);
+    } catch { /* silencioso: contenção é informação extra, não pode virar faixa vermelha */ }
+  };
+
+  useEffect(() => {
+    carregar();
+    const id = setInterval(carregar, 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (lista.length === 0) return null;
+
+  const liberar = async (ip: string) => {
+    try {
+      await client.delete('/api/nftables/abusers', { data: { ip } });
+      onMsg(t('fw.contained.released', { ip }), 'ok');
+      carregar();
+    } catch {
+      onMsg(t('fw.contained.error'), 'error');
+    }
+  };
+
+  return (
+    <Panel title={<span className="text-white font-semibold">{t('fw.contained.title')}</span>}>
+      <p className="text-gray-500 text-xs mb-4">{t('fw.contained.subtitle')}</p>
+      <ul className="space-y-2">
+        {lista.map((c) => (
+          <li key={c.ip} className="flex items-center justify-between gap-3 text-sm">
+            <span className="font-mono text-gray-200">{c.ip}</span>
+            <span className="flex items-center gap-3">
+              <span className="text-xs text-gray-500">
+                {t('fw.contained.expires', { min: String(Math.max(1, Math.round(c.expira_em_seg / 60))) })}
+              </span>
+              {canWrite && (
+                <button onClick={() => liberar(c.ip)} className="text-xs text-blue-400 hover:text-blue-300">
+                  {t('fw.contained.release')}
+                </button>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
     </Panel>
   );
 }
