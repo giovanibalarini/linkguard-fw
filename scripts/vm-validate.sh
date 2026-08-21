@@ -1831,19 +1831,38 @@ PYEOF
   # estava acima dos jumps — diagnóstico errado a partir de um sintoma real. A
   # janela é justamente o mecanismo que a fase 3 vai usar para fechar a
   # gerência com segurança.
-  local grupo
-  grupo=$(body POST /api/nftables/groups "$tok" '{"name":"Fecha gerencia N","scope":"input","fallthrough":"continue","conn_state":"any"}' | jqk id)
+  # confirma_janela LÊ O ID DA JANELA DO CORPO DA RESPOSTA e confirma. Sem o
+  # corpo `{"id":...}` o endpoint devolve 400 — e uma confirmação que falha em
+  # silêncio deixa a janela aberta, a mutação seguinte é recusada, e a bateria
+  # acusa o firewall por um erro que é dela.
+  confirma_janela() {
+    local janela
+    janela=$(jqk pending.id <<<"$1")
+    [[ -n "$janela" ]] || return 0
+    status POST /api/nftables/pending/confirm "$tok" "{\"id\":\"$janela\"}" >/dev/null
+  }
+
+  local resp grupo
+  resp=$(body POST /api/nftables/groups "$tok" '{"name":"Fecha gerencia N","scope":"input","fallthrough":"continue","conn_state":"any"}')
+  grupo=$(jqk id <<<"$resp")
   if [[ -n "$grupo" ]]; then
-    status POST /api/nftables/pending/confirm "$tok" >/dev/null 2>&1
-    status POST /api/nftables/rules "$tok" "{\"group_id\":\"$grupo\",\"action\":\"drop\",\"saddr\":\"198.51.100.2\",\"proto\":\"tcp\",\"dport\":\"9997\",\"enabled\":true,\"description\":\"fecha gerencia da bateria N\"}" >/dev/null
-    status POST /api/nftables/pending/confirm "$tok" >/dev/null 2>&1
+    confirma_janela "$resp"
+    resp=$(body POST /api/nftables/rules "$tok" "{\"group_id\":\"$grupo\",\"action\":\"drop\",\"saddr\":\"198.51.100.2\",\"proto\":\"tcp\",\"dport\":\"9997\",\"enabled\":true,\"description\":\"fecha gerencia da bateria N\"}")
+    confirma_janela "$resp"
     sleep 2
     code=$(vm "ip netns exec lgwan curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://198.51.100.1:9997/api/health 2>/dev/null" | tr -d '\r')
     if [[ "$code" != "200" ]]; then ok "um grupo de escopo input fecha a gerência na WAN (o admin manda mais que a nossa liberação)"
-    else bad "o grupo do admin não conseguiu fechar a gerência — as nossas linhas estão acima dos jumps"; fi
-    status DELETE /api/nftables/groups "$tok" "{\"id\":\"$grupo\"}" >/dev/null 2>&1
-    status POST /api/nftables/pending/confirm "$tok" >/dev/null 2>&1
-  else bad "não consegui criar o grupo de escopo input"; fi
+    else
+      # A MENSAGEM NÃO CONCLUI NADA, E ISSO É PROPOSITAL. Ela já afirmou duas
+      # vezes que "as nossas linhas estão acima dos jumps" quando a causa era
+      # outra (a janela de confirmação recusando a criação da regra). Quem lê
+      # uma falha precisa da EVIDÊNCIA para decidir, não da hipótese de quem
+      # escreveu o teste.
+      bad "a gerência continuou respondendo pela WAN com o grupo do admin no lugar" \
+          "ordem na chain: $(vm "nft list chain inet linkguard input" | grep -cE 'jump grp_') jump(s) de grupo; regras no grupo: $(vm "nft list table inet linkguard" | grep -A4 "chain grp_" | grep -c 'drop')"
+    fi
+    confirma_janela "$(body DELETE /api/nftables/groups "$tok" "{\"id\":\"$grupo\"}")"
+  else bad "não consegui criar o grupo de escopo input" "$(head -c 200 <<<"$resp")"; fi
 
   # N7 — apagar o link tira a proteção dele da chain na hora.
   local linkid
