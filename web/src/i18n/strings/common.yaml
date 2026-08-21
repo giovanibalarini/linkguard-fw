@@ -884,3 +884,45 @@ fw.sysmembers.offBanner:
 fw.overview.noRules:
   pt: "Nenhuma regra."
   en: "No rules."
+
+# ─── O que o firewall deixa passar (issue #119, fase 3) ──────────────────────
+# As duas primeiras fases mexeram em regra; esta mexe em AFIRMAÇÃO. O ruleset
+# passou a proteger mais e a tela continuou descrevendo um firewall que não é o
+# que está rodando — e num produto cujo valor é o operador confiar no que lê,
+# omissão e mentira custam igual.
+fw.exposure.title:
+  pt: "O que fica aberto"
+  en: "What stays open"
+fw.exposure.subtitle:
+  pt: "Nem tudo que este firewall deixa passar aparece como regra na tela. O que está aqui é decisão de projeto, e você precisa saber que ela existe para poder discordar."
+  en: "Not everything this firewall lets through shows up as a rule on screen. What is listed here is a design decision, and you need to know it exists in order to disagree with it."
+fw.exposure.mgmtOpen:
+  pt: "As portas de gerência ({portas}) respondem pela internet, em {wans}"
+  en: "The management ports ({portas}) answer from the internet, on {wans}"
+fw.exposure.mgmtOpen.why:
+  pt: "Sem essa liberação, cadastrar um link pelo painel trancaria o administrador do lado de fora numa caixa de uma interface só. Todo o resto que chega pela WAN sem ter sido pedido é descartado."
+  en: "Without this exception, registering a link from the panel would lock the administrator out on a single-interface box. Everything else arriving unsolicited from the WAN is dropped."
+fw.exposure.ipv6Off:
+  pt: "IPv6 não é roteado para a sua rede"
+  en: "IPv6 is not routed to your network"
+fw.exposure.ipv6Off.why:
+  pt: "O encaminhamento de IPv6 está desligado no sistema, então nenhum aparelho da rede alcança a internet por IPv6 através desta caixa — nem para o bem, nem para o mal."
+  en: "IPv6 forwarding is off on the system, so no device on the network reaches the internet over IPv6 through this box — neither for good nor for ill."
+fw.exposure.ipv6On:
+  pt: "IPv6 está sendo roteado, e as regras por endereço não o alcançam"
+  en: "IPv6 is being routed, and address-based rules do not reach it"
+fw.exposure.ipv6On.why:
+  pt: "Um aparelho bloqueado por endereço continua saindo por IPv6. Bloqueie por aparelho, que vale nas duas famílias, até as regras por endereço cobrirem IPv6."
+  en: "A device blocked by address still gets out over IPv6. Block by device instead — that works for both families — until address rules cover IPv6."
+fw.exposure.ipv6Unknown:
+  pt: "Não foi possível ler o estado do encaminhamento de IPv6 nesta máquina"
+  en: "Could not read the IPv6 forwarding state on this machine"
+fw.exposure.addrIPv4Only:
+  pt: "Regras que casam endereço valem só para IPv4"
+  en: "Rules matching an address apply to IPv4 only"
+fw.exposure.addrIPv4Only.exception:
+  pt: "A exceção é o bloqueio de aparelho: ele casa pelo endereço físico e vale em IPv4 e IPv6."
+  en: "The exception is device blocking: it matches the hardware address and applies to both IPv4 and IPv6."
+fw.exposure.unknown:
+  pt: "Não foi possível montar este retrato: {erro}. O que está descrito acima pode não ser o que está valendo."
+  en: "Could not build this picture: {erro}. What is described above may not be what is in effect."

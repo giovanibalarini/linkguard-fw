@@ -1909,6 +1909,34 @@ battery_bloqueio_familias() {
 
   status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
 
+  # O ZERO — A TELA CONTA O QUE O RULESET FAZ (issue #119, fase 3).
+  #
+  # A asserção não é sobre texto bonito: é que a API e o `nft` NÃO PODEM
+  # DISCORDAR. Uma tela com a própria cópia da verdade diverge em silêncio, que
+  # é o defeito que a fase 3 existe para fechar — e é o mesmo formato dos quatro
+  # erros de bateria de hoje, onde o teste supôs um detalhe em vez de perguntar.
+  local exp portas_api portas_nft
+  exp=$(body GET /api/nftables/policy "$tok")
+  portas_api=$(python3 -c "
+import json,sys
+d=json.loads(sys.argv[1]).get('exposure') or {}
+print(','.join(str(p) for p in (d.get('management_ports') or [])))" "$exp" 2>/dev/null)
+  portas_nft=$(vm "nft list chain inet linkguard input 2>/dev/null" | grep -oE 'tcp dport \{[^}]*\}' | grep -oE '[0-9]+' | paste -sd, -)
+  if [[ -n "$portas_api" && "$portas_api" == "$portas_nft" ]]; then
+    ok "a tela anuncia exatamente as portas que a chain libera ($portas_api)"
+  else bad "a tela e o ruleset discordam sobre as portas de gerência" "API '$portas_api' vs nft '$portas_nft'"; fi
+
+  local fwd_api fwd_sys
+  fwd_api=$(python3 -c "
+import json,sys
+print((json.loads(sys.argv[1]).get('exposure') or {}).get('ipv6_forwarding',''))" "$exp" 2>/dev/null)
+  fwd_sys=$(vm "cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null" | tr -d '')
+  local esperado="unknown"
+  [[ "$fwd_sys" == "0" ]] && esperado="off"
+  [[ -n "$fwd_sys" && "$fwd_sys" != "0" ]] && esperado="on"
+  if [[ "$fwd_api" == "$esperado" ]]; then ok "a tela diz o estado real do encaminhamento IPv6 ('$fwd_api')"
+  else bad "a tela discorda do sysctl de IPv6" "API '$fwd_api', /proc '$fwd_sys' (esperado '$esperado')"; fi
+
   # O0 — A SET TEM DE EXISTIR NUMA MÁQUINA QUE VEIO DE UPGRADE.
   #
   # O DEFEITO QUE ESTA LINHA PEGA, e que escapou para produção: a set nascia só

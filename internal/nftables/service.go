@@ -73,6 +73,12 @@ type Service struct {
 	// emite regra nenhuma, o comportamento de toda máquina anterior a esta
 	// entrega. Erro de leitura ABORTA: ver wanInterfaces.
 	wanInterfacesSource func() ([]string, error)
+
+	// ipv6FwdPath é o sysctl que a tela lê para dizer se IPv6 é roteado
+	// (#119, fase 3). Campo, e não const, pelo mesmo motivo de
+	// routes.Service.fwdPath: o teste aponta para um arquivo temporário em vez
+	// de depender do /proc da máquina que roda a suíte.
+	ipv6FwdPath string
 	// forwardPolicySource é a política da chain forward (#92). Independente da
 	// input: bloquear o que atravessa e liberar o que chega ao firewall é uma
 	// combinação legítima.
@@ -179,8 +185,13 @@ func (s *Service) PersistState() PersistState {
 
 // NewService creates an nftables Service.
 func NewService(exec firewall.Executor) *Service {
-	return &Service{exec: exec, confPath: ConfPath}
+	return &Service{exec: exec, confPath: ConfPath, ipv6FwdPath: IPv6ForwardingSysctl}
 }
+
+// SetIPv6ForwardingPath aponta a leitura do sysctl de IPv6 para outro arquivo.
+// Mesmo motivo do SetConfPath: o teste não pode depender do /proc da máquina que
+// roda a suíte, onde o valor é o da estação de quem roda, não o do produto.
+func (s *Service) SetIPv6ForwardingPath(path string) { s.ipv6FwdPath = path }
 
 // SetConfPath aponta o Persist para outro arquivo. Existe para os testes
 // escreverem em t.TempDir() (ver o campo confPath); em produção o valor vem de
