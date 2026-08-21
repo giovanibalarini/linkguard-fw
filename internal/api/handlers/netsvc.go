@@ -407,17 +407,24 @@ func (h *NetsvcHandler) UpsertReservation(w http.ResponseWriter, r *http.Request
 	//
 	// O caminho ficou mais provável com a #119: a tela de Hosts passou a mostrar
 	// o endereço IPv6 de um aparelho, e é de lá que o admin copia.
+	if !validate.IPv4(b.IP) {
+		writeError(w, http.StatusBadRequest,
+			"reserva de DHCP precisa de um endereço IPv4: o servidor de DHCP desta caixa é IPv4, e um endereço IPv6 aqui faria toda alteração de DHCP/DNS parar de ser aplicada")
+		return
+	}
+	// A SUB-REDE VEM DEPOIS DA FAMÍLIA, e a ordem é sobre a MENSAGEM.
+	//
+	// Um endereço IPv6 também está fora de uma sub-rede IPv4, então esta
+	// checagem o pegava primeiro e respondia "fora da sub-rede servida" — que é
+	// tecnicamente verdade e manda o admin conferir a coisa errada. Ele acabou
+	// de copiar esse endereço da tela de Hosts (#119); o que precisa ler é que
+	// reserva de DHCP é IPv4. Foi a bateria R que mostrou a inversão.
 	if !netsvc.DentroDaSubrede(strings.TrimSpace(b.IP), h.getConfig().SubnetCIDR) {
 		// Medido no kea-dhcp4 2.6.3: "specified reservation ... is not within
 		// the IPv4 subnet". É a #152 com outro valor — a guarda de família não
 		// pega, e o efeito é o mesmo: nada mais é aplicado.
 		writeError(w, http.StatusBadRequest,
 			"a reserva precisa estar dentro da sub-rede servida ("+h.getConfig().SubnetCIDR+"); fora dela o servidor de DHCP recusa a configuração inteira")
-		return
-	}
-	if !validate.IPv4(b.IP) {
-		writeError(w, http.StatusBadRequest,
-			"reserva de DHCP precisa de um endereço IPv4: o servidor de DHCP desta caixa é IPv4, e um endereço IPv6 aqui faria toda alteração de DHCP/DNS parar de ser aplicada")
 		return
 	}
 	if err := h.db.UpsertDHCPReservation(mac, strings.TrimSpace(b.IP), strings.TrimSpace(b.Hostname)); err != nil {

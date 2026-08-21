@@ -2341,6 +2341,9 @@ battery_reserva_dhcp() {
   # esse endereço da tela de Hosts; "IP inválido" o mandaria conferir a digitação.
   local corpo
   corpo=$(body POST /api/dhcp/reservations "$tok" '{"mac":"aa:bb:cc:dd:ee:52","ip":"fd00::52","hostname":"teste152"}')
+  # A mensagem tem de falar de FAMÍLIA, não de sub-rede: o admin acabou de
+  # copiar esse endereço da tela de Hosts. Dizer "fora da sub-rede" sobre um
+  # IPv6 é tecnicamente verdade e inútil — manda conferir a coisa errada.
   if grep -qi "IPv4" <<<"$corpo"; then ok "a mensagem explica que a reserva precisa ser IPv4"
   else bad "a mensagem não explica o motivo" "$(head -c 160 <<<"$corpo")"; fi
 
@@ -2357,9 +2360,15 @@ battery_reserva_dhcp() {
   kea=$(vm "systemctl is-active kea-dhcp4-server 2>/dev/null" | tr -d '\r')
   if [[ "$kea" == "active" ]]; then ok "o servidor de DHCP continua de pé depois das tentativas"
   else bad "o DHCP não está ativo depois da bateria ('$kea')"; fi
-  if vm "grep -q '192.168.3.153' /etc/kea/kea-dhcp4.conf 2>/dev/null" && echo ok | grep -q ok; then
+  if vm "grep -q '192.168.3.153' /etc/kea/kea-dhcp4.conf" 2>/dev/null; then
     ok "a reserva boa chegou na config do Kea"
-  else bad "a reserva IPv4 não foi aplicada" "$(vm "grep -c reservations /etc/kea/kea-dhcp4.conf 2>/dev/null" | tr -d '\r')"; fi
+  else
+    bad "a reserva IPv4 não chegou na config do Kea" \
+        "último apply: $(body GET /api/dhcp "$tok" | python3 -c "
+import json,sys
+d=(json.load(sys.stdin).get('last_apply') or {})
+print(('ok' if d.get('ok') else 'FALHOU') + ' ' + (d.get('error') or d.get('warning') or ''))" 2>/dev/null | head -c 200)"
+  fi
 
   # R5 — a família da #161: valor bem formado que o daemon recusa depois.
   # Cada um destes travava TODO apply de DHCP/DNS, e o do gateway derrubava o
@@ -2376,7 +2385,12 @@ battery_reserva_dhcp() {
 
   # R6 — O QUE DERRUBA: gateway num endereço que a máquina não tem.
   local atual
-  atual=$(body GET /api/dhcp/config "$tok")
+  # GET /api/dhcp, e não /api/dhcp/config — o PUT é que tem o sufixo. Com a
+  # rota errada o corpo vinha vazio, o python quebrava, o PUT ia com lixo e
+  # tomava 400: a asserção PASSAVA pelo motivo errado.
+  atual=$(body GET /api/dhcp "$tok" | python3 -c "
+import json,sys
+print(json.dumps(json.load(sys.stdin).get('config') or {}))" 2>/dev/null)
   local sub
   sub=$(jqk subnet_cidr <<<"$atual")
   st=$(status PUT /api/dhcp/config "$tok" "$(python3 -c "

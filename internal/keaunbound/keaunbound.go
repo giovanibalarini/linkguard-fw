@@ -509,7 +509,30 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 	// Por isso a checagem vem ANTES da escrita, e não depois: aqui, escrever já
 	// é o dano.
 	if err := s.enderecoBindavel(ctx, c.Gateway); err != nil {
-		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, err
+		// AVISA E SEGUE SEM A LINHA, em vez de recusar o apply inteiro — e esta
+		// correção veio da VM, que mostrou a guarda anterior sendo pior que o
+		// defeito.
+		//
+		// Recusar tudo parecia a resposta segura: escrever mata o unbound, logo
+		// não escreva. Só que o endereço de LAN padrão de fábrica não existe em
+		// máquina nenhuma antes de o admin configurar a rede — então TODO apply
+		// de DHCP/DNS passava a falhar numa caixa recém-instalada, inclusive os
+		// que não têm nada a ver com o gateway. Era o mesmo "subsistema travado
+		// por um campo" que a #152 existe para acabar, reintroduzido pelo
+		// conserto dela.
+		//
+		// Sem a linha, o unbound escuta só em 127.0.0.1: a LAN fica sem DNS,
+		// que é ruim — mas o daemon fica DE PÉ, o resto da configuração é
+		// aplicado, e o aviso diz exatamente o que está faltando. Ficar de pé
+		// com metade é melhor que morrer inteiro, e muito melhor que travar
+		// todas as outras telas.
+		warnings = append(warnings, err.Error())
+		c.Gateway = ""
+		// Regerado sem o endereço: o candidato validado abaixo tem de ser o
+		// mesmo que vai para o disco.
+		if regen, w2, gerr := s.generateConfigs(c, res, blocked, ntpServer); gerr == nil {
+			files, warnings = regen, append(warnings, w2...)
+		}
 	}
 
 	// Validate both candidates before touching anything in production —
@@ -665,7 +688,7 @@ func (s *Service) enderecoBindavel(ctx context.Context, addr string) error {
 		// Não conseguir perguntar NÃO vira "pode escrever". Um apply que segue
 		// adiante às cegas aqui é o apagão de volta — e a alternativa, recusar,
 		// custa uma alteração adiada.
-		return fmt.Errorf("não consegui conferir se %s existe nesta máquina antes de aplicar; nada foi alterado: %w", addr, err)
+		return fmt.Errorf("não consegui conferir se %s existe nesta máquina; o servidor de DNS pode não conseguir escutar nele: %w", addr, err)
 	}
 	for _, linha := range strings.Split(out, "\n") {
 		for _, campo := range strings.Fields(linha) {
@@ -674,7 +697,7 @@ func (s *Service) enderecoBindavel(ctx context.Context, addr string) error {
 			}
 		}
 	}
-	return fmt.Errorf("o endereço %s não existe em nenhuma interface desta máquina: o servidor de DNS escuta nele, e aplicar assim derrubaria o DNS da rede inteira. Nada foi alterado — confira o endereço do firewall na rede", addr)
+	return fmt.Errorf("o endereço %s não existe em nenhuma interface desta máquina, então o servidor de DNS não pode escutar nele: os aparelhos da rede não vão receber DNS deste firewall até o endereço existir. O resto da configuração foi aplicado", addr)
 }
 
 // validateKea writes the candidate config to a temp file and runs the Kea

@@ -63,6 +63,13 @@ func TestApplyRecusaEnderecoQueNaoExisteNaMaquina(t *testing.T) {
 	if err := s.enderecoBindavel(context.Background(), "203.0.113.9"); err == nil {
 		t.Fatal("aceitou escutar num endereço que a máquina não tem")
 	}
+	// A REAÇÃO É AVISAR, NÃO TRAVAR — e esta distinção veio da VM. Recusar o
+	// apply inteiro parecia seguro (escrever mata o unbound, logo não escreva),
+	// mas o endereço de LAN padrão de fábrica não existe em máquina nenhuma
+	// antes de o admin configurar a rede: TODO apply passava a falhar numa caixa
+	// recém-instalada, inclusive os que não têm nada a ver com o gateway. Era o
+	// "subsistema travado por um campo" da #152, reintroduzido pelo conserto
+	// dela. Ver ReloadConfigs.
 	if err := s.enderecoBindavel(context.Background(), "192.168.3.3"); err != nil {
 		t.Errorf("recusou um endereço que a máquina tem: %v", err)
 	}
