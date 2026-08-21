@@ -256,8 +256,12 @@ func Apply(db *storage.DB, data BackupData) (Result, error) {
 			return Result{}, invalid("backup contém reserva DHCP com MAC inválido — nada foi restaurado: %s", rsv.MAC)
 		}
 		ip := strings.TrimSpace(rsv.IP)
-		if net.ParseIP(ip) == nil {
-			return Result{}, invalid("backup contém reserva DHCP com IP inválido — nada foi restaurado: %s", rsv.IP)
+		// Mesma guarda do handler (#152): o restore refaz o banco SEM passar por
+		// ele, e todo campo em que este caminho for mais permissivo é um jeito
+		// de plantar um valor que a tela nunca deixaria entrar. Um backup tirado
+		// antes da guarda pode conter um endereço IPv6 aqui.
+		if !validate.IPv4(ip) {
+			return Result{}, invalid("backup contém reserva DHCP com endereço que não é IPv4 — nada foi restaurado: %s", rsv.IP)
 		}
 		normalizedReservations = append(normalizedReservations, storage.DHCPReservation{MAC: mac, IP: ip, Hostname: rsv.Hostname})
 	}
