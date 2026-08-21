@@ -23,6 +23,7 @@ import (
 
 // Validadores estritos para valores renderizados em configs de unbound/Kea.
 var (
+	reMACCanonico = regexp.MustCompile(`^([0-9a-f]{2}:){5}[0-9a-f]{2}$`)
 	// reDNSDomain is intentionally lenient about structure — single-label names
 	// ("lan", "localhost") and underscore labels ("_dmarc.example.com") are all
 	// legitimate for a DNS blocklist or a DHCP domain suffix — but strict about
@@ -76,6 +77,46 @@ func Iface(s string) bool {
 
 // NTPServer reports whether s is acceptable as a chrony server entry.
 func NTPServer(s string) bool { return reNTPServer.MatchString(s) }
+
+// MACCanonico devolve o endereço físico na ÚNICA grafia que os dois daemons
+// deste produto aceitam — seis octetos minúsculos separados por dois-pontos —
+// ou "" se não for isso.
+//
+// NormalizeMAC não serve para esta pergunta: ela delega a net.ParseMAC, que
+// aceita "aa-bb-cc-dd-ee-ff" (Windows), "aabb.ccdd.eeff" (Cisco) e endereços
+// InfiniBand de 20 bytes, e só passa para minúsculas. O valor chegava ao kea e
+// ao nft na grafia original, e os dois recusam (issue #161).
+func MACCanonico(s string) string {
+	norm := NormalizeMAC(s)
+	if norm == "" || !reMACCanonico.MatchString(norm) {
+		return ""
+	}
+	return norm
+}
+
+// DomainWire diz se o nome é válido no formato que o DNS realmente usa.
+//
+// Domain() checa charset e comprimento TOTAL, e é permissiva de propósito. O que
+// ela não checa é a ESTRUTURA DE RÓTULO — e é isso que o unbound recusa (issue
+// #161): rótulo vazio ("a..b", de um ponto digitado duas vezes) ou com mais de
+// 63 caracteres faz o `unbound-checkconf` responder "cannot parse name" e
+// derrubar a configuração inteira. Fronteira medida no unbound 1.22.0: 63
+// caracteres passa, 64 recusa.
+//
+// O guarda que deveria descartar a entrada ruim na renderização usava a MESMA
+// regex da Domain(), então não descartava nada — dois lugares concordando em
+// estar errados parecem uma checagem dupla.
+func DomainWire(d string) bool {
+	if !Domain(d) {
+		return false
+	}
+	for _, rotulo := range strings.Split(strings.TrimSuffix(strings.TrimSpace(d), "."), ".") {
+		if rotulo == "" || len(rotulo) > 63 {
+			return false
+		}
+	}
+	return true
+}
 
 // IPv4 diz se s é um endereço IPv4.
 //

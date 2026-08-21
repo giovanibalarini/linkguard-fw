@@ -42,11 +42,11 @@ func upsertReserva(t *testing.T, h *NetsvcHandler, mac, ip, hostname string) *ht
 func TestUpsertReservationRecusaIPJaReservadoENomeiaOMACDono(t *testing.T) {
 	h := newDHCPConflitoHandler(t)
 
-	if rec := upsertReserva(t, h, "AA:BB:CC:00:00:01", "192.168.1.50", "impressora"); rec.Code != 200 {
+	if rec := upsertReserva(t, h, "AA:BB:CC:00:00:01", "192.168.3.50", "impressora"); rec.Code != 200 {
 		t.Fatalf("primeira reserva: status %d, corpo %s", rec.Code, rec.Body.String())
 	}
 
-	rec := upsertReserva(t, h, "AA:BB:CC:00:00:02", "192.168.1.50", "nvr")
+	rec := upsertReserva(t, h, "AA:BB:CC:00:00:02", "192.168.3.50", "nvr")
 
 	// 409 e não 400: o pedido está bem formado; o que conflita é o estado.
 	if rec.Code != 409 {
@@ -59,7 +59,7 @@ func TestUpsertReservationRecusaIPJaReservadoENomeiaOMACDono(t *testing.T) {
 	if !strings.Contains(corpo, "aa:bb:cc:00:00:01") {
 		t.Errorf("a recusa não nomeia o MAC dono do IP; o admin não saberia qual reserva remover. Corpo: %s", corpo)
 	}
-	if !strings.Contains(corpo, "192.168.1.50") {
+	if !strings.Contains(corpo, "192.168.3.50") {
 		t.Errorf("a recusa não nomeia o IP em conflito. Corpo: %s", corpo)
 	}
 }
@@ -71,10 +71,10 @@ func TestUpsertReservationRecusaIPJaReservadoENomeiaOMACDono(t *testing.T) {
 func TestUpsertReservationDeixaOMesmoMACSalvarDeNovo(t *testing.T) {
 	h := newDHCPConflitoHandler(t)
 
-	if rec := upsertReserva(t, h, "AA:BB:CC:00:00:01", "192.168.1.50", "impressora"); rec.Code != 200 {
+	if rec := upsertReserva(t, h, "AA:BB:CC:00:00:01", "192.168.3.50", "impressora"); rec.Code != 200 {
 		t.Fatalf("primeira: status %d", rec.Code)
 	}
-	rec := upsertReserva(t, h, "AA:BB:CC:00:00:01", "192.168.1.50", "impressora do 2o andar")
+	rec := upsertReserva(t, h, "AA:BB:CC:00:00:01", "192.168.3.50", "impressora do 2o andar")
 	if rec.Code != 200 {
 		t.Fatalf("reeditar a própria reserva foi recusado: status %d, corpo %s", rec.Code, rec.Body.String())
 	}

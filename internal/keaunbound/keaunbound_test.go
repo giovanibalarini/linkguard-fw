@@ -81,6 +81,14 @@ func (e *recExec) Execute(_ context.Context, cmd string, args ...string) (string
 	return "", nil
 }
 func (e *recExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	// A máquina de mentira precisa TER o endereço em que o unbound vai escutar,
+	// senão o apply é recusado antes de escrever (#161) — que é justamente o
+	// comportamento novo. Um executor falso que não simula a máquina faz o teste
+	// medir a guarda em vez do que ele quer medir.
+	if cmd == "ip" {
+		return "2: br10    inet 192.168.3.3/24 brd 192.168.3.255 scope global br10\n" +
+			"1: lo    inet 127.0.0.1/8 scope host lo\n", nil
+	}
 	if cmd == "dpkg-query" && len(args) > 0 {
 		pkg := args[len(args)-1]
 		if e.missingPkgs[pkg] {

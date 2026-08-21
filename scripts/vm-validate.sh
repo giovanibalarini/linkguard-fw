@@ -2361,6 +2361,39 @@ battery_reserva_dhcp() {
     ok "a reserva boa chegou na config do Kea"
   else bad "a reserva IPv4 não foi aplicada" "$(vm "grep -c reservations /etc/kea/kea-dhcp4.conf 2>/dev/null" | tr -d '\r')"; fi
 
+  # R5 — a família da #161: valor bem formado que o daemon recusa depois.
+  # Cada um destes travava TODO apply de DHCP/DNS, e o do gateway derrubava o
+  # DNS da rede — os arquivos eram escritos e o unbound morria sem conseguir
+  # escutar.
+  local caso desc
+  for caso in     'ip-fora-da-subrede|{"mac":"aa:bb:cc:dd:ee:54","ip":"10.9.9.9","hostname":"fora"}|/api/dhcp/reservations'     'mac-do-windows|{"mac":"aa-bb-cc-dd-ee-55","ip":"192.168.3.155","hostname":"win"}|/api/dhcp/reservations'
+  do
+    desc="${caso%%|*}"; local resto="${caso#*|}"; local corpo_req="${resto%%|*}"; local rota="${resto##*|}"
+    st=$(status POST "$rota" "$tok" "$corpo_req")
+    if [[ "$st" == "400" ]]; then ok "recusado na hora: $desc"
+    else bad "$desc foi aceito (HTTP $st) — travaria todo apply de DHCP/DNS"; fi
+  done
+
+  # R6 — O QUE DERRUBA: gateway num endereço que a máquina não tem.
+  local atual
+  atual=$(body GET /api/dhcp/config "$tok")
+  local sub
+  sub=$(jqk subnet_cidr <<<"$atual")
+  st=$(status PUT /api/dhcp/config "$tok" "$(python3 -c "
+import json,sys
+d=json.loads(sys.argv[1]); d['gateway']='203.0.113.9'
+print(json.dumps(d))" "$atual")")
+  if [[ "$st" == "400" ]]; then ok "gateway fora da sub-rede é recusado antes de escrever"
+  else bad "gateway inalcançável aceito (HTTP $st) — o unbound morreria e a LAN ficaria sem DNS"; fi
+
+  # R7 — e o DNS continua de pé depois de todas as tentativas. É a asserção que
+  # mede o dano real: não é a requisição recusada, é o serviço que não pode cair.
+  sleep 3
+  local unb
+  unb=$(vm "systemctl is-active unbound 2>/dev/null" | tr -d '\r')
+  if [[ "$unb" == "active" ]]; then ok "o servidor de DNS continua de pé (sub-rede $sub)"
+  else bad "o unbound não está ativo depois da bateria ('$unb')"; fi
+
   status DELETE /api/dhcp/reservations "$tok" '{"mac":"aa:bb:cc:dd:ee:53"}' >/dev/null 2>&1
 }
 
