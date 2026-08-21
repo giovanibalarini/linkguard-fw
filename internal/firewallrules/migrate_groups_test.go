@@ -482,6 +482,7 @@ func TestReconcileStaysHealthyAfterTheSystemGroupsAreCreated(t *testing.T) {
 	for _, want := range []string{
 		"ip saddr @blocked_hosts counter drop",
 		"ip daddr @blocked_hosts counter drop",
+		"ether saddr @blocked_macs counter drop",
 		"ip daddr @blocklist counter drop",
 		"ip saddr @blocklist counter drop",
 	} {

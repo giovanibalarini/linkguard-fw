@@ -185,6 +185,7 @@ func TestForwardChainFollowsTheSingleOrderedList(t *testing.T) {
 		"ip saddr 192.168.50.0/24 counter jump grp_aaa",
 		"ip saddr @blocked_hosts counter drop",
 		"ip daddr @blocked_hosts counter drop",
+		"ether saddr @blocked_macs counter drop",
 		"ip daddr @blocklist counter drop",
 		"ip saddr @blocklist counter drop",
 	}
@@ -324,11 +325,12 @@ func TestForwardChainKeepsTheFourAdministrativeBlocks(t *testing.T) {
 	want := []string{
 		"ip saddr @blocked_hosts counter drop",
 		"ip daddr @blocked_hosts counter drop",
+		"ether saddr @blocked_macs counter drop",
 		"ip daddr @blocklist counter drop",
 		"ip saddr @blocklist counter drop",
 	}
 	if len(lines) != len(want) {
-		t.Fatalf("só com os grupos do sistema a forward deveria ter os 4 bloqueios, tem %d:\n%v", len(lines), lines)
+		t.Fatalf("só com os grupos do sistema a forward deveria ter os 5 bloqueios, tem %d:\n%v", len(lines), lines)
 	}
 	for i := range want {
 		if lines[i] != want[i] {
@@ -849,6 +851,7 @@ func TestReconcileGroupsForwardCommandOrder(t *testing.T) {
 	want := []string{
 		"nft add rule inet linkguard forward ip saddr @blocked_hosts counter drop",
 		"nft add rule inet linkguard forward ip daddr @blocked_hosts counter drop",
+		"nft add rule inet linkguard forward ether saddr @blocked_macs counter drop",
 		"nft add rule inet linkguard forward ip daddr @blocklist counter drop",
 		"nft add rule inet linkguard forward ip saddr @blocklist counter drop",
 		"nft add rule inet linkguard forward ip saddr 192.168.50.0/24 counter jump grp_aaa",
@@ -1779,7 +1782,7 @@ func TestSystemGroupsStayInForwardEvenWithAnInputScopeRow(t *testing.T) {
 			Enabled: true, Position: 0},
 	}
 	fwd := forwardLines(groups)
-	if len(fwd) != 2 || !strings.Contains(fwd[0], "@blocked_hosts") {
+	if len(fwd) != 3 || !strings.Contains(fwd[0], "@blocked_hosts") {
 		t.Fatalf("o bloqueio do sistema tem que continuar na forward, obtive %v", fwd)
 	}
 	if lines := inputLinesAfterBase(t, groups, nil, false); len(lines) != 0 {
@@ -2433,6 +2436,7 @@ func TestForwardChainKeepsSystemBlockLinesUntouchedByConnState(t *testing.T) {
 	want := []string{
 		"ip saddr @" + BlockedSet + " counter drop",
 		"ip daddr @" + BlockedSet + " counter drop",
+		"ether saddr @" + BlockedMACSet + " counter drop",
 		"ip daddr @blocklist counter drop",
 		"ip saddr @blocklist counter drop",
 	}

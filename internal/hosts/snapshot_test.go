@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
@@ -71,5 +72,68 @@ func TestSetBlockedPersistsLiveSnapshot(t *testing.T) {
 	}
 	if got != wantRuleset {
 		t.Errorf("snapshot not persisted correctly:\ngot:  %q\nwant: %q", got, wantRuleset)
+	}
+}
+
+// execGravador guarda os comandos, para o teste abaixo poder afirmar o que foi
+// escrito no firewall — e não só que nada explodiu.
+type execGravador struct {
+	fakeExec
+	comandos [][]string
+}
+
+func (e *execGravador) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	e.comandos = append(e.comandos, append([]string{cmd}, args...))
+	return "", nil
+}
+
+func (e *execGravador) contem(sub string) bool {
+	for _, c := range e.comandos {
+		if strings.Contains(strings.Join(c, " "), sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBloquearHostValeAntesDeConhecerOIP é a asserção que a fase 2 da #119
+// existe para garantir.
+//
+// Antes dela, bloquear um host que ainda não tinha sido visto na rede não
+// escrevia NADA no firewall: a flag ficava guardada e o produto esperava o host
+// aparecer para traduzir o MAC em IP. E, mesmo depois de aparecer, o bloqueio
+// só valia para IPv4 — o mesmo host falando IPv6 atravessava a chain forward
+// sem casar com regra nenhuma, com a tela dizendo "bloqueado".
+//
+// O endereço físico não tem família e não depende de o host ter sido visto.
+func TestBloquearHostValeAntesDeConhecerOIP(t *testing.T) {
+	origConfPath := nftables.ConfPath
+	nftables.ConfPath = filepath.Join(t.TempDir(), "nftables.conf")
+	t.Cleanup(func() { nftables.ConfPath = origConfPath })
+
+	db, err := storage.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// De propósito SEM UpsertHostSighting: este host nunca foi visto, então não
+	// há IP para traduzir.
+	e := &execGravador{}
+	svc := hosts.NewService(e, db, nftables.NewService(e), fakeNetProvider{})
+
+	if err := svc.SetBlocked(context.Background(), "aa:bb:cc:dd:ee:ff", true); err != nil {
+		t.Fatalf("SetBlocked: %v", err)
+	}
+	if !e.contem("add element inet linkguard blocked_macs { aa:bb:cc:dd:ee:ff }") {
+		t.Errorf("o endereço físico não foi bloqueado; comandos: %v", e.comandos)
+	}
+
+	e.comandos = nil
+	if err := svc.SetBlocked(context.Background(), "aa:bb:cc:dd:ee:ff", false); err != nil {
+		t.Fatalf("SetBlocked(false): %v", err)
+	}
+	if !e.contem("delete element inet linkguard blocked_macs { aa:bb:cc:dd:ee:ff }") {
+		t.Errorf("o desbloqueio não tirou o endereço físico; comandos: %v", e.comandos)
 	}
 }

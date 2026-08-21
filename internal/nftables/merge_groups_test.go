@@ -146,6 +146,7 @@ func TestMergeGroupsSystemGroupAppliedFromItsSetLines(t *testing.T) {
 	forward := ChainInfo{Name: ForwardChain, Rules: []ChainRule{
 		{Expression: "ip saddr @blocked_hosts drop", Handle: 4, HasCounter: true, Packets: 52, Bytes: 4096},
 		{Expression: "ip daddr @blocked_hosts drop", Handle: 5, HasCounter: true, Packets: 16, Bytes: 1280},
+		{Expression: "ether saddr @blocked_macs drop", Handle: 6, HasCounter: true, Packets: 3, Bytes: 240},
 	}}
 
 	v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, forward)[0]
@@ -153,8 +154,9 @@ func TestMergeGroupsSystemGroupAppliedFromItsSetLines(t *testing.T) {
 		t.Error("as linhas do set estão vivas na forward: o grupo está aplicado")
 	}
 	// O contador do grupo é a soma das linhas dele — aqui não há jump para
-	// medir, e as duas linhas juntas são o que o grupo faz.
-	if v.Packets != 68 || v.Bytes != 5376 || !v.HasCounter {
+	// medir, e as três linhas juntas são o que o grupo faz (as duas de IPv4
+	// mais a de endereço físico, que é o bloqueio válido em qualquer família).
+	if v.Packets != 71 || v.Bytes != 5616 || !v.HasCounter {
 		t.Errorf("contador do grupo do sistema errado: %+v", v)
 	}
 }
@@ -200,6 +202,7 @@ func TestMergeGroupsSystemGroupHasEmptyNotNilRuleChain(t *testing.T) {
 	forward := ChainInfo{Name: ForwardChain, Rules: []ChainRule{
 		{Expression: "ip saddr @blocked_hosts drop", Handle: 4, HasCounter: true, Packets: 52, Bytes: 4096},
 		{Expression: "ip daddr @blocked_hosts drop", Handle: 5, HasCounter: true, Packets: 16, Bytes: 1280},
+		{Expression: "ether saddr @blocked_macs drop", Handle: 6, HasCounter: true, Packets: 3, Bytes: 240},
 	}}
 	v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, forward)[0]
 	if v.Rules.Rules == nil {
@@ -271,6 +274,7 @@ func TestMergeGroupsSystemGroupIsReadFromTheForwardEvenWithAnInputScopeRow(t *te
 	forward := ChainInfo{Name: ForwardChain, Rules: []ChainRule{
 		{Expression: "ip saddr @blocked_hosts drop", HasCounter: true},
 		{Expression: "ip daddr @blocked_hosts drop", HasCounter: true},
+		{Expression: "ether saddr @blocked_macs drop", HasCounter: true},
 	}}
 	if v := MergeGroups([]StoredGroup{g}, map[string]ChainInfo{}, forward)[0]; !v.Applied {
 		t.Error("o bloqueio do sistema está vivo na forward e consta como não aplicado")
@@ -298,6 +302,7 @@ const liveForwardWithCtStateNewJump = `table inet linkguard {
 		type filter hook forward priority filter; policy accept;
 		ip saddr @blocked_hosts counter packets 0 bytes 0 drop
 		ip daddr @blocked_hosts counter packets 0 bytes 0 drop
+		ether saddr @blocked_macs counter packets 0 bytes 0 drop
 		ip saddr 192.168.50.0/24 ct state new counter packets 7 bytes 420 jump grp_aaa
 		ip saddr 192.168.60.0/24 counter packets 3 bytes 180 jump grp_bbb
 		iifname "enp0s3" counter packets 0 bytes 0 jump grp_ccc

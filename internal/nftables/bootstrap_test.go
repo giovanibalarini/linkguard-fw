@@ -223,6 +223,7 @@ func TestBuildBootstrapRulesetForwardAndMarkHostsCarryCounter(t *testing.T) {
 		"counter jump user_rules",
 		"ip saddr @blocked_hosts counter drop",
 		"ip daddr @blocked_hosts counter drop",
+		"ether saddr @blocked_macs counter drop",
 		"ip daddr @blocklist counter drop",
 		"ip saddr @blocklist counter drop",
 		"counter meta mark set ip saddr map @host_wan",

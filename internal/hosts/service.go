@@ -2,6 +2,7 @@ package hosts
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -180,12 +181,30 @@ func (s *Service) SetBlocked(ctx context.Context, mac string, blocked bool) erro
 	if err := s.db.SetHostBlocked(mac, blocked); err != nil {
 		return err
 	}
+	// O ENDEREÇO FÍSICO VEM PRIMEIRO, E NÃO DEPENDE DE CONHECER O IP (#119).
+	//
+	// O bloqueio por IP só valia para IPv4, e só depois de o host ter sido
+	// visto na rede — até lá a flag ficava guardada sem efeito. O MAC é a
+	// identidade que o chamador JÁ tem em mãos: bloquear por ele vale para
+	// todas as famílias e vale imediatamente, sem esperar o host aparecer.
+	//
+	// Best-effort como o resto: elemento duplicado ou ausente não é falha dura,
+	// porque a flag no banco é a fonte da verdade.
+	if blocked {
+		_, _ = s.nft.BlockMAC(ctx, mac)
+	} else {
+		_, _ = s.nft.UnblockMAC(ctx, mac)
+	}
+
 	ip := s.ipForMAC(mac)
 	if ip == "" {
-		return nil // host IP unknown yet; flag persisted, enforced on next sighting
+		// Sem IP conhecido não há o que pôr no set IPv4 — mas o bloqueio por
+		// MAC acima JÁ está valendo, que é a diferença desta mudança.
+		if rs, err := s.nft.Ruleset(ctx); err == nil {
+			_ = s.db.SetSetting(nftables.LiveSnapshotSettingKey, rs)
+		}
+		return nil
 	}
-	// Best-effort enforcement: a duplicate add or missing-element delete is not
-	// a hard failure (the persisted flag is the source of truth).
 	if blocked {
 		_, _ = s.nft.BlockHost(ctx, ip)
 	} else {
@@ -212,4 +231,35 @@ func (s *Service) ipForMAC(mac string) string {
 		}
 	}
 	return ""
+}
+
+// SincronizaBloqueiosPorMAC põe no firewall o endereço físico de todo host
+// marcado como bloqueado no banco.
+//
+// POR QUE ISTO EXISTE. O bloqueio por endereço físico chegou depois (#119,
+// fase 2), e o set nasce vazio. Numa caixa já instalada, os hosts bloqueados
+// estão no banco e no set de IPv4 — mas não no de MAC. Sem esta passada, o
+// bloqueio deles continuaria valendo só para IPv4 até alguém desbloquear e
+// bloquear de novo pela tela, o que ninguém faz porque a tela já diz
+// "bloqueado".
+//
+// Roda a cada boot, e é idempotente: elemento duplicado não é falha.
+func (s *Service) SincronizaBloqueiosPorMAC(ctx context.Context) {
+	metas, err := s.db.ListHostMetadata()
+	if err != nil {
+		slog.Warn("não foi possível ler os hosts para sincronizar o bloqueio por endereço físico", "err", err)
+		return
+	}
+	var n int
+	for _, m := range metas {
+		if !m.Blocked || m.MAC == "" {
+			continue
+		}
+		if _, err := s.nft.BlockMAC(ctx, m.MAC); err == nil {
+			n++
+		}
+	}
+	if n > 0 {
+		slog.Info("bloqueio por endereço físico sincronizado a partir do banco", "hosts", n)
+	}
 }
