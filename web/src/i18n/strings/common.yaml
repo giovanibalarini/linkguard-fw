@@ -984,3 +984,15 @@ fw.contained.released:
 fw.contained.error:
   pt: "Não foi possível liberar essa origem."
   en: "Could not release that source."
+fw.containment.on:
+  pt: "Ligar contenção de tentativa repetida"
+  en: "Enable repeated-attempt containment"
+fw.containment.off:
+  pt: "Desligar contenção de tentativa repetida"
+  en: "Disable repeated-attempt containment"
+fw.containment.off.warn:
+  pt: "Desligada. Quem vem da internet e martela as portas de gerência não é contido pelo firewall — a defesa fica só na tela de login."
+  en: "Disabled. Anyone from the internet hammering the management ports is not contained by the firewall — the defence is left to the login screen alone."
+fw.containment.on.warn:
+  pt: "Ligada. Origens da internet que abrirem mais de 10 conexões por minuto às portas de gerência ficam contidas por 1 hora. Se você usa a API deste firewall a partir da internet, ela pode ser contida também — quem entra pela rede interna nunca é."
+  en: "Enabled. Sources from the internet opening more than 10 connections per minute to the management ports are contained for 1 hour. If you use this firewall's API from the internet, it may be contained too — anyone coming from the internal network never is."

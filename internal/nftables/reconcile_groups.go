@@ -680,5 +680,10 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 		slog.Warn("não foi possível ler o fechamento da gerência para o pré-voo; os jumps continuam sendo validados", "err", ferr)
 		fechada = false
 	}
-	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans, fechada), ensureInput)
+	cont, cerr := s.edgeContainment()
+	if cerr != nil {
+		slog.Warn("não foi possível ler a contenção de borda para o pré-voo", "err", cerr)
+		cont = false
+	}
+	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans, fechada, cont), ensureInput)
 }

@@ -547,6 +547,10 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// da janela de 90 s reescreve o valor no banco, e a reconciliação seguinte
 	// tem de obedecer ao que a reversão gravou — não ao que o processo lembrava.
 	nftSvc.SetWANMgmtClosedSource(frSvc.WANMgmtClosed)
+	// A contenção de tentativa repetida (#127) é opt-in e lida a cada
+	// reconciliação, pelo mesmo motivo das outras: o valor pode mudar pela tela
+	// e tem de valer na reconciliação seguinte, sem reiniciar nada.
+	nftSvc.SetEdgeContainmentSource(frSvc.EdgeContainment)
 	nftSvc.SetForwardPolicySource(frSvc.ForwardPolicy)
 	nftSvc.SetAdminAccessSource(func() (nftables.AdminAccess, error) {
 		netCfg := netsvc.DefaultConfig()

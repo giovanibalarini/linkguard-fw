@@ -2437,6 +2437,27 @@ battery_contencao() {
   status POST /api/links/auto-detect "$tok" >/dev/null 2>&1
   sleep 2
 
+  # S0 — DESLIGADA POR PADRÃO, e esta asserção é a mais importante da bateria.
+  #
+  # Ela nasceu LIGADA, e a execução da v1.0.157 mostrou o custo: o próprio arnês
+  # faz centenas de chamadas de API, cada uma uma conexão nova pela NIC que o
+  # auto-detect classifica como WAN. Excedeu a taxa, se conteve sozinho, e a
+  # suíte inteira caiu a partir da bateria F — 20 falhas em cascata, todas
+  # "sem sessão administrativa".
+  #
+  # No nível do firewall não dá para distinguir automação legítima de varredura
+  # só pela taxa. Este produto já decidiu, no survival.go, que não trancar o
+  # admin vale mais do que fechar tudo.
+  local chain0
+  chain0=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
+  if ! grep -q 'add @abusers' <<<"$chain0"; then
+    ok "a contenção nasce DESLIGADA: nenhuma regra a alimenta"
+  else bad "a contenção veio ligada de fábrica — foi assim que o arnês se trancou"; fi
+
+  # A partir daqui, LIGADA de propósito, para medir o que ela faz.
+  status PUT /api/nftables/edge-containment "$tok" '{"enabled":true}' >/dev/null
+  sleep 2
+
   # S1 — o set existe e a regra que a alimenta está na chain, escopada por WAN.
   local chain
   chain=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
@@ -2507,6 +2528,15 @@ print(len([c for c in d if c.get('ip')=='198.18.0.2' and c.get('expira_em_seg',0
   if ! vm "nft list set inet linkguard abusers" | grep -q '198.18.0.2'; then
     ok "liberar tira a origem da contenção"
   else bad "a origem continuou contida depois de liberar"; fi
+
+  # S7 — e DESLIGAR tira as regras da chain. Sem isto, a bateria deixaria a
+  # contenção ligada para as baterias seguintes, que fazem exatamente o tipo de
+  # chamada que dispara a contenção — que foi como esta suíte se trancou.
+  status PUT /api/nftables/edge-containment "$tok" '{"enabled":false}' >/dev/null
+  sleep 2
+  if ! vm "nft list chain inet linkguard input 2>/dev/null" | grep -q 'add @abusers'; then
+    ok "desligar tira a contenção da chain"
+  else bad "a contenção continuou na chain depois de desligada"; fi
 
   local lid
   lid=$(body GET /api/links "$tok" | python3 -c "
