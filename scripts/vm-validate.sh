@@ -1964,24 +1964,55 @@ PYEOF
   else bad "não consegui bloquear o host: $st"; return; fi
   sleep 2
 
-  # O3 — A ASSERÇÃO CENTRAL: bloqueado é bloqueado nas DUAS famílias.
+  # O3 — BLOQUEIO VALE PARA HOST QUE O PRODUTO NUNCA VIU.
+  #
+  # Esta asserção nasceu de uma FALHA DA PRÓPRIA BATERIA: o A/B abaixo não
+  # separava as famílias, e o motivo era que o set de IPv4 estava VAZIO — o
+  # cliente nunca tinha sido listado, então não havia MAC→IP para traduzir e os
+  # dois bloqueios vinham do endereço físico. Antes da fase 2 isso não seria
+  # detalhe de teste: bloquear um host ainda não visto não escrevia NADA no
+  # firewall, e a tela já dizia "bloqueado".
+  local elementos
+  elementos=$(vm "nft list set inet linkguard blocked_hosts" | tr -d '\r')
+  if ! grep -q 'elements' <<<"$elementos"; then
+    ok "host nunca visto pelo produto já fica bloqueado (o set de IPv4 está vazio)"
+  else bad "o set de IPv4 tem elemento para um host que nunca foi listado" "$(tr '\n' ' ' <<<"$elementos")"; fi
+
+  local v4 v6
   v4=$(alcanca 4); v6=$(alcanca 6)
   if [[ "$v4" != "200" ]]; then ok "host bloqueado não atravessa em IPv4"
   else bad "o host bloqueado continua atravessando em IPv4"; fi
   if [[ "$v6" != "200" ]]; then ok "host bloqueado não atravessa em IPv6 — a tela deixou de mentir"
   else bad "O HOST BLOQUEADO ATRAVESSA EM IPv6: o painel diz bloqueado e ele não está"; fi
 
-  # O4 — O DEFEITO, REPRODUZIDO. Tirando SÓ o set de endereços físicos, o IPv6
-  # volta a passar enquanto o IPv4 continua bloqueado. É a prova de que a
-  # asserção acima mede o que diz medir, e não outra coisa.
+  # O4 — agora com o host REGISTRADO, para o A/B ter os dois sets preenchidos.
+  # GET /api/hosts é o que grava o avistamento (hosts.List) — o mesmo caminho
+  # que a tela percorre sozinha quando alguém abre a página de Hosts.
+  status POST /api/hosts/block "$tok" "{\"mac\":\"$mac\",\"blocked\":false}" >/dev/null
+  sleep 1
+  alcanca 4 >/dev/null   # tráfego para o firewall aprender o vizinho
+  body GET /api/hosts "$tok" >/dev/null
+  status POST /api/hosts/block "$tok" "{\"mac\":\"$mac\",\"blocked\":true}" >/dev/null
+  sleep 2
+  elementos=$(vm "nft list set inet linkguard blocked_hosts" | tr -d '\r')
+  if grep -q '192.168.77.2' <<<"$elementos"; then
+    ok "depois de o produto ver o host, o endereço dele entra no set de IPv4 também"
+  else bad "o host foi listado e o endereço não entrou no set de IPv4" "$(tr '\n' ' ' <<<"$elementos")"; fi
+
+  # O5 — O DEFEITO, REPRODUZIDO. Com os DOIS sets preenchidos, tirar só o de
+  # endereços físicos devolve o IPv6 e mantém o IPv4 bloqueado. É isto que
+  # impede as asserções acima de estarem medindo outra coisa.
   vm "nft flush set inet linkguard blocked_macs" >/dev/null 2>&1
   sleep 1
   v4=$(alcanca 4); v6=$(alcanca 6)
   if [[ "$v6" == "200" && "$v4" != "200" ]]; then
     ok "sem o set de endereços físicos o IPv6 volta a passar e o IPv4 não (o defeito, reproduzido)"
-  else bad "o A/B não separou as famílias (v4 '$v4', v6 '$v6'): a asserção anterior pode estar medindo outra coisa"; fi
+  else
+    bad "o A/B não separou as famílias (v4 '$v4', v6 '$v6')" \
+        "set de IPv4 agora: $(vm "nft list set inet linkguard blocked_hosts" | tr -d '\r' | tr '\n' ' ')"
+  fi
 
-  # O5 — e desbloquear devolve as duas.
+  # O6 — e desbloquear devolve as duas.
   status POST /api/hosts/block "$tok" "{\"mac\":\"$mac\",\"blocked\":false}" >/dev/null
   sleep 2
   v4=$(alcanca 4); v6=$(alcanca 6)

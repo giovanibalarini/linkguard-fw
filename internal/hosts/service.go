@@ -3,6 +3,7 @@ package hosts
 import (
 	"context"
 	"log/slog"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -77,23 +78,50 @@ func (s *Service) List(ctx context.Context) ([]Host, error) {
 		if n.MAC == "" {
 			continue // can't track a host without a stable identifier
 		}
+		// UM HOST É UM MAC, E NÃO UMA LINHA DE `ip neigh` (#119).
+		//
+		// O mesmo aparelho aparece na vizinhança uma vez por ENDEREÇO: o IPv4,
+		// o IPv6 global e o link-local — três linhas com o mesmo MAC. Antes
+		// desta guarda, as três viravam três "hosts" na tela, e o avistamento
+		// gravado no banco era o da ÚLTIMA linha lida, que costuma ser um
+		// endereço IPv6.
+		//
+		// O estrago não ficava na tela. O IP guardado alimenta o bloqueio
+		// (`blocked_hosts` é `ipv4_addr`) e o direcionamento por host
+		// (`host_wan` idem): com um endereço IPv6 gravado ali, o `nft add
+		// element` era RECUSADO e o erro descartado por um `_, _ =` — o host
+		// aparecia bloqueado na tela e não estava bloqueado em lugar nenhum.
+		//
+		// Isso não doía enquanto a LAN não tinha IPv6 (forwarding desligado,
+		// sem RA do produto). Doeu no primeiro cliente de teste com IPv6, que é
+		// como foi encontrado.
+		if !ehIPv4(n.IP) {
+			if _, jaVisto := seen[n.MAC]; jaVisto {
+				continue
+			}
+			// Host só-IPv6: entra na lista (existe, e a tela precisa mostrá-lo),
+			// mas NÃO vira avistamento — gravar um endereço que os sets IPv4
+			// não aceitam é pior que não gravar nada.
+			seen[n.MAC] = true
+			hosts = append(hosts, hostDeVizinho(n, meta))
+			continue
+		}
+		if _, jaVisto := seen[n.MAC]; jaVisto {
+			// Já entrou por um endereço não-IPv4; corrige a linha para o IPv4,
+			// que é a identidade que o resto do produto sabe usar.
+			for i := range hosts {
+				if hosts[i].MAC == n.MAC {
+					hosts[i].IP, hosts[i].State, hosts[i].Online = n.IP, n.State, reachableStates[n.State]
+					break
+				}
+			}
+			sightings[n.MAC] = n.IP
+			continue
+		}
 		seen[n.MAC] = true
 		sightings[n.MAC] = n.IP
 
-		h := Host{
-			IP:        n.IP,
-			MAC:       n.MAC,
-			Interface: n.Interface,
-			State:     n.State,
-			Online:    reachableStates[n.State],
-		}
-		if m, ok := meta[n.MAC]; ok {
-			h.Hostname = m.Hostname
-			h.Alias = m.Alias
-			h.Blocked = m.Blocked
-			h.FirstSeen = &m.FirstSeen
-		}
-		hosts = append(hosts, h)
+		hosts = append(hosts, hostDeVizinho(n, meta))
 	}
 
 	// Persist all sightings at once; best-effort (don't fail listing on write error).
@@ -197,6 +225,15 @@ func (s *Service) SetBlocked(ctx context.Context, mac string, blocked bool) erro
 	}
 
 	ip := s.ipForMAC(mac)
+	if ip != "" && !ehIPv4(ip) {
+		// Endereço não-IPv4 gravado por uma versão anterior (ver a guarda em
+		// List). Mandá-lo para um set `ipv4_addr` seria um elemento recusado
+		// com o erro descartado — o host apareceria bloqueado e não estaria.
+		// O bloqueio por endereço físico acima já está valendo.
+		slog.Warn("host com endereço não-IPv4 gravado; só o bloqueio por endereço físico foi aplicado",
+			"mac", mac, "ip", ip)
+		ip = ""
+	}
 	if ip == "" {
 		// Sem IP conhecido não há o que pôr no set IPv4 — mas o bloqueio por
 		// MAC acima JÁ está valendo, que é a diferença desta mudança.
@@ -262,4 +299,32 @@ func (s *Service) SincronizaBloqueiosPorMAC(ctx context.Context) {
 	if n > 0 {
 		slog.Info("bloqueio por endereço físico sincronizado a partir do banco", "hosts", n)
 	}
+}
+
+// ehIPv4 diz se o endereço é IPv4. Existe porque os sets do nftables que o
+// produto usa para host (`blocked_hosts`, `host_wan`) são `ipv4_addr`: gravar
+// outra coisa não é uma limitação, é um elemento recusado com o erro
+// descartado.
+func ehIPv4(ip string) bool {
+	addr, err := netip.ParseAddr(ip)
+	return err == nil && addr.Is4()
+}
+
+// hostDeVizinho monta a linha da tela a partir de uma entrada de vizinhança,
+// juntando o que o banco já sabe sobre aquele MAC.
+func hostDeVizinho(n Neighbor, meta map[string]storage.HostMetadata) Host {
+	h := Host{
+		IP:        n.IP,
+		MAC:       n.MAC,
+		Interface: n.Interface,
+		State:     n.State,
+		Online:    reachableStates[n.State],
+	}
+	if m, ok := meta[n.MAC]; ok {
+		h.Hostname = m.Hostname
+		h.Alias = m.Alias
+		h.Blocked = m.Blocked
+		h.FirstSeen = &m.FirstSeen
+	}
+	return h
 }
