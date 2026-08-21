@@ -21,7 +21,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { ShieldCheck, ShieldOff, ChevronDown, ChevronRight, AlertTriangle, Check } from 'lucide-react';
+import { ShieldCheck, ShieldOff, ChevronDown, ChevronRight, AlertTriangle, Check, Loader2 } from 'lucide-react';
 import client from '../../api/client';
 import Panel from '../ui/Panel';
 import ConfirmOrRevertBanner from './ConfirmOrRevertBanner';
@@ -246,7 +246,9 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
         );
       })}
 
-      {data?.exposure && <CartaoExposicao e={data.exposure} />}
+      {data?.exposure && (
+        <CartaoExposicao e={data.exposure} canWrite={canWrite} onMsg={onMsg} onMudou={load} />
+      )}
     </div>
   );
 }
@@ -263,8 +265,28 @@ export default function FirewallPosture({ canWrite, onMsg }: Props) {
  * "bloquear" ou "aceitar" e formou uma impressão. Este cartão é onde ela é
  * corrigida.
  */
-function CartaoExposicao({ e }: { e: Exposure }) {
+function CartaoExposicao({ e, canWrite, onMsg, onMudou }: {
+  e: Exposure;
+  canWrite: boolean;
+  onMsg: (m: string, level?: MsgLevel) => void;
+  onMudou: () => void;
+}) {
   const { t } = useI18n();
+  const [salvando, setSalvando] = useState(false);
+
+  const trocarGerencia = async (fechar: boolean) => {
+    setSalvando(true);
+    try {
+      await client.put('/api/nftables/wan-management', { closed: fechar });
+      onMudou();
+      onMsg(t(fechar ? 'fw.exposure.closed.ok' : 'fw.exposure.opened.ok'), 'ok');
+    } catch (err) {
+      const ax = err as { response?: { data?: { error?: string } } };
+      onMsg(ax?.response?.data?.error || t('fw.exposure.error'), 'error');
+    } finally {
+      setSalvando(false);
+    }
+  };
   const itens: { texto: string; detalhe?: string; nivel: 'aviso' | 'neutro' }[] = [];
 
   if (e.error) {
@@ -277,6 +299,12 @@ function CartaoExposicao({ e }: { e: Exposure }) {
       }),
       detalhe: t('fw.exposure.mgmtOpen.why'),
       nivel: 'aviso',
+    });
+  } else if ((e.wan_interfaces ?? []).length > 0) {
+    itens.push({
+      texto: t('fw.exposure.mgmtClosed', { portas: (e.management_ports ?? []).join(', ') }),
+      detalhe: t('fw.exposure.mgmtClosed.why'),
+      nivel: 'neutro',
     });
   }
 
@@ -315,6 +343,25 @@ function CartaoExposicao({ e }: { e: Exposure }) {
           </li>
         ))}
       </ul>
+
+      {/* O botão só aparece quando há WAN: sem ela a regra não existe, e
+          oferecer "fechar" o que não está aberto seria a tela inventando um
+          controle sem efeito. */}
+      {canWrite && !e.error && (e.wan_interfaces ?? []).length > 0 && (
+        <div className="mt-4 pt-4 border-t border-gray-800">
+          <button
+            onClick={() => trocarGerencia(e.management_open_on_wan)}
+            disabled={salvando}
+            className={`text-xs disabled:opacity-50 ${e.management_open_on_wan ? 'btn-secondary' : 'btn-primary'}`}
+          >
+            {salvando && <Loader2 className="w-3.5 h-3.5 animate-spin" />}{' '}
+            {t(e.management_open_on_wan ? 'fw.exposure.close' : 'fw.exposure.open')}
+          </button>
+          <p className="text-[11px] text-gray-500 mt-2">
+            {t(e.management_open_on_wan ? 'fw.exposure.close.warn' : 'fw.exposure.open.warn')}
+          </p>
+        </div>
+      )}
     </Panel>
   );
 }

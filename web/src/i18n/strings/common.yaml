@@ -926,3 +926,30 @@ fw.exposure.addrIPv4Only.exception:
 fw.exposure.unknown:
   pt: "Não foi possível montar este retrato: {erro}. O que está descrito acima pode não ser o que está valendo."
   en: "Could not build this picture: {erro}. What is described above may not be what is in effect."
+fw.exposure.mgmtClosed:
+  pt: "As portas de gerência ({portas}) não respondem pela internet"
+  en: "The management ports ({portas}) do not answer from the internet"
+fw.exposure.mgmtClosed.why:
+  pt: "Você fechou. O acesso ao painel e ao SSH continua valendo pela rede interna."
+  en: "You closed them. Panel and SSH access still work from the internal network."
+fw.exposure.close:
+  pt: "Fechar a gerência na internet"
+  en: "Close management on the internet"
+fw.exposure.close.warn:
+  pt: "Se você depende de entrar por fora, vai perder o acesso — e é justamente por isso que esta mudança pede confirmação em 90 segundos. Sem a confirmação, ela se desfaz sozinha."
+  en: "If you rely on getting in from outside, you will lose access — which is exactly why this change asks for confirmation within 90 seconds. Without it, it undoes itself."
+fw.exposure.open:
+  pt: "Reabrir a gerência na internet"
+  en: "Reopen management on the internet"
+fw.exposure.open.warn:
+  pt: "O painel e o SSH voltam a responder pela internet. Também pede confirmação, para nenhuma mudança de borda passar sem aviso."
+  en: "Panel and SSH answer from the internet again. This also asks for confirmation, so no edge change goes through unannounced."
+fw.exposure.closed.ok:
+  pt: "Gerência fechada na internet. Confirme em 90 segundos, ou a mudança se desfaz."
+  en: "Management closed on the internet. Confirm within 90 seconds, or the change undoes itself."
+fw.exposure.opened.ok:
+  pt: "Gerência reaberta na internet. Confirme em 90 segundos, ou a mudança se desfaz."
+  en: "Management reopened on the internet. Confirm within 90 seconds, or the change undoes itself."
+fw.exposure.error:
+  pt: "Não foi possível mudar o acesso de gerência."
+  en: "Could not change management access."

@@ -99,6 +99,17 @@ type stateSnapshot struct {
 	// motivo e com a mesma forma: sem ela, reverter devolveria os grupos e
 	// deixaria o tráfego da rede bloqueado.
 	ForwardPolicy *nftables.Policy `json:"forward_policy,omitempty"`
+	// WANMgmtClosed é o fechamento das portas de gerência nas WANs (#119, fase
+	// 3b), e está aqui pela MESMA razão que Policy — que é a razão de este
+	// campo existir e não ser um detalhe.
+	//
+	// É a única mutação do produto que pode cortar o acesso de quem a fez SEM
+	// que ele perceba na hora: quem fecha a gerência pela LAN não sente nada, e
+	// descobre no dia em que precisar entrar de fora. Se o flag não entrasse
+	// aqui, a janela de 90 s armaria, o prazo venceria, e as portas
+	// continuariam fechadas sem nada apontando para elas — a reversão desfazendo
+	// tudo menos a mudança que ela existe para desfazer.
+	WANMgmtClosed *bool `json:"wan_mgmt_closed,omitempty"`
 }
 
 // SnapshotState serializa o estado ATUAL dos grupos e regras — o que o
@@ -146,7 +157,14 @@ func (s *Service) readState() (stateSnapshot, error) {
 	if err != nil {
 		return stateSnapshot{}, fmt.Errorf("ler a política da forward para o snapshot: %w", err)
 	}
-	return stateSnapshot{Groups: groups, Rules: rules, Policy: &policy, ForwardPolicy: &fwPolicy}, nil
+	fechado, err := s.WANMgmtClosed()
+	if err != nil {
+		return stateSnapshot{}, fmt.Errorf("ler o fechamento da gerência para o snapshot: %w", err)
+	}
+	return stateSnapshot{
+		Groups: groups, Rules: rules,
+		Policy: &policy, ForwardPolicy: &fwPolicy, WANMgmtClosed: &fechado,
+	}, nil
 }
 
 // canonicalState serializa um estado numa forma COMPARÁVEL byte a byte.
@@ -1016,6 +1034,12 @@ func (s *Service) revert(ctx context.Context, p *storage.PendingChange, reason s
 		if err := s.SetForwardPolicy(*snap.ForwardPolicy); err != nil {
 			slog.Error("o estado anterior voltou, mas a política da forward não pôde ser restaurada",
 				"err", err, "politica", *snap.ForwardPolicy)
+		}
+	}
+	if snap.WANMgmtClosed != nil {
+		if err := s.SetWANMgmtClosed(*snap.WANMgmtClosed); err != nil {
+			slog.Error("o estado anterior voltou, mas o fechamento da gerência nas WANs não pôde ser restaurado",
+				"err", err, "fechado", *snap.WANMgmtClosed)
 		}
 	}
 

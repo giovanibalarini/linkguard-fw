@@ -87,7 +87,7 @@ import (
 // nasce sem link nenhum, o resultado é byte a byte o de antes. Um firewall que
 // descartasse "tudo que vem da WAN" sem saber quais são as WANs descartaria
 // nada ou tudo, e as duas respostas estão erradas.
-func WANInputRules(wanIfaces []string, access AdminAccess) [][]string {
+func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada bool) [][]string {
 	nomes := make([]string, 0, len(wanIfaces))
 	vistos := map[string]bool{}
 	for _, iface := range wanIfaces {
@@ -183,8 +183,19 @@ func WANInputRules(wanIfaces []string, access AdminAccess) [][]string {
 		[]string{"iifname", set, "icmpv6", "type", "echo-request", "limit", "rate", "5/second", "counter", "accept"},
 	)
 
-	if portas := portasDeGerencia(access); portas != "" {
-		regras = append(regras, []string{"iifname", set, "tcp", "dport", portas, "counter", "accept"})
+	// O FECHAMENTO É PARÂMETRO PRÓPRIO, E NÃO UM CAMPO DE AdminAccess, e a
+	// diferença é a armadilha desta entrega.
+	//
+	// portasDeGerencia é compartilhada com SurvivalRules (survival.go), que
+	// emite a MESMA liberação na chain input inteira, sem escopo de interface,
+	// como anti-lockout de `policy drop`. Um campo em AdminAccess faria "fechar
+	// a gerência na WAN" apagar também esse anti-lockout global — o admin
+	// pedindo para fechar uma porta na internet e perdendo o acesso pela LAN
+	// junto, sem nada na tela sugerindo a ligação.
+	if !gerenciaFechada {
+		if portas := portasDeGerencia(access); portas != "" {
+			regras = append(regras, []string{"iifname", set, "tcp", "dport", portas, "counter", "accept"})
+		}
 	}
 
 	// O QUE ESTA LINHA FAZ: descarta o que chega pelas WANs sem ter sido

@@ -353,6 +353,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/policy", nftH.GetInputPolicy)
 		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/policy", nftH.SetInputPolicy)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/pending", nftH.PendingChange)
+		// Fechar a gerência nas WANs (#119, fase 3b) exige a MESMA permissão de
+		// trocar a postura: as duas podem cortar o acesso de quem as faz.
+		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/wan-management", nftH.SetWANManagement)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/pending/confirm", nftH.ConfirmPendingChange)
 		r.With(require(auth.PermFirewallWrite)).Post("/api/nftables/pending/revert", nftH.RevertPendingChange)
 
