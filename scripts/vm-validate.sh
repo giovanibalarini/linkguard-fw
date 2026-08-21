@@ -2120,8 +2120,14 @@ PYEOF
   st=$(status POST /api/portforward "$tok" '{"name":"servidor interno P","enabled":true,"proto":"tcp","interface":"lg-wanp","ext_port":18095,"dest_ip":"192.168.99.2","dest_port":18095}')
   if [[ "$st" != "200" && "$st" != "201" ]]; then bad "não consegui criar o encaminhamento: $st"; return; fi
   sleep 2
-  if ! vm "nft list chain inet linkguard dnat 2>/dev/null" | grep -q '192.168.99.2'; then
-    bad "a tradução não chegou na chain de DNAT" "$(vm "nft list chain inet linkguard dnat 2>/dev/null" | tr '\n' ' ' | head -c 200)"
+  # A chain de DNAT chama-se `prerouting_dnat` (nftables.DNATChain). A primeira
+  # versão desta linha procurava numa chain "dnat" que não existe, e o
+  # `2>/dev/null` transformava "chain inexistente" em "tradução ausente": o
+  # teste acusava o produto por um nome errado dele mesmo — e acusava JUNTO com
+  # a asserção de tráfego passando, o que já era a pista de que o errado era o
+  # teste.
+  if ! vm "nft list chain inet linkguard prerouting_dnat 2>/dev/null" | grep -q '192.168.99.2'; then
+    bad "a tradução não chegou na chain de DNAT" "$(vm "nft list chain inet linkguard prerouting_dnat 2>&1" | tr '\n' ' ' | head -c 200)"
   fi
   local corpo
   corpo=$(vm "ip netns exec wanp curl -s --max-time 5 http://10.77.0.1:18095/ 2>/dev/null" | tr -d '\r')
@@ -2129,7 +2135,7 @@ PYEOF
     ok "o encaminhamento entrega ao host da LAN pela WAN secundária"
   else
     bad "o encaminhamento não entregou ao host da LAN (resposta: '${corpo:-vazia}')" \
-        "marca restaurada na direção original manda o pacote de volta pela WAN; conn_mark: $(vm "nft list chain inet linkguard conn_mark 2>/dev/null" | tr -d '\r' | tr '\n' ' ' | head -c 220)"
+        "conn_mark: $(vm "nft list chain inet linkguard conn_mark 2>/dev/null" | tr -d '\r' | tr '\n' ' ' | head -c 200) | dnat: $(vm "nft list chain inet linkguard prerouting_dnat 2>&1" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
   fi
 
   # P4 — e a regra de restauração casa SÓ a direção de resposta. É a asserção
