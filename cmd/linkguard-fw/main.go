@@ -585,6 +585,24 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// nada. Mesmo desenho da política padrão da chain input.
 	nftSvc.SetBlockLogSource(func() (bool, error) { return handlers.BlockLogEnabled(db) })
 
+	// A proteção de entrada das WANs (#119) lê a MESMA lista que o masquerade e
+	// a contabilidade, e pelo mesmo motivo lê a cada reconciliação em vez de
+	// guardar em memória: trocar a interface de um link tem de valer na
+	// reconciliação seguinte, sem reiniciar nada.
+	nftSvc.SetWANInterfacesSource(func() ([]string, error) {
+		ls, err := db.GetLinks()
+		if err != nil {
+			return nil, err
+		}
+		ifaces := make([]string, 0, len(ls))
+		for _, l := range ls {
+			if l.Enabled && l.Interface != "" {
+				ifaces = append(ifaces, l.Interface)
+			}
+		}
+		return ifaces, nil
+	})
+
 	rrdSvc := tsdb.NewService(db)
 
 	// A série de consumo por host (#113) usa as três peças que já existem: os
@@ -909,6 +927,14 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// por construção onde a MTU é 1500 — ver EnsureMSSClamp.
 			if err := nftSvc.EnsureMSSClamp(ctx, enabledWANs); err != nil {
 				slog.Warn("não foi possível reconciliar o ajuste de MSS no boot", "err", err)
+			}
+
+			// Proteção de entrada das WANs (#119). Reconciliada em todo boot
+			// pela mesma razão da contabilidade: EnsureTable é no-op em máquina
+			// já provisionada, então sem isto uma instalação existente nunca
+			// ganharia a proteção.
+			if err := nftSvc.ReconcileInputProtection(ctx); err != nil {
+				slog.Warn("não foi possível reconciliar a proteção de entrada das WANs no boot", "err", err)
 			}
 
 			// Roteamento de retorno por WAN (#120). As duas metades saem da

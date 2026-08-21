@@ -513,7 +513,7 @@ func (s *Service) CheckChainEnsuring(ctx context.Context, chain string, tokenSet
 //
 // Grupo do sistema nunca entra aqui: o conteúdo dele é um named set de
 // bloqueio de tráfego atravessando, e o lugar dele é a forward.
-func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool, policy Policy, access AdminAccess) [][]string {
+func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool, policy Policy, access AdminAccess, wanIfaces []string) [][]string {
 	// Incondicional: sem toggle, sem depender de grupo nenhum. Um firewall
 	// que só quebra PMTUD depois que o admin cria o grupo errado é um
 	// firewall que guarda a armadilha armada esperando.
@@ -577,7 +577,46 @@ func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool
 		}
 		rules = append(rules, tokens)
 	}
+
+	// A proteção de entrada das WANs vem DEPOIS dos jumps, e a posição é a
+	// decisão (#119): um grupo de escopo input que libere algo vindo da WAN
+	// precisa ser avaliado antes, senão o produto anularia em silêncio uma
+	// decisão explícita do admin. Ver waninput.go.
+	rules = append(rules, WANInputRules(wanIfaces)...)
 	return rules
+}
+
+// ReconcileInputProtection reconstrói a chain input a partir das fontes
+// ligadas — grupos, NTP, política e a lista de WANs (#119).
+//
+// Existe porque a proteção de entrada deriva da lista de WANs, e essa lista
+// muda por um caminho que não passa pelos dois escritores da chain: criar,
+// editar, desligar ou apagar um link. Sem esta porta, a chain só acompanharia
+// a mudança no boot seguinte — e uma interface renomeada deixaria o `iifname`
+// apontando para um nome que não existe mais, isto é, a proteção calada com
+// cara de ligada. É o mesmo defeito que a bateria G pegou na contabilidade.
+func (s *Service) ReconcileInputProtection(ctx context.Context) error {
+	if s.exec.IsDryRun() {
+		return nil
+	}
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+
+	groups, err := s.inputChainGroups()
+	if err != nil {
+		return fmt.Errorf("ler os grupos de regras para reconstruir a chain %s: %w", InputChain, err)
+	}
+	ntpNetworks, ntpServing, err := s.ntpInputState()
+	if err != nil {
+		return fmt.Errorf("ler o estado do NTP para reconstruir a chain %s: %w", InputChain, err)
+	}
+	if err := s.reconcileInputChain(ctx, groups, ntpNetworks, ntpServing); err != nil {
+		return err
+	}
+	if err := s.Persist(ctx); err != nil {
+		slog.Warn("chain de input reconciliada, mas não foi possível persistir para o próximo boot", "err", err)
+	}
+	return nil
 }
 
 // reconcileInputChain é o único caminho que escreve na chain input: garante
@@ -621,11 +660,19 @@ func (s *Service) reconcileInputChain(ctx context.Context, groups []StoredGroup,
 			return err
 		}
 	}
+	// A lista de WANs é lida DENTRO desta função pelo mesmo motivo da política
+	// (#81): os dois escritores da chain já passam por aqui sob reconcileMu, e
+	// uma leitura feita fora do lock poderia gravar a lista antiga por cima de
+	// uma reconciliação em curso.
+	wans, err := s.wanInterfaces()
+	if err != nil {
+		return err
+	}
 	if _, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, InputChain,
 		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", string(policy), ";", "}"); err != nil {
 		return fmt.Errorf("criar chain %s: %w", InputChain, err)
 	}
-	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access))
+	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans))
 }
 
 // ReconcileNTPInput reconcilia a chain input a partir do toggle "servir NTP

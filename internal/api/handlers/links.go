@@ -62,6 +62,13 @@ func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
 		slog.Warn("não foi possível reconciliar o ajuste de MSS após mudança de link", "err", err)
 	}
 
+	// A proteção de entrada da chain input (#119) casa por `iifname` das WANs:
+	// se ela não for reconstruída aqui, uma interface renomeada deixa o nome
+	// antigo na regra — a proteção calada, com cara de ligada.
+	if err := h.nftSvc.ReconcileInputProtection(ctx); err != nil {
+		slog.Warn("não foi possível reconciliar a proteção de entrada das WANs após mudança de link", "err", err)
+	}
+
 	// O roteamento de retorno (#120) também deriva da lista de WANs, e mais
 	// diretamente que os outros dois: trocar a interface ou o gateway de um
 	// link muda o caminho de volta dele. Sem reconciliar aqui, a tabela do link
