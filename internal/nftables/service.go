@@ -53,6 +53,11 @@ type Service struct {
 	// adminAccessSource alimenta as regras de sobrevivência. Só consultada com
 	// política restritiva; ausente nesse caso é ERRO (ver adminAccess).
 	adminAccessSource func() (AdminAccess, error)
+	// wanInterfacesSource é a lista de WANs habilitadas, para a proteção de
+	// entrada da chain input (#119). Ausente resolve para lista vazia — que
+	// emite regra nenhuma, o comportamento de toda máquina anterior a esta
+	// entrega. Erro de leitura ABORTA: ver wanInterfaces.
+	wanInterfacesSource func() ([]string, error)
 	// forwardPolicySource é a política da chain forward (#92). Independente da
 	// input: bloquear o que atravessa e liberar o que chega ao firewall é uma
 	// combinação legítima.

@@ -633,5 +633,13 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 			policy = PolicyAccept
 		}
 	}
-	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access), ensureInput)
+	// As WANs entram no pré-voo pelo mesmo princípio do NTP e da política:
+	// validar uma forma diferente da que vai ser aplicada é validar outra
+	// coisa. Erro aqui também não reprova a mutação — este caminho não escreve.
+	wans, err := s.wanInterfaces()
+	if err != nil {
+		slog.Warn("não foi possível ler as WANs para o pré-voo da chain input; os jumps continuam sendo validados, a proteção de entrada não", "err", err)
+		wans = nil
+	}
+	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans), ensureInput)
 }

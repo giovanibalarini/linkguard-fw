@@ -1648,7 +1648,7 @@ func TestCheckGroupsValidatesTheForwardWithTheBlocksInListPosition(t *testing.T)
 // ordenada que o renderizador único emite, uma linha por regra.
 func inputLines(groups []StoredGroup, ntpNetworks []string, ntpServing bool) []string {
 	var lines []string
-	for _, toks := range inputChainRules(groups, ntpNetworks, ntpServing, PolicyAccept, AdminAccess{}) {
+	for _, toks := range inputChainRules(groups, ntpNetworks, ntpServing, PolicyAccept, AdminAccess{}, nil) {
 		lines = append(lines, strings.Join(toks, " "))
 	}
 	return lines
@@ -1734,7 +1734,7 @@ func TestGroupScopeDecidesWhichChainItLandsIn(t *testing.T) {
 		{ID: "i", Kind: GroupKindAdmin, Scope: ScopeInput, ChainName: "grp_iii", Enabled: true, Position: 0},
 		{ID: "f", Kind: GroupKindAdmin, Scope: ScopeForward, ChainName: "grp_fff", Enabled: true, Position: 1},
 	}
-	inp := renderChainScript(InputChain, inputChainRules(groups, nil, false, PolicyAccept, AdminAccess{}))
+	inp := renderChainScript(InputChain, inputChainRules(groups, nil, false, PolicyAccept, AdminAccess{}, nil))
 	fwd := renderChainScript(ForwardChain, forwardChainRules(groups, false))
 	// Presença primeiro: só com as ausências, este teste passaria com os dois
 	// renderizadores devolvendo lista vazia — nenhum grupo em chain nenhuma,

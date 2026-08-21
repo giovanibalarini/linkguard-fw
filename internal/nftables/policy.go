@@ -102,6 +102,37 @@ func (s *Service) inputPolicy() (Policy, error) {
 	return p, nil
 }
 
+// SetWANInterfacesSource liga a fonte das WANs habilitadas, que alimenta a
+// proteção de entrada da chain input (#119, ver waninput.go).
+//
+// O CONTRATO DAS DUAS FALHAS É O MESMO DE ntpInputState, E NÃO O DE
+// inputPolicy — o que exige explicação, porque as três moram neste arquivo:
+//
+//   - FONTE NÃO LIGADA devolve lista vazia, sem erro. Não é fail-open por
+//     descuido: é o estado de todo binário anterior a esta mudança, e a lista
+//     vazia emite regra nenhuma, byte a byte o que a chain era. Abortar aqui
+//     faria a input parar de ser reconciliada em quem nunca ligar a fonte;
+//
+//   - ERRO DE LEITURA propaga e o chamador aborta sem tocar na chain. Um
+//     SELECT que falhou NÃO é "esta máquina não tem WAN": obedecer a essa
+//     lista vazia APAGARIA a proteção de entrada de uma caixa que a tem, por
+//     causa de um erro de leitura, e o painel continuaria dizendo que ela está
+//     protegida. É o mesmo raciocínio que governa os grupos.
+func (s *Service) SetWANInterfacesSource(src func() ([]string, error)) {
+	s.wanInterfacesSource = src
+}
+
+func (s *Service) wanInterfaces() ([]string, error) {
+	if s.wanInterfacesSource == nil {
+		return nil, nil
+	}
+	ifaces, err := s.wanInterfacesSource()
+	if err != nil {
+		return nil, fmt.Errorf("ler as WANs para reconstruir a chain %s: %w", InputChain, err)
+	}
+	return ifaces, nil
+}
+
 // SetAdminAccessSource liga a fonte do acesso administrativo — as portas, as
 // redes da LAN e se alguma WAN é por DHCP.
 //
