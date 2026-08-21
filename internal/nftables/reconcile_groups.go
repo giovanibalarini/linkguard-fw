@@ -179,6 +179,23 @@ func (s *Service) reconcileGroups(ctx context.Context, groups []StoredGroup) err
 	if s.exec.IsDryRun() {
 		return nil
 	}
+	// A set de endereços físicos precisa EXISTIR antes de a chain que a
+	// referencia ser escrita, e garanti-la aqui é o que faz ela aparecer numa
+	// máquina já instalada (#119, fase 2).
+	//
+	// O DEFEITO QUE ISTO CORRIGE, VISTO EM PRODUÇÃO. A set nascia só no
+	// EnsureTable, que é NO-OP em caixa já provisionada — a tabela já existe,
+	// então o bootstrap não roda e a set nunca aparece. Resultado do upgrade:
+	// a regra `ether saddr @blocked_macs` não podia ser escrita, sumia em
+	// silêncio da forward, e o bloqueio continuava valendo só para IPv4 numa
+	// caixa cujo painel dizia o contrário.
+	//
+	// É exatamente o mesmo defeito que a bateria G pegou na contabilidade por
+	// host, pela mesma causa: coisa nova que precisa existir em instalação
+	// EXISTENTE tem de ser garantida a cada reconciliação, não no bootstrap.
+	if err := s.EnsureBlockedMACSet(ctx); err != nil {
+		slog.Warn("não foi possível garantir a set de endereços físicos bloqueados; o bloqueio pode valer só para IPv4 nesta reconciliação", "err", err)
+	}
 
 	// Um nome de chain que não pode ir para o nft tira o grupo inteiro do
 	// jogo — os outros continuam. Filtrar aqui, uma vez, garante que os

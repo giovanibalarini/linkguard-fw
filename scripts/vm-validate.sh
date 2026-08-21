@@ -1909,6 +1909,22 @@ battery_bloqueio_familias() {
 
   status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
 
+  # O0 — A SET TEM DE EXISTIR NUMA MÁQUINA QUE VEIO DE UPGRADE.
+  #
+  # O DEFEITO QUE ESTA LINHA PEGA, e que escapou para produção: a set nascia só
+  # no EnsureTable, que é NO-OP em caixa já provisionada. Depois do upgrade a
+  # tabela já existia, o bootstrap não rodava, a set não aparecia — e a regra
+  # que a referencia sumia em silêncio da forward. O painel continuava dizendo
+  # "bloqueado" e o bloqueio valia só para IPv4.
+  #
+  # A bateria O inteira passava mesmo assim, porque as asserções dela olhavam
+  # tráfego e o tráfego era bloqueado pelo set de IPv4. Só uma asserção sobre a
+  # EXISTÊNCIA da set separa "está funcionando" de "está funcionando por outro
+  # motivo".
+  if vm "nft list set inet linkguard blocked_macs" >/dev/null 2>&1; then
+    ok "a set de endereços físicos existe (inclusive vinda de upgrade)"
+  else bad "a set blocked_macs não existe: o bloqueio vale só para IPv4 nesta caixa"; fi
+
   # Cliente e servidor, cada um do seu lado do firewall, com IPv4 e IPv6.
   vm "pkill -f duasfam >/dev/null 2>&1
       ip netns del lgcli 2>/dev/null; ip netns del lgsrv 2>/dev/null
