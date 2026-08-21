@@ -158,3 +158,86 @@ func TestReplaceRouteUsaOnlink(t *testing.T) {
 		t.Errorf("faltou onlink; rodou: %v", ex.rodou)
 	}
 }
+
+// execComGateway responde ao `ip -4 route show default dev X` com o gateway vivo
+// daquela interface.
+type execComGateway struct {
+	execEspiao
+	porIface map[string]string
+	escritos []string
+}
+
+func (e *execComGateway) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "ip" && len(args) >= 5 && args[1] == "route" && args[2] == "show" && args[3] == "default" {
+		return e.porIface[args[len(args)-1]], nil
+	}
+	if cmd == "ip" && len(args) >= 2 && args[0] == "rule" {
+		return "", nil
+	}
+	return "", nil
+}
+
+func (e *execComGateway) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	e.escritos = append(e.escritos, cmd+" "+strings.Join(args, " "))
+	return "", nil
+}
+
+// TestOGatewayVemDoKernelENaoDoBanco é a regressão da issue #154.
+//
+// storage.Link.Gateway só é reescrito quando o admin clica em "detectar links"
+// ou edita o link à mão — nenhum timer, boot ou monitor o refresca. Troque-se o
+// modem do provedor e o dhclient conserta a tabela `main`, enquanto esta função
+// continuava gravando o gateway ANTIGO na tabela do link. Com `onlink`, o kernel
+// aceita sem reclamar.
+//
+// O efeito é seletivo e por isso enganoso: a navegação da LAN continua indo pela
+// `main`, mas tudo que CHEGA por aquela WAN deixa de ser respondido — SSH e
+// painel acessados de fora, e os encaminhamentos de porta.
+func TestOGatewayVemDoKernelENaoDoBanco(t *testing.T) {
+	e := &execComGateway{porIface: map[string]string{
+		"wan1": "default via 10.0.0.254 dev wan1 proto dhcp metric 100",
+	}}
+	s := &Service{exec: e}
+
+	err := s.EnsureReplyRouting(context.Background(), []ReplyRoute{
+		{Interface: "wan1", Gateway: "10.0.0.1", Table: "100", Mark: "0x64"}, // gravado: velho
+	})
+	if err != nil {
+		t.Fatalf("EnsureReplyRouting: %v", err)
+	}
+
+	var achou bool
+	for _, c := range e.escritos {
+		if strings.Contains(c, "route replace") {
+			achou = true
+			if !strings.Contains(c, "10.0.0.254") {
+				t.Errorf("gravou o gateway do banco em vez do vivo: %q", c)
+			}
+			if strings.Contains(c, "10.0.0.1 ") {
+				t.Errorf("o gateway antigo foi para a tabela do link: %q", c)
+			}
+		}
+	}
+	if !achou {
+		t.Fatalf("nenhuma rota foi escrita: %v", e.escritos)
+	}
+}
+
+func TestSemGatewayVivoUsaOGravado(t *testing.T) {
+	// Link caído ou endereçamento estático sem default: trocar um gateway
+	// possivelmente velho por NENHUM deixaria a tabela do link sem rota de
+	// volta, que é pior do que uma rota velha.
+	e := &execComGateway{porIface: map[string]string{}}
+	s := &Service{exec: e}
+
+	if err := s.EnsureReplyRouting(context.Background(), []ReplyRoute{
+		{Interface: "wan1", Gateway: "10.0.0.1", Table: "100", Mark: "0x64"},
+	}); err != nil {
+		t.Fatalf("EnsureReplyRouting: %v", err)
+	}
+	for _, c := range e.escritos {
+		if strings.Contains(c, "route replace") && !strings.Contains(c, "10.0.0.1") {
+			t.Errorf("sem gateway vivo, não caiu no gravado: %q", c)
+		}
+	}
+}
