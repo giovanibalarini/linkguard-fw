@@ -229,3 +229,31 @@ func TestSemSaberAsPortasAProtecaoNaoEhEmitida(t *testing.T) {
 		}
 	}
 }
+
+func TestPingNaWANTemTaxaLimitadaENaoEnfeite(t *testing.T) {
+	// `limit rate` é um CASAMENTO, não um modificador (lição da #122). Se o
+	// limite estiver na regra errada, ou o ping fica sem limite nenhum, ou o
+	// excedente é aceito em vez de cair no descarte.
+	regras := linhas(WANInputRules([]string{"wan0"}, gerencia))
+	var echos []string
+	for _, r := range regras {
+		if strings.Contains(r, "echo-request") {
+			echos = append(echos, r)
+		}
+	}
+	if len(echos) != 2 {
+		t.Fatalf("queria echo-request nas duas famílias, veio %d: %v", len(echos), echos)
+	}
+	for _, r := range echos {
+		if !strings.Contains(r, "limit rate") {
+			t.Errorf("ping sem limite de taxa: %q", r)
+		}
+		if !strings.HasSuffix(r, "accept") {
+			t.Errorf("a regra de ping não termina em accept: %q", r)
+		}
+	}
+	// E o descarte continua depois, para o excedente cair nele.
+	if !strings.Contains(regras[len(regras)-1], "drop") {
+		t.Errorf("o descarte deixou de ser a última linha: %v", regras)
+	}
+}
