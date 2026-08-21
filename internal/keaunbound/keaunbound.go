@@ -491,6 +491,27 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
 	}
 
+	// O ENDEREÇO PRECISA EXISTIR NA MÁQUINA, e esta checagem é a única que
+	// impede um apagão de DNS (#161).
+	//
+	// O gateway vira `interface: <addr>` no unbound.conf — é o endereço em que
+	// ele ESCUTA. Medido nos binários do Debian 13: o `kea-dhcp4 -t` aceita e o
+	// `unbound-checkconf` responde "no errors", porque NENHUM DOS DOIS checa se
+	// o endereço é bindável. Os dois arquivos eram então escritos, a linha
+	// `interface:` mudava, o apply reiniciava o unbound, e ele morria com
+	// "can't bind socket: Cannot assign requested address".
+	//
+	// O resultado não é o subsistema travado, como nos outros campos desta
+	// família: é a LAN inteira sem DNS, com o arquivo ruim JÁ em disco — a
+	// máquina volta do reboot com o unbound em failed. É exatamente o incidente
+	// que a validação acima existe para impedir, por um caminho que ela não vê.
+	//
+	// Por isso a checagem vem ANTES da escrita, e não depois: aqui, escrever já
+	// é o dano.
+	if err := s.enderecoBindavel(ctx, c.Gateway); err != nil {
+		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, err
+	}
+
 	// Validate both candidates before touching anything in production —
 	// neither is written, nor is anything reloaded, unless both pass. This
 	// used to only validate Kea; the unbound side landed on disk with no
@@ -626,6 +647,34 @@ func reservasSemIPv4(res []netsvc.Reservation) error {
 		}
 	}
 	return nil
+}
+
+// enderecoBindavel confere que o endereço em que o unbound vai escutar existe
+// nesta máquina.
+//
+// Gateway vazio não é erro: o unbound escuta só em 127.0.0.1, o que já é
+// avisado em GenerateUnboundConfig e é uma configuração legítima de caixa sem
+// LAN servida.
+func (s *Service) enderecoBindavel(ctx context.Context, addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	out, err := s.exec.ExecuteRead(ctx, "ip", "-o", "addr", "show")
+	if err != nil {
+		// Não conseguir perguntar NÃO vira "pode escrever". Um apply que segue
+		// adiante às cegas aqui é o apagão de volta — e a alternativa, recusar,
+		// custa uma alteração adiada.
+		return fmt.Errorf("não consegui conferir se %s existe nesta máquina antes de aplicar; nada foi alterado: %w", addr, err)
+	}
+	for _, linha := range strings.Split(out, "\n") {
+		for _, campo := range strings.Fields(linha) {
+			if campo == addr || strings.HasPrefix(campo, addr+"/") {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("o endereço %s não existe em nenhuma interface desta máquina: o servidor de DNS escuta nele, e aplicar assim derrubaria o DNS da rede inteira. Nada foi alterado — confira o endereço do firewall na rede", addr)
 }
 
 // validateKea writes the candidate config to a temp file and runs the Kea

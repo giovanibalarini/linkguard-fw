@@ -1,6 +1,8 @@
 package keaunbound
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -47,4 +49,50 @@ func TestGeracaoAceitaSoIPv4(t *testing.T) {
 	if err := reservasSemIPv4(nil); err != nil {
 		t.Errorf("lista vazia recusada: %v", err)
 	}
+}
+
+func TestApplyRecusaEnderecoQueNaoExisteNaMaquina(t *testing.T) {
+	// A GUARDA QUE IMPEDE UM APAGÃO, e não só um travamento (#161).
+	//
+	// O gateway vira `interface: <addr>` no unbound.conf — o endereço em que ele
+	// ESCUTA. Medido: kea-dhcp4 -t aceita e unbound-checkconf responde "no
+	// errors", porque nenhum dos dois checa bindabilidade. Os arquivos eram
+	// escritos, o unbound reiniciava e morria com "can't bind socket", e o
+	// arquivo ruim ficava em disco: a máquina voltava do reboot sem DNS.
+	s := &Service{exec: &execSemEndereco{}}
+	if err := s.enderecoBindavel(context.Background(), "203.0.113.9"); err == nil {
+		t.Fatal("aceitou escutar num endereço que a máquina não tem")
+	}
+	if err := s.enderecoBindavel(context.Background(), "192.168.3.3"); err != nil {
+		t.Errorf("recusou um endereço que a máquina tem: %v", err)
+	}
+	// Sem gateway não é erro: o unbound escuta só em 127.0.0.1, que é
+	// configuração legítima de caixa sem LAN servida.
+	if err := s.enderecoBindavel(context.Background(), ""); err != nil {
+		t.Errorf("gateway vazio virou erro: %v", err)
+	}
+}
+
+func TestNaoConseguirPerguntarNaoViraPodeEscrever(t *testing.T) {
+	// Um apply que segue às cegas aqui é o apagão de volta. A alternativa —
+	// recusar — custa uma alteração adiada, que é infinitamente mais barato.
+	s := &Service{exec: &execQueFalha{}}
+	if err := s.enderecoBindavel(context.Background(), "192.168.3.3"); err == nil {
+		t.Error("a leitura falhou e o apply seguiu adiante")
+	}
+}
+
+type execSemEndereco struct{ recExec }
+
+func (e *execSemEndereco) ExecuteRead(_ context.Context, cmd string, _ ...string) (string, error) {
+	if cmd == "ip" {
+		return "2: br10    inet 192.168.3.3/24 brd 192.168.3.255 scope global br10\n", nil
+	}
+	return "", nil
+}
+
+type execQueFalha struct{ recExec }
+
+func (e *execQueFalha) ExecuteRead(context.Context, string, ...string) (string, error) {
+	return "", errors.New("ip: comando não encontrado")
 }

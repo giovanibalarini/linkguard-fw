@@ -316,33 +316,27 @@ func (h *NetsvcHandler) UpdateDHCPConfig(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	for _, v := range []string{rStart, rEnd, gw} {
-		if v != "" && net.ParseIP(v) == nil {
-			writeError(w, http.StatusBadRequest, "endereço IP inválido: "+v)
-			return
-		}
-	}
-	if suffix != "" && !validate.Domain(suffix) {
-		writeError(w, http.StatusBadRequest, "domínio (domain_suffix) inválido")
-		return
-	}
 	dns := []string{}
 	for _, d := range b.DNSToClients {
-		d = strings.TrimSpace(d)
-		if d == "" {
-			continue
+		if d = strings.TrimSpace(d); d != "" {
+			dns = append(dns, d)
 		}
-		if net.ParseIP(d) == nil {
-			writeError(w, http.StatusBadRequest, "DNS inválido: "+d)
-			return
-		}
-		dns = append(dns, d)
 	}
 	cfg := h.getConfig()
 	cfg.Interface, cfg.SubnetCIDR = iface, subnet
 	cfg.RangeStart, cfg.RangeEnd = rStart, rEnd
 	cfg.Gateway, cfg.LeaseHours = gw, b.LeaseHours
 	cfg.DNSToClients, cfg.DomainSuffix = dns, suffix
+
+	// A COERÊNCIA ENTRE OS CAMPOS, que nenhuma validação campo-a-campo pegava
+	// (#161). Endereço bem formado mas fora da sub-rede, ou IPv6 onde o daemon
+	// exige IPv4, era aceito com 200 e recusado depois pelo kea ou pelo
+	// unbound — travando TODA alteração de DHCP/DNS seguinte, com a mensagem
+	// do daemon e sem o nome do campo culpado.
+	if err := netsvc.ValidaConfig(cfg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := h.saveConfig(cfg); err != nil {
 		writeInternalError(w, err)
 		return
@@ -359,9 +353,19 @@ func (h *NetsvcHandler) UpsertReservation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	mac := validate.NormalizeMAC(b.MAC)
+	// CANÔNICO, e não só "parseável" (#161). net.ParseMAC aceita a grafia do
+	// Windows (aa-bb-cc-dd-ee-ff) e a da Cisco (aabb.ccdd.eeff), e
+	// NormalizeMAC só passa para minúsculas — o valor ia para o banco na grafia
+	// original e o kea recusava a config inteira com "invalid host identifier
+	// value". Pior: o MAC é a chave primária da tabela, então a linha ruim só
+	// saía com um DELETE mandando exatamente a mesma grafia esquisita.
+	//
+	// É o mesmo furo que macParaNft fecha do lado do nftables. Estava nos dois
+	// lugares, e eu só tinha olhado um.
+	mac := validate.MACCanonico(b.MAC)
 	if mac == "" {
-		writeError(w, http.StatusBadRequest, "MAC inválido")
+		writeError(w, http.StatusBadRequest,
+			"endereço físico inválido: use a forma aa:bb:cc:dd:ee:ff (com dois-pontos)")
 		return
 	}
 	// IPv4 E NÃO net.ParseIP, e a diferença é a issue #152.
@@ -374,6 +378,14 @@ func (h *NetsvcHandler) UpsertReservation(w http.ResponseWriter, r *http.Request
 	//
 	// O caminho ficou mais provável com a #119: a tela de Hosts passou a mostrar
 	// o endereço IPv6 de um aparelho, e é de lá que o admin copia.
+	if !netsvc.DentroDaSubrede(strings.TrimSpace(b.IP), h.getConfig().SubnetCIDR) {
+		// Medido no kea-dhcp4 2.6.3: "specified reservation ... is not within
+		// the IPv4 subnet". É a #152 com outro valor — a guarda de família não
+		// pega, e o efeito é o mesmo: nada mais é aplicado.
+		writeError(w, http.StatusBadRequest,
+			"a reserva precisa estar dentro da sub-rede servida ("+h.getConfig().SubnetCIDR+"); fora dela o servidor de DHCP recusa a configuração inteira")
+		return
+	}
 	if !validate.IPv4(b.IP) {
 		writeError(w, http.StatusBadRequest,
 			"reserva de DHCP precisa de um endereço IPv4: o servidor de DHCP desta caixa é IPv4, e um endereço IPv6 aqui faria toda alteração de DHCP/DNS parar de ser aplicada")
