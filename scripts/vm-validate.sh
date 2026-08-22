@@ -2671,8 +2671,28 @@ print(json.loads(sys.argv[1]).get('ligado'))" "$resp" 2>/dev/null)
   # T4 — A ASSERÇÃO CENTRAL: uma consulta de verdade vira nome no mapa.
   # O domínio é resolvido pelo próprio unbound da caixa, e o nome perguntado tem
   # de aparecer no mapa associado a um endereço.
-  vm "systemctl is-active unbound >/dev/null 2>&1 && command -v getent >/dev/null && getent hosts deb.debian.org >/dev/null 2>&1; true" >/dev/null 2>&1
-  vm "for i in 1 2 3; do getent hosts deb.debian.org >/dev/null 2>&1; sleep 1; done; true" >/dev/null 2>&1
+  # A CONSULTA VAI DIRETO AO UNBOUND, e não pelo resolvedor da caixa.
+  #
+  # A primeira versão usava `getent hosts`, que passa pelo /etc/resolv.conf — e
+  # nesta VM ele aponta para 127.0.0.53, o systemd-resolved. A consulta NUNCA
+  # chegava ao unbound, e a asserção falhava dizendo que o dnstap não entregou.
+  # Medido: o unbound escuta em 127.0.0.1:53 e responde normalmente.
+  #
+  # Perguntar direto ao resolver do produto é o que um aparelho da LAN faz, e é
+  # o único jeito de esta asserção medir o dnstap em vez de medir o resolvedor
+  # do sistema operacional.
+  vm "cat > /tmp/lgq.py <<'PYEOF'
+import socket
+q = bytes.fromhex(\"abcd01000001000000000000036465620664656269616e036f72670000010001\")
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(6)
+for _ in range(4):
+    s.sendto(q, (\"127.0.0.1\", 53))
+    try:
+        s.recvfrom(4096)
+    except Exception:
+        pass
+PYEOF
+python3 /tmp/lgq.py; rm -f /tmp/lgq.py" >/dev/null 2>&1
   sleep 3
   local achou
   achou=$(body GET /api/dns/mapa "$tok" | python3 -c "
