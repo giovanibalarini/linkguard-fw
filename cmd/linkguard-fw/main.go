@@ -675,6 +675,10 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// Criado ANTES do servidor: api.New monta o roteador na mesma chamada, e as
 	// rotas leem o coletor na hora do registro (#116).
 	dnstapSvc := dnstap.NovoServico()
+	// Séries por aparelho para o coletor do cliente (#118). Fora do registro
+	// aberto do Prometheus de propósito — ver internal/metrics/exposicao.go.
+	porHost := metrics.NovoPorHost()
+	hostSampler.SetPorHost(porHost)
 
 	server := api.New(api.Config{
 		Addr:        cfg.Addr(),
@@ -685,6 +689,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		PkgExec:     pkgExec,
 		CaptureExec: capExec,
 		DNSTap:      dnstapSvc,
+		PorHost:     porHost,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second

@@ -32,6 +32,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
 	"github.com/giovanibalarini/linkguard-fw/internal/linkquota"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
+	"github.com/giovanibalarini/linkguard-fw/internal/metrics"
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
 	"github.com/giovanibalarini/linkguard-fw/internal/netif"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
@@ -110,6 +111,8 @@ type Config struct {
 	// DNSTap é o coletor de respostas de DNS (#116). Opcional: um binário sem
 	// ele responde a tela com "desligado" em vez de quebrar.
 	DNSTap *dnstap.Servico
+	// PorHost são as séries por aparelho servidas em /api/metrics/hosts (#118).
+	PorHost *metrics.PorHost
 }
 
 // New creates and wires up the HTTP server.
@@ -181,8 +184,22 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		MaxAge:           300,
 	}))
 
-	// Prometheus metrics (no auth)
+	// Prometheus metrics (no auth).
+	//
+	// O que sai aqui é AGREGADO — CPU, memória, disco, uptime, contagem de
+	// alerta. Nada que identifique um aparelho da rede: a regra está escrita em
+	// internal/metrics/exposicao.go e é varrida por teste, porque esta porta não
+	// tem autenticação e a suíte exige que ela responda pela WAN.
 	r.Handle("/metrics", promhttp.HandlerFor(cfg.PromReg, promhttp.HandlerOpts{}))
+
+	// Métricas POR APARELHO (#118), em rota própria e por token. Fora do grupo
+	// autenticado por sessão de propósito: quem raspa isto é um coletor, e
+	// coletor não faz login — ele manda bearer token. Sem token configurado a
+	// rota responde 404.
+	if cfg.PorHost != nil {
+		mhH := handlers.NewMetricasHostHandler(s.db, cfg.PorHost)
+		r.Get("/api/metrics/hosts", mhH.Servir)
+	}
 
 	// Public auth endpoints
 	authH := handlers.NewAuthHandler(s.authSvc, s.db)
