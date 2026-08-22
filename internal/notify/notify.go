@@ -68,11 +68,23 @@ type EmailCfg struct {
 
 // Config is the persisted notification configuration.
 type Config struct {
-	MinSeverity string      `json:"min_severity"` // info | warning | critical
-	Webhook     WebhookCfg  `json:"webhook"`
-	Telegram    TelegramCfg `json:"telegram"`
-	WhatsApp    WhatsAppCfg `json:"whatsapp"`
-	Email       EmailCfg    `json:"email"`
+	MinSeverity string `json:"min_severity"` // info | warning | critical
+	// NotificarAparelho autoriza alertas que NOMEIAM um aparelho da LAN a
+	// sair da caixa (issue #117).
+	//
+	// PADRÃO FALSO, e isso não é excesso de zelo. Identidade de aparelho —
+	// endereço físico, apelido, nome de host — é inventário da rede do cliente
+	// (ver internal/metrics/exposicao.go). Sem este campo, um alerta de
+	// comportamento por aparelho herdaria a severidade mínima "warning" e sairia
+	// por Telegram, WhatsApp ou e-mail sem ninguém ter decidido isso.
+	//
+	// O alerta continua sendo criado e aparecendo na tela. O que este campo
+	// controla é ele ATRAVESSAR a fronteira da caixa.
+	NotificarAparelho bool        `json:"notificar_aparelho"`
+	Webhook           WebhookCfg  `json:"webhook"`
+	Telegram          TelegramCfg `json:"telegram"`
+	WhatsApp          WhatsAppCfg `json:"whatsapp"`
+	Email             EmailCfg    `json:"email"`
 }
 
 // Service loads config from the secrets vault and dispatches notifications.

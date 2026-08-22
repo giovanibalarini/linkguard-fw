@@ -27,6 +27,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/backup"
 	"github.com/giovanibalarini/linkguard-fw/internal/balancer"
 	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
+	"github.com/giovanibalarini/linkguard-fw/internal/comportamento"
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
@@ -549,6 +550,12 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// da janela de 90 s reescreve o valor no banco, e a reconciliação seguinte
 	// tem de obedecer ao que a reversão gravou — não ao que o processo lembrava.
 	nftSvc.SetWANMgmtClosedSource(frSvc.WANMgmtClosed)
+	// Alerta que NOMEIA aparelho só sai da caixa com escolha explícita (#117).
+	// Ver tiposQueNomeiamAparelho em internal/alerts e a regra escrita em
+	// internal/metrics/exposicao.go.
+	alertSvc.SetNotificarAparelho(func() (bool, error) {
+		return notifySvc.LoadConfig().NotificarAparelho, nil
+	})
 	// A contenção de tentativa repetida (#127) é opt-in e lida a cada
 	// reconciliação, pelo mesmo motivo das outras: o valor pode mudar pela tela
 	// e tem de valer na reconciliação seguinte, sem reiniciar nada.
@@ -1231,6 +1238,23 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	// Escritor: grava a série por host, e perder a última amostra num
 	// reinício abre buraco justamente na série que o histórico existe para ter.
 	spawnWriter("consumo-por-host", func() { hostSampler.Run(ctx) })
+	// Detectores de comportamento (#117): cruzam o histórico por aparelho com o
+	// inventário. Cadência de 5 minutos — a série é gravada a cada 10 segundos,
+	// e olhar mais rápido só geraria o ruído que a issue manda evitar.
+	go func() {
+		comp := comportamento.NovoServico(s.db, s.alertSvc)
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				comp.Verificar()
+			}
+		}
+	}()
+
 	go ddnsSvc.Run(ctx)
 
 	// Coletor de dnstap (#116). Sobe sempre; quem decide se há entrega é o
