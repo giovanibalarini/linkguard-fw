@@ -672,6 +672,10 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	journalSched := monitoring.NewJournalScheduler(metricsCollector)
 	updatesSched := monitoring.NewUpdatesScheduler(metricsCollector)
 
+	// Criado ANTES do servidor: api.New monta o roteador na mesma chamada, e as
+	// rotas leem o coletor na hora do registro (#116).
+	dnstapSvc := dnstap.NovoServico()
+
 	server := api.New(api.Config{
 		Addr:        cfg.Addr(),
 		DryRun:      cfg.DryRun,
@@ -680,13 +684,8 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		Version:     version,
 		PkgExec:     pkgExec,
 		CaptureExec: capExec,
+		DNSTap:      dnstapSvc,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
-
-	// Coletor de respostas de DNS (#116): é o que transforma todo destino de
-	// número em nome. Opt-in — o socket sobe sempre, mas o unbound só entrega
-	// quando o admin liga na tela, e sem entrega o mapa fica vazio.
-	dnstapSvc := dnstap.NovoServico()
-	server.SetDNSTap(dnstapSvc)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
 	// The link health probe runs on its own (faster) cadence, decoupled from the

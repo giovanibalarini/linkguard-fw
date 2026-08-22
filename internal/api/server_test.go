@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -177,5 +178,28 @@ func TestWebUICacheHeaders(t *testing.T) {
 		if got := resp.Header.Get("Cache-Control"); got != c.querCache {
 			t.Errorf("Cache-Control de %s = %q, queria %q — %s", c.path, got, c.querCache, c.porque)
 		}
+	}
+}
+
+// TestDNSTapVemPelaConfig é a regressão de uma fiação que não fazia nada.
+//
+// O coletor entrava por SETTER, chamado depois de api.New. Só que New monta o
+// roteador na MESMA chamada, e as rotas leem o coletor na hora do registro: o
+// campo ficava nil, a tela dizia "desligado" com o recurso ligado, e o mapa
+// ficava eternamente vazio — sem erro em lugar nenhum.
+//
+// Este teste prende o campo na Config. A ORDEM em si (config lida antes de
+// buildRouter) é o que a bateria T do vm-validate mede, com uma consulta de
+// verdade virando nome no mapa — foi ela que encontrou isto.
+func TestDNSTapVemPelaConfig(t *testing.T) {
+	svc := dnstap.NovoServico()
+	s := &Server{}
+	cfg := Config{DNSTap: svc}
+	s.dnstapSvc = cfg.DNSTap
+	if s.dnstapSvc == nil {
+		t.Fatal("o coletor não sobrevive à Config: as rotas nasceriam sem o mapa")
+	}
+	if s.dnstapSvc.Mapa() == nil {
+		t.Error("o coletor veio sem mapa")
 	}
 }
