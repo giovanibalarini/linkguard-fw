@@ -2850,6 +2850,711 @@ battery_metricas_host() {
   else bad "a rota continuou respondendo depois de apagar o token ($code)"; fi
 }
 
+# ─── V. Alertas de comportamento por aparelho (issue #117) ───────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Detector de desvio é fácil de escrever e
+# fácil de entregar MUDO: ele só fala quando o histórico real da caixa tem a
+# forma que ele espera, e o teste em Go semeia essa forma com a própria mão. Os
+# testes da #117 escreviam amostras num passo escolhido por eles e conferiam que o
+# detector alertou — provam a aritmética da mediana, não que exista aparelho no
+# mundo capaz de disparar isto.
+#
+# Por isso a bateria abre com a pergunta que teste de unidade nenhum faz: o
+# passo que o detector CONSULTA é um passo que o produto GRAVA sozinho? (V2.) Foi
+# essa pergunta que achou o defeito: o detector pedia 300 segundos e o tsdb
+# grava host.* em 10, 60, 900 e 3600 — o alerta nunca pôde sair. E
+# ela não pergunta isso olhando o banco de qualquer jeito — gera tráfego que
+# ATRAVESSA o firewall, do jeito que a bateria G gera, e pergunta quais passos
+# apareceram PARA AQUELE APARELHO na última hora. Assim a resposta é do produto
+# desta rodada, e não de restos de uma execução anterior nem da ordem em que as
+# baterias rodaram.
+#
+# Depois vêm as asserções da issue, e as DUAS DE SILÊNCIO são o que torna as
+# outras honestas:
+#
+#   V1 — aparelho que o produto nunca viu vira alerta. Esta metade não é
+#        semeada: um aparelho de mentira aparece na vizinhança e o avistamento é
+#        gravado pelo caminho do próprio produto (GET /api/hosts).
+#   V3 — consumo acima do próprio normal daquela hora vira alerta.
+#   V4 — O PISO CALA. Um aparelho que faz DEZ vezes o normal dele e mesmo assim
+#        não chega a 2 MB/s não pode gerar nada. Só que "ficou calado" não prova
+#        piso nenhum se o detector estiver morto — quando `consumo()` desiste
+#        por falta de amostras, ELE CALA PARA TODO MUNDO. Por isso a V4 só é
+#        cobrada quando a V3 disparou na mesma passada; sem isso, ela é PULADA.
+#   V6 — A HISTERESE CALA. Segundo pico do mesmo aparelho dentro de 6 h não
+#        vira segundo alerta. E para essa asserção não ser gratuita: o primeiro
+#        alerta é RESOLVIDO antes (senão quem cala é o dedupe de alerta aberto,
+#        não a histerese), uma testemunha é semeada para disparar NA MESMA
+#        passada (silêncio sem testemunha só provaria que o detector parou) e o
+#        PID do serviço é conferido no fim (a histerese vive na memória do
+#        processo: um restart no meio a zera, e alertar de novo passa a ser o
+#        comportamento CERTO — acusar o produto ali seria mentira).
+#
+# O passado não tem rota: nenhuma API do produto cria sete dias de histórico.
+# Essa metade é semeada no banco da VM, e é a única coisa desta suíte escrita
+# por baixo do produto — de propósito, e só o que é passado. Tudo o que é
+# medição é lido por SQL também, e não pela lista de alertas do painel: a rota
+# devolve as 100 mais recentes (handlers/alerts.go), e as três asserções de
+# silêncio desta bateria são igualdades com uma linha de base — uma janela que
+# empurra alertas para fora do fim transformaria "a histerese não segurou" em OK.
+battery_comportamento() {
+  head_ "V. Alertas de comportamento por aparelho"
+
+  # Cada asserção tem um marcador. Quem sair pelo meio chama encerra_v, que
+  # PULA por nome tudo o que não chegou a ser medido: uma bateria que aborta
+  # calada deixa o resumo dizer "0 falhas" sobre asserção que nunca rodou.
+  local M_V1=0 M_V2=0 M_V3=0 M_V4=0 M_V6=0
+  local SCRIPT=/tmp/lgv117.py
+  local BANCO="" mac_novo="" script_pronto=0
+  local T_NOVO="host_novo_na_rede" T_ACIMA="host_acima_do_normal"
+
+  # MACS SORTEADOS A CADA RODADA. A histerese do detector é um mapa em MEMÓRIA
+  # do processo (6 h por aparelho) e não tem rota para ser limpa: com MACs
+  # fixos, a segunda execução desta bateria na mesma caixa mediria o silêncio
+  # que a primeira deixou e chamaria isso de defeito do produto. MAC novo por
+  # rodada também tira do caminho o dedupe de alerta aberto e qualquer resto de
+  # execução abortada.
+  local suf; suf=$(printf '%02x:%02x' $((RANDOM % 256)) $((RANDOM % 256)))
+  local ALTO="aa:bb:17:$suf:01" PISO="aa:bb:17:$suf:02" CTRL="aa:bb:17:$suf:03"
+
+  # limpa_v desfaz o que a bateria montou. Ela é chamada de TODOS os caminhos de
+  # saída, inclusive os que abortam cedo: o aparelho de mentira precisa sair do
+  # inventário, senão a bateria seguinte enxerga um inventário que a rede não
+  # tem. Cada pedaço é independente do outro — nada aqui pode depender de uma
+  # etapa que talvez não tenha acontecido.
+  limpa_v() {
+    vm "ip netns del lgnovo 2>/dev/null; ip link del lg-novo 2>/dev/null; true" >/dev/null 2>&1
+    [[ "$script_pronto" == 1 ]] || return 0
+    # Os alertas desta bateria são fechados pelo caminho do painel, e em TODO
+    # caminho de saída: alerta aberto sobre um MAC que não existe mais engorda a
+    # contagem de abertos que outras baterias e o próprio painel leem.
+    local tipo mac id lista
+    if [[ -n "$tok" ]]; then
+      for tipo in "$T_NOVO" "$T_ACIMA"; do
+        for mac in "$ALTO" "$PISO" "$CTRL" ${mac_novo:+"$mac_novo"}; do
+          lista=$(q1 abertos "$tipo" "$mac")
+          [[ "$lista" == ABERTOS\ * && "$lista" != "ABERTOS -" ]] || continue
+          for id in ${lista#ABERTOS }; do
+            status PUT "/api/alerts/$id/resolve" "$tok" >/dev/null 2>&1
+          done
+        done
+      done
+    fi
+    local sobra
+    sobra=$(q1 limpa "$ALTO" "$PISO" "$CTRL" ${mac_novo:+"$mac_novo"})
+    if [[ "$sobra" != "LIMPO 0" ]]; then
+      bad "a limpeza da bateria V não terminou; a bateria seguinte pode ver aparelho que a rede não tem" "$sobra"
+    fi
+    vm "rm -f $SCRIPT" >/dev/null 2>&1
+  }
+
+  encerra_v() {
+    local motivo="$1"
+    [[ "$M_V1" == 1 ]] || pular "V1. Aparelho nunca visto vira alerta" "$motivo"
+    [[ "$M_V2" == 1 ]] || pular "V2. O passo consultado é um passo que o produto grava" "$motivo"
+    [[ "$M_V3" == 1 ]] || pular "V3. Consumo acima do próprio normal vira alerta" "$motivo"
+    [[ "$M_V4" == 1 ]] || pular "V4. O piso absoluto cala o detector" "$motivo"
+    [[ "$M_V6" == 1 ]] || pular "V6. A histerese cala o segundo pico" "$motivo"
+    limpa_v
+  }
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  if [[ -z "$tok" ]]; then
+    bad "sem sessão administrativa; a bateria V não roda"
+    encerra_v "sem sessão administrativa"
+    return
+  fi
+
+  # ── Portões de ambiente, ANTES de montar qualquer coisa ────────────────────
+  #
+  # O passado que o baseline exige não tem rota de API, e o único jeito de
+  # escrevê-lo é o sqlite3 do python da VM. Perguntar isso depois de criar o
+  # veth deixaria um aparelho fantasma no inventário sem nenhuma forma de
+  # apagá-lo (não existe DELETE /api/hosts). E as duas ausências possíveis têm
+  # consertos diferentes, então são diagnosticadas separadamente.
+  local tem_py tem_sql
+  tem_py=$(vm "command -v python3 >/dev/null 2>&1 && echo py" | tr -d '\r' | tail -1)
+  if [[ "$tem_py" != "py" ]]; then
+    bad "não há python3 na VM: o histórico por aparelho não tem como ser escrito nem lido"
+    encerra_v "sem python3 na VM"
+    return
+  fi
+  tem_sql=$(vm "python3 -c 'import sqlite3; print(\"sql\")' 2>/dev/null" | tr -d '\r' | tail -1)
+  if [[ "$tem_sql" != "sql" ]]; then
+    bad "o python3 da VM não tem o módulo sqlite3; o passado que o baseline exige não pode ser criado"
+    encerra_v "python3 da VM sem o módulo sqlite3"
+    return
+  fi
+
+  # O caminho do banco é o que o PRODUTO usa, e não um caminho cravado aqui: o
+  # próprio arranjo desta suíte já edita config.json, então ele não é imutável.
+  # Semear no banco errado imprimiria "o produto não alertou" sobre um banco que
+  # o produto nunca leu.
+  BANCO=$(vm "python3 -c \"import json;print(json.load(open('/etc/linkguard-fw/config.json')).get('db_path',''))\" 2>/dev/null" | tr -d '\r' | tail -1)
+  [[ -n "$BANCO" ]] || BANCO="/var/lib/linkguard-fw/linkguard.db"
+
+  # ── O ajudante que lê e semeia o banco da VM ───────────────────────────────
+  #
+  # Ele abre o banco com mode=rw: caminho errado ERRA, em vez de criar um .db
+  # vazio e falhar depois com "no such table" dentro de um 2>/dev/null.
+  # Toda saída é uma linha com prefixo conhecido — falha vira "ERRO ...", nunca
+  # vira zero. Zero é justamente o valor que faz as asserções de silêncio
+  # passarem, e uma leitura quebrada não pode virar uma asserção verde.
+  vm "cat > $SCRIPT <<'PYEOF'
+import sqlite3, sys, time
+
+SERIE = 'host.rx_bps'
+# PASSO tem de ser o mesmo de comportamento.PassoBaseline. Semear no passo
+# errado faz o produto ficar calado COM RAZÃO e a bateria acusá-lo por isso —
+# foi exatamente o defeito que a V2 pegou: o detector pedia 300, que o tsdb
+# nunca grava. Do lado do Go, TestPassoBaselineExisteNoTSDB amarra a constante
+# aos passos que o produtor da série realmente escreve.
+PASSO = 900
+
+def abre(caminho):
+    db = sqlite3.connect('file:%s?mode=rw' % caminho, uri=True, timeout=20)
+    db.execute('PRAGMA busy_timeout=20000')
+    return db
+
+def grava(db, mac, ts, v):
+    ts = ts - ts % PASSO
+    db.execute('INSERT OR REPLACE INTO metric_samples (series,label,step_seconds,ts_unix,v_min,v_avg,v_max)'
+               ' VALUES (?,?,?,?,?,?,?)', (SERIE, mac, PASSO, ts, v, v, v))
+
+def semeia(db, alto, piso, ctrl):
+    agora = int(time.time())
+    lt = time.localtime(agora)
+    # O detector compara HORA LOCAL do processo (time.Time.Hour()). Alinhar
+    # pelo topo da hora UTC só funcionaria por acidente de fuso.
+    topo = agora - lt.tm_min * 60 - lt.tm_sec
+    velho = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(agora - 30 * 86400))
+    visto = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(agora))
+    # first_seen de 30 dias com folga enorme de propósito: é o que sustenta a
+    # asserção 'aparelho conhecido não é novidade' mesmo com o fuso errado.
+    for mac, ip, alias in ((alto, '192.168.117.11', 'Alto da bateria V'),
+                           (piso, '192.168.117.12', 'Quieto da bateria V'),
+                           (ctrl, '192.168.117.13', 'Testemunha da bateria V')):
+        db.execute('INSERT OR REPLACE INTO host_metadata (mac,ip,hostname,alias,blocked,first_seen,last_seen)'
+                   ' VALUES (?,?,?,?,0,?,?)', (mac, ip, '', alias, velho, visto))
+    db.commit()
+    # TRÊS HORAS SEGUIDAS em cada um dos sete dias anteriores (12 baldes de 15
+    # min), e não só a hora
+    # corrente: o normal é a mediana da MESMA HORA DO DIA, e esta bateria leva
+    # mais de dez minutos — uma passada que caia na hora seguinte não pode
+    # reprovar o produto por causa do relógio.
+    # Um commit por dia semeado: uma transação longa segura o writer
+    # do tsdb, que grava a cada segundo, e fazem o produto PERDER amostra real.
+    for mac, v in ((alto, 1048576.0), (piso, 102400.0), (ctrl, 1048576.0)):
+        for d in range(1, 8):
+            base = topo - d * 86400
+            for j in range(12):
+                grava(db, mac, base + j * PASSO, v)
+            db.commit()
+    grava(db, alto, agora, 8388608.0)   # 8x o normal e acima do piso
+    grava(db, piso, agora, 1048576.0)   # 10x o normal e ABAIXO do piso
+    db.commit()
+    print('SEMEADO')
+
+def pico2(db, alto, ctrl):
+    agora = int(time.time())
+    grava(db, alto, agora, 16777216.0)
+    grava(db, ctrl, agora, 8388608.0)
+    db.commit()
+    n = db.execute('SELECT count(*) FROM metric_samples WHERE series=? AND step_seconds=?'
+                   ' AND label IN (?,?) AND ts_unix >= ? AND v_avg >= ?',
+                   (SERIE, PASSO, alto, ctrl, agora - agora % PASSO, 8388608.0)).fetchone()[0]
+    print('PICO2 %d' % n)
+
+def portas(db, mac):
+    # As duas portas EXATAS de consumo(): 12 amostras na janela de 7 dias e 6 na
+    # mesma hora do dia com mais de uma hora de idade. Contar linhas no total
+    # aprovaria uma semeadura na hora errada, e aí o produto ficaria calado com
+    # razão e a bateria gritaria que ele falhou.
+    agora = int(time.time())
+    linhas = db.execute('SELECT ts_unix, v_avg FROM metric_samples WHERE series=? AND label=?'
+                        ' AND step_seconds=? AND ts_unix BETWEEN ? AND ? ORDER BY ts_unix ASC',
+                        (SERIE, mac, PASSO, agora - 7 * 86400, agora)).fetchall()
+    hora = time.localtime(agora).tm_hour
+    mesma = [r for r in linhas if time.localtime(r[0]).tm_hour == hora and agora - r[0] > 3600]
+    meta = db.execute('SELECT count(*) FROM host_metadata WHERE mac=? AND blocked=0', (mac,)).fetchone()[0]
+    atual = linhas[-1][1] if linhas else -1.0
+    print('PORTAS %d %d %d %d' % (len(linhas), len(mesma), meta, int(atual)))
+
+def passos(db, mac):
+    agora = int(time.time())
+    l = db.execute('SELECT DISTINCT step_seconds FROM metric_samples WHERE series=? AND label=?'
+                   ' AND ts_unix > ? ORDER BY 1', (SERIE, mac, agora - 3600)).fetchall()
+    print('PASSOS ' + (','.join(str(x[0]) for x in l) if l else '-'))
+
+def conta(db, tipo, mac):
+    print('CONTA %d' % db.execute('SELECT count(*) FROM alerts WHERE type=? AND link_id=?',
+                                  (tipo, mac)).fetchone()[0])
+
+def msg(db, tipo, mac):
+    r = db.execute('SELECT message FROM alerts WHERE type=? AND link_id=? ORDER BY rowid DESC LIMIT 1',
+                   (tipo, mac)).fetchone()
+    print('MSG ' + (r[0].replace('\n', ' ') if r else '-'))
+
+def abertos(db, tipo, mac):
+    r = db.execute('SELECT id FROM alerts WHERE type=? AND link_id=? AND resolved=0', (tipo, mac)).fetchall()
+    print('ABERTOS ' + (' '.join(x[0] for x in r) if r else '-'))
+
+def meta(db, mac):
+    print('META %d' % db.execute('SELECT count(*) FROM host_metadata WHERE mac=?', (mac,)).fetchone()[0])
+
+def limpa(db, macs):
+    for mac in macs:
+        db.execute('DELETE FROM metric_samples WHERE label=?', (mac,))
+        db.execute('DELETE FROM host_metadata WHERE mac=?', (mac,))
+    db.commit()
+    n = 0
+    for mac in macs:
+        n += db.execute('SELECT count(*) FROM host_metadata WHERE mac=?', (mac,)).fetchone()[0]
+    print('LIMPO %d' % n)
+
+try:
+    db = abre(sys.argv[1])
+    cmd, arg = sys.argv[2], sys.argv[3:]
+    if cmd == 'semeia':   semeia(db, arg[0], arg[1], arg[2])
+    elif cmd == 'pico2':  pico2(db, arg[0], arg[1])
+    elif cmd == 'portas': portas(db, arg[0])
+    elif cmd == 'passos': passos(db, arg[0])
+    elif cmd == 'conta':  conta(db, arg[0], arg[1])
+    elif cmd == 'msg':    msg(db, arg[0], arg[1])
+    elif cmd == 'abertos':abertos(db, arg[0], arg[1])
+    elif cmd == 'meta':   meta(db, arg[0])
+    elif cmd == 'limpa':  limpa(db, arg)
+    else: print('ERRO subcomando desconhecido: %s' % cmd)
+except Exception as e:
+    print('ERRO %r' % (e,))
+PYEOF
+      echo escrito" >/dev/null 2>&1
+  script_pronto=1
+
+  q()  { vm "python3 $SCRIPT '$BANCO' $*" 2>/dev/null | tr -d '\r'; }
+  q1() { q "$@" | tail -1; }
+
+  # conta_alertas TIPO MAC → número, ou ERR. Nunca zero por falha de leitura: o
+  # zero é o valor que faz as asserções de silêncio passarem, e um banco
+  # ilegível não pode virar prova de que o detector se conteve.
+  conta_alertas() {
+    local r; r=$(q1 conta "$1" "$2")
+    if [[ "$r" =~ ^CONTA\ ([0-9]+)$ ]]; then echo "${BASH_REMATCH[1]}"; else echo ERR; fi
+  }
+  mensagem_de() {
+    local r; r=$(q1 msg "$1" "$2")
+    [[ "$r" == MSG\ * ]] && printf '%s\n' "${r#MSG }"
+  }
+
+  # O ajudante tem de responder antes de qualquer asserção depender dele.
+  local sanidade; sanidade=$(q1 conta "$T_NOVO" "00:00:00:00:00:00")
+  if [[ "$sanidade" != "CONTA 0" ]]; then
+    bad "não consigo ler a tabela de alertas do banco da VM; nada desta bateria pode ser afirmado" "$sanidade"
+    encerra_v "o banco da VM não pôde ser lido ($BANCO)"
+    return
+  fi
+
+  # Linha de base. Com MAC sorteado ela tem de ser zero; se não for, o sorteio
+  # bateu num MAC de outra rodada e as igualdades desta bateria mediriam o
+  # passado.
+  local base_alto base_piso base_ctrl
+  base_alto=$(conta_alertas "$T_ACIMA" "$ALTO")
+  base_piso=$(conta_alertas "$T_ACIMA" "$PISO")
+  base_ctrl=$(conta_alertas "$T_ACIMA" "$CTRL")
+  if [[ "$base_alto" != "0" || "$base_piso" != "0" || "$base_ctrl" != "0" ]]; then
+    bad "os MACs sorteados já têm alerta nesta caixa; as asserções de silêncio não valeriam" \
+        "$ALTO=$base_alto $PISO=$base_piso $CTRL=$base_ctrl"
+    encerra_v "colisão dos MACs sorteados com uma execução anterior"
+    return
+  fi
+
+  # ── V2 — O PASSO QUE O DETECTOR PEDE TEM DE SER UM PASSO QUE O PRODUTO GRAVA
+  #
+  # ESTA É A ASSERÇÃO QUE JUSTIFICA A BATERIA EXISTIR NUMA MÁQUINA DE VERDADE.
+  # O detector consulta a série `host.rx_bps` no passo 900 (15 min). Se o produto
+  # não gravar esse passo sozinho, a consulta volta vazia, `consumo()` desiste
+  # por falta de amostras e NENHUM aparelho do mundo dispara o alerta — recurso
+  # entregue e mudo, com os testes em Go verdes porque eles mesmos inserem o
+  # passo que o produto não grava — foi assim que o defeito do passo 300 passou.
+  #
+  # A pergunta é feita com tráfego DESTA rodada, atravessando o firewall, e
+  # olhando só o aparelho que acabou de gerá-lo: assim a resposta não pode vir
+  # de resto de execução anterior nem depender de a bateria G ter rodado antes.
+  status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null 2>&1
+  status POST /api/links/auto-detect "$tok" >/dev/null 2>&1
+  vm "ip netns del lgnovo 2>/dev/null; ip link del lg-novo 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add lgnovo && \
+      ip link add lg-novo type veth peer name novo-far && \
+      ip link set novo-far netns lgnovo && \
+      ip addr add 192.168.117.1/24 dev lg-novo && ip link set lg-novo up && \
+      ip netns exec lgnovo ip link set lo up && \
+      ip netns exec lgnovo ip addr add 192.168.117.2/24 dev novo-far && \
+      ip netns exec lgnovo ip link set novo-far up && \
+      ip netns exec lgnovo ip route add default via 192.168.117.1" >/dev/null 2>&1
+  # O endereço físico do veth é sorteado a cada criação: é genuinamente inédito
+  # para o inventário desta caixa.
+  mac_novo=$(vm "ip netns exec lgnovo cat /sys/class/net/novo-far/address 2>/dev/null" | tr -d '\r' | tr 'A-Z' 'a-z')
+  # Um ping curto no próprio firewall coloca o aparelho na vizinhança (é dali
+  # que sai tanto o inventário quanto o mapa IP→MAC do amostrador), e um ping
+  # longo para fora gera o tráfego que ATRAVESSA e portanto é contabilizado.
+  if [[ -z "$mac_novo" ]]; then
+    bad "não consegui criar o aparelho de mentira na VM; nada desta bateria pode ser montado" \
+        "$(vm "ip link show lg-novo 2>&1 | head -2" | tr -d '\r' | head -c 160)"
+    encerra_v "a montagem do aparelho de teste (veth em netns) falhou"
+    return
+  fi
+  vm "timeout 5 ip netns exec lgnovo ping -c 3 -i 0.3 192.168.117.1" >/dev/null 2>&1
+  vm "nohup ip netns exec lgnovo ping -q -i 0.2 -s 1400 -w 120 10.0.2.2 >/dev/null 2>&1 &" >/dev/null 2>&1
+
+  printf '       (gerando tráfego contabilizado para descobrir em que passo a série por aparelho é gravada)\n'
+  local i passos=""
+  for i in $(seq 1 12); do
+    sleep 15
+    passos=$(q1 passos "$mac_novo")
+    [[ "$passos" == PASSOS\ -* || "$passos" != PASSOS\ * ]] || break
+  done
+  if [[ "$passos" != PASSOS\ * ]]; then
+    bad "não consegui ler os passos gravados para o aparelho de teste" "$passos"
+    encerra_v "leitura dos passos da série por aparelho falhou"
+    return
+  fi
+  passos="${passos#PASSOS }"
+  if [[ "$passos" == "-" ]]; then
+    # Sem amostra nenhuma o buraco pode ser do cenário (tráfego que não
+    # atravessou, contabilidade sem WAN detectada) e não do produto. Acusar o
+    # detector aqui seria trocar a culpa.
+    pular "V2. O passo consultado é um passo que o produto grava" \
+          "o produto não gravou amostra alguma para o aparelho de teste em 3 min; sem série real não dá para dizer em que passo ela é escrita"
+    M_V2=1
+  elif grep -qE '(^|,)900(,|$)' <<<"$passos"; then
+    ok "o passo que o detector consulta (900s) é um dos que o produto grava sozinho ($passos)"
+    M_V2=1
+  else
+    bad "O DETECTOR CONSULTA UM PASSO QUE NINGUÉM GRAVA: sem 900s, o alerta de consumo nunca sai numa caixa real" \
+        "passos que o produto acabou de gravar para $mac_novo: $passos"
+    M_V2=1
+  fi
+
+  # ── Semeadura: o passado, que não tem rota ─────────────────────────────────
+  local r_semeia; r_semeia=$(q1 semeia "$ALTO" "$PISO" "$CTRL")
+  if [[ "$r_semeia" != "SEMEADO" ]]; then
+    bad "não consegui semear o histórico por aparelho; as asserções de consumo não seriam medidas" "$r_semeia"
+    encerra_v "a semeadura do baseline falhou"
+    return
+  fi
+
+  # E a semeadura é conferida CONTRA AS PORTAS DO PRODUTO, não contra um número
+  # de linhas: consumo() exige 12 amostras na janela de 7 dias, 6 na mesma hora
+  # do dia com mais de uma hora de idade, e o aparelho no inventário e não
+  # bloqueado. Uma contagem global aprovaria uma semeadura na hora errada — e aí
+  # o produto ficaria calado com razão e esta bateria o acusaria.
+  local m falhou_porta=0 detalhe_porta=""
+  for m in "$ALTO" "$PISO" "$CTRL"; do
+    local p; p=$(q1 portas "$m")
+    if [[ "$p" =~ ^PORTAS\ ([0-9]+)\ ([0-9]+)\ ([0-9]+)\ (-?[0-9]+)$ ]]; then
+      local nj="${BASH_REMATCH[1]}" nh="${BASH_REMATCH[2]}" nm="${BASH_REMATCH[3]}"
+      if [[ "$nj" -lt 12 || "$nh" -lt 6 || "$nm" -ne 1 ]]; then
+        falhou_porta=1; detalhe_porta="$detalhe_porta $m(janela=$nj mesma_hora=$nh inventário=$nm)"
+      fi
+    else
+      falhou_porta=1; detalhe_porta="$detalhe_porta $m($p)"
+    fi
+  done
+  if [[ "$falhou_porta" == 0 ]]; then
+    ok "o histórico semeado satisfaz as portas que o detector exige (janela de 7 dias, mesma hora do dia e inventário)"
+  else
+    bad "o histórico semeado NÃO satisfaz as portas do detector; o silêncio dele seria certo e a bateria mediria a si mesma" \
+        "$detalhe_porta"
+    encerra_v "a semeadura não satisfez as portas de consumo()"
+    return
+  fi
+
+  # ── V1, montagem: o avistamento, que é a última coisa a acontecer ──────────
+  #
+  # `IdadeDeHostNovo` é de 10 minutos contados do first_seen, o ticker é de 5 e
+  # NÃO há passada no boot. Se o avistamento fosse gravado antes da semeadura, o
+  # orçamento de 10 minutos seria gasto por SSH e SQL e o aparelho deixaria de
+  # ser novo antes do primeiro tick — matando a V1 e, pior, podendo pegar uma
+  # passada com metade do cenário montado e reprovar a V3 por isso. Semeado tudo,
+  # o avistamento é a última coisa: uma única passada serve para os dois
+  # detectores.
+  local t_avist visto_meta quer_novo=0
+  body GET /api/hosts "$tok" >/dev/null 2>&1
+  sleep 2
+  body GET /api/hosts "$tok" >/dev/null 2>&1
+  t_avist=$(date +%s)
+  # O que o detector lê é a LINHA DO BANCO, e o upsert do avistamento é
+  # best-effort dentro do handler (o erro é descartado): o aparelho pode
+  # aparecer na resposta HTTP sem ter entrado no inventário.
+  visto_meta=$(q1 meta "$mac_novo")
+  if [[ "$visto_meta" == "META 1" ]]; then
+    ok "o aparelho de mentira entrou no inventário pelo caminho do produto ($mac_novo)"
+    quer_novo=1
+  else
+    bad "o avistamento não chegou ao inventário; a asserção de aparelho novo não pode ser medida" \
+        "mac '$mac_novo', leitura: $visto_meta, vizinhança: $(vm "ip neigh show 2>/dev/null | grep -i '$mac_novo'" | tr -d '\r' | head -c 120)"
+    pular "V1. Aparelho nunca visto vira alerta" "o avistamento não foi gravado no inventário; sem ele o detector não teria o que ver"
+    M_V1=1
+  fi
+
+  # O PID de agora. A histerese vive na memória do processo: se ele reiniciar no
+  # meio, alertar de novo passa a ser o comportamento CERTO, e a V6 não pode
+  # acusar ninguém.
+  local pid1; pid1=$(vm "systemctl show -p MainPID --value linkguard-fw" | tr -d '\r' | tail -1)
+
+  # ── A passada do detector ──────────────────────────────────────────────────
+  #
+  # Teto, e não sono cego: se os alertas saírem no primeiro minuto a bateria
+  # segue no primeiro minuto. E a espera só termina quando OS DOIS sinais
+  # chegam — os dois detectores rodam na mesma passada, e quebrar no primeiro
+  # faria julgar o segundo com 15 segundos de espera para um ticker de 5 min.
+  printf '       (aguardando a passada dos detectores — o ticker é de 5 minutos, sem passada no boot)\n'
+  local n_novo=0 n_alto=0
+  for i in $(seq 1 28); do
+    sleep 15
+    n_novo=$(conta_alertas "$T_NOVO" "$mac_novo")
+    n_alto=$(conta_alertas "$T_ACIMA" "$ALTO")
+    [[ "$n_alto" == ERR || "$n_novo" == ERR ]] && continue
+    if [[ "$n_alto" -gt 0 ]] && { [[ "$quer_novo" == 0 ]] || [[ "$n_novo" -gt 0 ]]; }; then break; fi
+  done
+  # Os detectores rodam um depois do outro dentro da mesma passada; um instante
+  # de folga evita julgar o segundo com o número lido enquanto o primeiro ainda
+  # escrevia.
+  sleep 5
+  n_novo=$(conta_alertas "$T_NOVO" "$mac_novo")
+  n_alto=$(conta_alertas "$T_ACIMA" "$ALTO")
+  if [[ "$n_novo" == ERR || "$n_alto" == ERR ]]; then
+    bad "a leitura dos alertas falhou depois da espera; a bateria V não mediu nada"
+    encerra_v "a tabela de alertas ficou ilegível durante a bateria"
+    return
+  fi
+
+  # Antes de acusar o detector de mudo, provar que a caixa está viva: serviço
+  # morto e detector calado produzem o mesmo silêncio, e só um deles é defeito
+  # do recurso.
+  if [[ "$n_novo" -eq 0 && "$n_alto" -eq 0 ]]; then
+    local vivo; vivo=$(vm "systemctl is-active linkguard-fw" | tr -d '\r' | tail -1)
+    if [[ "$vivo" != "active" ]] || ! wait_api; then
+      bad "o serviço não está no ar; o silêncio dos detectores não pode ser cobrado dele" "systemctl is-active: $vivo"
+      encerra_v "o serviço caiu durante a bateria"
+      return
+    fi
+  fi
+
+  # ── V1 — APARELHO NOVO VIRA ALERTA ─────────────────────────────────────────
+  if [[ "$quer_novo" == 1 ]]; then
+    if [[ "$n_novo" -eq 1 ]]; then
+      ok "o aparelho nunca visto virou alerta de aparelho novo"
+    elif [[ "$n_novo" -gt 1 ]]; then
+      bad "o mesmo aparelho novo gerou $n_novo alertas: a histerese não vale para este detector"
+    elif [[ $(( $(date +%s) - t_avist )) -gt 600 ]]; then
+      # A janela do cenário venceu antes de o ticker bater: isto não é veredicto
+      # sobre o produto, e imprimir FALHA aqui seria acusar o relógio da bateria.
+      pular "V1. Aparelho nunca visto vira alerta" \
+            "a janela de 10 min de 'aparelho novo' venceu antes da passada de 5 min do detector; o cenário não deu tempo"
+    else
+      bad "o aparelho apareceu na rede e nenhum alerta de aparelho novo saiu ($mac_novo)"
+    fi
+    M_V1=1
+
+    if [[ "$n_novo" -ge 1 ]]; then
+      # O alerta tem de IDENTIFICAR o aparelho — é o que separa um aviso útil de
+      # uma linha que manda o admin procurar em outra tela. Este aparelho não tem
+      # apelido nem nome anunciado, então o que se cobra é o endereço físico.
+      local msg_novo; msg_novo=$(mensagem_de "$T_NOVO" "$mac_novo")
+      if [[ -n "$msg_novo" && "$msg_novo" != "-" ]] && grep -qiF -- "$mac_novo" <<<"$msg_novo"; then
+        ok "o alerta de aparelho novo traz o endereço físico do aparelho"
+      else
+        bad "o alerta de aparelho novo não identifica o aparelho" "$(head -c 150 <<<"$msg_novo")"
+      fi
+
+      # A OUTRA METADE: aparelho conhecido há trinta dias NÃO é novidade. Só vale
+      # perguntar isso porque o alerta do aparelho de mentira prova que o detector
+      # RODOU e varreu o inventário inteiro na mesma passada; sem esse gate, um
+      # detector morto imprimiria este OK de graça.
+      local n_novo_velho; n_novo_velho=$(conta_alertas "$T_NOVO" "$ALTO")
+      if [[ "$n_novo_velho" == "0" ]]; then
+        ok "aparelho visto pela primeira vez há 30 dias não vira alerta de aparelho novo"
+      elif [[ "$n_novo_velho" == ERR ]]; then
+        bad "não consegui contar os alertas do aparelho conhecido; a asserção não foi medida"
+      else
+        bad "um aparelho conhecido há 30 dias foi anunciado como novo na rede ($n_novo_velho alerta(s))"
+      fi
+    else
+      pular "V1b. Aparelho conhecido há 30 dias não é novidade" \
+            "sem o alerta do aparelho de mentira não há prova de que o detector varreu o inventário nesta passada"
+    fi
+  fi
+
+  # ── V3 — CONSUMO ACIMA DO PRÓPRIO NORMAL VIRA ALERTA ───────────────────────
+  # 8 MB/s contra 1 MB/s de mediana naquela hora: oito vezes o normal e acima do
+  # piso de 2 MB/s.
+  if [[ "$n_alto" -eq 1 ]]; then
+    ok "consumo de 8x o normal daquela hora virou alerta"
+  elif [[ "$n_alto" -eq 0 ]]; then
+    bad "o aparelho com 8x o próprio normal não gerou alerta de consumo" \
+        "$(vm "journalctl -u linkguard-fw --since '15 min ago' --no-pager | grep -iE 'comportamento|panic|alert created' | tail -2" | tr -d '\r' | head -c 200)"
+  else
+    bad "o mesmo aparelho gerou $n_alto alertas de consumo numa passada só"
+  fi
+  M_V3=1
+
+  if [[ "$n_alto" -ge 1 ]]; then
+    # A mensagem tem de trazer os DOIS números na ORDEM CERTA. Dois greps
+    # independentes passariam igual se o produto trocasse os argumentos —
+    # "consumindo 1.0 MB/s, contra 8.0 MB/s que é o normal" — que é exatamente o
+    # defeito que esta asserção existe para pegar.
+    local msg_alto; msg_alto=$(mensagem_de "$T_ACIMA" "$ALTO")
+    if [[ -n "$msg_alto" && "$msg_alto" != "-" ]] &&
+       grep -qE "Alto da bateria V \($ALTO\) está consumindo 8\.0 MB/s, contra 1\.0 MB/s" <<<"$msg_alto"; then
+      ok "a mensagem nomeia o aparelho e compara o consumo de agora com o normal dele, nessa ordem"
+    else
+      bad "a mensagem não compara o consumo com o normal na ordem esperada" "$(head -c 200 <<<"$msg_alto")"
+    fi
+  fi
+
+  # Os alertas também têm de CHEGAR À TELA. Tudo o que esta bateria decide é
+  # lido por SQL (a rota devolve só as 100 mais recentes, o que estragaria as
+  # igualdades), mas se a rota não os mostrasse, o recurso estaria entregue
+  # invisível.
+  if [[ "$quer_novo" == 1 && "$n_novo" -ge 1 && "$n_alto" -ge 1 ]]; then
+    local no_painel
+    no_painel=$(body GET "/api/alerts?unresolved=true" "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+if not isinstance(d,list): raise SystemExit(1)
+alvo={(sys.argv[1],sys.argv[3].lower()),(sys.argv[2],sys.argv[4].lower())}
+print(len({(a.get('type'),(a.get('link_id') or '').lower()) for a in d} & alvo))" \
+      "$T_NOVO" "$T_ACIMA" "$mac_novo" "$ALTO" 2>/dev/null)
+    if [[ "$no_painel" == "2" ]]; then
+      ok "os dois alertas aparecem na lista do painel (GET /api/alerts)"
+    else
+      bad "os alertas de comportamento não apareceram na lista do painel" "encontrados: ${no_painel:-leitura falhou}"
+    fi
+  fi
+
+  # ── V4 — O PISO CALA O DETECTOR ────────────────────────────────────────────
+  #
+  # O aparelho quieto foi semeado com a MESMA FORMA do outro — mesmos baldes,
+  # mesma hora, mesma janela — e faz DEZ vezes o próprio normal, mais que os três
+  # exigidos. A única diferença é a grandeza: 1 MB/s não chega aos 2 MB/s do
+  # piso. Só que "ficou calado" só significa piso se ALGUÉM tiver falado na mesma
+  # passada: quando consumo() desiste por falta de amostras, ele desiste para
+  # todos. Sem a V3 verde, esta asserção é PULADA em vez de virar um OK grátis.
+  local n_piso; n_piso=$(conta_alertas "$T_ACIMA" "$PISO")
+  if [[ "$n_alto" -ne 1 ]]; then
+    pular "V4. O piso absoluto cala o detector" \
+          "o aparelho de controle não disparou nesta passada; o silêncio do quieto não distingue piso de detector parado"
+  elif [[ "$n_piso" == "0" ]]; then
+    ok "aparelho com 10x o próprio normal mas abaixo de 2 MB/s ficou calado — o piso segura o ruído"
+  elif [[ "$n_piso" == ERR ]]; then
+    bad "não consegui contar os alertas do aparelho quieto; o piso não foi medido"
+  else
+    bad "O PISO NÃO SEGUROU: alerta de consumo para quem faz 1 MB/s" \
+        "$(head -c 200 <<<"$(mensagem_de "$T_ACIMA" "$PISO")")"
+  fi
+  M_V4=1
+
+  # ── V5/V6 — A HISTERESE ────────────────────────────────────────────────────
+  #
+  # V5 é a montagem que torna V6 honesta. O serviço suprime alerta novo enquanto
+  # houver um ABERTO do mesmo tipo para o mesmo aparelho — se o primeiro ficasse
+  # aberto, o silêncio do segundo pico provaria o dedupe e não a histerese, que é
+  # outra coisa e mora na memória do processo.
+  if [[ "$n_alto" -lt 1 ]]; then
+    encerra_v "não houve primeiro alerta de consumo; sem ele não existe segundo pico para calar"
+    return
+  fi
+  local lista_abertos; lista_abertos=$(q1 abertos "$T_ACIMA" "$ALTO")
+  if [[ "$lista_abertos" != ABERTOS\ * || "$lista_abertos" == "ABERTOS -" ]]; then
+    bad "não achei alerta aberto para resolver; a histerese não poderia ser medida separada do dedupe" "$lista_abertos"
+    encerra_v "não foi possível tirar o dedupe de alerta aberto do caminho"
+    return
+  fi
+  local id st_res falha_res=0
+  for id in ${lista_abertos#ABERTOS }; do
+    st_res=$(status PUT "/api/alerts/$id/resolve" "$tok")
+    [[ "$st_res" == "204" || "$st_res" == "200" ]] || falha_res=1
+  done
+  # 204 não prova resolução: o handler responde 204 mesmo para id inexistente e o
+  # UPDATE descarta o RowsAffected. Quem decide é o estado depois.
+  local sobrou; sobrou=$(q1 abertos "$T_ACIMA" "$ALTO")
+  if [[ "$sobrou" == "ABERTOS -" ]]; then
+    ok "não há mais alerta aberto para o aparelho de teste (o dedupe está fora do caminho)"
+  else
+    bad "sobrou alerta aberto para o aparelho de teste; o silêncio seguinte seria do dedupe, não da histerese" \
+        "resolve devolveu falha=$falha_res, ainda abertos: $sobrou"
+    encerra_v "o dedupe de alerta aberto não pôde ser tirado do caminho"
+    return
+  fi
+
+  # Segundo pico do MESMO aparelho, maior ainda — e uma TESTEMUNHA, outro
+  # aparelho semeado para disparar na mesma passada. Sem a testemunha, "não
+  # alertou de novo" é o que se veria também com o detector morto. E a semeadura
+  # da testemunha é conferida: se ela não for gravada, a bateria acusaria o
+  # produto por uma escrita que nunca aconteceu.
+  local r_pico2; r_pico2=$(q1 pico2 "$ALTO" "$CTRL")
+  if [[ "$r_pico2" != "PICO2 2" ]]; then
+    bad "não consegui semear o segundo pico e a testemunha; a histerese não será medida" "$r_pico2"
+    encerra_v "a semeadura do segundo pico e da testemunha falhou"
+    return
+  fi
+
+  printf '       (aguardando a passada seguinte — a testemunha é quem prova que ela aconteceu)\n'
+  local n_ctrl=0
+  for i in $(seq 1 28); do
+    sleep 15
+    n_ctrl=$(conta_alertas "$T_ACIMA" "$CTRL")
+    [[ "$n_ctrl" =~ ^[0-9]+$ && "$n_ctrl" -gt 0 ]] && break
+  done
+
+  if [[ ! "$n_ctrl" =~ ^[0-9]+$ || "$n_ctrl" -eq 0 ]]; then
+    bad "a testemunha não alertou em 7 minutos; não dá para afirmar que a histerese calou coisa alguma" \
+        "alertas da testemunha: $n_ctrl"
+    encerra_v "sem testemunha, o silêncio do segundo pico não distingue histerese de detector parado"
+    return
+  fi
+
+  # A ordem em que o detector percorre o inventário não é definida (a consulta
+  # não tem ORDER BY), então ver a testemunha não garante que o aparelho de teste
+  # já foi avaliado nesta passada. A leitura só é aceita quando estabiliza: duas
+  # leituras seguidas iguais, com folga entre elas.
+  local n_alto2="" n_alto3=""
+  for i in $(seq 1 6); do
+    sleep 10
+    n_alto2=$(conta_alertas "$T_ACIMA" "$ALTO")
+    sleep 10
+    n_alto3=$(conta_alertas "$T_ACIMA" "$ALTO")
+    [[ "$n_alto2" == "$n_alto3" && "$n_alto2" =~ ^[0-9]+$ ]] && break
+  done
+
+  local pid2; pid2=$(vm "systemctl show -p MainPID --value linkguard-fw" | tr -d '\r' | tail -1)
+  if [[ ! "$n_alto2" =~ ^[0-9]+$ || "$n_alto2" != "$n_alto3" ]]; then
+    pular "V6. A histerese cala o segundo pico" \
+          "não consegui uma leitura estável dos alertas depois da passada da testemunha (leituras: '$n_alto2' e '$n_alto3')"
+  elif [[ -z "$pid2" || "$pid2" != "$pid1" ]]; then
+    # Histerese é estado de processo: depois de um restart, alertar de novo é o
+    # comportamento CERTO. Acusar aqui seria inventar um defeito.
+    pular "V6. A histerese cala o segundo pico" \
+          "o serviço reiniciou entre as duas passadas (PID $pid1 → $pid2); a histerese é estado de memória e foi zerada"
+  elif [[ "$n_alto2" -eq 1 ]]; then
+    ok "houve passada (a testemunha alertou) e o segundo pico do mesmo aparelho NÃO virou segundo alerta"
+  else
+    bad "SEGUNDO ALERTA DO MESMO APARELHO DENTRO DE 6H: a histerese não segurou" \
+        "alertas para $ALTO: $n_alto2 (o primeiro foi resolvido antes do segundo pico)"
+  fi
+  M_V6=1
+
+  # Limpeza: os alertas desta bateria são fechados pelo caminho do painel, o
+  # histórico semeado sai do banco e o aparelho de mentira sai da rede e do
+  # inventário — senão a bateria seguinte enxerga um inventário que a rede não
+  # tem.
+  limpa_v
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -2870,6 +3575,7 @@ battery_reserva_dhcp
 battery_contencao
 battery_mapa_dns
 battery_metricas_host
+battery_comportamento
 battery_fechar_gerencia
 
 head_ "Resumo"
