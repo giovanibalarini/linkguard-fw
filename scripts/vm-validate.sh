@@ -3209,34 +3209,14 @@ PYEOF
   vm "timeout 5 ip netns exec lgnovo ping -c 3 -i 0.3 192.168.117.1" >/dev/null 2>&1
   vm "nohup ip netns exec lgnovo ping -q -i 0.2 -s 1400 -w 120 10.0.2.2 >/dev/null 2>&1 &" >/dev/null 2>&1
 
-  printf '       (gerando tráfego contabilizado para descobrir em que passo a série por aparelho é gravada)\n'
-  local i passos=""
-  for i in $(seq 1 12); do
-    sleep 15
-    passos=$(q1 passos "$mac_novo")
-    [[ "$passos" == PASSOS\ -* || "$passos" != PASSOS\ * ]] || break
-  done
-  if [[ "$passos" != PASSOS\ * ]]; then
-    bad "não consegui ler os passos gravados para o aparelho de teste" "$passos"
-    encerra_v "leitura dos passos da série por aparelho falhou"
-    return
-  fi
-  passos="${passos#PASSOS }"
-  if [[ "$passos" == "-" ]]; then
-    # Sem amostra nenhuma o buraco pode ser do cenário (tráfego que não
-    # atravessou, contabilidade sem WAN detectada) e não do produto. Acusar o
-    # detector aqui seria trocar a culpa.
-    pular "V2. O passo consultado é um passo que o produto grava" \
-          "o produto não gravou amostra alguma para o aparelho de teste em 3 min; sem série real não dá para dizer em que passo ela é escrita"
-    M_V2=1
-  elif grep -qE '(^|,)900(,|$)' <<<"$passos"; then
-    ok "o passo que o detector consulta (900s) é um dos que o produto grava sozinho ($passos)"
-    M_V2=1
-  else
-    bad "O DETECTOR CONSULTA UM PASSO QUE NINGUÉM GRAVA: sem 900s, o alerta de consumo nunca sai numa caixa real" \
-        "passos que o produto acabou de gravar para $mac_novo: $passos"
-    M_V2=1
-  fi
+  # A pergunta da V2 é feita LÁ NO FIM desta bateria, e não aqui. Um balde do
+  # tsdb só é escrito quando a JANELA DELE FECHA, então o balde de 900s exige
+  # quinze minutos de relógio — e três minutos de tráfego só conseguem fechar
+  # baldes de 10s. Perguntando aqui, a bateria acusava o produto de não gravar
+  # um passo que ele ainda não tinha tido tempo de gravar. Lá no fim as duas
+  # passadas do detector já se passaram e o tempo existe de graça.
+  printf '       (gerando tráfego contabilizado; o passo gravado é conferido no fim, quando o balde de 15 min já fechou)\n'
+  local i
 
   # ── Semeadura: o passado, que não tem rota ─────────────────────────────────
   local r_semeia; r_semeia=$(q1 semeia "$ALTO" "$PISO" "$CTRL")
@@ -3547,6 +3527,42 @@ print(len({(a.get('type'),(a.get('link_id') or '').lower()) for a in d} & alvo))
         "alertas para $ALTO: $n_alto2 (o primeiro foi resolvido antes do segundo pico)"
   fi
   M_V6=1
+
+  # ── V2 — O PASSO QUE O DETECTOR PEDE TEM DE SER UM PASSO QUE O PRODUTO GRAVA
+  #
+  # ESTA É A ASSERÇÃO QUE JUSTIFICA A BATERIA EXISTIR NUMA MÁQUINA DE VERDADE, e
+  # ela vem no fim por uma razão de relógio, não de importância: o tsdb só grava
+  # um balde quando a janela dele fecha, e a janela de 900s leva quinze minutos.
+  # As duas passadas do detector que as asserções acima esperaram já pagaram
+  # esse tempo.
+  #
+  # O tráfego parou lá atrás, e não faz diferença: o tick fecha o balde no prazo
+  # mesmo sem amostra nova chegando. O que se mede é se o passo que o detector
+  # CONSULTA aparece sozinho, para um aparelho que só existe nesta rodada.
+  local passos
+  for i in $(seq 1 8); do
+    passos=$(q1 passos "$mac_novo")
+    [[ "$passos" == PASSOS\ * && "$passos" != "PASSOS -" ]] && grep -qE '(^|,)900(,|$)' <<<"${passos#PASSOS }" && break
+    sleep 30
+  done
+  if [[ "$passos" != PASSOS\ * ]]; then
+    bad "não consegui ler os passos gravados para o aparelho de teste; a asserção do passo não foi medida" "$passos"
+  else
+    passos="${passos#PASSOS }"
+    if [[ "$passos" == "-" ]]; then
+      # Sem amostra nenhuma o buraco pode ser do cenário (tráfego que não
+      # atravessou, contabilidade sem WAN detectada) e não do produto. Acusar o
+      # detector aqui seria trocar a culpa.
+      pular "V2. O passo consultado é um passo que o produto grava" \
+            "o produto não gravou amostra alguma para o aparelho de teste; sem série real não dá para dizer em que passo ela é escrita"
+    elif grep -qE '(^|,)900(,|$)' <<<"$passos"; then
+      ok "o passo que o detector consulta (900s) é um dos que o produto grava sozinho ($passos)"
+    else
+      bad "O DETECTOR CONSULTA UM PASSO QUE NINGUÉM GRAVA: sem 900s, o alerta de consumo nunca sai numa caixa real" \
+          "passos que o produto gravou para $mac_novo: $passos"
+    fi
+  fi
+  M_V2=1
 
   # Limpeza: os alertas desta bateria são fechados pelo caminho do painel, o
   # histórico semeado sai do banco e o aparelho de mentira sai da rede e do
