@@ -145,3 +145,37 @@ jobs:
               --notes-file release-notes.md \
               --latest
           fi
+
+          # A ESTEIRA CONFERE O QUE PUBLICOU, e não só se o comando saiu com
+          # zero.
+          #
+          # A v1.0.158 saiu "success" com UM asset de cinco: os dois .deb foram
+          # construídos, o sha256sums.txt foi gerado — está tudo no log deste
+          # mesmo job — e só o binário arm64 apareceu na release. O `gh release
+          # create` devolveu zero mesmo assim.
+          #
+          # Uma release verde sem pacote é pior do que uma release vermelha: o
+          # deploy encontra a versão nova, não encontra o que instalar, e quem
+          # olha o CI vê tudo em ordem. Este laço é o que impede "sucesso" de
+          # significar outra coisa.
+          echo "--- conferindo os assets publicados ---"
+          PUBLICADOS="$(gh release view "${TAG}" --json assets -q '.assets[].name')"
+          echo "${PUBLICADOS}"
+          FALTANDO=()
+          for f in "${FILES[@]}"; do
+            nome="$(basename "${f}")"
+            grep -qxF "${nome}" <<<"${PUBLICADOS}" || FALTANDO+=("${nome}")
+          done
+          if [ ${#FALTANDO[@]} -gt 0 ]; then
+            echo "::error::a release ${TAG} ficou sem: ${FALTANDO[*]}"
+            echo "Tentando subir de novo o que faltou..."
+            gh release upload "${TAG}" "${FILES[@]}" --clobber
+            PUBLICADOS="$(gh release view "${TAG}" --json assets -q '.assets[].name')"
+            for nome in "${FALTANDO[@]}"; do
+              grep -qxF "${nome}" <<<"${PUBLICADOS}" || {
+                echo "::error::${nome} continua ausente depois da segunda tentativa"
+                exit 1
+              }
+            done
+            echo "Segunda tentativa completou a release."
+          fi
