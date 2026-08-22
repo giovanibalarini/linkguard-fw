@@ -42,6 +42,13 @@ done
 
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); printf '  \033[32mOK\033[0m   %s\n' "$1"; }
+# PULADAS registra bateria que não rodou. Sem isto, "N verificações OK, 0
+# falhas" descreve a cobertura que a rodada TEVE e não a que ela deveria ter, e
+# as duas divergem em silêncio: a bateria de upgrade só roda com --from-deb, e
+# sem ela o resumo dizia 207 OK / 0 falhas exatamente como se tivesse rodado
+# tudo. Uma suíte que esconde o que não mediu é pior do que uma que falha.
+PULADAS=()
+pular() { PULADAS+=("$1 — $2"); printf '\n\033[1m%s\033[0m\n  \033[33mPULADA\033[0m %s\n' "$1" "$2"; }
 bad()  { FAIL=$((FAIL+1)); printf '  \033[31mFALHA\033[0m %s\n' "$1"; [[ -n "${2:-}" ]] && printf '        %s\n' "$2"; }
 head_() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
@@ -511,7 +518,11 @@ for g in json.load(sys.stdin).get('groups',[]):
 # Bateria B — upgrade sobre uma instalação que já roda
 # ─────────────────────────────────────────────────────────────────────────────
 battery_upgrade() {
-  [[ -n "$FROM_DEB" ]] || return 0
+  if [[ -z "$FROM_DEB" ]]; then
+    pular "B. Upgrade sobre instalação existente" \
+          "sem --from-deb; produção é upgrade, não instalação nova — esta rodada não mediu esse caminho"
+    return 0
+  fi
   recreate_vm
   head_ "B. Upgrade sobre instalação existente"
   install_deb "$FROM_DEB" "anterior" || return
@@ -2828,5 +2839,10 @@ battery_metricas_host
 battery_fechar_gerencia
 
 head_ "Resumo"
-printf '  %d verificações OK, %d falhas\n\n' "$PASS" "$FAIL"
+printf '  %d verificações OK, %d falhas\n' "$PASS" "$FAIL"
+if [[ ${#PULADAS[@]} -gt 0 ]]; then
+  printf '  \033[33m%d bateria(s) NÃO rodaram nesta execução:\033[0m\n' "${#PULADAS[@]}"
+  for p in "${PULADAS[@]}"; do printf '    · %s\n' "$p"; done
+fi
+printf '\n'
 [[ "$FAIL" -eq 0 ]] || exit 1
