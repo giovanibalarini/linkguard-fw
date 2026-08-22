@@ -7,6 +7,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 )
 
 func novoServico(t *testing.T) (*Servico, *storage.DB) {
@@ -78,7 +79,7 @@ func TestSemHistoricoNaoInventaNormal(t *testing.T) {
 	agora := time.Now()
 	for i := 0; i < 3; i++ {
 		_ = db.UpsertMetricSample(storage.MetricSample{
-			Series: "host.rx_bps", Label: "aa:bb:cc:dd:ee:03", StepSeconds: 300,
+			Series: SerieConsumo, Label: "aa:bb:cc:dd:ee:03", StepSeconds: PassoBaseline,
 			TsUnix: agora.Add(-time.Duration(i) * 5 * time.Minute).Unix(),
 			VAvg:   500 * 1024 * 1024,
 		})
@@ -104,14 +105,14 @@ func TestPisoAbsolutoImpedeRuidoDeAparelhoQuieto(t *testing.T) {
 	// Histórico farto na mesma hora, com valores minúsculos.
 	for i := 1; i <= 40; i++ {
 		_ = db.UpsertMetricSample(storage.MetricSample{
-			Series: "host.rx_bps", Label: mac, StepSeconds: 300,
+			Series: SerieConsumo, Label: mac, StepSeconds: PassoBaseline,
 			TsUnix: agora.Add(-time.Duration(i) * 24 * time.Hour).Unix(),
 			VAvg:   1024,
 		})
 	}
 	// E agora "dez vezes mais": 10 KB/s. Dez vezes o normal, e irrelevante.
 	_ = db.UpsertMetricSample(storage.MetricSample{
-		Series: "host.rx_bps", Label: mac, StepSeconds: 300,
+		Series: SerieConsumo, Label: mac, StepSeconds: PassoBaseline,
 		TsUnix: agora.Unix(), VAvg: 10 * 1024,
 	})
 	s.agora = func() time.Time { return agora }
@@ -132,6 +133,48 @@ func TestFormatarTaxaEhLegivel(t *testing.T) {
 	} {
 		if got := FormatarTaxa(c.bps); got != c.quer {
 			t.Errorf("FormatarTaxa(%v) = %q, queria %q", c.bps, got, c.quer)
+		}
+	}
+}
+
+// TestPassoBaselineExisteNoTSDB amarra o passo que o detector CONSULTA ao
+// conjunto de passos que o tsdb realmente GRAVA para esta série.
+//
+// POR QUE ESTE TESTE EXISTE. O detector pedia o passo 300, que o produto nunca
+// gravou. GetMetricSamples casa o passo por igualdade exata, então a consulta
+// voltava vazia para todo aparelho, consumo() desistia por falta de histórico e
+// o alerta de "acima do normal" nunca pôde disparar. Medido em produção antes
+// do conserto: a série existia nos passos 10, 60, 900 e 3600, com zero linhas
+// no 300 e zero alertas emitidos desde a entrega.
+//
+// Os outros testes deste arquivo não pegavam isso porque INSEREM as amostras
+// com o passo que eles mesmos escolhem — provam a aritmética da mediana num
+// histórico que o produto não é capaz de produzir. Um teste que semeia o dado
+// que testa concorda com qualquer número; este pergunta ao produtor.
+func TestPassoBaselineExisteNoTSDB(t *testing.T) {
+	passos := tsdb.StepsFor(SerieConsumo)
+	for _, p := range passos {
+		if p == PassoBaseline {
+			return
+		}
+	}
+	t.Fatalf("o detector consulta %s no passo %d, e o tsdb só grava esta série nos passos %v: "+
+		"a consulta volta vazia para todo aparelho e o alerta nunca dispara",
+		SerieConsumo, PassoBaseline, passos)
+}
+
+// TestJanelaDoBaselineCabeNaRetencao garante que a janela de sete dias não peça
+// justamente a borda que a limpeza apaga. É o motivo de o passo ser 900 e não
+// 60: o passo 60 é mantido por exatamente sete dias no perfil padrão.
+func TestJanelaDoBaselineCabeNaRetencao(t *testing.T) {
+	for _, perfil := range []string{tsdb.Profile30d, tsdb.Profile1y, tsdb.Profile5y} {
+		guardado, ok := tsdb.RetentionFor(perfil, PassoBaseline)
+		if !ok {
+			t.Fatalf("perfil %s não guarda o passo %d", perfil, PassoBaseline)
+		}
+		if guardado <= JanelaBaseline {
+			t.Errorf("perfil %s guarda o passo %d por %v, e o baseline pede %v: a borda da janela é apagada enquanto a consulta a pede",
+				perfil, PassoBaseline, guardado, JanelaBaseline)
 		}
 	}
 }
