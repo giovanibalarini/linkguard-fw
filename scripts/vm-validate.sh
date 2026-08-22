@@ -2468,61 +2468,6 @@ battery_contencao() {
     ok "a contenção nasce DESLIGADA: nenhuma regra a alimenta"
   else bad "a contenção veio ligada de fábrica — foi assim que o arnês se trancou"; fi
 
-  # ISOLAMENTO ANTES DE LIGAR, e a razão é a execução da v1.0.159: com a
-  # contenção ligada, o PRÓPRIO ARNÊS foi contido. Ele fala com o painel pela
-  # NIC que o auto-detect cadastra como WAN, e faz centenas de chamadas — que é
-  # exatamente o comportamento que a contenção existe para pegar.
-  #
-  # Isso não é defeito do produto: é a feature funcionando numa caixa onde o
-  # admin entra pela WAN, e está escrito no aviso do próprio botão. Mas o teste
-  # precisa medir a contenção, não sofrer com ela — então os links detectados
-  # saem da lista de WANs, e só a WAN de mentira fica.
-  local detectados id
-  detectados=$(body GET /api/links "$tok" | python3 -c "
-import json,sys
-for l in json.load(sys.stdin):
-    if l.get('enabled'): print(l['id'])" 2>/dev/null)
-  for id in $detectados; do
-    local atual
-    atual=$(body GET "/api/links/$id" "$tok")
-    python3 -c "
-import json,sys
-d=json.loads(sys.argv[1]); d['enabled']=False
-print(json.dumps(d))" "$atual" > /tmp/lgv_link.json 2>/dev/null
-    status PUT "/api/links/$id" "$tok" "$(cat /tmp/lgv_link.json)" >/dev/null 2>&1
-  done
-
-  # A partir daqui, LIGADA de propósito, para medir o que ela faz.
-  status PUT /api/nftables/edge-containment "$tok" '{"enabled":true}' >/dev/null
-  sleep 2
-
-  # S1 — o set existe e a regra que a alimenta está na chain, escopada por WAN.
-  local chain
-  chain=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
-  if vm "nft list set inet linkguard abusers" >/dev/null 2>&1; then ok "a set de contenção existe"
-  else bad "a set de contenção não existe: a regra que a referencia sumiria da chain"; fi
-  local add
-  add=$(grep 'add @abusers' <<<"$chain")
-  if [[ -n "$add" ]]; then ok "a regra que contém está na chain"
-  else bad "nenhuma regra alimenta a contenção" "$(tr '\n' ' ' <<<"$chain" | head -c 200)"; fi
-  if grep -q '^\s*iifname' <<<"$add"; then ok "a regra que contém é escopada por interface de WAN"
-  else bad "a regra que contém NÃO é escopada: o admin da LAN pode ser contido" "$add"; fi
-  if grep -q 'limit rate over' <<<"$add"; then ok "o limite casa o excedente, e não quem cabe na taxa"
-  else bad "o limite está invertido: conteria quem se comporta" "$add"; fi
-
-  # S2 — a ordem: o descarte de contido vem ANTES da liberação de gerência.
-  # Se viesse depois, o accept curto-circuitaria e a contenção não valeria nada.
-  local i_drop i_accept
-  i_drop=$(grep -n 'ip saddr @abusers' <<<"$chain" | head -1 | cut -d: -f1)
-  # O nft imprime `counter packets N bytes N accept` — casar "counter accept"
-  # não encontra nada, e a asserção falhava com o índice vazio dizendo que a
-  # ordem estava errada. É o mesmo erro de supor a forma da saída em vez de
-  # olhá-la.
-  i_accept=$(grep -n 'tcp dport {.*accept' <<<"$chain" | head -1 | cut -d: -f1)
-  if [[ -n "$i_drop" && -n "$i_accept" && "$i_drop" -lt "$i_accept" ]]; then
-    ok "o descarte de contido vem antes da liberação de gerência ($i_drop < $i_accept)"
-  else bad "a ordem está errada (descarte $i_drop, liberação $i_accept): o accept curto-circuita a contenção"; fi
-
   # S3 — A ASSERÇÃO CENTRAL, LADO DE FORA: martelar pela WAN contém.
   vm "ip netns del lgabus 2>/dev/null; ip link del lg-abus 2>/dev/null; true" >/dev/null 2>&1
   vm "ip netns add lgabus && \
@@ -2536,6 +2481,60 @@ print(json.dumps(d))" "$atual" > /tmp/lgv_link.json 2>/dev/null
   st=$(status POST /api/links "$tok" '{"name":"WAN abuso","interface":"lg-abus","gateway":"198.18.0.2","ip_address":"198.18.0.1","weight":1,"enabled":true,"monitor_hosts":"198.18.0.2","dns_test":"198.18.0.2"}')
   if [[ "$st" != "200" && "$st" != "201" ]]; then bad "não consegui cadastrar a WAN de abuso: $st"; return; fi
   sleep 2
+
+  # ISOLAMENTO DEPOIS DE A WAN DE MENTIRA EXISTIR, e a ordem é o erro que a
+  # execução da v1.0.160 pegou: desligar os links detectados ANTES de cadastrar
+  # a lg-abus deixava a caixa sem WAN nenhuma — e sem WAN a proteção de entrada
+  # não emite regra, então as quatro asserções seguintes falhavam dizendo que a
+  # contenção não existia. Ela não existia porque não havia o que proteger.
+  #
+  # O isolamento em si continua necessário: com a contenção ligada, o próprio
+  # arnês seria contido, porque fala com o painel pela NIC que o auto-detect
+  # cadastra como WAN e faz centenas de chamadas.
+  local detectados id
+  detectados=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l.get('enabled') and l.get('interface')!='lg-abus': print(l['id'])" 2>/dev/null)
+  for id in $detectados; do
+    local atual
+    atual=$(body GET "/api/links/$id" "$tok")
+    python3 -c "
+import json,sys
+d=json.loads(sys.argv[1]); d['enabled']=False
+print(json.dumps(d))" "$atual" > /tmp/lgv_link.json 2>/dev/null
+    status PUT "/api/links/$id" "$tok" "$(cat /tmp/lgv_link.json)" >/dev/null 2>&1
+  done
+
+  # Agora sim, LIGADA de propósito, para medir o que ela faz.
+  status PUT /api/nftables/edge-containment "$tok" '{"enabled":true}' >/dev/null
+  sleep 2
+
+  local chain
+  chain=$(vm "nft list chain inet linkguard input 2>/dev/null" | tr -d '\r')
+
+  # S1 — o set existe e a regra que a alimenta está na chain, escopada por WAN.
+  if vm "nft list set inet linkguard abusers" >/dev/null 2>&1; then ok "a set de contenção existe"
+  else bad "a set de contenção não existe: a regra que a referencia sumiria da chain"; fi
+  local add
+  add=$(grep 'add @abusers' <<<"$chain")
+  if [[ -n "$add" ]]; then ok "a regra que contém está na chain"
+  else bad "nenhuma regra alimenta a contenção" "$(tr '\n' ' ' <<<"$chain" | head -c 200)"; fi
+  if grep -q '^\s*iifname' <<<"$add"; then ok "a regra que contém é escopada por interface de WAN"
+  else bad "a regra que contém NÃO é escopada: o admin da LAN pode ser contido" "$add"; fi
+  if grep -q 'limit rate over' <<<"$add"; then ok "o limite casa o excedente, e não quem cabe na taxa"
+  else bad "o limite está invertido: conteria quem se comporta" "$add"; fi
+
+  # S2 — a ordem: o descarte de contido vem ANTES da liberação de gerência.
+  local i_drop i_accept
+  i_drop=$(grep -n 'ip saddr @abusers' <<<"$chain" | head -1 | cut -d: -f1)
+  # O nft imprime `counter packets N bytes N accept` — casar "counter accept"
+  # não encontra nada, e o índice vazio virava "a ordem está errada", acusando o
+  # produto por um erro de leitura.
+  i_accept=$(grep -n 'tcp dport {.*accept' <<<"$chain" | head -1 | cut -d: -f1)
+  if [[ -n "$i_drop" && -n "$i_accept" && "$i_drop" -lt "$i_accept" ]]; then
+    ok "o descarte de contido vem antes da liberação de gerência ($i_drop < $i_accept)"
+  else bad "a ordem está errada (descarte $i_drop, liberação $i_accept)" "$(tr '\n' ' ' <<<"$chain" | head -c 220)"; fi
 
   # 25 conexões novas em rajada, muito acima de 10/minuto.
   vm "ip netns exec lgabus sh -c 'for i in \$(seq 1 25); do timeout 1 bash -c \"exec 3<>/dev/tcp/198.18.0.1/9997\" 2>/dev/null; done'" >/dev/null 2>&1
