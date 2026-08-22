@@ -2681,29 +2681,47 @@ print(json.loads(sys.argv[1]).get('ligado'))" "$resp" 2>/dev/null)
   # Perguntar direto ao resolver do produto é o que um aparelho da LAN faz, e é
   # o único jeito de esta asserção medir o dnstap em vez de medir o resolvedor
   # do sistema operacional.
-  vm "cat > /tmp/lgq.py <<'PYEOF'
+  #
+  # E a consulta é MEDIDA, não suposta. O unbound recém-reiniciado gasta a
+  # primeira consulta fazendo priming da raiz e validando o DNSSEC, e responde
+  # só a partir da segunda. Sem separar "o unbound não respondeu" de "o dnstap
+  # não entregou", uma VM sem saída para a internet reprova a bateria acusando
+  # o coletor de um problema que é de rede.
+  local respondeu
+  respondeu=$(vm "cat > /tmp/lgq.py <<'PYEOF'
 import socket
 q = bytes.fromhex(\"abcd01000001000000000000036465620664656269616e036f72670000010001\")
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(6)
-for _ in range(4):
+n = 0
+for _ in range(6):
     s.sendto(q, (\"127.0.0.1\", 53))
     try:
-        s.recvfrom(4096)
+        r, _ = s.recvfrom(4096)
+        n += 1
     except Exception:
         pass
+print(n)
 PYEOF
-python3 /tmp/lgq.py; rm -f /tmp/lgq.py" >/dev/null 2>&1
+python3 /tmp/lgq.py; rm -f /tmp/lgq.py" | tr -d '\r' | tail -1)
+  if [[ "${respondeu:-0}" -gt 0 ]]; then
+    ok "o unbound da caixa respondeu a consulta ($respondeu de 6)"
+  else
+    bad "o unbound não respondeu; sem resposta não há CLIENT_RESPONSE para o dnstap entregar" \
+        "$(vm "journalctl -u unbound --since '2 min ago' --no-pager | tail -3" | tr -d '\r' | head -c 300)"
+  fi
   sleep 3
-  local achou
-  achou=$(body GET /api/dns/mapa "$tok" | python3 -c "
+  if [[ "${respondeu:-0}" -gt 0 ]]; then
+    local achou
+    achou=$(body GET /api/dns/mapa "$tok" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 print(len([e for e in (d.get('amostra') or []) if 'debian' in (e.get('nome') or '')]))" 2>/dev/null)
-  if [[ "${achou:-0}" -gt 0 ]]; then
-    ok "uma consulta de verdade virou nome no mapa ($achou entrada(s))"
-  else
-    bad "a consulta não chegou ao mapa" \
-        "estado: $(body GET /api/dns/mapa "$tok" | head -c 200)"
+    if [[ "${achou:-0}" -gt 0 ]]; then
+      ok "uma consulta de verdade virou nome no mapa ($achou entrada(s))"
+    else
+      bad "a consulta não chegou ao mapa" \
+          "estado: $(body GET /api/dns/mapa "$tok" | head -c 200)"
+    fi
   fi
 
   # T5 — e desligar para de escrever o bloco.
