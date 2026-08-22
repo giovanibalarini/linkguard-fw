@@ -528,6 +528,8 @@ export interface NetsvcConfig {
   dns_to_clients: string[];
   upstreams: string[];
   log_queries: boolean;
+  /** Entrega das RESPOSTAS de DNS ao coletor, que alimenta o mapa endereço → nome (#116). */
+  dnstap_enabled?: boolean;
   domain_suffix: string;
   // Controle de fuga de DNS (#124). Ver a tela de DNS para o que cada um
   // realmente garante — e o que não garante.

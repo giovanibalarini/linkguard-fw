@@ -23,6 +23,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/blocklog"
 	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnslog"
+	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
@@ -76,7 +77,14 @@ type Server struct {
 	aiClient    *ai.Client
 	backupSched *backup.Scheduler
 	webFS       fs.FS
+	// dnstapSvc é o coletor de respostas de DNS (#116). Opcional e ligado por
+	// setter, no mesmo estilo das outras fontes injetadas: um binário sem ele
+	// responde a tela com "desligado" em vez de quebrar.
+	dnstapSvc *dnstap.Servico
 }
+
+// SetDNSTap liga o coletor de respostas de DNS (#116).
+func (s *Server) SetDNSTap(svc *dnstap.Servico) { s.dnstapSvc = svc }
 
 // Config holds server configuration.
 type Config struct {
@@ -462,6 +470,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// DHCP / DNS (Kea + unbound)
 		netH := handlers.NewNetsvcHandler(s.db, s.netSvc, s.alertSvc, s.nftSvc)
+		if s.dnstapSvc != nil {
+			netH.SetDNSMapa(s.dnstapSvc.Mapa())
+		}
 		r.With(require(auth.PermDHCPRead)).Get("/api/dhcp", netH.GetDHCP)
 		r.With(require(auth.PermDHCPWrite)).Put("/api/dhcp/config", netH.UpdateDHCPConfig)
 		r.With(require(auth.PermDHCPWrite)).Post("/api/dhcp/reservations", netH.UpsertReservation)
@@ -470,6 +481,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermDNSWrite)).Put("/api/dns/config", netH.UpdateDNSConfig)
 		r.With(require(auth.PermDNSWrite)).Post("/api/dns/blocklist", netH.AddBlocklist)
 		r.With(require(auth.PermDNSWrite)).Delete("/api/dns/blocklist", netH.DeleteBlocklist)
+		// O mapa endereço → nome (#116). Leitura de DNS, não de firewall: é a
+		// mesma tela onde o admin liga o recurso.
+		r.With(require(auth.PermDHCPRead)).Get("/api/dns/mapa", netH.MapaDeDominios)
 		r.With(require(auth.PermDHCPRead)).Get("/api/netsvc/preview", netH.Preview)
 		r.With(require(auth.PermDHCPWrite)).Post("/api/netsvc/apply", netH.Apply)
 

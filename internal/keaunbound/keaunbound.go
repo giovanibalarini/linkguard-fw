@@ -29,6 +29,15 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/validate"
 )
 
+// DNSTapSocketPath é onde o coletor do produto escuta (#116).
+//
+// O caminho é o mesmo que o pacote do Debian compilou por padrão
+// (--with-dnstap-socket-path=/run/dnstap.sock), e isso NÃO é coincidência: o
+// unbound do Debian roda sob o perfil AppArmor do próprio pacote. Escolher
+// outro caminho exigiria mexer no perfil alheio — a mesma armadilha que a
+// captura de pacotes já pagou com o tcpdump.
+const DNSTapSocketPath = "/run/dnstap.sock"
+
 const (
 	KeaConfPath      = "/etc/kea/kea-dhcp4.conf"
 	UnboundConfPath  = "/etc/unbound/unbound.conf.d/linkguard.conf"
@@ -1035,6 +1044,22 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) (string, []string,
 			slog.Warn("domain_suffix inválido descartado na renderização do unbound.conf", "domain_suffix", c.DomainSuffix)
 			warnings = append(warnings, fmt.Sprintf("domínio local %q é inválido e não foi aplicado ao DNS", c.DomainSuffix))
 		}
+	}
+
+	// dnstap: as RESPOSTAS saem por socket binário para o coletor do produto
+	// (#116). É o que transforma todo destino de número em nome.
+	//
+	// `dnstap-log-client-response-messages` é a metade que interessa: a resposta
+	// que o unbound DEVOLVEU ao cliente, já com o resultado da cadeia de CNAME
+	// resolvida. A pergunta a gente já tem pelo log de consultas.
+	if c.DNSTapEnabled {
+		w("dnstap:")
+		w("  dnstap-enable: yes")
+		w("  dnstap-socket-path: \"" + DNSTapSocketPath + "\"")
+		w("  dnstap-send-identity: no")
+		w("  dnstap-send-version: no")
+		w("  dnstap-log-client-response-messages: yes")
+		w("server:")
 	}
 
 	if len(blocked) > 0 {

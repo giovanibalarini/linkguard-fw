@@ -170,7 +170,12 @@ var allowedInternalImports = map[string]bool{
 	// internal/ddns entrou com o DNS dinâmico (#129): o handler grava a
 	// configuração e o segredo e devolve o estado. A descoberta do endereço,
 	// a detecção de CGNAT e o protocolo do provedor moram lá.
-	"internal/ddns":          true,
+	"internal/ddns": true,
+	// internal/dnstap entrou com o mapa endereço → nome (#116): o handler
+	// devolve o que o coletor aprendeu e o estado do mapa (teto, se encheu). A
+	// leitura dos três formatos — Frame Streams, protobuf e o fio do DNS — e a
+	// decisão de prazo moram lá.
+	"internal/dnstap":        true,
 	"internal/dnslog":        true,
 	"internal/failover":      true,
 	"internal/firewallrules": true,

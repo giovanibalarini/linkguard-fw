@@ -55,6 +55,7 @@ export default function Dns() {
   const saveConfig = () => cfg && run(() => client.put('/api/dns/config', {
     upstreams: cfg.upstreams,
     log_queries: cfg.log_queries,
+    dnstap_enabled: cfg.dnstap_enabled,
     force_local_dns: cfg.force_local_dns,
     block_dot: cfg.block_dot,
     dns_except_ips: cfg.dns_except_ips ?? [],
@@ -119,6 +120,16 @@ export default function Dns() {
                   <input type="checkbox" className="w-4 h-4" checked={cfg.log_queries} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, log_queries: e.target.checked })} />
                   <span className="text-gray-300 text-sm">{t('svc.dns.check.logQueries')}</span>
                 </label>
+                {/* Mapa endereço → nome (#116). Fica ao lado do log de consultas
+                    porque é a mesma escolha: o que o resolver registra, e o que
+                    isso custa. Um guarda o que foi PERGUNTADO; este, o que foi
+                    RESPONDIDO — que é o que falta para toda tela do produto
+                    parar de mostrar destino como número. */}
+                <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                  <input type="checkbox" className="w-4 h-4" checked={!!cfg.dnstap_enabled} disabled={!canWrite} onChange={(e) => setCfg({ ...cfg, dnstap_enabled: e.target.checked })} />
+                  <span className="text-gray-300 text-sm">{t('svc.dns.check.dnstap')}</span>
+                </label>
+                <p className="text-xs text-gray-600 mt-1">{t('svc.dns.hint.dnstap')}</p>
               </div>
             </div>
             {/* Fuga de DNS (#124). O texto abaixo é parte da feature: sem ele

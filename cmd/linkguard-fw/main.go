@@ -29,6 +29,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
+	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
@@ -385,8 +386,9 @@ type services struct {
 	journalSched     *monitoring.JournalScheduler
 	updatesSched     *monitoring.UpdatesScheduler
 
-	monitor *links.Monitor
-	server  *api.Server
+	monitor   *links.Monitor
+	server    *api.Server
+	dnstapSvc *dnstap.Servico
 
 	// ntpInputState é a MESMA fonte que foi entregue a
 	// nftSvc.SetInputChainSources, guardada aqui porque a reconciliação de
@@ -673,6 +675,12 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		CaptureExec: capExec,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
+	// Coletor de respostas de DNS (#116): é o que transforma todo destino de
+	// número em nome. Opt-in — o socket sobe sempre, mas o unbound só entrega
+	// quando o admin liga na tela, e sem entrega o mapa fica vazio.
+	dnstapSvc := dnstap.NovoServico()
+	server.SetDNSTap(dnstapSvc)
+
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
 	// The link health probe runs on its own (faster) cadence, decoupled from the
 	// metrics collector, and sends several probes per host so packet loss/latency
@@ -717,6 +725,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		server:           server,
 		ntpInputState:    ntpInputState,
 		interval:         interval,
+		dnstapSvc:        dnstapSvc,
 	}, nil
 }
 
@@ -1223,6 +1232,18 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	// reinício abre buraco justamente na série que o histórico existe para ter.
 	spawnWriter("consumo-por-host", func() { hostSampler.Run(ctx) })
 	go ddnsSvc.Run(ctx)
+
+	// Coletor de dnstap (#116). Sobe sempre; quem decide se há entrega é o
+	// unbound, e ele só entrega quando o admin liga o recurso na tela.
+	//
+	// Falhar aqui NÃO derruba o produto — dnstap é acessório. Mas também não
+	// pode falhar em silêncio: sem esta linha, o admin ligaria na tela e não
+	// teria como saber por que o mapa fica vazio para sempre.
+	go func() {
+		if err := s.dnstapSvc.Run(ctx); err != nil {
+			slog.Warn("dnstap: o coletor não subiu; o mapa endereço → nome fica vazio", "err", err)
+		}
+	}()
 	go balancerSvc.Run(ctx)
 	spawnWriter("backup", func() { backupSched.Run(ctx) })
 	go journalSched.Run(ctx)
