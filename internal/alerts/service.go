@@ -47,6 +47,14 @@ const (
 	TypeDNSResolverDrift       = "dns_resolver_drift"
 	TypeDNSResolverOK          = "dns_resolver_ok"
 	TypeSecurityUpdatesPending = "security_updates_pending"
+	// TypeHostNovoNaRede e TypeHostAcimaDoNormal são os alertas de
+	// COMPORTAMENTO (issue #117): eles nascem de desvio do que a própria rede
+	// costuma fazer, e não de limiar fixo.
+	//
+	// Os dois nomeiam um aparelho, e por isso não saem por notificação sem
+	// escolha explícita — ver tiposQueNomeiamAparelho.
+	TypeHostNovoNaRede    = "host_novo_na_rede"
+	TypeHostAcimaDoNormal = "host_acima_do_normal"
 	// TypeBalancerNoWAN é o balanceamento sem nenhuma WAN ativa (issue #147).
 	//
 	// Existe porque isto é um ESTADO, e estava sendo levantado como rule_error —
@@ -141,6 +149,9 @@ var stateAlertTypes = []string{
 type Service struct {
 	db       *storage.DB
 	notifier Notifier
+	// notificarAparelho diz se alerta que nomeia aparelho pode sair da caixa.
+	// Ausente = não. Ver podeNotificar.
+	notificarAparelho func() (bool, error)
 }
 
 // NewService creates a new alerts Service.
@@ -221,10 +232,50 @@ func (s *Service) Create(alertType, severity, title, message, linkID string) err
 		return err
 	}
 	slog.Info("alert created", "type", alertType, "severity", severity, "title", title)
-	if s.notifier != nil {
+	if s.notifier != nil && s.podeNotificar(alertType) {
 		s.notifier.Notify(severity, title, message)
 	}
 	return nil
+}
+
+// tiposQueNomeiamAparelho são os alertas cujo texto identifica um aparelho da
+// LAN — endereço físico, apelido, nome de host.
+//
+// ELES NÃO SAEM POR NOTIFICAÇÃO SEM ESCOLHA EXPLÍCITA, e a razão está escrita
+// em internal/metrics/exposicao.go: identidade de aparelho é inventário da rede
+// do cliente, e o padrão de severidade mínima das notificações é "warning" — o
+// que faria um alerta de comportamento por aparelho sair por Telegram, WhatsApp
+// ou e-mail sem ninguém ter decidido isso.
+//
+// O alerta continua sendo criado, aparecendo na tela e contando no painel. O que
+// a escolha controla é ele ATRAVESSAR a fronteira da caixa.
+var tiposQueNomeiamAparelho = map[string]bool{
+	TypeHostNovoNaRede:    true,
+	TypeHostAcimaDoNormal: true,
+}
+
+// podeNotificar decide se um alerta pode sair da caixa.
+func (s *Service) podeNotificar(alertType string) bool {
+	if !tiposQueNomeiamAparelho[alertType] {
+		return true
+	}
+	if s.notificarAparelho == nil {
+		// Fonte não ligada é "não escolheram" — e não escolher não pode
+		// significar publicar identidade de aparelho para fora.
+		return false
+	}
+	ok, err := s.notificarAparelho()
+	if err != nil {
+		slog.Warn("não consegui ler se alertas de aparelho podem ser notificados; não notificando", "err", err)
+		return false
+	}
+	return ok
+}
+
+// SetNotificarAparelho liga a fonte da escolha de notificar alertas que nomeiam
+// aparelho. Ver tiposQueNomeiamAparelho.
+func (s *Service) SetNotificarAparelho(src func() (bool, error)) {
+	s.notificarAparelho = src
 }
 
 // createRecovery is like Create but delivers via the recovery path (bypasses
@@ -410,6 +461,43 @@ func (s *Service) BalancerWANBack(detail string) error {
 	s.AutoResolve(TypeBalancerNoWAN, "")
 	return s.createRecovery(TypeBalancerWANBack, "Balanceamento voltou a ter WAN",
 		detail, "")
+}
+
+// HostNovoNaRede avisa que um aparelho apareceu na rede pela primeira vez.
+//
+// Severidade INFORMATIVA de propósito: aparelho novo é quase sempre a visita
+// que chegou, e um aviso amarelo para cada celular que entra no escritório
+// treina o admin a ignorar a tela de alertas — que é o oposto do que a issue
+// pede. Ele conta na lista e não grita.
+func (s *Service) HostNovoNaRede(mac, nome string) error {
+	return s.Create(TypeHostNovoNaRede, SeverityInfo, "Aparelho novo na rede",
+		fmt.Sprintf("%s (%s) apareceu na rede agora, pela primeira vez.", nome, mac), mac)
+}
+
+// HostAcimaDoNormal avisa que um aparelho está consumindo muito acima do que
+// ELE MESMO costuma consumir naquela hora.
+//
+// A mensagem traz os dois números porque um deles sozinho não decide nada: "12
+// MB/s" é muito ou pouco dependendo de quem é, e é a comparação com o próprio
+// normal que transforma o aviso em ação.
+func (s *Service) HostAcimaDoNormal(mac, nome string, atual, normal float64) error {
+	return s.Create(TypeHostAcimaDoNormal, SeverityWarning, "Consumo muito acima do normal",
+		fmt.Sprintf("%s (%s) está consumindo %s, contra %s que é o normal dele neste horário.",
+			nome, mac, formatarTaxa(atual), formatarTaxa(normal)), mac)
+}
+
+// formatarTaxa é a mesma conversão que internal/comportamento usa, repetida
+// aqui porque este pacote não pode importar aquele (ciclo: o serviço de
+// comportamento importa alerts).
+func formatarTaxa(bps float64) string {
+	switch {
+	case bps >= 1024*1024:
+		return fmt.Sprintf("%.1f MB/s", bps/(1024*1024))
+	case bps >= 1024:
+		return fmt.Sprintf("%.0f KB/s", bps/1024)
+	default:
+		return fmt.Sprintf("%.0f B/s", bps)
+	}
 }
 
 // RuleError raises a critical alert when a firewall rule fails.

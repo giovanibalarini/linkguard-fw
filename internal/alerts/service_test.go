@@ -967,3 +967,69 @@ func TestBalancerNoWANEhEstadoENaoPegaTudo(t *testing.T) {
 		t.Error("balancer_no_wan não está em stateAlertTypes: ficaria vermelho para sempre")
 	}
 }
+
+// TestAlertaQueNomeiaAparelhoNaoSaiSemEscolha é a rede que a regra escrita em
+// internal/metrics/exposicao.go exige.
+//
+// O padrão de severidade mínima das notificações é "warning". Sem este portão,
+// um alerta de comportamento por aparelho — que nomeia o apelido, o nome de host
+// ou o endereço físico — sairia por Telegram, WhatsApp ou e-mail SEM NINGUÉM
+// TER DECIDIDO ISSO. Identidade de aparelho é inventário da rede do cliente.
+func TestAlertaQueNomeiaAparelhoNaoSaiSemEscolha(t *testing.T) {
+	db := openTestDB(t)
+	svc := NewService(db)
+	n := &fakeNotifier{}
+	svc.SetNotifier(n)
+
+	// Fonte não ligada = ninguém escolheu = não sai.
+	if err := svc.HostAcimaDoNormal("aa:bb:cc:dd:ee:ff", "Notebook da Ana", 9e6, 1e6); err != nil {
+		t.Fatalf("HostAcimaDoNormal: %v", err)
+	}
+	if len(n.normal) != 0 {
+		t.Errorf("o alerta saiu da caixa sem escolha explícita (%d notificações)", len(n.normal))
+	}
+
+	// Escolhido explicitamente: sai.
+	svc.SetNotificarAparelho(func() (bool, error) { return true, nil })
+	if err := svc.HostNovoNaRede("aa:bb:cc:dd:ee:aa", "Celular novo"); err != nil {
+		t.Fatalf("HostNovoNaRede: %v", err)
+	}
+	if len(n.normal) != 1 {
+		t.Errorf("com a escolha feita, o alerta não saiu (%d notificações)", len(n.normal))
+	}
+
+	// E um alerta que NÃO nomeia aparelho continua saindo como sempre.
+	svc.SetNotificarAparelho(func() (bool, error) { return false, nil })
+	if err := svc.HighCPU(97); err != nil {
+		t.Fatalf("HighCPU: %v", err)
+	}
+	if len(n.normal) != 2 {
+		t.Errorf("um alerta de sistema deixou de sair por causa do portão (%d)", len(n.normal))
+	}
+}
+
+// TestErroAoLerAEscolhaNaoNotifica: não conseguir ler a escolha não pode
+// significar "pode publicar identidade de aparelho para fora".
+func TestErroAoLerAEscolhaNaoNotifica(t *testing.T) {
+	db := openTestDB(t)
+	svc := NewService(db)
+	n := &fakeNotifier{}
+	svc.SetNotifier(n)
+	svc.SetNotificarAparelho(func() (bool, error) { return false, errTeste })
+
+	_ = svc.HostNovoNaRede("aa:bb:cc:dd:ee:bb", "Aparelho")
+	if len(n.normal) != 0 {
+		t.Errorf("erro de leitura virou autorização (%d notificações)", len(n.normal))
+	}
+}
+
+type notificadorEspiao struct{ chamadas int }
+
+func (n *notificadorEspiao) Notify(string, string, string) { n.chamadas++ }
+func (n *notificadorEspiao) NotifyRecovery(string, string) { n.chamadas++ }
+
+var errTeste = errTipo("banco fora")
+
+type errTipo string
+
+func (e errTipo) Error() string { return string(e) }
