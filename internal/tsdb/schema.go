@@ -1,6 +1,7 @@
 package tsdb
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -34,6 +35,44 @@ func nativeStep(series string) int {
 	// Unknown series: treat as 10s native (safe default; producers are
 	// expected to use a registered prefix).
 	return 10
+}
+
+// RetentionFor devolve por quanto tempo um perfil guarda um passo.
+//
+// Existe pelo mesmo motivo de StepsFor: quem consulta uma janela de histórico
+// precisa saber se a janela cabe no que sobrevive à limpeza. Uma janela do
+// mesmo tamanho da retenção pede exatamente a borda que está sendo apagada.
+func RetentionFor(profile string, stepSeconds int) (time.Duration, bool) {
+	for _, r := range profileRetention(profile) {
+		if r.StepSeconds == stepSeconds {
+			return r.KeepFor, true
+		}
+	}
+	return 0, false
+}
+
+// StepsFor devolve TODOS os passos em que uma série é realmente gravada: o
+// nativo do produtor dela mais os rollups derivados.
+//
+// POR QUE ISTO É EXPORTADO. Quem CONSULTA a série precisa perguntar por um
+// passo que existe, e GetMetricSamples casa o passo por igualdade exata — pedir
+// um passo que ninguém grava devolve zero linhas, sem erro. O detector de
+// comportamento (#117) pedia 300 segundos, que nunca esteve nesta lista: a
+// consulta voltava vazia para todo aparelho, o detector desistia por falta de
+// histórico e o recurso foi entregue MUDO, com os testes verdes porque eles
+// inseriam o passo 300 com a própria mão.
+//
+// Exportar a lista é o que permite um teste amarrar o consumidor ao produtor em
+// vez de amarrá-lo a um número escolhido pelo próprio teste.
+func StepsFor(series string) []int {
+	passos := []int{nativeStep(series)}
+	for _, d := range derivedSteps {
+		if d != passos[0] {
+			passos = append(passos, d)
+		}
+	}
+	sort.Ints(passos)
+	return passos
 }
 
 // nativeStepValues returns the distinct step values used across nativeSteps,

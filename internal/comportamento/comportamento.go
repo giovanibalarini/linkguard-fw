@@ -67,6 +67,32 @@ const (
 
 	// IdadeDeHostNovo é por quanto tempo um aparelho conta como "novo".
 	IdadeDeHostNovo = 10 * time.Minute
+
+	// SerieConsumo é a série de consumo por aparelho que define o normal dele.
+	SerieConsumo = "host.rx_bps"
+
+	// PassoBaseline é o passo da série de consumo que o detector consulta.
+	//
+	// ESTE NÚMERO NÃO PODE SER ESCOLHIDO AQUI SOZINHO. Ele tem de ser um dos
+	// passos em que o tsdb realmente grava host.*, porque GetMetricSamples casa
+	// o passo por igualdade exata: pedir um passo que ninguém grava devolve zero
+	// linhas, sem erro nenhum. Era exatamente isto que acontecia — o detector
+	// pedia 300 segundos, que o produto nunca gravou, a consulta voltava vazia
+	// para TODO aparelho e o recurso foi entregue mudo. Medido em produção:
+	// host.rx_bps existia nos passos 10, 60, 900 e 3600, zero linhas no 300, e
+	// zero alertas de "acima do normal" desde que a #117 foi entregue.
+	//
+	// POR QUE 900 E NÃO 60. A janela do baseline é de sete dias, e o passo 60 é
+	// mantido por exatamente sete dias no perfil padrão — a borda que a consulta
+	// pede é a mesma que a retenção apaga. O passo 900 é mantido por no mínimo
+	// trinta dias nos três perfis, então a janela cabe com folga.
+	//
+	// E ele muda o que o alerta SIGNIFICA, para melhor: com quinze minutos de
+	// média, "acima do normal" quer dizer consumo sustentado, e não um pico de
+	// um minuto. É o que combina com o piso de 2 MB/s e com a histerese de 6 h.
+	//
+	// TestPassoBaselineExisteNoTSDB amarra este número ao produtor da série.
+	PassoBaseline = 900
 )
 
 // Servico cruza o histórico com o inventário e levanta alertas.
@@ -155,10 +181,11 @@ func (s *Servico) acimaDoNormal(metas []storage.HostMetadata) {
 func (s *Servico) consumo(mac string, agora time.Time) (atual, normal float64, ok bool) {
 	de := agora.Add(-JanelaBaseline).Unix()
 	ate := agora.Unix()
-	amostras, err := s.db.GetMetricSamples("host.rx_bps", mac, 300, de, ate)
+	amostras, err := s.db.GetMetricSamples(SerieConsumo, mac, PassoBaseline, de, ate)
 	if err != nil || len(amostras) < 12 {
-		// Menos de uma hora de histórico não define normal nenhum. Alertar aqui
-		// seria inventar um baseline a partir de dois pontos.
+		// Doze amostras de quinze minutos são três horas de histórico. Menos do
+		// que isso não define normal nenhum, e alertar aqui seria inventar um
+		// baseline a partir de dois pontos.
 		return 0, 0, false
 	}
 	hora := agora.Hour()
