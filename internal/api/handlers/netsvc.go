@@ -36,6 +36,11 @@ type NetsvcHandler struct {
 	// nftSvc aplica a parte de firewall da tela de DNS (#124). Opcional: um
 	// handler sem ele continua aplicando DHCP/DNS normalmente.
 	nftSvc *nftables.Service
+	// dnsMapa é o mapa endereço → nome alimentado pelo dnstap (#116). Vive em
+	// dnsmapa.go, junto do handler que o lê — o teto de pacotes internos por
+	// arquivo (TestPackageBoundary) existe justamente para empurrar domínio
+	// novo para arquivo novo em vez de engordar este.
+	dnsMapa mapaDeDominios
 }
 
 // autoApplyDelay is how long the handler waits for edits to settle before
@@ -492,6 +497,8 @@ func (h *NetsvcHandler) UpdateDNSConfig(w http.ResponseWriter, r *http.Request) 
 		ForceLocalDNS bool     `json:"force_local_dns"`
 		BlockDoT      bool     `json:"block_dot"`
 		DNSExceptIPs  []string `json:"dns_except_ips"`
+		// Mapa endereço → nome (#116). Opt-in, como o log de consultas.
+		DNSTapEnabled bool `json:"dnstap_enabled"`
 	}
 	if err := decodeJSON(r, &b); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -532,6 +539,7 @@ func (h *NetsvcHandler) UpdateDNSConfig(w http.ResponseWriter, r *http.Request) 
 	cfg.ForceLocalDNS = b.ForceLocalDNS
 	cfg.BlockDoT = b.BlockDoT
 	cfg.DNSExceptIPs = excecoes
+	cfg.DNSTapEnabled = b.DNSTapEnabled
 	if err := h.saveConfig(cfg); err != nil {
 		writeInternalError(w, err)
 		return

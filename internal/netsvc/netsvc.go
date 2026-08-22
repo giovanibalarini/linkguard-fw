@@ -42,6 +42,13 @@ type Config struct {
 	// BlockDoT recusa DNS sobre TLS (853) com RST. DoH na 443 continua
 	// passando: é HTTPS comum e indistinguível do resto.
 	BlockDoT bool `json:"block_dot"`
+	// DNSTapEnabled liga a entrega das RESPOSTAS de DNS ao coletor do produto
+	// (issue #116), que é o que permite o mapa endereço → nome.
+	//
+	// Opt-in e desligado por padrão, como o log de consultas e pelo mesmo
+	// motivo: custa I/O num resolver movimentado. É mais barato que o log em
+	// texto (socket binário, sem formatação), e a tela diz isso antes de ligar.
+	DNSTapEnabled bool `json:"dnstap_enabled"`
 	// DNSExceptIPs são hosts isentos das duas medidas — quem roda resolver
 	// próprio na LAN de propósito.
 	DNSExceptIPs []string `json:"dns_except_ips"`

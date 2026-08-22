@@ -2600,6 +2600,89 @@ print(json.dumps(d))" "$volta" > /tmp/lgv_link.json 2>/dev/null
   done
 }
 
+# ─── T. Mapa endereço → nome (issue #116) ────────────────────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. O produto sabia que alguém perguntou por
+# um site e não sabia qual endereço foi devolvido — então todo destino em toda
+# tela era número. Esta bateria prova o caminho inteiro numa máquina de verdade:
+# o unbound entrega a RESPOSTA por dnstap, o coletor lê três formatos que o
+# produto não conhecia (Frame Streams, protobuf e o fio do DNS), e o mapa passa
+# a saber o nome daquele endereço.
+#
+# E prova o outro lado, que é o que torna a asserção honesta: DESLIGADO, o mapa
+# fica vazio. Sem essa metade, "o mapa tem entradas" poderia significar qualquer
+# coisa.
+battery_mapa_dns() {
+  head_ "T. Mapa endereço → nome"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria T não roda"; return; }
+
+  # T0 — o unbound desta caixa tem dnstap? A issue exige medir, não supor.
+  if vm "/usr/sbin/unbound -V 2>&1 | grep -q enable-dnstap"; then
+    ok "o unbound desta máquina foi compilado com dnstap"
+  else
+    bad "o unbound não tem dnstap; o recurso não pode funcionar aqui" \
+        "$(vm "/usr/sbin/unbound -V 2>&1 | head -3" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
+    return
+  fi
+
+  # T1 — DESLIGADO, o mapa está vazio e a tela diz isso.
+  local resp
+  resp=$(body GET /api/dns/mapa "$tok")
+  local ligado
+  ligado=$(python3 -c "
+import json,sys
+print(json.loads(sys.argv[1]).get('ligado'))" "$resp" 2>/dev/null)
+  if [[ "$ligado" == "False" ]]; then ok "desligado por padrão, como a issue exige"
+  else bad "o recurso veio ligado de fábrica ('$ligado')"; fi
+
+  # T2 — ligar escreve o bloco no unbound.conf.
+  local st
+  st=$(status PUT /api/dns/config "$tok" '{"upstreams":[],"log_queries":false,"force_local_dns":false,"block_dot":false,"dns_except_ips":[],"dnstap_enabled":true}')
+  if [[ "$st" != "200" ]]; then bad "não consegui ligar o recurso: $st"; return; fi
+  sleep 6
+  if vm "grep -q 'dnstap-enable: yes' /etc/unbound/unbound.conf.d/*.conf 2>/dev/null"; then
+    ok "o bloco de dnstap foi escrito na configuração do unbound"
+  else
+    bad "o bloco não chegou no unbound.conf" \
+        "$(vm "grep -c dnstap /etc/unbound/unbound.conf.d/*.conf 2>/dev/null" | tr -d '\r')"
+  fi
+
+  # T3 — o coletor está ouvindo no caminho que o unbound espera.
+  if vm "ls -l /run/dnstap.sock 2>/dev/null | grep -q srw"; then
+    ok "o coletor está ouvindo em /run/dnstap.sock"
+  else bad "o socket do coletor não existe: o unbound não tem onde entregar"; fi
+
+  # T4 — A ASSERÇÃO CENTRAL: uma consulta de verdade vira nome no mapa.
+  # O domínio é resolvido pelo próprio unbound da caixa, e o nome perguntado tem
+  # de aparecer no mapa associado a um endereço.
+  vm "systemctl is-active unbound >/dev/null 2>&1 && command -v getent >/dev/null && getent hosts deb.debian.org >/dev/null 2>&1; true" >/dev/null 2>&1
+  vm "for i in 1 2 3; do getent hosts deb.debian.org >/dev/null 2>&1; sleep 1; done; true" >/dev/null 2>&1
+  sleep 3
+  local achou
+  achou=$(body GET /api/dns/mapa "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(len([e for e in (d.get('amostra') or []) if 'debian' in (e.get('nome') or '')]))" 2>/dev/null)
+  if [[ "${achou:-0}" -gt 0 ]]; then
+    ok "uma consulta de verdade virou nome no mapa ($achou entrada(s))"
+  else
+    bad "a consulta não chegou ao mapa" \
+        "estado: $(body GET /api/dns/mapa "$tok" | head -c 200)"
+  fi
+
+  # T5 — e desligar para de escrever o bloco.
+  status PUT /api/dns/config "$tok" '{"upstreams":[],"log_queries":false,"force_local_dns":false,"block_dot":false,"dns_except_ips":[],"dnstap_enabled":false}' >/dev/null
+  sleep 6
+  if ! vm "grep -q 'dnstap-enable: yes' /etc/unbound/unbound.conf.d/*.conf 2>/dev/null"; then
+    ok "desligar tira o bloco da configuração"
+  else bad "o bloco continuou no unbound.conf depois de desligado"; fi
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -2618,6 +2701,7 @@ battery_bloqueio_familias
 battery_portforward_wan2
 battery_reserva_dhcp
 battery_contencao
+battery_mapa_dns
 battery_fechar_gerencia
 
 head_ "Resumo"

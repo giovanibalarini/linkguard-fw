@@ -10,6 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.24.1
 	golang.org/x/crypto v0.55.0
+	golang.org/x/net v0.58.0
 	modernc.org/sqlite v1.56.0
 )
 
