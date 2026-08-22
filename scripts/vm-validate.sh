@@ -2736,21 +2736,35 @@ battery_metricas_host() {
   if [[ "$code" == "404" ]]; then ok "sem token, a rota por aparelho não existe (404)"
   else bad "a rota respondeu $code sem token configurado"; fi
 
-  # U3 — com token, ela serve; e com token errado, não.
-  vm "sqlite3 /var/lib/linkguard-fw/linkguard.db \"INSERT OR REPLACE INTO settings(key,value) VALUES('metrics_host_token','tok-da-bateria-u');\" 2>/dev/null || true" >/dev/null 2>&1
-  if ! vm "command -v sqlite3" >/dev/null 2>&1; then
-    printf '       (sem sqlite3 na VM: U3 e U4 não podem configurar o token)\n'
-    return
-  fi
+  # U3 — o token é configurado PELO PRODUTO, e não por dentro do banco.
+  #
+  # A primeira versão desta bateria escrevia direto no SQLite e pulava as
+  # asserções quando não havia sqlite3 na VM — e foi assim que ela mostrou que
+  # eu tinha entregado a #118 SEM NENHUMA ROTA para definir o token. Um recurso
+  # opt-in sem caminho para o opt-in é um recurso desligado com trabalho extra.
+  local st
+  st=$(status PUT /api/metrics/hosts/token "$tok" '{"token":"curto"}')
+  if [[ "$st" == "400" ]]; then ok "token curto é recusado (ele dá acesso à lista de aparelhos)"
+  else bad "token de 5 caracteres aceito ($st)"; fi
+
+  st=$(status PUT /api/metrics/hosts/token "$tok" '{"token":"tok-da-bateria-u-com-tamanho"}')
+  if [[ "$st" == "200" ]]; then ok "o token é definido pela API do produto"
+  else bad "não consegui definir o token: $st"; return; fi
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 -H "Authorization: Bearer errado" "$API/api/metrics/hosts" 2>/dev/null)
   if [[ "$code" == "401" ]]; then ok "token errado é recusado (401)"
   else bad "token errado respondeu $code"; fi
 
   local corpo
-  corpo=$(curl -s --max-time 6 -H "Authorization: Bearer tok-da-bateria-u" "$API/api/metrics/hosts" 2>/dev/null)
+  corpo=$(curl -s --max-time 6 -H "Authorization: Bearer tok-da-bateria-u-com-tamanho" "$API/api/metrics/hosts" 2>/dev/null)
   if grep -q 'linkguard_host_rx_bytes_per_second' <<<"$corpo"; then
     ok "com o token certo, as séries por aparelho são servidas"
   else bad "a rota autenticada não serviu as séries" "$(head -c 200 <<<"$corpo")"; fi
+
+  # U5 — e desligar é tão alcançável quanto ligar: token vazio apaga.
+  status PUT /api/metrics/hosts/token "$tok" '{"token":""}' >/dev/null
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 -H "Authorization: Bearer tok-da-bateria-u-com-tamanho" "$API/api/metrics/hosts" 2>/dev/null)
+  if [[ "$code" == "404" ]]; then ok "apagar o token desliga a rota (404)"
+  else bad "a rota continuou respondendo depois de apagar o token ($code)"; fi
 }
 
 battery_fresh
