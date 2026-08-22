@@ -21,14 +21,22 @@ import (
 // Campos do dnstap que importam (dnstap.proto, estável desde 2014):
 //
 //	Dnstap.message  = 14 (mensagem embutida)
-//	Message.type    = 1  (varint; 5 = CLIENT_RESPONSE, 3 = RESOLVER_RESPONSE)
+//	Message.type    = 1  (varint; 6 = CLIENT_RESPONSE, 4 = RESOLVER_RESPONSE)
 //	Message.response_message = 14 (bytes, mensagem DNS em formato de fio)
+//
+// O enum do dnstap começa em AUTH_QUERY = 1 e alterna pergunta/resposta, então
+// toda RESPOSTA tem número par. Já erramos isto: filtrávamos 5 e 3, que são
+// CLIENT_QUERY e RESOLVER_QUERY — perguntas, que não carregam resposta
+// nenhuma. O coletor recebia todo o tráfego do unbound e descartava tudo, em
+// silêncio, e o mapa ficava vazio sem um único erro no log. O teste não pegou
+// porque montava o quadro com a mesma constante que testava; hoje há um quadro
+// real do unbound preso no teste, e é ele que ancora o número.
 const (
 	campoDnstapMessage   = 14
 	campoMessageType     = 1
 	campoResponseMessage = 14
-	tipoClientResponse   = 5
-	tipoResolverResponse = 3
+	tipoClientResponse   = 6
+	tipoResolverResponse = 4
 )
 
 // RespostaDNS extrai de um quadro dnstap os bytes da resposta em formato de

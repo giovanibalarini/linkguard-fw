@@ -3,6 +3,7 @@ package dnstap
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"net/netip"
 	"testing"
 	"time"
@@ -301,5 +302,88 @@ func TestSemEscritorOModoUnidirecionalContinuaFuncionando(t *testing.T) {
 	}
 	if string(got) != "unidirecional" {
 		t.Errorf("veio %q", got)
+	}
+}
+
+// quadroRealDoUnbound é um quadro dnstap capturado do unbound 1.22 rodando na
+// VM de validação, respondendo uma consulta A por debian.org. Está aqui inteiro,
+// em bytes, porque foi exatamente aqui que o produto errou: o filtro de tipo de
+// mensagem usava 5 (CLIENT_QUERY) achando que era CLIENT_RESPONSE, e um teste
+// que MONTA o quadro com a mesma constante que testa concorda com qualquer
+// número. Um quadro de verdade não concorda.
+const quadroRealDoUnbound = "72810108061001180122047f0000012a047f00000130b980033835" +
+	"6097c6a6d4066db01d1301725c1234818000010004000000000664656269616e036f726700" +
+	"00010001c00c0001000100000126000497658284c00c000100010000012600049765c284c0" +
+	"0c0001000100000126000497654284c00c00010001000001260004976502847801"
+
+func TestQuadroRealDoUnboundChegaAoMapa(t *testing.T) {
+	quadro := make([]byte, hex.DecodedLen(len(quadroRealDoUnbound)))
+	if _, err := hex.Decode(quadro, []byte(quadroRealDoUnbound)); err != nil {
+		t.Fatalf("hex: %v", err)
+	}
+
+	fio, err := RespostaDNS(quadro)
+	if err != nil {
+		t.Fatalf("RespostaDNS: %v", err)
+	}
+	if fio == nil {
+		t.Fatal("o quadro real foi descartado como se não fosse resposta")
+	}
+
+	r, err := Extrair(fio)
+	if err != nil {
+		t.Fatalf("Extrair: %v", err)
+	}
+	if r == nil {
+		t.Fatal("nada aprendido de uma resposta com quatro registros A")
+	}
+	if r.Nome != "debian.org" {
+		t.Errorf("nome %q, esperado debian.org", r.Nome)
+	}
+	querido := map[string]bool{
+		"151.101.130.132": true, "151.101.194.132": true,
+		"151.101.66.132": true, "151.101.2.132": true,
+	}
+	if len(r.Enderecos) != len(querido) {
+		t.Fatalf("vieram %d endereços: %v", len(r.Enderecos), r.Enderecos)
+	}
+	for _, a := range r.Enderecos {
+		if !querido[a.String()] {
+			t.Errorf("endereço inesperado %s", a)
+		}
+	}
+	if r.TTL != 294*time.Second {
+		t.Errorf("TTL %v, esperado 294s (o menor dos quatro registros)", r.TTL)
+	}
+}
+
+func TestClientQueryNaoEhClientResponse(t *testing.T) {
+	// Os números estão literais de propósito, e é o par vizinho que o teste
+	// trava: 5 é CLIENT_QUERY e 6 é CLIENT_RESPONSE, 3 é RESOLVER_QUERY e 4 é
+	// RESOLVER_RESPONSE. Trocar um pelo outro faz o coletor descartar tudo em
+	// silêncio, que foi o que aconteceu.
+	for _, c := range []struct {
+		nome   string
+		tipo   uint64
+		aceita bool
+	}{
+		{"AUTH_QUERY", 1, false},
+		{"AUTH_RESPONSE", 2, false},
+		{"RESOLVER_QUERY", 3, false},
+		{"RESOLVER_RESPONSE", 4, true},
+		{"CLIENT_QUERY", 5, false},
+		{"CLIENT_RESPONSE", 6, true},
+	} {
+		interna := bytes.Join([][]byte{
+			protoVarint(campoMessageType, c.tipo),
+			protoBytes(campoResponseMessage, []byte("FIO")),
+		}, nil)
+		got, err := RespostaDNS(protoBytes(campoDnstapMessage, interna))
+		if err != nil {
+			t.Fatalf("%s: %v", c.nome, err)
+		}
+		if (got != nil) != c.aceita {
+			t.Errorf("%s (tipo %d): aceito=%v, esperado=%v", c.nome, c.tipo, got != nil, c.aceita)
+		}
 	}
 }
