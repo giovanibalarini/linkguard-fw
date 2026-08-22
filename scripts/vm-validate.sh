@@ -610,9 +610,22 @@ battery_upgrade() {
   else ok "o papel somente-leitura NÃO ganhou monitoring.write"; fi
 
   # A migração não pode reverter uma revogação do admin: roda de novo no reboot.
-  # Só faz sentido se o papel tem a permissão para revogar.
+  #
+  # A permissão precisa ESTAR no papel para haver o que revogar. Antes, quando
+  # ela não estava, a asserção inteira sumia sem imprimir nada — e ela não
+  # estava justamente no caso que mais interessa: upgrade a partir de uma
+  # versão recente, em que a migração já rodou na base e portanto não
+  # acrescenta nada. O caminho mais testado do produto era o único não medido.
+  #
+  # Concedê-la explicitamente quando falta não enfraquece a asserção: o que se
+  # mede é "o admin revogou, o serviço reiniciou, e a migração não devolveu" —
+  # e isso independe de como o papel ganhou a permissão.
   local before after
   before=$(role_perms "$tok" "$op_role")
+  if ! grep -qx 'monitoring.write' <<<"$before"; then
+    body PUT "/api/roles/$op_role" "$tok" '{"name":"Operador VM","description":"operacional","permissions":["monitoring.read","firewall.write","monitoring.write"]}' >/dev/null
+    before=$(role_perms "$tok" "$op_role")
+  fi
   if grep -qx 'monitoring.write' <<<"$before"; then
     body PUT "/api/roles/$op_role" "$tok" '{"name":"Operador VM","description":"operacional","permissions":["monitoring.read","firewall.write"]}' >/dev/null
     vm "systemctl restart linkguard-fw" >/dev/null 2>&1
@@ -622,6 +635,8 @@ battery_upgrade() {
     if grep -qx 'monitoring.write' <<<"$after"; then
       bad "o reboot devolveu uma permissão que o admin tinha revogado"
     else ok "revogação do admin sobrevive ao restart (a migração não roda de novo)"; fi
+  else
+    bad "não consegui pôr monitoring.write no papel; a asserção de revogação não foi medida"
   fi
 }
 
@@ -1064,18 +1079,34 @@ for h in json.load(sys.stdin):
 
   # G5 — A ASSERÇÃO QUE DÁ NOME À ISSUE. Os fluxos ICMP envelhecem e somem do
   # conntrack; o consumo NÃO pode sumir junto.
+  # A espera é MEDIDA, e o resultado dela decide se a asserção seguinte pode
+  # ser cobrada. Antes eram 45 segundos cegos e, se algum fluxo tivesse
+  # sobrevivido, o script imprimia uma nota dizendo "a asserção seguinte vale
+  # do mesmo jeito" e seguia — mas ela NÃO vale: "o consumo sobreviveu ao fim
+  # dos fluxos" com fluxo vivo afirma o que ninguém mediu. Pior, a variável
+  # vinha VAZIA quando /proc/net/nf_conntrack não existe, e falha de medição
+  # caía no mesmo silêncio que a condição legítima.
   printf '       (aguardando os fluxos saírem do conntrack)\n'
-  sleep 45
-  local vivos
-  # `grep -c` imprime 0 E sai com código 1 quando não acha; o `|| echo 0`
-  # acrescentava um segundo zero e a variável virava "0\n0".
-  vivos=$(vm "grep -c 192.168.3.200 /proc/net/nf_conntrack 2>/dev/null; true" | tr -d '\r' | head -1)
+  local vivos="" i
+  for i in $(seq 1 12); do
+    sleep 10
+    # `grep -c` imprime 0 E sai com código 1 quando não acha; o `|| echo 0`
+    # acrescentava um segundo zero e a variável virava "0\n0".
+    vivos=$(vm "test -r /proc/net/nf_conntrack && { grep -c 192.168.3.200 /proc/net/nf_conntrack; true; } || echo sem-conntrack" | tr -d '\r' | head -1)
+    [[ "$vivos" == "0" ]] && break
+  done
   local depois
   depois=$(vm "nft list set inet linkguard acct_up 2>/dev/null" | grep -oE '192\.168\.3\.200 counter packets [0-9]+ bytes [0-9]+' | grep -oE 'bytes [0-9]+' | grep -oE '[0-9]+')
-  if [[ "$vivos" == "0" ]]; then ok "os fluxos do host saíram do conntrack (a fonte antiga diria zero)"
-  else printf '       (ainda há %s fluxo(s) no conntrack; a asserção seguinte vale do mesmo jeito)\n' "$vivos"; fi
-  if [[ "$depois" == "14280" ]]; then ok "o consumo sobreviveu ao fim dos fluxos — é o defeito da #112, corrigido"
-  else bad "o consumo mudou depois de os fluxos morrerem: ${depois:-vazio}"; fi
+  if [[ "$vivos" == "0" ]]; then
+    ok "os fluxos do host saíram do conntrack (a fonte antiga diria zero)"
+    if [[ "$depois" == "14280" ]]; then ok "o consumo sobreviveu ao fim dos fluxos — é o defeito da #112, corrigido"
+    else bad "o consumo mudou depois de os fluxos morrerem: ${depois:-vazio}"; fi
+  elif [[ "$vivos" == "sem-conntrack" ]]; then
+    bad "não consegui ler /proc/net/nf_conntrack; a asserção da #112 não foi medida"
+  else
+    bad "os fluxos não saíram do conntrack em 120s ($vivos vivo(s)); a asserção da #112 não foi medida" \
+        "consumo lido no acct_up: ${depois:-vazio}"
+  fi
 
   # G6 — a SÉRIE por host (issue #113). O contador é acumulado; a série é o
   # histórico. Ela só existe depois de duas amostras (cadência de 10s), então
@@ -1892,6 +1923,9 @@ for l in json.load(sys.stdin):
     if ! vm "nft list chain inet linkguard input 2>/dev/null" | grep -q 'lg-win'; then
       ok "apagar o link tira a proteção dele da chain na hora"
     else bad "a chain continua casando uma interface que não é mais WAN"; fi
+  else
+    bad "não achei o link lg-win para apagar; a asserção de remoção não foi medida" \
+        "$(body GET /api/links "$tok" | head -c 200)"
   fi
 
   vm "pkill -f wanecho >/dev/null 2>&1; pkill -f wanserv >/dev/null 2>&1; ip netns del lgwan 2>/dev/null; ip link del lg-win 2>/dev/null; rm -f /tmp/wanecho.py /tmp/wanserv.py; true" >/dev/null 2>&1
