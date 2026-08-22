@@ -77,14 +77,15 @@ type Server struct {
 	aiClient    *ai.Client
 	backupSched *backup.Scheduler
 	webFS       fs.FS
-	// dnstapSvc é o coletor de respostas de DNS (#116). Opcional e ligado por
-	// setter, no mesmo estilo das outras fontes injetadas: um binário sem ele
-	// responde a tela com "desligado" em vez de quebrar.
+	// dnstapSvc é o coletor de respostas de DNS (#116).
+	//
+	// VEM PELA Config, E NÃO POR SETTER, e a diferença custou uma validação
+	// inteira: New monta o roteador na mesma chamada, então um setter chamado
+	// DEPOIS nunca chega a tempo — as rotas já foram registradas com o campo
+	// nil. O sintoma na VM foi a tela dizendo "desligado" com o recurso ligado
+	// e o mapa eternamente vazio, sem erro em lugar nenhum.
 	dnstapSvc *dnstap.Servico
 }
-
-// SetDNSTap liga o coletor de respostas de DNS (#116).
-func (s *Server) SetDNSTap(svc *dnstap.Servico) { s.dnstapSvc = svc }
 
 // Config holds server configuration.
 type Config struct {
@@ -106,6 +107,9 @@ type Config struct {
 	// reportada como falha que não houve. Nil cai no exec, o que só é certo
 	// em teste.
 	CaptureExec firewall.Executor
+	// DNSTap é o coletor de respostas de DNS (#116). Opcional: um binário sem
+	// ele responde a tela com "desligado" em vez de quebrar.
+	DNSTap *dnstap.Servico
 }
 
 // New creates and wires up the HTTP server.
@@ -147,6 +151,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		webFS:       cfg.WebFS,
 	}
 
+	s.dnstapSvc = cfg.DNSTap
 	s.router = s.buildRouter(cfg)
 	return s
 }
