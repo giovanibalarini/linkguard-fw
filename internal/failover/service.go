@@ -34,10 +34,18 @@ type Service struct {
 	alertSvc *alerts.Service
 
 	mu       sync.Mutex
-	cooldown map[string]time.Time // key = link ID
+	cooldown map[string]time.Time
+	// onEvent conta um evento de failover para fora deste pacote. Ver
+	// SetEventHook.
+	onEvent func() // key = link ID
 }
 
 // NewService creates a new failover Service.
+// SetEventHook liga o contador de eventos de failover (ver o uso em
+// recordEvent). Injetado como função para este pacote não depender de
+// internal/metrics — a mesma razão pela qual alertSvc já entra por parâmetro.
+func (s *Service) SetEventHook(f func()) { s.onEvent = f }
+
 func NewService(cfg Config, db *storage.DB, exec firewall.Executor,
 	routeSvc *routes.Service, alertSvc *alerts.Service) *Service {
 	return &Service{
@@ -108,6 +116,20 @@ func (s *Service) HandleStatusChange(link *storage.Link, oldStatus, newStatus st
 	}
 	if dbErr := s.db.CreateFailoverEvent(event); dbErr != nil {
 		slog.Error("store failover event", "err", dbErr)
+	}
+	// A MÉTRICA É INCREMENTADA AQUI, e antes disto ela não era incrementada em
+	// lugar nenhum.
+	//
+	// `linkguard_failover_events_total` era declarada, registrada e publicada
+	// em /metrics valendo ZERO PARA SEMPRE. Quem montasse um alerta de "houve
+	// failover" em cima dela teria um alerta que nunca dispara — e um painel de
+	// Grafana dizendo que a rede nunca teve problema nenhum.
+	//
+	// É a mesma classe dos defeitos deste projeto: um número exibido com cara
+	// de certo. Só que exportado para fora da caixa, onde ninguém tem como
+	// conferir contra a tela.
+	if s.onEvent != nil {
+		s.onEvent()
 	}
 
 	// Apply cooldown

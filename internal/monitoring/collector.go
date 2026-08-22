@@ -143,9 +143,18 @@ func (c *Collector) collect() {
 		c.checkServices(cfg)
 	}
 
-	// Unresolved alerts
-	n, _ := c.db.CountAlerts()
-	c.m.AlertsTotal.Set(float64(n))
+	// Alertas não resolvidos.
+	//
+	// ERRO DE LEITURA NÃO VIRA ZERO. O `n, _ :=` publicava 0 quando o banco
+	// falhava — e zero alerta é exatamente o valor que faz um painel externo
+	// dizer que está tudo bem. Um scrape que não conseguiu ler tem de deixar o
+	// valor ANTERIOR de pé: o Prometheus enxerga a série parada, que é a forma
+	// de dizer "não sei" em métrica.
+	if n, err := c.db.CountAlerts(); err != nil {
+		slog.Warn("não foi possível contar os alertas para a métrica; o valor anterior fica de pé", "err", err)
+	} else {
+		c.m.AlertsTotal.Set(float64(n))
+	}
 
 	if cfg.Enabled {
 		c.trackLinks()

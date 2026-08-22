@@ -648,6 +648,10 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 
 	promReg := prometheus.NewRegistry()
 	appMetrics := metrics.New(promReg)
+	// `linkguard_failover_events_total` era publicada em /metrics e NUNCA
+	// incrementada: zero para sempre, num painel de Grafana dizendo que a rede
+	// nunca teve problema nenhum. Ver recordEvent em internal/failover.
+	failoverSvc.SetEventHook(appMetrics.FailoverEvents.Inc)
 	metricsCollector := monitoring.NewCollector(db, appMetrics, alertSvc, exec, rrdSvc)
 	// O item "Regras no próximo boot" da Saúde do sistema. Sem esta linha o
 	// vigia não tem como saber nada sobre o /etc/nftables.conf e o item
