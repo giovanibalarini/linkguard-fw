@@ -175,7 +175,12 @@ var allowedInternalImports = map[string]bool{
 	// devolve o que o coletor aprendeu e o estado do mapa (teto, se encheu). A
 	// leitura dos três formatos — Frame Streams, protobuf e o fio do DNS — e a
 	// decisão de prazo moram lá.
-	"internal/dnstap":        true,
+	"internal/dnstap": true,
+	// internal/metrics entrou com as séries por aparelho (#118). O handler só
+	// serve o texto já renderizado e confere o token; quem mede é o amostrador
+	// de #113, e a decisão de essas séries viverem FORA do registro aberto do
+	// Prometheus mora em internal/metrics/exposicao.go.
+	"internal/metrics":       true,
 	"internal/dnslog":        true,
 	"internal/failover":      true,
 	"internal/firewallrules": true,

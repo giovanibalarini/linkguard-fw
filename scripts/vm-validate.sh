@@ -2683,6 +2683,65 @@ print(len([e for e in (d.get('amostra') or []) if 'debian' in (e.get('nome') or 
   else bad "o bloco continuou no unbound.conf depois de desligado"; fi
 }
 
+# ─── U. Métricas por aparelho para o coletor (issue #118) ────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. A issue pedia publicar endereço físico e
+# consumo por aparelho no /metrics — que é ABERTO e que esta própria suíte exige
+# que responda pela WAN (bateria N: fechar a porta do painel é tranca). Isso
+# seria um endpoint público de inventário da rede do cliente.
+#
+# A entrega é a intenção da issue sem o endereço errado: as séries existem, em
+# rota própria e por token. Então a bateria prova as DUAS metades — que o
+# inventário NÃO sai pelo aberto, e que sai pelo autenticado.
+battery_metricas_host() {
+  head_ "U. Métricas por aparelho"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria U não roda"; return; }
+
+  # U1 — A ASSERÇÃO DE SEGURANÇA: o /metrics aberto não tem identidade de
+  # aparelho. Vale mesmo com a feature ligada, porque as séries vivem fora do
+  # registro aberto — ausentes por construção, não filtradas na saída.
+  local aberto
+  aberto=$(curl -s --max-time 6 "$API/metrics" 2>/dev/null)
+  if [[ -z "$aberto" ]]; then bad "o /metrics não respondeu; a bateria U não pode afirmar nada"; return; fi
+  if ! grep -qE 'mac=|linkguard_host_' <<<"$aberto"; then
+    ok "o /metrics aberto não publica identidade de aparelho"
+  else
+    bad "INVENTÁRIO DA REDE NO /metrics SEM AUTENTICAÇÃO" "$(grep -E 'mac=|linkguard_host_' <<<"$aberto" | head -2)"
+  fi
+  # E continua servindo o que sempre serviu: sem isto, "não tem identidade"
+  # passaria também com o endpoint quebrado.
+  if grep -q 'linkguard_' <<<"$aberto"; then ok "o /metrics aberto continua servindo as métricas agregadas"
+  else bad "o /metrics não serve mais nada" "$(head -c 150 <<<"$aberto")"; fi
+
+  # U2 — sem token configurado, a rota por aparelho NÃO EXISTE. 404, e não 403:
+  # responder "não autorizado" confirmaria que há algo ali.
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 "$API/api/metrics/hosts" 2>/dev/null)
+  if [[ "$code" == "404" ]]; then ok "sem token, a rota por aparelho não existe (404)"
+  else bad "a rota respondeu $code sem token configurado"; fi
+
+  # U3 — com token, ela serve; e com token errado, não.
+  vm "sqlite3 /var/lib/linkguard-fw/linkguard.db \"INSERT OR REPLACE INTO settings(key,value) VALUES('metrics_host_token','tok-da-bateria-u');\" 2>/dev/null || true" >/dev/null 2>&1
+  if ! vm "command -v sqlite3" >/dev/null 2>&1; then
+    printf '       (sem sqlite3 na VM: U3 e U4 não podem configurar o token)\n'
+    return
+  fi
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 -H "Authorization: Bearer errado" "$API/api/metrics/hosts" 2>/dev/null)
+  if [[ "$code" == "401" ]]; then ok "token errado é recusado (401)"
+  else bad "token errado respondeu $code"; fi
+
+  local corpo
+  corpo=$(curl -s --max-time 6 -H "Authorization: Bearer tok-da-bateria-u" "$API/api/metrics/hosts" 2>/dev/null)
+  if grep -q 'linkguard_host_rx_bytes_per_second' <<<"$corpo"; then
+    ok "com o token certo, as séries por aparelho são servidas"
+  else bad "a rota autenticada não serviu as séries" "$(head -c 200 <<<"$corpo")"; fi
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -2702,6 +2761,7 @@ battery_portforward_wan2
 battery_reserva_dhcp
 battery_contencao
 battery_mapa_dns
+battery_metricas_host
 battery_fechar_gerencia
 
 head_ "Resumo"

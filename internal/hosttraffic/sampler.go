@@ -74,7 +74,26 @@ type Sampler struct {
 	// não por MAC: o contador do kernel é indexado por endereço, e é entre
 	// duas leituras do mesmo endereço que a diferença faz sentido.
 	anterior map[string]leitura
+
+	// porHost é o segundo consumidor da mesma medição (#118): as séries por
+	// aparelho servidas ao coletor do cliente. Opcional — sem ele o amostrador
+	// grava só no histórico, como sempre fez.
+	//
+	// Interface local, e não o tipo de internal/metrics, para este pacote não
+	// depender daquele: o amostrador é medição, e medição não deve saber quem
+	// consome.
+	porHost RegistroPorHost
 }
+
+// RegistroPorHost é o que o amostrador precisa do registro de métricas por
+// aparelho.
+type RegistroPorHost interface {
+	Registrar(mac, rotulo string, rx, tx float64)
+	Limpar(vivos map[string]bool)
+}
+
+// SetPorHost liga o registro de métricas por aparelho (#118).
+func (s *Sampler) SetPorHost(r RegistroPorHost) { s.porHost = r }
 
 // NewSampler cria o amostrador.
 func NewSampler(counters CounterSource, macs MACSource, rec Recorder) *Sampler {
@@ -170,6 +189,7 @@ func (s *Sampler) SampleOnce(ctx context.Context, now int64) {
 	}
 
 	lista := make([]taxa, 0, len(juntos))
+	vivos := map[string]bool{}
 	for _, t := range juntos {
 		lista = append(lista, *t)
 	}
@@ -195,6 +215,20 @@ func (s *Sampler) SampleOnce(ctx context.Context, now int64) {
 		}
 		s.rec.Gauge("host.rx_bps", t.mac, t.rx)
 		s.rec.Gauge("host.tx_bps", t.mac, t.tx)
+		// Segundo consumidor da MESMA medição (#118), e não uma medição nova:
+		// duplicar a coleta daria dois números para a mesma pergunta, que é como
+		// dois painéis passam a discordar sobre a mesma rede.
+		if s.porHost != nil {
+			s.porHost.Registrar(t.mac, t.mac, t.rx, t.tx)
+			vivos[t.mac] = true
+		}
+	}
+	if s.porHost != nil {
+		// Aparelho que saiu da rede precisa PARAR de publicar. Sem isto, o
+		// Grafana mostraria uma linha reta perpétua no último valor, onde
+		// deveria haver uma série que acaba — métrica que não morre é métrica
+		// que mente.
+		s.porHost.Limpar(vivos)
 	}
 	if sobraRx > 0 || sobraTx > 0 {
 		s.rec.Gauge("host.rx_bps", OtherLabel, sobraRx)
