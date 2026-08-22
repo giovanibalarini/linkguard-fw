@@ -103,7 +103,23 @@ ProtectSystem=strict
 # /etc/resolv.conf (sempre presente) e /etc/dhcp (do isc-dhcp-client, que
 # este pacote não declara em lugar nenhum — num box só com WAN estática, ou
 # no Debian 13, ele legitimamente não existe).
-ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/sysctl.d -/etc/nftables.conf -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp
+ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/sysctl.d -/etc/nftables.conf -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp -/etc/apparmor.d/local
+
+# RuntimeDirectory cria /run/linkguard-fw ANTES do serviço subir, já gravável,
+# e o remove quando ele para (issue #116).
+#
+# POR QUE ISTO É NECESSÁRIO: ProtectSystem=strict deixa /run somente-leitura, e
+# o coletor de dnstap precisa CRIAR um socket unix. O sintoma sem esta linha é
+# exato e foi medido na VM:
+#
+#   dnstap: o coletor não subiu ... err="listen unix /run/dnstap.sock: bind:
+#   read-only file system"
+#
+# A alternativa seria pôr /run inteiro em ReadWritePaths — desmontar a proteção
+# que vale 100% do tempo para um socket que o produto cria uma vez. Mesmo
+# raciocínio que levou o dpkg da auto-atualização para uma unidade transiente.
+RuntimeDirectory=linkguard-fw
+RuntimeDirectoryMode=0755
 ProtectHome=yes
 PrivateTmp=yes
 

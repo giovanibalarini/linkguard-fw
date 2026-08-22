@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/bootstrapdeps"
+	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/sysprep"
@@ -31,12 +32,16 @@ import (
 
 // DNSTapSocketPath é onde o coletor do produto escuta (#116).
 //
-// O caminho é o mesmo que o pacote do Debian compilou por padrão
-// (--with-dnstap-socket-path=/run/dnstap.sock), e isso NÃO é coincidência: o
-// unbound do Debian roda sob o perfil AppArmor do próprio pacote. Escolher
-// outro caminho exigiria mexer no perfil alheio — a mesma armadilha que a
-// captura de pacotes já pagou com o tcpdump.
-const DNSTapSocketPath = "/run/dnstap.sock"
+// NÃO é o caminho que o pacote compilou por padrão, e a razão foi medida: o
+// serviço roda com ProtectSystem=strict e não pode criar socket em /run. O
+// diretório abaixo vem do RuntimeDirectory= do unit.
+//
+// E o caminho compilado não ajudaria de qualquer forma: o perfil AppArmor de
+// fábrica do unbound permite exatamente três caminhos em /run — unbound.pid,
+// unbound.ctl e systemd/notify — e nenhum é de dnstap. A regra que autoriza
+// este socket é escrita pelo produto no ponto de extensão documentado do perfil
+// (ver internal/dnstap.EscreverRegraAppArmor).
+const DNSTapSocketPath = "/run/linkguard-fw/dnstap.sock"
 
 const (
 	KeaConfPath      = "/etc/kea/kea-dhcp4.conf"
@@ -541,6 +546,25 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		// mesmo que vai para o disco.
 		if regen, w2, gerr := s.generateConfigs(c, res, blocked, ntpServer); gerr == nil {
 			files, warnings = regen, append(warnings, w2...)
+		}
+	}
+
+	// A REGRA DE APPARMOR É PARTE DE LIGAR O DNSTAP, e não um detalhe de
+	// instalação (#116).
+	//
+	// O perfil de fábrica do unbound no Debian 13 permite exatamente três
+	// caminhos em /run — unbound.pid, unbound.ctl e systemd/notify. Nenhum
+	// socket de dnstap, nem o que o próprio pacote compilou como padrão. Sem a
+	// regra, ligar o recurso na tela deixa o mapa vazio PARA SEMPRE, e quem
+	// recusa é o AppArmor: não há erro no unbound nem no nosso lado para
+	// procurar.
+	//
+	// Escrita aqui, junto da config que referencia o socket, para as duas coisas
+	// nunca existirem separadas.
+	if c.DNSTapEnabled {
+		if err := dnstap.EscreverRegraAppArmor(s.exec, ctx); err != nil {
+			return netsvc.ApplyResult{Warnings: warnings, Installed: installed},
+				fmt.Errorf("o controle de dnstap não pôde ser autorizado no AppArmor do unbound (sem isso o mapa fica vazio): %w", err)
 		}
 	}
 

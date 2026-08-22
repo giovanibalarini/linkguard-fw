@@ -143,6 +143,24 @@ var Entries = []Entry{
 		Why: "configuração do LinkGuard",
 	},
 	{
+		// O ponto de extensão do AppArmor do unbound (issue #116).
+		//
+		// O diretório vem do pacote `apparmor`, mas ele é OPCIONAL na unidade
+		// (`-` em ReadWritePaths=), e entrada opcional que não existe no start
+		// simplesmente não é montada — a primeira escrita falharia com
+		// "Read-only file system" e só voltaria a funcionar depois de um
+		// restart do serviço. Numa caixa sem AppArmor instalado, criar o
+		// diretório é inofensivo; o que ele guarda só tem efeito se houver
+		// AppArmor para ler.
+		//
+		// OnlyAtServiceStart pela mesma razão do /etc/nftables.conf: o caminho
+		// pertence a outro pacote, e criá-lo no postinst arrisca prompt de
+		// conffile do dpkg numa instalação pelada.
+		Path: "/etc/apparmor.d/local", Dir: true, Mode: 0o755,
+		Why:                "regra que autoriza o unbound a entregar dnstap; sem o diretório montado a escrita falha em read-only até o próximo restart",
+		OnlyAtServiceStart: true,
+	},
+	{
 		// OnlyAtServiceStart: este é o único caminho da lista que pertence a
 		// OUTRO pacote (é conffile do `nftables`). Criá-lo no postinst fazia
 		// `apt install ./linkguard-fw_*.deb` numa máquina pelada parar no
