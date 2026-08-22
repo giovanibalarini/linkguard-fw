@@ -225,3 +225,81 @@ func TestMapaDizQuandoEncheEmVezDeSumirEmSilencio(t *testing.T) {
 		t.Errorf("passou do teto: %d", e.Entradas)
 	}
 }
+
+// conexaoFalsa é um io.ReadWriter: o leitor consome o que o "remetente"
+// escreveu, e o que a gente responde fica registrado.
+type conexaoFalsa struct {
+	entrada  *bytes.Buffer
+	resposta bytes.Buffer
+}
+
+func (c *conexaoFalsa) Read(p []byte) (int, error)  { return c.entrada.Read(p) }
+func (c *conexaoFalsa) Write(p []byte) (int, error) { return c.resposta.Write(p) }
+
+// TestREADYEhRespondidoComACCEPT é a regressão do defeito que segurou a #116 por
+// quatro validações.
+//
+// Em modo BIDIRECIONAL — que é o que o unbound usa — o remetente manda READY e
+// FICA ESPERANDO um ACCEPT. Sem a resposta ele nunca envia dado nenhum, e nunca
+// reclama: do ponto de vista dele a conversa apenas não começou.
+//
+// O sintoma medido na VM era o pior possível: socket conectado, unbound
+// registrando "dnstap Message/CLIENT_RESPONSE enabled", consultas resolvendo, e
+// o mapa vazio. Tudo verde dos dois lados.
+func TestREADYEhRespondidoComACCEPT(t *testing.T) {
+	// O READY do remetente carrega os tipos de conteúdo que ele sabe enviar.
+	campos := []byte("\x00\x00\x00\x01\x00\x00\x00\x15protobuf:dnstap.Dnstap")
+	var corpo bytes.Buffer
+	binary.Write(&corpo, binary.BigEndian, uint32(controlReady))
+	corpo.Write(campos)
+
+	var fluxo bytes.Buffer
+	binary.Write(&fluxo, binary.BigEndian, uint32(0)) // escape
+	binary.Write(&fluxo, binary.BigEndian, uint32(corpo.Len()))
+	fluxo.Write(corpo.Bytes())
+	fluxo.Write(quadroControle(controlStart))
+	fluxo.Write(quadroDados([]byte("carga")))
+
+	c := &conexaoFalsa{entrada: &fluxo}
+	fr := NewReader(c)
+
+	got, err := fr.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if string(got) != "carga" {
+		t.Errorf("dado veio %q", got)
+	}
+
+	// A resposta tem de ser um quadro de controle ACCEPT.
+	resp := c.resposta.Bytes()
+	if len(resp) < 12 {
+		t.Fatalf("nada foi respondido ao READY (%d bytes): o remetente esperaria para sempre", len(resp))
+	}
+	if escape := binary.BigEndian.Uint32(resp[0:4]); escape != 0 {
+		t.Errorf("a resposta não começa com o escape de controle: %d", escape)
+	}
+	if tipo := binary.BigEndian.Uint32(resp[8:12]); tipo != controlAccept {
+		t.Errorf("respondeu tipo %d, queria ACCEPT (%d)", tipo, controlAccept)
+	}
+	// E ecoa os tipos de conteúdo que o remetente ofereceu: confirmar o que ele
+	// propôs evita a gente ter de conhecer a lista dele.
+	if !bytes.Contains(resp, []byte("protobuf:dnstap.Dnstap")) {
+		t.Error("o ACCEPT não ecoou o tipo de conteúdo oferecido")
+	}
+}
+
+func TestSemEscritorOModoUnidirecionalContinuaFuncionando(t *testing.T) {
+	// NewReader aceita io.Reader para os testes usarem um buffer. Sem escritor,
+	// a resposta é pulada e o fluxo unidirecional segue — não pode virar erro.
+	var fluxo bytes.Buffer
+	fluxo.Write(quadroControle(controlStart))
+	fluxo.Write(quadroDados([]byte("unidirecional")))
+	got, err := NewReader(&fluxo).Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if string(got) != "unidirecional" {
+		t.Errorf("veio %q", got)
+	}
+}

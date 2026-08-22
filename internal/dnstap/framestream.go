@@ -20,10 +20,20 @@ import (
 // tamanho, é mais barato de auditar do que uma dependência a mais de cadeia
 // desconhecida.
 //
-// O QUE NÃO ESTÁ AQUI: o lado bidirecional do protocolo (READY/ACCEPT/FINISH
-// negociado nos dois sentidos). O unbound é o CLIENTE que conecta e escreve; a
-// gente é o coletor que só lê. Implementar o handshake completo seria escrever
-// código para um caminho que este produto nunca percorre.
+// O HANDSHAKE BIDIRECIONAL ESTÁ AQUI, E A PRIMEIRA VERSÃO NÃO TINHA — foi um
+// comentário meu deduzido em vez de medido, e custou uma validação inteira.
+//
+// Eu tinha escrito: "o unbound é o CLIENTE que conecta e escreve; a gente só lê,
+// implementar o handshake seria código para um caminho que este produto nunca
+// percorre". Errado. Medido na VM: o socket conectava, o unbound registrava
+// "attempting to connect to dnstap socket" e "dnstap Message/CLIENT_RESPONSE
+// enabled", as consultas resolviam — e NENHUM byte de dado chegava.
+//
+// O motivo é o protocolo: em modo bidirecional o remetente manda READY e FICA
+// ESPERANDO um ACCEPT. Sem a resposta, ele nunca envia dado nenhum, e nunca
+// reclama — porque do ponto de vista dele a conversa apenas não começou.
+//
+// O sintoma era o pior possível: tudo verde dos dois lados e um mapa vazio.
 
 const (
 	// controlAccept e os outros são os tipos de quadro de controle do fstrm.
@@ -70,34 +80,78 @@ func (fr *Reader) Next() ([]byte, error) {
 		}
 		// Comprimento zero: o que vem a seguir é um quadro de controle, com o
 		// próprio comprimento.
-		tipo, err := fr.lerControle()
+		tipo, corpo, err := fr.lerControle()
 		if err != nil {
 			return nil, err
 		}
 		switch tipo {
-		case controlStart, controlReady, controlAccept:
+		case controlReady:
+			// A RESPOSTA QUE FAZ O DADO FLUIR. O remetente espera o ACCEPT
+			// antes de mandar qualquer coisa; sem ele, silêncio para sempre.
+			//
+			// O ACCEPT devolve os tipos de conteúdo que a gente aceita. Devolver
+			// exatamente o que ele ofereceu é o caminho certo: ele propôs
+			// "protobuf:dnstap.Dnstap", a gente confirma o mesmo, e nenhum dos
+			// dois precisa conhecer a lista do outro.
+			if err := fr.responder(controlAccept, corpo); err != nil {
+				return nil, err
+			}
 			fr.iniciou = true
-		case controlStop, controlFinish:
+		case controlStart, controlAccept:
+			fr.iniciou = true
+		case controlStop:
+			// Encerramento limpo: confirma com FINISH para o remetente não ficar
+			// esperando, e encerra.
+			_ = fr.responder(controlFinish, nil)
+			return nil, io.EOF
+		case controlFinish:
 			return nil, io.EOF
 		}
 	}
 }
 
-// lerControle consome um quadro de controle e devolve o tipo dele.
-func (fr *Reader) lerControle() (uint32, error) {
+// lerControle consome um quadro de controle e devolve o tipo e os campos dele.
+//
+// Os campos são devolvidos crus porque o ACCEPT os ecoa de volta: o remetente
+// propõe os tipos de conteúdo que sabe enviar, e confirmar exatamente o que ele
+// propôs evita a gente ter de conhecer a lista dele.
+func (fr *Reader) lerControle() (uint32, []byte, error) {
 	var tam uint32
 	if err := binary.Read(fr.r, binary.BigEndian, &tam); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if tam > maxFrame {
-		return 0, fmt.Errorf("quadro de controle de %d bytes acima do teto", tam)
+		return 0, nil, fmt.Errorf("quadro de controle de %d bytes acima do teto", tam)
 	}
 	buf := make([]byte, tam)
 	if _, err := io.ReadFull(fr.r, buf); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if len(buf) < 4 {
-		return 0, fmt.Errorf("quadro de controle truncado (%d bytes)", len(buf))
+		return 0, nil, fmt.Errorf("quadro de controle truncado (%d bytes)", len(buf))
 	}
-	return binary.BigEndian.Uint32(buf[:4]), nil
+	return binary.BigEndian.Uint32(buf[:4]), buf[4:], nil
+}
+
+// responder escreve um quadro de controle de volta ao remetente.
+//
+// Só faz sentido quando o leitor foi construído sobre algo que também escreve —
+// que é o caso do socket. NewReader aceita io.Reader para os testes poderem usar
+// um buffer; sem escritor, a resposta é silenciosamente pulada e o modo
+// unidirecional continua funcionando.
+func (fr *Reader) responder(tipo uint32, campos []byte) error {
+	w, ok := fr.r.(io.Writer)
+	if !ok {
+		return nil
+	}
+	corpo := make([]byte, 4, 4+len(campos))
+	binary.BigEndian.PutUint32(corpo, tipo)
+	corpo = append(corpo, campos...)
+
+	var quadro []byte
+	quadro = binary.BigEndian.AppendUint32(quadro, 0) // escape de controle
+	quadro = binary.BigEndian.AppendUint32(quadro, uint32(len(corpo)))
+	quadro = append(quadro, corpo...)
+	_, err := w.Write(quadro)
+	return err
 }
