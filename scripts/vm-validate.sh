@@ -2652,10 +2652,21 @@ print(json.loads(sys.argv[1]).get('ligado'))" "$resp" 2>/dev/null)
         "$(vm "grep -c dnstap /etc/unbound/unbound.conf.d/*.conf 2>/dev/null" | tr -d '\r')"
   fi
 
-  # T3 — o coletor está ouvindo no caminho que o unbound espera.
-  if vm "ls -l /run/dnstap.sock 2>/dev/null | grep -q srw"; then
-    ok "o coletor está ouvindo em /run/dnstap.sock"
-  else bad "o socket do coletor não existe: o unbound não tem onde entregar"; fi
+  # T3 — o coletor está ouvindo, E o AppArmor autoriza o unbound a chegar lá.
+  #
+  # As duas asserções andam juntas porque separadas mentem: o socket pode estar
+  # de pé e o unbound ser recusado pelo AppArmor sem que nada apareça no log de
+  # nenhum dos dois. O perfil de fábrica permite exatamente três caminhos em
+  # /run, e nenhum é de dnstap — nem o que o pacote compilou por padrão.
+  if vm "ls -l /run/linkguard-fw/dnstap.sock 2>/dev/null | grep -q srw"; then
+    ok "o coletor está ouvindo em /run/linkguard-fw/dnstap.sock"
+  else
+    bad "o socket do coletor não existe: o unbound não tem onde entregar" \
+        "$(vm "journalctl -u linkguard-fw --since '5 min ago' --no-pager | grep -i dnstap | tail -1" | tr -d '\r' | head -c 200)"
+  fi
+  if vm "grep -q 'dnstap.sock' /etc/apparmor.d/local/usr.sbin.unbound 2>/dev/null"; then
+    ok "o AppArmor do unbound foi autorizado no ponto de extensão local"
+  else bad "sem a regra de AppArmor o unbound é recusado em silêncio pelo kernel"; fi
 
   # T4 — A ASSERÇÃO CENTRAL: uma consulta de verdade vira nome no mapa.
   # O domínio é resolvido pelo próprio unbound da caixa, e o nome perguntado tem
