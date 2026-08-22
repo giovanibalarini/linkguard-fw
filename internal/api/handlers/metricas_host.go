@@ -59,3 +59,45 @@ func (h *MetricasHostHandler) Servir(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write([]byte(h.porHost.Exposicao()))
 }
+
+// DefinirToken grava (ou apaga) o token da rota de métricas por aparelho.
+//
+// SEM ISTO A FEATURE NÃO TEM COMO SER LIGADA — e eu entreguei a #118 sem esta
+// rota, o que a bateria U mostrou ao não conseguir configurar o token de jeito
+// nenhum. Um recurso opt-in sem caminho para o opt-in é um recurso desligado
+// com trabalho extra.
+//
+// Token vazio APAGA: é assim que se desliga, e o desligamento tem de ser tão
+// alcançável quanto o ligamento.
+func (h *MetricasHostHandler) DefinirToken(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &b); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	t := strings.TrimSpace(b.Token)
+	if t != "" && len(t) < 16 {
+		// Este token dá acesso ao inventário da rede. Um token curto é pior que
+		// nenhum: ele dá a sensação de proteção e cede a um laço de tentativas.
+		writeError(w, http.StatusBadRequest, "o token precisa de pelo menos 16 caracteres: ele dá acesso à lista de aparelhos da rede")
+		return
+	}
+	if err := h.db.SetSetting(MetricasHostTokenKey, t); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	auditAction(h.db, r, "metrics.host.token", "metrics", map[bool]string{true: "definido", false: "removido"}[t != ""])
+	writeJSON(w, http.StatusOK, map[string]bool{"configurado": t != ""})
+}
+
+// EstadoToken diz se há token, sem devolvê-lo.
+func (h *MetricasHostHandler) EstadoToken(w http.ResponseWriter, r *http.Request) {
+	t, err := h.db.GetSetting(MetricasHostTokenKey)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"configurado": strings.TrimSpace(t) != ""})
+}

@@ -3,6 +3,7 @@ package keaunbound
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -102,4 +103,43 @@ type execQueFalha struct{ recExec }
 
 func (e *execQueFalha) ExecuteRead(context.Context, string, ...string) (string, error) {
 	return "", errors.New("ip: comando não encontrado")
+}
+
+// TestKeaInvalidoNaoCongelaODNS é a regressão do defeito que reprovou a #116
+// três vezes na VM.
+//
+// A validação era conjunta: nenhum arquivo era escrito se QUALQUER um dos dois
+// candidatos fosse recusado. Numa caixa cuja interface de LAN não existe, o
+// `kea-dhcp4 -t` recusa com "interface 'br10' doesn't exist" — e a partir daí
+// NENHUMA alteração de DNS é aplicada. Nunca. Nem redirecionamento da porta 53,
+// nem blocklist de domínios, nem dnstap: coisas sem relação nenhuma com DHCP.
+//
+// É a mesma classe da #152 e da #161 — um campo congelando o subsistema inteiro
+// —, e desta vez o congelado era outro subsistema.
+func TestKeaInvalidoNaoCongelaODNS(t *testing.T) {
+	e := &recExec{keaTestErr: errors.New("interface 'br10' doesn't exist")}
+	s := newTestSvc(t, e)
+
+	_, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, "")
+	if err == nil {
+		t.Fatal("a falha do Kea tem de ser relatada, não engolida")
+	}
+	if !strings.Contains(err.Error(), "Kea") {
+		t.Errorf("a mensagem não nomeia o daemon culpado: %v", err)
+	}
+
+	// E o DNS foi aplicado do mesmo jeito.
+	if _, err := os.Stat(s.unboundConf); err != nil {
+		t.Error("a config do unbound não foi escrita: um erro de DHCP congelou o DNS")
+	}
+	if _, err := os.Stat(s.keaConf); err == nil {
+		t.Error("a config recusada do Kea foi para o disco; o próximo boot tentaria carregá-la")
+	}
+	// E o daemon recusado não foi reiniciado: um restart aqui derrubaria e
+	// subiria o Kea com a configuração ANTIGA, transformando "a alteração não
+	// passou" numa interrupção de serviço.
+	juntos := strings.Join(e.writes, "\n")
+	if strings.Contains(juntos, "kea-dhcp4-server") && strings.Contains(juntos, "reload-or-restart") {
+		t.Errorf("o Kea foi recarregado mesmo com a config recusada:\n%s", juntos)
+	}
 }

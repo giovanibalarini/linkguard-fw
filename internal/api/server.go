@@ -86,6 +86,8 @@ type Server struct {
 	// nil. O sintoma na VM foi a tela dizendo "desligado" com o recurso ligado
 	// e o mapa eternamente vazio, sem erro em lugar nenhum.
 	dnstapSvc *dnstap.Servico
+	// metricasHostH serve as séries por aparelho e o token delas (#118).
+	metricasHostH *handlers.MetricasHostHandler
 }
 
 // Config holds server configuration.
@@ -199,6 +201,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 	if cfg.PorHost != nil {
 		mhH := handlers.NewMetricasHostHandler(s.db, cfg.PorHost)
 		r.Get("/api/metrics/hosts", mhH.Servir)
+		s.metricasHostH = mhH
 	}
 
 	// Public auth endpoints
@@ -424,6 +427,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		alertsH := handlers.NewAlertsHandler(s.alertSvc, s.db)
 		r.With(require(auth.PermMonitoringRead)).Get("/api/alerts", alertsH.List)
 		r.With(require(auth.PermMonitoringWrite)).Put("/api/alerts/{id}/resolve", alertsH.Resolve)
+		// O token da rota de métricas por aparelho (#118). Ler diz apenas se há
+		// um; a rota nunca devolve o valor.
+		if s.metricasHostH != nil {
+			r.With(require(auth.PermMonitoringRead)).Get("/api/metrics/hosts/token", s.metricasHostH.EstadoToken)
+			r.With(require(auth.PermSystemWrite)).Put("/api/metrics/hosts/token", s.metricasHostH.DefinirToken)
+		}
 
 		// Monitoring (Vigia health snapshot + config)
 		monH := handlers.NewMonitoringHandler(s.mon, s.db)

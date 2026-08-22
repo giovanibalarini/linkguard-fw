@@ -583,11 +583,52 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 			unboundContent = f.Content
 		}
 	}
+	// UM DAEMON RECUSADO NÃO PODE CONGELAR O OUTRO, e esta é a correção de uma
+	// classe de defeito que este produto já pagou três vezes (#152, #161).
+	//
+	// Antes, a validação era conjunta: nenhum arquivo era escrito se QUALQUER um
+	// dos dois fosse recusado. A intenção era boa — não deixar meia configuração
+	// em disco — mas o efeito era outro: uma caixa cuja interface de LAN não
+	// existe faz o `kea-dhcp4 -t` recusar por "interface 'br10' doesn't exist",
+	// e a partir daí NENHUMA alteração de DNS é aplicada. Nunca. Nem o
+	// redirecionamento da porta 53, nem a blocklist de domínios, nem o dnstap —
+	// coisas que não têm relação nenhuma com DHCP.
+	//
+	// Foi assim que a bateria T reprovou a #116 três vezes: o socket estava de
+	// pé, o AppArmor autorizava, e a config do unbound simplesmente nunca era
+	// escrita.
+	//
+	// São dois daemons, dois arquivos e dois validadores. Cada um é aplicado se
+	// o SEU passar, e a falha do outro é relatada — em vez de virar um bloqueio
+	// mudo do subsistema inteiro.
+	var falhas []string
+	keaOK := true
 	if err := s.validateKea(ctx, keaContent); err != nil {
-		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("config do Kea inválida (nada aplicado): %w", err)
+		keaOK = false
+		falhas = append(falhas, fmt.Sprintf("config do Kea inválida (o DHCP continua com a configuração anterior): %v", err))
 	}
+	// A ASSIMETRIA É DELIBERADA, e precisa de justificativa porque parece
+	// descuido.
+	//
+	// unbound recusado ABORTA TUDO, como antes. O DHCP entrega aos clientes o
+	// endereço do resolver: aplicar uma faixa nova enquanto o DNS ficou para
+	// trás põe aparelhos apontando para um resolver que acabou de recusar a
+	// própria configuração. E o motivo original de validar antes de escrever
+	// (achado #3 da auditoria de entrada) era exatamente um unbound.conf
+	// quebrado sobreviver ao reboot e derrubar o DNS.
+	//
+	// kea recusado NÃO bloqueia o DNS, e essa é a correção. O caminho contrário
+	// não tem simetria de dano: uma configuração de DHCP inválida não torna
+	// nenhuma configuração de DNS menos válida — e bloquear as duas
+	// transformava um erro num campo de DHCP em "nenhuma alteração de DNS pode
+	// mais ser aplicada nesta caixa, para sempre".
+	unboundOK := true
 	if err := s.validateUnbound(ctx, unboundContent); err != nil {
-		return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("config do unbound inválida (nada aplicado): %w", err)
+		unboundOK = false
+		keaOK = false // unbound recusado aborta os dois — ver acima
+		falhas = append(falhas, fmt.Sprintf("config do unbound inválida (nada aplicado): %v", err))
+		return netsvc.ApplyResult{Warnings: warnings, Installed: installed},
+			fmt.Errorf("%s", strings.Join(falhas, "; "))
 	}
 
 	// Whether unbound needs a real restart or the graceful reload is enough
@@ -603,6 +644,12 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 	// justamente essa guarda repetida — e esquecida em dois lugares — que fazia
 	// o dry-run vazar.
 	for _, f := range files {
+		// Só o que passou pela PRÓPRIA validação vai para o disco. Escrever a
+		// config recusada seria deixar em disco algo que o daemon rejeita — e
+		// que o próximo boot tentaria carregar.
+		if (f.Path == s.keaConf && !keaOK) || (f.Path == s.unboundConf && !unboundOK) {
+			continue
+		}
 		if err := s.exec.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
 			return netsvc.ApplyResult{Warnings: warnings, Installed: installed}, fmt.Errorf("write %s: %w", f.Path, err)
 		}
@@ -610,6 +657,13 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 
 	var out []string
 	for _, svc := range []string{keaService, unboundService} {
+		// Recarregar um daemon cuja config NÃO foi escrita não tem o que
+		// recarregar — e, pior, um `restart` aqui derrubaria e subiria o daemon
+		// com a configuração ANTIGA, transformando "a alteração não passou" em
+		// uma interrupção de serviço.
+		if (svc == keaService && !keaOK) || (svc == unboundService && !unboundOK) {
+			continue
+		}
 		action := "reload-or-restart"
 		if svc == unboundService && restartUnbound {
 			action = "restart"
@@ -642,6 +696,13 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 			slog.Warn("não foi possível registrar a config do unbound ativada; o próximo apply pode reiniciar o unbound sem necessidade",
 				"path", s.unboundApplied, "err", err)
 		}
+	}
+	// Uma metade recusada volta como ERRO, com o motivo — mas depois de a outra
+	// metade ter sido aplicada de verdade. É a diferença entre "o DNS não foi
+	// aplicado porque o DHCP está inválido" e "nada mais funciona nesta tela".
+	if len(falhas) > 0 {
+		return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings, Installed: installed},
+			fmt.Errorf("%s", strings.Join(falhas, "; "))
 	}
 	return netsvc.ApplyResult{Output: strings.Join(out, "; "), Warnings: warnings, Installed: installed}, nil
 }
