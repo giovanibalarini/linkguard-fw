@@ -55,6 +55,11 @@ api() {
   local args=(-s -o /tmp/lgv_body -w '%{http_code}' -X "$method" "$API$path")
   [[ -n "$token" ]] && args+=(-H "Authorization: Bearer $token")
   [[ -n "$body"  ]] && args+=(-H 'Content-Type: application/json' -d "$body")
+  # ZERA O CORPO ANTES DE CADA CHAMADA. Quando o curl não consegue conectar, o
+  # `-o` não escreve o arquivo — e a asserção seguinte lia a RESPOSTA ANTERIOR
+  # como se fosse a desta chamada. Foi assim que uma asserção sobre contenção
+  # recebeu uma lista de links e falhou dizendo a coisa errada.
+  : > /tmp/lgv_body
   local code; code=$(curl "${args[@]}")
   echo "$code"; cat /tmp/lgv_body 2>/dev/null; echo
 }
@@ -2360,7 +2365,16 @@ battery_reserva_dhcp() {
   kea=$(vm "systemctl is-active kea-dhcp4-server 2>/dev/null" | tr -d '\r')
   if [[ "$kea" == "active" ]]; then ok "o servidor de DHCP continua de pé depois das tentativas"
   else bad "o DHCP não está ativo depois da bateria ('$kea')"; fi
-  if vm "grep -q '192.168.3.153' /etc/kea/kea-dhcp4.conf" 2>/dev/null; then
+  # A VM NÃO TEM A INTERFACE DE LAN DE FÁBRICA (br10), então o kea recusa a
+  # config por um motivo que não tem nada a ver com a reserva:
+  # "Failed to select interface: interface 'br10' doesn't exist". Exigir que a
+  # reserva chegue na config aqui seria cobrar do produto uma coisa que o
+  # ambiente impede — e a asserção falharia para sempre, ensinando a ignorá-la.
+  local lan_existe
+  lan_existe=$(vm "ip -o link show br10 2>/dev/null | wc -l" | tr -d '\r')
+  if [[ "${lan_existe:-0}" == "0" ]]; then
+    ok "a reserva foi aceita (esta VM não tem a interface de LAN, então o Kea não aplica — fora do escopo desta bateria)"
+  elif vm "grep -q '192.168.3.153' /etc/kea/kea-dhcp4.conf" 2>/dev/null; then
     ok "a reserva boa chegou na config do Kea"
   else
     bad "a reserva IPv4 não chegou na config do Kea" \
@@ -2454,6 +2468,30 @@ battery_contencao() {
     ok "a contenção nasce DESLIGADA: nenhuma regra a alimenta"
   else bad "a contenção veio ligada de fábrica — foi assim que o arnês se trancou"; fi
 
+  # ISOLAMENTO ANTES DE LIGAR, e a razão é a execução da v1.0.159: com a
+  # contenção ligada, o PRÓPRIO ARNÊS foi contido. Ele fala com o painel pela
+  # NIC que o auto-detect cadastra como WAN, e faz centenas de chamadas — que é
+  # exatamente o comportamento que a contenção existe para pegar.
+  #
+  # Isso não é defeito do produto: é a feature funcionando numa caixa onde o
+  # admin entra pela WAN, e está escrito no aviso do próprio botão. Mas o teste
+  # precisa medir a contenção, não sofrer com ela — então os links detectados
+  # saem da lista de WANs, e só a WAN de mentira fica.
+  local detectados id
+  detectados=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l.get('enabled'): print(l['id'])" 2>/dev/null)
+  for id in $detectados; do
+    local atual
+    atual=$(body GET "/api/links/$id" "$tok")
+    python3 -c "
+import json,sys
+d=json.loads(sys.argv[1]); d['enabled']=False
+print(json.dumps(d))" "$atual" > /tmp/lgv_link.json 2>/dev/null
+    status PUT "/api/links/$id" "$tok" "$(cat /tmp/lgv_link.json)" >/dev/null 2>&1
+  done
+
   # A partir daqui, LIGADA de propósito, para medir o que ela faz.
   status PUT /api/nftables/edge-containment "$tok" '{"enabled":true}' >/dev/null
   sleep 2
@@ -2476,7 +2514,11 @@ battery_contencao() {
   # Se viesse depois, o accept curto-circuitaria e a contenção não valeria nada.
   local i_drop i_accept
   i_drop=$(grep -n 'ip saddr @abusers' <<<"$chain" | head -1 | cut -d: -f1)
-  i_accept=$(grep -n 'tcp dport {.*} counter accept' <<<"$chain" | head -1 | cut -d: -f1)
+  # O nft imprime `counter packets N bytes N accept` — casar "counter accept"
+  # não encontra nada, e a asserção falhava com o índice vazio dizendo que a
+  # ordem estava errada. É o mesmo erro de supor a forma da saída em vez de
+  # olhá-la.
+  i_accept=$(grep -n 'tcp dport {.*accept' <<<"$chain" | head -1 | cut -d: -f1)
   if [[ -n "$i_drop" && -n "$i_accept" && "$i_drop" -lt "$i_accept" ]]; then
     ok "o descarte de contido vem antes da liberação de gerência ($i_drop < $i_accept)"
   else bad "a ordem está errada (descarte $i_drop, liberação $i_accept): o accept curto-circuita a contenção"; fi
@@ -2545,6 +2587,18 @@ for l in json.load(sys.stdin):
     if l['interface']=='lg-abus': print(l['id'])" 2>/dev/null)
   [[ -n "$lid" ]] && status DELETE "/api/links/$lid" "$tok" >/dev/null 2>&1
   vm "ip netns del lgabus 2>/dev/null; ip link del lg-abus 2>/dev/null; true" >/dev/null 2>&1
+
+  # Religa os links detectados: as baterias seguintes contam com eles. A
+  # contenção já foi desligada acima, então religar não tranca ninguém.
+  for id in $detectados; do
+    local volta
+    volta=$(body GET "/api/links/$id" "$tok")
+    python3 -c "
+import json,sys
+d=json.loads(sys.argv[1]); d['enabled']=True
+print(json.dumps(d))" "$volta" > /tmp/lgv_link.json 2>/dev/null
+    status PUT "/api/links/$id" "$tok" "$(cat /tmp/lgv_link.json)" >/dev/null 2>&1
+  done
 }
 
 battery_fresh
