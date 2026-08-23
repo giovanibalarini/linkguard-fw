@@ -241,3 +241,40 @@ func TestSemGatewayVivoUsaOGravado(t *testing.T) {
 		}
 	}
 }
+
+// TestGatewayDeMultipathNaoPegaOPrimeiro é a regressão do gateway trocado que
+// se viu na máquina de produção: a tabela de retorno da WAN VIVO estava com o
+// gateway da WAN GIGA.
+//
+// A saída abaixo é a de verdade, copiada da caixa. O filtro `dev` casa a rota
+// multipath INTEIRA quando qualquer nexthop usa aquela interface, e a leitura
+// antiga devolvia o `via` do primeiro nexthop para qualquer interface pedida.
+func TestGatewayDeMultipathNaoPegaOPrimeiro(t *testing.T) {
+	const multipath = `default 
+	nexthop via 192.168.18.1 dev lg-wan-giga weight 256 onlink 
+	nexthop via 192.168.15.1 dev lg-wan-vivo weight 110 onlink `
+
+	for _, c := range []struct {
+		iface, quer string
+	}{
+		{"lg-wan-giga", "192.168.18.1"},
+		{"lg-wan-vivo", "192.168.15.1"},
+		{"lg-wan-fantasma", ""},
+	} {
+		if got := viaDaInterface(multipath, c.iface); got != c.quer {
+			t.Errorf("multipath, %s: veio %q, esperado %q", c.iface, got, c.quer)
+		}
+	}
+}
+
+// TestGatewayDeRotaSimplesContinuaFuncionando: o caminho comum, uma WAN só, não
+// pode ter sido quebrado pela correção do multipath.
+func TestGatewayDeRotaSimplesContinuaFuncionando(t *testing.T) {
+	const simples = "default via 192.168.15.1 dev lg-wan-vivo proto dhcp src 192.168.15.2 metric 100 "
+	if got := viaDaInterface(simples, "lg-wan-vivo"); got != "192.168.15.1" {
+		t.Errorf("rota simples: veio %q", got)
+	}
+	if got := viaDaInterface(simples, "outra"); got != "" {
+		t.Errorf("interface que não está na saída devia dar vazio, veio %q", got)
+	}
+}
