@@ -136,7 +136,50 @@ func connMarkChainRules(wans []WANMark) [][]string {
 			"ct", "mark", "set", fmt.Sprintf("0x%x", w.Mark),
 		})
 	}
-	return append(regras, restoreMarkRule(), restoreOutboundMarkRule(wans))
+	return append(regras, restoreReplyMarkRule(wans), restoreOutboundMarkRule(wans))
+}
+
+// restoreReplyMarkRule é a restauração da metade de ENTRADA (#120), com o
+// guarda de interface que ela não precisava ter antes e passou a precisar.
+//
+// O DEFEITO QUE ESTE GUARDA IMPEDE, e que quase foi entregue. Antes desta
+// feature, `ct mark != 0` significava uma coisa só: "a conexão entrou por uma
+// WAN". A restauração podia casar `ct direction reply` sem olhar de onde o
+// pacote vinha, porque a resposta de uma conexão que entrou de fora é sempre o
+// host da LAN devolvendo — e ele devolve pela LAN.
+//
+// A memória de saída muda o significado da marca: agora conexão nascida na LAN
+// também tem `ct mark`. E a "resposta" DELA é a internet respondendo, chegando
+// por uma WAN. Sem o guarda, essa regra casaria esse pacote, poria a marca da
+// WAN, a `ip rule fwmark` o mandaria para a tabela do link — que só tem
+// `default via <gateway>` — e o SYN-ACK destinado a 192.168.3.20 sairia de
+// volta para o provedor. Toda a LAN sem internet, no instante da reconciliação,
+// e persistido para o próximo boot.
+//
+// É o defeito da #120 renascido pela porta que ninguém trancou: a proteção nova
+// tinha sido posta na regra nova, e a regra velha continuou lendo `ct mark` com
+// o significado antigo.
+//
+// `iifname != { as WANs }` diz a coisa certa para as duas metades: RESTAURAR SÓ
+// O QUE VEIO DA LAN. Resposta de encaminhamento de porta vem da LAN e casa;
+// resposta da internet para um host da LAN vem de uma WAN e não casa.
+//
+// Sem `meta mark == 0x0`, de propósito e ao contrário da restauração de saída:
+// aqui a memória da conexão TEM de vencer o @host_wan. O pacote é o host da LAN
+// respondendo a quem o procurou de fora, e ele precisa sair pela WAN por onde a
+// conexão entrou, mesmo que o admin tenha fixado aquele aparelho em outra.
+func restoreReplyMarkRule(wans []WANMark) []string {
+	return append([]string{"iifname", "!=", setDeInterfaces(wans)}, restoreMarkRule()...)
+}
+
+// setDeInterfaces monta `{ "wanA", "wanB" }` como um token só, na forma que o
+// resto do pacote já usa (ver acctChainRules).
+func setDeInterfaces(wans []WANMark) string {
+	nomes := make([]string, len(wans))
+	for i, w := range wans {
+		nomes[i] = fmt.Sprintf("%q", w.Interface)
+	}
+	return "{ " + strings.Join(nomes, ", ") + " }"
 }
 
 func outputMarkChainRules() [][]string {
@@ -203,15 +246,8 @@ func connMarkOutChainRules(wans []WANMark) [][]string {
 // (-140): quando o admin fixou o aparelho numa WAN, a marca já está posta e
 // esta regra não a toca. Fixação escolhida por gente vence memória de conexão.
 func restoreOutboundMarkRule(wans []WANMark) []string {
-	// O conjunto inteiro num token só, como em acctChainRules: é a forma que o
-	// resto do pacote já usa para `iifname != { ... }`.
-	nomes := make([]string, len(wans))
-	for i, w := range wans {
-		nomes[i] = fmt.Sprintf("%q", w.Interface)
-	}
-	set := "{ " + strings.Join(nomes, ", ") + " }"
 	return []string{
-		"iifname", "!=", set,
+		"iifname", "!=", setDeInterfaces(wans),
 		"ct", "mark", "!=", "0x0", "ct", "direction", "original",
 		"meta", "mark", "==", "0x0", "counter",
 		"meta", "mark", "set", "ct", "mark",

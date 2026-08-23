@@ -20,8 +20,43 @@ func TestConnMarkChainRules(t *testing.T) {
 	if got := strings.Join(regras[1], " "); got != `iifname "wan2" ct state new counter ct mark set 0x65` {
 		t.Errorf("memória da wan2: %q", got)
 	}
-	if got := strings.Join(regras[2], " "); got != `ct mark != 0x0 ct direction reply counter meta mark set ct mark` {
-		t.Errorf("restauração: %q", got)
+	if got := strings.Join(regras[2], " "); got != `iifname != { "wan1", "wan2" } ct mark != 0x0 ct direction reply counter meta mark set ct mark` {
+		t.Errorf("restauração de entrada: %q", got)
+	}
+	if got := strings.Join(regras[3], " "); got != `iifname != { "wan1", "wan2" } ct mark != 0x0 ct direction original meta mark == 0x0 counter meta mark set ct mark` {
+		t.Errorf("restauração de saída: %q", got)
+	}
+}
+
+func TestARestauracaoNoPreroutingSoAgeSobreOQueVeioDaLAN(t *testing.T) {
+	// O DEFEITO QUE ESTE TESTE PRENDE, e que quase foi entregue.
+	//
+	// Antes da memória de saída, `ct mark != 0` significava uma coisa só: "a
+	// conexão entrou por uma WAN". Com a memória de saída, conexão nascida na
+	// LAN também tem marca — e a RESPOSTA dela é a internet respondendo,
+	// chegando por uma WAN.
+	//
+	// Sem o guarda de interface, a restauração de resposta casaria esse pacote,
+	// a `ip rule fwmark` o mandaria para a tabela do link — que só tem
+	// `default via <gateway>` — e o SYN-ACK destinado a um host da LAN sairia de
+	// volta para o provedor. Toda a LAN sem internet, no instante da
+	// reconciliação, persistido para o próximo boot.
+	//
+	// AS DUAS REGRAS DO PREROUTING PRECISAM DO GUARDA. Foi ter posto a proteção
+	// só na regra nova que criou o defeito: a regra velha continuou lendo
+	// `ct mark` com o significado antigo.
+	wans := []WANMark{{Interface: "wan1", Mark: 100}, {Interface: "wan2", Mark: 101}}
+	for _, r := range [][]string{restoreReplyMarkRule(wans), restoreOutboundMarkRule(wans)} {
+		got := strings.Join(r, " ")
+		if !strings.HasPrefix(got, `iifname != { "wan1", "wan2" }`) {
+			t.Errorf("restauração do prerouting sem o guarda de interface: %q", got)
+		}
+	}
+
+	// E o guarda NÃO pode existir na chain de output: lá não há interface de
+	// entrada, e a marca só chega em conexão que entrou por WAN de verdade.
+	if got := strings.Join(outputMarkChainRules()[0], " "); strings.Contains(got, "iifname") {
+		t.Errorf("a chain de output não tem interface de entrada para casar: %q", got)
 	}
 }
 
@@ -37,7 +72,8 @@ func TestARestauracaoSoValeParaADirecaoDeResposta(t *testing.T) {
 	//
 	// Sintoma: o painel mostra o encaminhamento aplicado, a tradução está na
 	// chain de DNAT, e o servidor interno não responde de fora.
-	for _, r := range [][]string{restoreMarkRule(), outputMarkChainRules()[0]} {
+	entrada := restoreReplyMarkRule([]WANMark{{Interface: "wan1", Mark: 100}})
+	for _, r := range [][]string{entrada, outputMarkChainRules()[0]} {
 		got := strings.Join(r, " ")
 		if !strings.Contains(got, "ct direction reply") {
 			t.Errorf("restauração sem direção: %q — encaminhamento de porta volta pela WAN", got)
