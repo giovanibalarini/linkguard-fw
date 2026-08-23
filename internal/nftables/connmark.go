@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 )
 
 // Marcação de conexão para roteamento de retorno (issue #120).
@@ -48,6 +49,8 @@ const (
 	ConnMarkChain = "conn_mark"
 	// OutputMarkChain restaura a marca no tráfego que a própria máquina gera.
 	OutputMarkChain = "output_mark"
+	// ConnMarkOutChain lembra por qual WAN uma conexão NASCIDA NA LAN saiu.
+	ConnMarkOutChain = "conn_mark_out"
 
 	// Prioridade mangle + 10: depois da mark_hosts, para que a marca de
 	// direcionamento por host (que só existe em conexão nova, saindo) já tenha
@@ -55,6 +58,13 @@ const (
 	// pacote — ver o comentário do pacote —, mas a ordem deixa isso explícito.
 	connMarkChainSpec   = "{ type filter hook prerouting priority mangle + 10; policy accept; }"
 	outputMarkChainSpec = "{ type route hook output priority mangle; policy accept; }"
+
+	// Hook FORWARD, e não postrouting, por duas razões. A interface de saída já
+	// está decidida aqui, que é o que se quer lembrar; e o forward vê SÓ o que
+	// atravessa — no postrouting passaria também o tráfego que a própria caixa
+	// gera, e gravar marca nele seria estado sem uso, do tipo que confunde quem
+	// for depurar depois.
+	connMarkOutChainSpec = "{ type filter hook forward priority mangle; policy accept; }"
 )
 
 // WANMark associa a interface de uma WAN à marca que identifica o caminho de
@@ -90,11 +100,17 @@ func (s *Service) EnsureConnMark(ctx context.Context, wans []WANMark) error {
 	if out, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, OutputMarkChain, outputMarkChainSpec); err != nil {
 		return fmt.Errorf("criar chain %s: %w (%s)", OutputMarkChain, err, out)
 	}
+	if out, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, ConnMarkOutChain, connMarkOutChainSpec); err != nil {
+		return fmt.Errorf("criar chain %s: %w (%s)", ConnMarkOutChain, err, out)
+	}
 
 	if err := s.rebuildChain(ctx, ConnMarkChain, connMarkChainRules(limpas)); err != nil {
 		return err
 	}
 	if err := s.rebuildChain(ctx, OutputMarkChain, outputMarkChainRules()); err != nil {
+		return err
+	}
+	if err := s.rebuildChain(ctx, ConnMarkOutChain, connMarkOutChainRules(limpas)); err != nil {
 		return err
 	}
 	slog.Info("marcação de conexão reconciliada", "wans", len(limpas))
@@ -120,11 +136,86 @@ func connMarkChainRules(wans []WANMark) [][]string {
 			"ct", "mark", "set", fmt.Sprintf("0x%x", w.Mark),
 		})
 	}
-	return append(regras, restoreMarkRule())
+	return append(regras, restoreMarkRule(), restoreOutboundMarkRule(wans))
 }
 
 func outputMarkChainRules() [][]string {
 	return [][]string{restoreMarkRule()}
+}
+
+// connMarkOutChainRules lembra por qual WAN saiu cada conexão NASCIDA NA LAN.
+//
+// O QUE ISTO RESOLVE, E POR QUE NÃO É O MESMO PROBLEMA DA #120. A #120 tratou
+// do que CHEGA de fora. O que SAI da LAN nunca teve dono: a rota padrão em modo
+// balanceado é multipath, o kernel escolhe o caminho por hash, e a escolha vale
+// enquanto aquela rota existir. Quando um link cai e volta — ou quando o
+// gateway muda numa renovação de DHCP — a rota é reescrita e o hash muda de
+// resposta. As conexões ABERTAS pulam de link.
+//
+// E pular de link não degrada: mata. O conntrack já guardou a tradução de
+// origem para o endereço da WAN antiga, então o pacote sai pela WAN nova
+// levando o endereço da outra, e o provedor descarta por uRPF. A conexão morre
+// calada e não se recupera nem quando o link volta.
+//
+// O QUE SOBREVIVE E O QUE MORRE, e é isto que torna o defeito difícil de
+// enxergar: download e navegação reabrem conexão e parecem apenas "travar um
+// instante". Chamada de vídeo e jogo online são fluxos longos — para eles, uma
+// reescrita de rota é queda. Medido na caixa de produção: cinco quedas e sete
+// retornos em trinta dias, cada um uma janela de morte para o que estava aberto.
+//
+// AS TRÊS CONDIÇÕES, e nenhuma é decorativa:
+//
+//   - `ct direction original` — conexão que veio de fora tem a marca gravada na
+//     ENTRADA, e os pacotes dela que passam por aqui são a direção de RESPOSTA.
+//     Sem isto, a resposta de um encaminhamento de porta seria re-marcada com a
+//     WAN de saída, que é a #120 ao contrário.
+//   - `ct mark == 0x0` — não sobrescrever o que a entrada já decidiu. Junto com
+//     a condição acima é cinto e suspensório, de propósito: as duas metades
+//     desta feature já se atropelaram uma vez.
+//   - `ct state new` NÃO é usada aqui. A conexão pode virar established antes
+//     de o primeiro pacote chegar ao forward em alguns caminhos; `ct mark == 0`
+//     já garante gravação única, e é uma condição sobre o ESTADO GUARDADO, não
+//     sobre o instante.
+func connMarkOutChainRules(wans []WANMark) [][]string {
+	regras := make([][]string, 0, len(wans))
+	for _, w := range wans {
+		regras = append(regras, []string{
+			"oifname", fmt.Sprintf("%q", w.Interface),
+			"ct", "direction", "original",
+			"ct", "mark", "==", "0x0", "counter",
+			"ct", "mark", "set", fmt.Sprintf("0x%x", w.Mark),
+		})
+	}
+	return regras
+}
+
+// restoreOutboundMarkRule devolve ao pacote a WAN por onde a conexão dele saiu.
+//
+// `iifname != { as WANs }` É O QUE SEPARA ESTA REGRA DA ARMADILHA DA #120.
+// A regra de restauração original vale só para `ct direction reply` justamente
+// porque marcar a direção ORIGINAL de uma conexão que entrou de fora mandava o
+// SYN destinado ao host da LAN de volta para o provedor. Aqui a direção original
+// também é marcada — mas só quando o pacote ENTROU POR ONDE NÃO É WAN, isto é,
+// quando ele veio da LAN. Conexão que entrou de fora nunca casa.
+//
+// `meta mark == 0x0` deixa o direcionamento por host (@host_wan) ganhar. A
+// mark_hosts roda em `priority mangle` (-150) e esta chain em `mangle + 10`
+// (-140): quando o admin fixou o aparelho numa WAN, a marca já está posta e
+// esta regra não a toca. Fixação escolhida por gente vence memória de conexão.
+func restoreOutboundMarkRule(wans []WANMark) []string {
+	// O conjunto inteiro num token só, como em acctChainRules: é a forma que o
+	// resto do pacote já usa para `iifname != { ... }`.
+	nomes := make([]string, len(wans))
+	for i, w := range wans {
+		nomes[i] = fmt.Sprintf("%q", w.Interface)
+	}
+	set := "{ " + strings.Join(nomes, ", ") + " }"
+	return []string{
+		"iifname", "!=", set,
+		"ct", "mark", "!=", "0x0", "ct", "direction", "original",
+		"meta", "mark", "==", "0x0", "counter",
+		"meta", "mark", "set", "ct", "mark",
+	}
 }
 
 // restoreMarkRule devolve a marca guardada na conexão ao pacote. O `!= 0x0` é

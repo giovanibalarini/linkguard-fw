@@ -11,8 +11,8 @@ func TestConnMarkChainRules(t *testing.T) {
 		{Interface: "wan1", Mark: 100},
 		{Interface: "wan2", Mark: 101},
 	})
-	if len(regras) != 3 {
-		t.Fatalf("queria 2 regras de memória + 1 de restauração, veio %d", len(regras))
+	if len(regras) != 4 {
+		t.Fatalf("queria 2 regras de memória + 2 de restauração (entrada e saída), veio %d", len(regras))
 	}
 	if got := strings.Join(regras[0], " "); got != `iifname "wan1" ct state new counter ct mark set 0x64` {
 		t.Errorf("memória da wan1: %q", got)
@@ -122,5 +122,74 @@ func TestAChainDeSaidaEhDoTipoRoute(t *testing.T) {
 	// `type route` dispara o reroute.
 	if !strings.Contains(outputMarkChainSpec, "type route hook output") {
 		t.Errorf("chain de saída não é do tipo route: %q", outputMarkChainSpec)
+	}
+}
+
+
+func TestConexaoDaLANEhFixadaNaWANEmQueSaiu(t *testing.T) {
+	// O DEFEITO QUE ESTE TESTE PRENDE. Conexão nascida na LAN não tinha dono: a
+	// rota padrão em modo balanceado é multipath e o kernel escolhe por hash.
+	// Link que cai e volta faz a rota ser reescrita, o hash muda de resposta e
+	// as conexões ABERTAS pulam de link — com o conntrack ainda traduzindo a
+	// origem para o endereço da WAN antiga, o que faz o provedor descartar por
+	// uRPF. Download reabre conexão e parece travar; chamada de vídeo e jogo
+	// online morrem.
+	regras := connMarkOutChainRules([]WANMark{
+		{Interface: "wan1", Mark: 100},
+		{Interface: "wan2", Mark: 101},
+	})
+	if len(regras) != 2 {
+		t.Fatalf("queria uma memória de saída por WAN, veio %d", len(regras))
+	}
+	if got := strings.Join(regras[0], " "); got != `oifname "wan1" ct direction original ct mark == 0x0 counter ct mark set 0x64` {
+		t.Errorf("memória de saída da wan1: %q", got)
+	}
+	if got := strings.Join(regras[1], " "); got != `oifname "wan2" ct direction original ct mark == 0x0 counter ct mark set 0x65` {
+		t.Errorf("memória de saída da wan2: %q", got)
+	}
+}
+
+func TestAMemoriaDeSaidaNaoSobrescreveAMemoriaDeEntrada(t *testing.T) {
+	// As duas metades desta feature já se atropelaram uma vez (#120). A memória
+	// de saída só grava quando não há marca — a decisão de quem ENTROU manda,
+	// porque é ela que sustenta o encaminhamento de porta.
+	for _, r := range connMarkOutChainRules([]WANMark{{Interface: "wan1", Mark: 100}}) {
+		got := strings.Join(r, " ")
+		if !strings.Contains(got, "ct mark == 0x0") {
+			t.Errorf("memória de saída sem o guarda de marca zero: %q", got)
+		}
+		if !strings.Contains(got, "ct direction original") {
+			t.Errorf("memória de saída sem a direção original: %q — remarcaria a resposta de um encaminhamento de porta", got)
+		}
+	}
+}
+
+func TestARestauracaoDeSaidaSoValeParaQuemVeioDaLAN(t *testing.T) {
+	// ESTA É A CONDIÇÃO QUE IMPEDE A ARMADILHA DA #120 DE VOLTAR. A restauração
+	// de saída casa a direção ORIGINAL, que é exatamente a direção que mandava o
+	// SYN de um encaminhamento de porta de volta para o provedor. O que a torna
+	// segura é o pacote ter de ter ENTRADO POR ONDE NÃO É WAN.
+	r := strings.Join(restoreOutboundMarkRule([]WANMark{
+		{Interface: "wan1", Mark: 100}, {Interface: "wan2", Mark: 101},
+	}), " ")
+	if !strings.Contains(r, `iifname != { "wan1", "wan2" }`) {
+		t.Errorf("restauração de saída sem excluir as WANs de entrada: %q", r)
+	}
+	if !strings.Contains(r, "ct direction original") {
+		t.Errorf("restauração de saída não casa a direção original: %q", r)
+	}
+	if !strings.Contains(r, "meta mark == 0x0") {
+		t.Errorf("restauração de saída sem deixar o @host_wan ganhar: %q", r)
+	}
+}
+
+func TestFixacaoPorHostGanhaDaMemoriaDeConexao(t *testing.T) {
+	// Fixação escolhida por gente vence memória de conexão. A mark_hosts roda em
+	// priority mangle (-150) e a conn_mark em mangle+10 (-140), então quando o
+	// admin fixou o aparelho a marca já está posta — e a restauração de saída
+	// exige marca zero para agir.
+	r := strings.Join(restoreOutboundMarkRule([]WANMark{{Interface: "wan1", Mark: 100}}), " ")
+	if !strings.Contains(r, "meta mark == 0x0") {
+		t.Fatalf("sem o guarda, a memória de conexão sobrescreveria o direcionamento por host: %q", r)
 	}
 }
