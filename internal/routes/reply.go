@@ -184,10 +184,43 @@ func (s *Service) gatewayVivo(ctx context.Context, iface string) string {
 	if err != nil {
 		return ""
 	}
+	return viaDaInterface(out, iface)
+}
+
+// viaDaInterface acha o gateway QUE PERTENCE à interface pedida, dentro da
+// saída de `ip route show default dev <iface>`.
+//
+// POR QUE ISTO NÃO É "PEGAR O PRIMEIRO via". Em modo de balanceamento a default
+// é uma rota multipath, e o filtro `dev` casa a rota INTEIRA quando qualquer um
+// dos nexthops usa aquela interface — a saída vem com todos eles:
+//
+//	default
+//	    nexthop via 192.168.18.1 dev lg-wan-giga weight 256 onlink
+//	    nexthop via 192.168.15.1 dev lg-wan-vivo weight 110 onlink
+//
+// Pegar o primeiro `via` devolvia o gateway do PRIMEIRO nexthop para qualquer
+// interface perguntada. Medido em produção: a tabela de retorno da WAN VIVO
+// ficou com `default via 192.168.18.1 dev lg-wan-vivo` — o gateway da outra
+// WAN, na interface certa, gravado com `onlink`, que faz o kernel aceitar sem
+// reclamar mesmo fora da sub-rede. Tudo que CHEGA por aquela WAN deixa de ser
+// respondido, e a navegação da LAN continua funcionando pela `main`: seletivo,
+// silencioso, e exatamente o modo de falha que a #154 existia para impedir.
+//
+// A correção da #154 (ler o gateway do kernel em vez do banco) continua certa;
+// o que faltava era ler o pedaço certo da resposta.
+//
+// Devolver "" quando não achar é deliberado: o chamador mantém o gateway do
+// banco, que é o comportamento de antes da #154 e nunca é pior que um chute.
+func viaDaInterface(out, iface string) string {
 	campos := strings.Fields(out)
+	var ultimoVia string
 	for i, c := range campos {
-		if c == "via" && i+1 < len(campos) {
-			return campos[i+1]
+		switch {
+		case c == "via" && i+1 < len(campos):
+			ultimoVia = campos[i+1]
+		case c == "dev" && i+1 < len(campos) && campos[i+1] == iface:
+			// O `dev` fecha o trecho: o `via` mais recente é o deste nexthop.
+			return ultimoVia
 		}
 	}
 	return ""

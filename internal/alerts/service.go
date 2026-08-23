@@ -30,6 +30,17 @@ const (
 	// auto-resolve.
 	TypeSelfUpdateFailed = "self_update_failed"
 
+	// TypeSteerInativo avisa que o direcionamento por WAN está configurado e
+	// NÃO está valendo — a marca é gravada nos pacotes e não existe regra de
+	// política que a atenda, então os hosts fixados saem por onde calhar.
+	//
+	// POR QUE ISTO PRECISA DE ALERTA E NÃO SÓ DE LOG. O sintoma é invisível: o
+	// painel mostra os hosts fixados, o nftables mostra a marca sendo posta, e
+	// o tráfego sai pelo link errado sem nada falhar. Medido em produção: oito
+	// hosts fixados numa tabela de um provedor que não existe mais, e os dois
+	// comandos que criariam a regra falhando a cada boot com o erro descartado.
+	TypeSteerInativo = "steer_inativo"
+
 	TypeNTPUnsynced       = "ntp_unsynced"
 	TypeNTPSynced         = "ntp_synced"
 	TypeDiskSMARTFail     = "disk_smart_fail"

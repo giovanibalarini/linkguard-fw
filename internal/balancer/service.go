@@ -453,13 +453,32 @@ func (s *Service) EnsureSteerRouting(ctx context.Context) {
 		slog.Warn("balancer: wan_steer inválido (campos fora do padrão) — ignorado")
 		return
 	}
+	// OS ERROS DAQUI NÃO PODEM SER DESCARTADOS, E ERAM.
+	//
+	// Este bloco escreve rota e regra de política. Quando o alvo não existe
+	// mais — tabela de um provedor antigo, interface renomeada — os comandos
+	// falham, e falhavam com `_, _ =`. O efeito é invisível e duradouro: a
+	// chain mark_hosts continua gravando a marca, o painel continua listando os
+	// hosts fixados, e sem regra que atenda a marca o pacote cai na tabela
+	// principal e sai por onde o balanceamento mandar.
+	//
+	// Medido na máquina de produção: `wan_steer` apontando para a tabela
+	// "sumicity", que não está em /etc/iproute2/rt_tables, e para a interface
+	// "enp3s0", renomeada para "lg-wan-giga" há meses. Oito hosts fixados, marca
+	// 0x12c gravada em todos, nenhuma regra procurando 0x12c, e um download
+	// saindo pelas duas WANs ao mesmo tempo. Nada em log nenhum.
+	var falhas []string
 	if c.Gateway != "" && c.Interface != "" {
-		_, _ = s.exec.Execute(ctx, "ip", "route", "replace", "default",
-			"via", c.Gateway, "dev", c.Interface, "onlink", "table", c.Table)
+		if out, err := s.exec.Execute(ctx, "ip", "route", "replace", "default",
+			"via", c.Gateway, "dev", c.Interface, "onlink", "table", c.Table); err != nil {
+			falhas = append(falhas, fmt.Sprintf("rota padrão na tabela %s: %v (%s)", c.Table, err, strings.TrimSpace(out)))
+		}
 	}
 	if c.LanCIDR != "" && c.LanVia != "" && c.LanDev != "" {
-		_, _ = s.exec.Execute(ctx, "ip", "route", "replace", c.LanCIDR,
-			"via", c.LanVia, "dev", c.LanDev, "table", c.Table)
+		if out, err := s.exec.Execute(ctx, "ip", "route", "replace", c.LanCIDR,
+			"via", c.LanVia, "dev", c.LanDev, "table", c.Table); err != nil {
+			falhas = append(falhas, fmt.Sprintf("rota da LAN na tabela %s: %v (%s)", c.Table, err, strings.TrimSpace(out)))
+		}
 	}
 	if c.Mark != "" {
 		out, _ := s.exec.ExecuteRead(ctx, "ip", "rule", "show")
@@ -469,8 +488,52 @@ func (s *Service) EnsureSteerRouting(ctx context.Context) {
 			if c.Priority > 0 {
 				args = append(args, "priority", fmt.Sprintf("%d", c.Priority))
 			}
-			_, _ = s.exec.Execute(ctx, "ip", args...)
+			if saida, err := s.exec.Execute(ctx, "ip", args...); err != nil {
+				falhas = append(falhas, fmt.Sprintf("regra fwmark %s → tabela %s: %v (%s)", c.Mark, c.Table, err, strings.TrimSpace(saida)))
+			}
 		}
+	}
+
+	// E a conferência é do ESTADO, não do código de saída: a regra pode já
+	// existir de antes, e pode ter sumido depois de um comando que "deu certo".
+	// O que decide é ela estar lá agora.
+	s.conferirSteer(ctx, c, falhas)
+}
+
+// conferirSteer confirma que a regra de política que dá sentido à marca existe
+// de verdade, e ALERTA quando não existe.
+//
+// Sem isto o defeito é mudo por construção: quem olha o painel vê os hosts
+// fixados, quem olha o nftables vê a marca sendo gravada, e o único lugar onde
+// a verdade aparece é um `ip rule show` que ninguém roda.
+func (s *Service) conferirSteer(ctx context.Context, c SteerConfig, falhas []string) {
+	if c.Mark == "" {
+		return
+	}
+	out, err := s.exec.ExecuteRead(ctx, "ip", "rule", "show")
+	if err != nil {
+		slog.Warn("balancer: não consegui conferir se o direcionamento por WAN está valendo", "err", err)
+		return
+	}
+	if strings.Contains(out, "fwmark "+c.Mark) && strings.Contains(out, "lookup "+c.Table) {
+		if len(falhas) > 0 {
+			slog.Warn("balancer: direcionamento por WAN está valendo, mas parte da configuração falhou",
+				"falhas", strings.Join(falhas, "; "))
+		}
+		return
+	}
+	motivo := strings.Join(falhas, "; ")
+	if motivo == "" {
+		motivo = fmt.Sprintf("nenhuma regra procura a marca %s", c.Mark)
+	}
+	slog.Error("balancer: o direcionamento por WAN NÃO está valendo; os hosts fixados saem pelo balanceamento",
+		"marca", c.Mark, "tabela", c.Table, "interface", c.Interface, "motivo", motivo)
+	if s.alertSvc != nil {
+		_ = s.alertSvc.Create(alerts.TypeSteerInativo, "warning",
+			"Direcionamento por WAN não está valendo",
+			fmt.Sprintf("Os aparelhos fixados recebem a marca %s, e não existe regra de roteamento que a atenda "+
+				"(tabela %q, interface %q). Eles estão saindo pelo balanceamento, e não pelo link escolhido. Motivo: %s",
+				c.Mark, c.Table, c.Interface, motivo), "")
 	}
 }
 
