@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -314,5 +315,59 @@ func TestRebuildSkipsRedundantRouteReplace(t *testing.T) {
 	}
 	if got := len(exec.writes); got != firstCount {
 		t.Fatalf("second Rebuild issued %d more write(s) — expected 0 (no-op), the nexthop set did not change", got-firstCount)
+	}
+}
+
+func TestContarFixadosCasaAMarcaPorNumeroENaoPorTexto(t *testing.T) {
+	// O DEFEITO QUE ESTE TESTE PRENDE. O nft imprime a marca preenchida com
+	// zeros e a configuração guarda a forma curta. Comparadas como texto, elas
+	// nunca casam — o contador daria zero sempre, o alerta seria suprimido
+	// mesmo com aparelhos fixados, e o silêncio se pareceria com conserto.
+	//
+	// A saída abaixo é a da máquina de produção.
+	const saida = `table inet linkguard {
+	map host_wan {
+		type ipv4_addr : mark
+		elements = { 192.168.3.17 : 0x0000012c,
+			     192.168.3.35 : 0x0000012c,
+			     192.168.3.47 : 0x00000065 }
+	}
+}`
+	casos := []struct {
+		marca string
+		quer  int
+	}{
+		{"0x12c", 2},      // forma curta, como a configuração guarda
+		{"0x0000012c", 2}, // forma longa, como o nft imprime
+		{"0x65", 1},
+		{"0x999", 0},
+	}
+	for _, c := range casos {
+		alvo, err := strconv.ParseUint(strings.TrimPrefix(c.marca, "0x"), 16, 32)
+		if err != nil {
+			t.Fatalf("%s: %v", c.marca, err)
+		}
+		var n int
+		for _, m := range reMarcaDoMap.FindAllStringSubmatch(saida, -1) {
+			if v, err := strconv.ParseUint(m[1], 16, 32); err == nil && v == alvo {
+				n++
+			}
+		}
+		if n != c.quer {
+			t.Errorf("marca %s: contei %d, esperado %d", c.marca, n, c.quer)
+		}
+	}
+}
+
+func TestOMapVazioNaoContaNinguem(t *testing.T) {
+	// Map sem elemento nenhum é o estado de quem soltou todos os aparelhos, e é
+	// exatamente quando o alerta NÃO pode aparecer.
+	const vazio = `table inet linkguard {
+	map host_wan {
+		type ipv4_addr : mark
+	}
+}`
+	if got := len(reMarcaDoMap.FindAllStringSubmatch(vazio, -1)); got != 0 {
+		t.Errorf("map vazio casou %d marca(s)", got)
 	}
 }
