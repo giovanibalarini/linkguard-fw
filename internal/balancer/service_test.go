@@ -355,6 +355,10 @@ func TestContarFixadosCasaAMarcaPorNumeroENaoPorTexto(t *testing.T) {
 		}
 		if n != c.quer {
 			t.Errorf("marca %s: contei %d, esperado %d", c.marca, n, c.quer)
+		}
+	}
+}
+
 func TestInterfaceComMaeEhReconhecidaComoNoAr(t *testing.T) {
 	// O DEFEITO QUE ESTE TESTE PRENDE, e ele é de produção.
 	//
@@ -400,6 +404,9 @@ func TestOMapVazioNaoContaNinguem(t *testing.T) {
 }`
 	if got := len(reMarcaDoMap.FindAllStringSubmatch(vazio, -1)); got != 0 {
 		t.Errorf("map vazio casou %d marca(s)", got)
+	}
+}
+
 func TestUmaWANEmVLANEntraNoPlano(t *testing.T) {
 	// A consequência do defeito acima, no lugar onde ela custa: selectNexthops
 	// joga em `excluded` todo link cuja interface não está na lista de no-ar.
