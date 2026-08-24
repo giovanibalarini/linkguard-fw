@@ -20,10 +20,10 @@ func TestConnMarkChainRules(t *testing.T) {
 	if got := strings.Join(regras[1], " "); got != `iifname "wan2" ct state new counter ct mark set 0x65` {
 		t.Errorf("memória da wan2: %q", got)
 	}
-	if got := strings.Join(regras[2], " "); got != `iifname != { "wan1", "wan2" } ct mark != 0x0 ct direction reply counter meta mark set ct mark` {
+	if got := strings.Join(regras[2], " "); got != `iifname != { "wan1", "wan2" } ct mark != 0x0 ct mark and 0x10000 == 0x0 ct direction reply counter meta mark set ct mark` {
 		t.Errorf("restauração de entrada: %q", got)
 	}
-	if got := strings.Join(regras[3], " "); got != `iifname != { "wan1", "wan2" } ct mark != 0x0 ct direction original meta mark == 0x0 counter meta mark set ct mark` {
+	if got := strings.Join(regras[3], " "); got != `iifname != { "wan1", "wan2" } ct mark and 0x10000 == 0x10000 ct direction original meta mark == 0x0 counter meta mark set ct mark and 0xffff` {
 		t.Errorf("restauração de saída: %q", got)
 	}
 }
@@ -177,10 +177,10 @@ func TestConexaoDaLANEhFixadaNaWANEmQueSaiu(t *testing.T) {
 	if len(regras) != 2 {
 		t.Fatalf("queria uma memória de saída por WAN, veio %d", len(regras))
 	}
-	if got := strings.Join(regras[0], " "); got != `oifname "wan1" ct direction original ct mark == 0x0 counter ct mark set 0x64` {
+	if got := strings.Join(regras[0], " "); got != `oifname "wan1" ct direction original ct mark == 0x0 counter ct mark set 0x10064` {
 		t.Errorf("memória de saída da wan1: %q", got)
 	}
-	if got := strings.Join(regras[1], " "); got != `oifname "wan2" ct direction original ct mark == 0x0 counter ct mark set 0x65` {
+	if got := strings.Join(regras[1], " "); got != `oifname "wan2" ct direction original ct mark == 0x0 counter ct mark set 0x10065` {
 		t.Errorf("memória de saída da wan2: %q", got)
 	}
 }
@@ -227,5 +227,61 @@ func TestFixacaoPorHostGanhaDaMemoriaDeConexao(t *testing.T) {
 	r := strings.Join(restoreOutboundMarkRule([]WANMark{{Interface: "wan1", Mark: 100}}), " ")
 	if !strings.Contains(r, "meta mark == 0x0") {
 		t.Fatalf("sem o guarda, a memória de conexão sobrescreveria o direcionamento por host: %q", r)
+	}
+}
+
+
+// TestARestauracaoDeOutputIgnoraConexaoNascidaNaLAN é a regressão do segundo
+// apagão que esta mudança quase entregou, e que a bateria I pegou.
+//
+// A caixa recusa DoT com `reject with tcp reset`. O RST é gerado por ela e
+// pertence à MESMA conexão, na direção de RESPOSTA. Com a memória de saída,
+// conexão nascida na LAN passou a ter ct mark — então a restauração do output
+// casava esse RST, punha a marca da WAN, e o `type route` mandava para a WAN a
+// recusa destinada ao cliente da LAN. O cliente ficava pendurado até o timeout.
+//
+// Vale para todo `reject` e para os ICMP de erro que a caixa emite por tráfego
+// encaminhado, não só para o DoT. O sintoma medido foi "TimeoutError 4.0".
+func TestARestauracaoDeOutputIgnoraConexaoNascidaNaLAN(t *testing.T) {
+	r := strings.Join(outputMarkChainRules()[0], " ")
+	if !strings.Contains(r, "ct mark and 0x10000 == 0x0") {
+		t.Errorf("a restauração do output não separa marca de saída: %q — o RST de um reject vai para a WAN", r)
+	}
+	if !strings.Contains(r, "ct direction reply") {
+		t.Errorf("a restauração do output perdeu a direção: %q", r)
+	}
+}
+
+// TestAsDuasMetadesGravamMarcasDISTINGUIVEIS: é o bit que impede uma regra
+// escrita para uma metade de agir sobre a outra. Já aconteceu duas vezes nesta
+// mesma mudança, e nas duas a causa foi a mesma — a memória de saída mudou o
+// significado de `ct mark != 0` e uma regra velha continuou lendo com o sentido
+// antigo.
+func TestAsDuasMetadesGravamMarcasDISTINGUIVEIS(t *testing.T) {
+	wans := []WANMark{{Interface: "wan1", Mark: 100}}
+	entrada := strings.Join(connMarkChainRules(wans)[0], " ")
+	saida := strings.Join(connMarkOutChainRules(wans)[0], " ")
+
+	if !strings.Contains(entrada, "ct mark set 0x64") {
+		t.Errorf("a memória de ENTRADA devia gravar o table_id puro: %q", entrada)
+	}
+	if !strings.Contains(saida, "ct mark set 0x10064") {
+		t.Errorf("a memória de SAÍDA devia gravar o table_id com o bit: %q", saida)
+	}
+	// E o bit tem de ficar ACIMA da faixa dos table_id, senão ele colide com o
+	// número de uma tabela e as duas metades voltam a ser indistinguíveis.
+	if marcaDeSaida <= 0xffff {
+		t.Errorf("o bit de saída (0x%x) invade a faixa dos table_id", marcaDeSaida)
+	}
+}
+
+// TestARestauracaoDeSaidaDevolveOTableIdSemOBit: a `ip rule fwmark N lookup N`
+// casa o table_id PURO. Devolver a marca com o bit faria a regra não casar, o
+// pacote cairia na tabela principal, e a fixação inteira seria um enfeite que
+// não muda caminho nenhum — verde em toda leitura de chain e inútil no fio.
+func TestARestauracaoDeSaidaDevolveOTableIdSemOBit(t *testing.T) {
+	r := strings.Join(restoreOutboundMarkRule([]WANMark{{Interface: "wan1", Mark: 100}}), " ")
+	if !strings.Contains(r, "meta mark set ct mark and 0xffff") {
+		t.Errorf("a restauração de saída não tira o bit: %q — a ip rule não casaria", r)
 	}
 }

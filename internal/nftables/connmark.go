@@ -52,6 +52,32 @@ const (
 	// ConnMarkOutChain lembra por qual WAN uma conexão NASCIDA NA LAN saiu.
 	ConnMarkOutChain = "conn_mark_out"
 
+	// marcaDeSaida é o bit que distingue "esta conexão SAIU por esta WAN" de
+	// "esta conexão ENTROU por esta WAN".
+	//
+	// POR QUE UM BIT, E NÃO SÓ O NÚMERO DA TABELA. As duas metades desta feature
+	// gravam em `ct mark`, e quem LÊ precisa saber qual das duas gravou — senão
+	// uma regra escrita para uma metade age sobre a outra. Isso já aconteceu
+	// duas vezes nesta mesma mudança:
+	//
+	//   1. a restauração do prerouting mandava a resposta da internet de volta
+	//      para o provedor, e a LAN inteira ficava sem internet;
+	//   2. a restauração do OUTPUT mandava para a WAN o RST que a caixa gera ao
+	//      recusar DoT — o cliente da LAN nunca recebia a recusa e ficava
+	//      pendurado até o timeout, e o mesmo valeria para qualquer `reject` e
+	//      para os ICMP de erro que a caixa emite por tráfego encaminhado.
+	//
+	// Nos dois casos a causa foi a mesma: a memória de saída mudou o SIGNIFICADO
+	// de `ct mark != 0`, e uma regra velha continuou lendo com o sentido antigo.
+	// O bit torna o significado explícito em cada regra, em vez de deixá-lo
+	// implícito na cabeça de quem escreveu.
+	//
+	// 0x10000 fica acima da faixa dos table_id (100+), então o número da tabela
+	// continua legível com `and 0xffff` — que é o que a `ip rule fwmark` casa.
+	marcaDeSaida = 0x10000
+	// mascaraDaTabela recupera o table_id de dentro da marca.
+	mascaraDaTabela = 0xffff
+
 	// Prioridade mangle + 10: depois da mark_hosts, para que a marca de
 	// direcionamento por host (que só existe em conexão nova, saindo) já tenha
 	// sido escrita quando a restauração roda. As duas nunca disputam o mesmo
@@ -226,7 +252,7 @@ func connMarkOutChainRules(wans []WANMark) [][]string {
 			"oifname", fmt.Sprintf("%q", w.Interface),
 			"ct", "direction", "original",
 			"ct", "mark", "==", "0x0", "counter",
-			"ct", "mark", "set", fmt.Sprintf("0x%x", w.Mark),
+			"ct", "mark", "set", fmt.Sprintf("0x%x", w.Mark|marcaDeSaida),
 		})
 	}
 	return regras
@@ -248,9 +274,11 @@ func connMarkOutChainRules(wans []WANMark) [][]string {
 func restoreOutboundMarkRule(wans []WANMark) []string {
 	return []string{
 		"iifname", "!=", setDeInterfaces(wans),
-		"ct", "mark", "!=", "0x0", "ct", "direction", "original",
+		"ct", "mark", "and", fmt.Sprintf("0x%x", marcaDeSaida), "==", fmt.Sprintf("0x%x", marcaDeSaida),
+		"ct", "direction", "original",
 		"meta", "mark", "==", "0x0", "counter",
-		"meta", "mark", "set", "ct", "mark",
+		// `and` para tirar o bit: a `ip rule fwmark` casa o table_id puro.
+		"meta", "mark", "set", "ct", "mark", "and", fmt.Sprintf("0x%x", mascaraDaTabela),
 	}
 }
 
@@ -283,8 +311,17 @@ func restoreOutboundMarkRule(wans []WANMark) []string {
 // duas chains dizerem a mesma coisa, em vez de duas formas que alguém precise
 // comparar.
 func restoreMarkRule() []string {
-	return []string{"ct", "mark", "!=", "0x0", "ct", "direction", "reply",
-		"counter", "meta", "mark", "set", "ct", "mark"}
+	return []string{
+		"ct", "mark", "!=", "0x0",
+		// SÓ MARCA DE ENTRADA. Sem esta condição, esta regra age sobre conexão
+		// nascida na LAN — e na chain de output isso manda para a WAN o RST que
+		// a caixa gera ao recusar DoT, além de todo `reject` e todo ICMP de erro
+		// por tráfego encaminhado. O cliente da LAN nunca recebe a recusa e fica
+		// pendurado até o timeout, que foi como a bateria I pegou isto.
+		"ct", "mark", "and", fmt.Sprintf("0x%x", marcaDeSaida), "==", "0x0",
+		"ct", "direction", "reply",
+		"counter", "meta", "mark", "set", "ct", "mark",
+	}
 }
 
 // sanitizeWANMarks descarta entrada inválida e duplicada, preservando ordem
