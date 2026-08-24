@@ -4285,22 +4285,37 @@ print('%s/%s' % (d.get('lg-wana',''), d.get('lg-wanb','')))" 2>/dev/null)
     return
   fi
 
-  # E a rota vivida é conferida por EXCLUSIVIDADE, não por presença: uma linha
-  # de default que contenha as WANs de teste E a WAN real ainda deixaria o
-  # tráfego da LAN hashear para o enlace do qemu, e o apagão medido em seguida
-  # seria do arnês.
-  local rota=""
+  # A ROTA VIVIDA É PERGUNTADA AO KERNEL, E NÃO CASADA POR TEXTO NA TABELA.
+  #
+  # A primeira versão exigia que a default fosse EXCLUSIVAMENTE as duas WANs de
+  # teste, e reprovava assim:
+  #
+  #   default  nexthop via 172.31.10.2 dev lg-wana weight 256 onlink
+  #            nexthop via 172.31.20.2 dev lg-wanb weight 256 onlink
+  #   default via 10.0.2.2 dev enp0s2 proto dhcp src 10.0.2.15 metric 100
+  #
+  # As duas coexistem porque o dhclient da VM instala a dela e o produto não a
+  # remove — e não pode: é por esse enlace que esta própria suíte fala com a
+  # caixa. Mas a multipath tem métrica 0 e a do DHCP métrica 100, então quem
+  # decide já é a multipath. A asserção reprovava um cenário que estava certo.
+  #
+  # `ip route get`, com a origem e a interface de entrada do tráfego que a
+  # bateria vai medir, é a pergunta exata: por onde ESTE pacote sairia? Ela
+  # atravessa métrica, multipath e política de uma vez, em vez de reconstruir
+  # essa lógica com grep.
+  local rota="" saida=""
   for i in $(seq 1 10); do
-    rota=$(rota_default)
-    grep -q 'via 172.31.10.2' <<<"$rota" && grep -q 'via 172.31.20.2' <<<"$rota" && break
+    saida=$(vm "ip route get 172.31.99.9 from 192.168.121.2 iif lg-lanw 2>&1" | tr -d '\r' | tr '\n' ' ')
+    grep -qE 'dev (lg-wana|lg-wanb)' <<<"$saida" && break
     sleep 3
   done
-  if grep -q 'via 172.31.10.2' <<<"$rota" && grep -q 'via 172.31.20.2' <<<"$rota" &&
-     { [[ -z "$gw_orig" ]] || ! grep -qF "via $gw_orig" <<<"$rota"; }; then
-    ok "a rota padrão é multipath pelas duas WANs de teste, e só por elas"
+  rota=$(rota_default)
+  if grep -qE 'dev (lg-wana|lg-wanb)' <<<"$saida"; then
+    ok "o kernel manda o tráfego da LAN por uma das WANs de teste ($(grep -oE 'dev (lg-wana|lg-wanb)' <<<"$saida" | head -1))"
   else
-    bad "a rota padrão não ficou multipath só com as WANs de teste; o tráfego da LAN pode sair por outro caminho" "${rota:-vazia}"
-    encerra_w "a rota padrão não adotou exclusivamente as WANs de teste"
+    bad "o kernel não manda o tráfego da LAN pelas WANs de teste; o que for medido a seguir sai pelo caminho errado" \
+        "ip route get: ${saida:-vazio} | default: ${rota:-vazia}"
+    encerra_w "o kernel não roteia o tráfego da LAN pelas WANs de teste"
     return
   fi
 
