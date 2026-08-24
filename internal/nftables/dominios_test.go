@@ -1,0 +1,163 @@
+package nftables
+
+import (
+	"net/netip"
+	"strings"
+	"testing"
+	"time"
+)
+
+func addr(t *testing.T, s string) netip.Addr {
+	t.Helper()
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		t.Fatalf("endereço inválido no teste: %s", s)
+	}
+	return a
+}
+
+// TestRenovarExigeApagarAntes prende a medição que decidiu a forma do lote.
+//
+// Medido no nft da máquina de teste:
+//
+//	add element ... { 1.2.3.4 timeout 1800s : 0x12c }  → aceito, sem erro
+//	expires antes: 29m54s   expires depois: 29m54s     → NÃO RENOVOU
+//	delete + add na mesma transação → expires 29m59s   → renovou
+//
+// Um `add` sobre elemento existente é aceito em silêncio e não mexe no prazo.
+// Sem o `delete` junto, "renovação" seria um comando que não faz nada e o
+// endereço sairia no meio do uso — a falha mais cara, porque parece funcionar.
+func TestRenovarExigeApagarAntes(t *testing.T) {
+	a := addr(t, "142.250.219.14")
+	l := Lote{
+		RemoverBloq:   []netip.Addr{a},
+		AdicionarBloq: []Entrada{{Addr: a, Prazo: 30 * time.Minute}},
+	}
+	script := montarLote(l, true)
+	linhas := strings.Split(strings.TrimSpace(script), "\n")
+	if len(linhas) != 2 {
+		t.Fatalf("uma renovação são duas linhas, vieram %d:\n%s", len(linhas), script)
+	}
+	if !strings.HasPrefix(linhas[0], "delete element") {
+		t.Errorf("a remoção não veio primeiro: %q", linhas[0])
+	}
+	if !strings.HasPrefix(linhas[1], "add element") {
+		t.Errorf("a adição não veio depois: %q", linhas[1])
+	}
+}
+
+// TestOReenvioSemRemocoesExisteEEhSoOsAdds prende a outra medição.
+//
+//	delete element ... { 9.9.9.9 }   ← ausente
+//	add    element ... { 5.6.7.8 ... }
+//	→ Error: Could not process rule: No such file or directory
+//	→ 5.6.7.8 NÃO entrou
+//
+// Um `delete` de elemento ausente derruba o lote INTEIRO. Como o kernel pode
+// expirar um elemento entre o feeder decidir renovar e o arquivo chegar, o
+// reenvio só com os `add` não é paranoia: é o único jeito de o endereço entrar.
+func TestOReenvioSemRemocoesExisteEEhSoOsAdds(t *testing.T) {
+	l := Lote{
+		RemoverBloq:   []netip.Addr{addr(t, "9.9.9.9")},
+		AdicionarBloq: []Entrada{{Addr: addr(t, "5.6.7.8"), Prazo: 30 * time.Minute}},
+	}
+	soAdds := montarLote(l, false)
+	if strings.Contains(soAdds, "delete") {
+		t.Errorf("o reenvio ainda traz remoção:\n%s", soAdds)
+	}
+	if !strings.Contains(soAdds, "5.6.7.8") {
+		t.Errorf("o reenvio perdeu a adição que precisava entrar:\n%s", soAdds)
+	}
+}
+
+// TestOPrazoEhGrampeadoOndeViraComando: o TTL vem de uma resposta de DNS, que é
+// um número escolhido por um terceiro. O grampo fica no lugar onde o valor vira
+// comando, e não só na boa vontade do chamador.
+func TestOPrazoEhGrampeadoOndeViraComando(t *testing.T) {
+	casos := []struct {
+		nome  string
+		prazo time.Duration
+		quer  string
+	}{
+		{"TTL de CDN, abaixo do piso", 30 * time.Second, "timeout 600s"},
+		{"TTL absurdo, acima do teto", 72 * time.Hour, "timeout 3600s"},
+		{"TTL no meio, respeitado", 20 * time.Minute, "timeout 1200s"},
+		{"TTL zero", 0, "timeout 600s"},
+	}
+	for _, c := range casos {
+		script := montarLote(Lote{
+			AdicionarBloq: []Entrada{{Addr: addr(t, "1.2.3.4"), Prazo: c.prazo}},
+		}, false)
+		if !strings.Contains(script, c.quer) {
+			t.Errorf("%s: esperava %q, veio %q", c.nome, c.quer, strings.TrimSpace(script))
+		}
+	}
+}
+
+// TestOMapLevaMarcaEOsSetsNao: o map de direcionamento é o único que carrega
+// marca. Escrever marca num set de bloqueio faria o nft recusar o lote inteiro
+// — e como o lote é uma transação, levaria junto tudo o que ia com ele.
+func TestOMapLevaMarcaEOsSetsNao(t *testing.T) {
+	l := Lote{
+		AdicionarBloq:  []Entrada{{Addr: addr(t, "1.2.3.4"), Prazo: time.Hour}},
+		AdicionarBloq6: []Entrada{{Addr: addr(t, "2800:3f0::200e"), Prazo: time.Hour}},
+		AdicionarWan:   []Entrada{{Addr: addr(t, "5.6.7.8"), Prazo: time.Hour, Marca: 0x12c}},
+	}
+	for _, linha := range strings.Split(strings.TrimSpace(montarLote(l, false)), "\n") {
+		temMarca := strings.Contains(linha, ": 0x")
+		ehMap := strings.Contains(linha, " "+DomWanMap+" ")
+		if ehMap != temMarca {
+			t.Errorf("marca no lugar errado: %q", linha)
+		}
+	}
+}
+
+// TestLoteVazioNaoGeraComando: o caminho mais comum do feeder é "nada mudou", e
+// ele não pode custar um fork. Um domínio popular com TTL de 30s e vinte
+// clientes geraria dezenas de forks por minuto se toda resposta virasse lote.
+func TestLoteVazioNaoGeraComando(t *testing.T) {
+	if !(Lote{}).Vazio() {
+		t.Error("lote sem nada não se declarou vazio")
+	}
+	l := Lote{AdicionarBloq: []Entrada{{Addr: addr(t, "1.2.3.4"), Prazo: time.Hour}}}
+	if l.Vazio() {
+		t.Error("lote com uma adição se declarou vazio")
+	}
+}
+
+// TestEnderecoInvalidoNaoViraComando: o endereço vem de uma resposta de DNS
+// parseada. Um netip.Addr zero interpolado no argv viraria uma linha sem
+// endereço, e o nft recusaria o lote inteiro — levando junto o que era válido.
+func TestEnderecoInvalidoNaoViraComando(t *testing.T) {
+	l := Lote{
+		RemoverBloq:   []netip.Addr{{}},
+		AdicionarBloq: []Entrada{{Prazo: time.Hour}, {Addr: addr(t, "1.2.3.4"), Prazo: time.Hour}},
+	}
+	script := montarLote(l, true)
+	if n := len(strings.Split(strings.TrimSpace(script), "\n")); n != 1 {
+		t.Fatalf("esperava só a linha do endereço válido, vieram %d:\n%s", n, script)
+	}
+	if !strings.Contains(script, "1.2.3.4") {
+		t.Errorf("o endereço válido não sobreviveu:\n%s", script)
+	}
+}
+
+// TestAsDeclaracoesNaoTemDynamicNemInterval: `dynamic` é para set que o KERNEL
+// alimenta (abusers, contabilidade); aqui quem escreve é o userspace. E
+// `interval` abriria a porta para alguém achar que dá para listar uma faixa,
+// quando o DNS devolve endereço.
+func TestAsDeclaracoesNaoTemDynamicNemInterval(t *testing.T) {
+	for _, spec := range []string{domBlockedSpec, domBlocked6Spec, domWanSpec} {
+		for _, proibido := range []string{"dynamic", "interval"} {
+			if strings.Contains(spec, proibido) {
+				t.Errorf("a declaração %q não devia ter %q", spec, proibido)
+			}
+		}
+		if !strings.Contains(spec, "size ") {
+			t.Errorf("declaração sem teto de tamanho: %q — set alimentado por DNS sem teto é vazamento", spec)
+		}
+		if !strings.Contains(spec, "flags timeout") {
+			t.Errorf("declaração sem prazo: %q — endereço de CDN muda de dono", spec)
+		}
+	}
+}
