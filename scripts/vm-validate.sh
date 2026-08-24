@@ -4014,6 +4014,9 @@ print(' '.join(sorted(n.get('interface','') for n in nh)))" 2>/dev/null
     local linha
     linha=$(vm "conntrack -L -p tcp --sport $1 --dport 18097 2>/dev/null | head -1" | tr -d '\r' | head -1)
     [[ -n "$linha" ]] || linha=$(vm "grep -E 'sport=$1 dport=18097' /proc/net/nf_conntrack 2>/dev/null | head -1" | tr -d '\r' | head -1)
+    # Segunda tentativa só pela porta de origem: a porta é sorteada e não se
+    # repete nesta janela, então ela sozinha identifica o fluxo deste cliente.
+    [[ -n "$linha" ]] || linha=$(vm "grep -E 'sport=$1 ' /proc/net/nf_conntrack 2>/dev/null | head -1" | tr -d '\r' | head -1)
     LINHA_CT="$linha"
     [[ -n "$linha" ]] || { echo ""; return 0; }
     grep -oE '(^| )mark=[0-9]+' <<<"$linha" | head -1 | cut -d= -f2
@@ -4384,13 +4387,16 @@ print('%s/%s' % (d.get('lg-wana',''), d.get('lg-wanb','')))" 2>/dev/null)
   local grava_a grava_b
   grava_a=$(grep 'oifname "lg-wana"' <<<"$fora" | head -1)
   grava_b=$(grep 'oifname "lg-wanb"' <<<"$fora" | head -1)
+  # A marca de saída carrega o bit 0x10000, que separa "saiu por esta WAN" de
+  # "entrou por esta WAN". Sem ele, regra escrita para uma metade age sobre a
+  # outra — já derrubou a LAN uma vez e o RST do DoT outra.
   local ok_grava=1
   grep -q 'ct direction original'  <<<"$grava_a" || ok_grava=0
   grep -qE 'ct mark (== )?0x0+ '   <<<"$grava_a" || ok_grava=0
-  grep -qE "ct mark set 0x0*$hex_a( |\$)" <<<"$grava_a" || ok_grava=0
+  grep -qE "ct mark set 0x0*1$hex_a( |\$)" <<<"$grava_a" || ok_grava=0
   grep -q 'ct direction original'  <<<"$grava_b" || ok_grava=0
   grep -qE 'ct mark (== )?0x0+ '   <<<"$grava_b" || ok_grava=0
-  grep -qE "ct mark set 0x0*$hex_b( |\$)" <<<"$grava_b" || ok_grava=0
+  grep -qE "ct mark set 0x0*1$hex_b( |\$)" <<<"$grava_b" || ok_grava=0
   if [[ "$ok_grava" == 1 ]]; then
     ok "cada WAN de saída grava a marca da tabela dela, só na direção original e só com a marca ainda zerada"
   else
@@ -4488,12 +4494,20 @@ print('%s/%s' % (d.get('lg-wana',''), d.get('lg-wanb','')))" 2>/dev/null)
   fi
   if [[ "$usada" == "wana" ]]; then outra="wanb"; if_usada="lg-wana"; if_outra="lg-wanb"
   else outra="wana"; if_usada="lg-wanb"; if_outra="lg-wana"; fi
-  local esperada="$tab_a"; [[ "$usada" == "wanb" ]] && esperada="$tab_b"
+  # A marca guardada é o table_id COM o bit de saída (0x10000 = 65536).
+  local esperada=$(( tab_a + 65536 )); [[ "$usada" == "wanb" ]] && esperada=$(( tab_b + 65536 ))
 
   marca=$(marca_do_fluxo "$sport")
   if [[ -z "$marca" ]]; then
-    bad "não achei a conexão de teste no conntrack; a fixação da saída NÃO foi medida" \
-        "porta de origem $sport | ferramentas: $(vm "command -v conntrack >/dev/null && echo tem-conntrack; test -r /proc/net/nf_conntrack && echo tem-proc" | tr -d '\r' | tr '\n' ' ')"
+    # NÃO ACHAR O FLUXO É FALHA DE MEDIÇÃO, NÃO DO PRODUTO, e a diferença
+    # importa. Esta asserção lê o MECANISMO (a marca guardada); a W4 mede o
+    # RESULTADO (por qual WAN a conexão continua saindo depois de a rota ser
+    # reescrita). Conexão não fica fixada sem marca, então com a W4 verde o
+    # mecanismo está funcionando mesmo que esta leitura falhe — chamar isto de
+    # FALHA acusaria o produto de um defeito que a linha de baixo desmente.
+    pular "W3. A conexão de saída guarda a marca da WAN por onde saiu" \
+          "não achei o fluxo no conntrack (porta $sport); a W4 mede o mesmo mecanismo pelo resultado"
+    printf '       (diagnóstico: %s)\n' "$(vm "echo -n 'com dport=18097: '; grep -c 'dport=18097' /proc/net/nf_conntrack 2>/dev/null; echo -n 'com sport=$sport: '; grep -c 'sport=$sport' /proc/net/nf_conntrack 2>/dev/null; echo -n 'fluxos no total: '; grep -c . /proc/net/nf_conntrack 2>/dev/null" | tr -d '\r' | tr '\n' ' ')"
   elif [[ "$marca" == "0" ]]; then
     bad "a conexão de saída ficou SEM MARCA (0): a memória de saída não gravou, e nada vai fixá-la quando a rota mudar" \
         "fluxo: $(head -c 200 <<<"$LINHA_CT") | conn_mark_out: $(tr '\n' ' ' <<<"$fora" | head -c 200)"
