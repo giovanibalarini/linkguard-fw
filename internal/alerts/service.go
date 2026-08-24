@@ -132,6 +132,7 @@ type Notifier interface {
 // TestStateAlertTypesMatchAutoResolveCallSites guards this list against
 // drifting from service.go's actual AutoResolve call sites.
 var stateAlertTypes = []string{
+	TypeSteerInativo,
 	TypeLinkOffline,
 	TypeLinkDegraded,
 	TypeServiceOffline,
@@ -603,6 +604,31 @@ func (s *Service) ResolveStaleOnStartup() {
 		done[key] = true
 		s.AutoResolve(a.Type, a.LinkID)
 	}
+}
+
+// SteerInativo avisa que o direcionamento por WAN está configurado, tem
+// aparelho fixado nele, e NÃO está valendo.
+func (s *Service) SteerInativo(marca, tabela, iface, motivo string, fixados int) error {
+	return s.Create(TypeSteerInativo, SeverityWarning,
+		"Direcionamento por WAN não está valendo",
+		fmt.Sprintf("%d aparelho(s) fixado(s) recebem a marca %s, e não existe regra de roteamento que a atenda "+
+			"(tabela %q, interface %q). Eles estão saindo pelo balanceamento, e não pelo link escolhido. Motivo: %s",
+			fixados, marca, tabela, iface, motivo), "")
+}
+
+// SteerAtivo fecha o alerta acima.
+//
+// POR QUE ISTO PRECISA EXISTIR, e a falta dele já custou. O alerta descreve uma
+// CONDIÇÃO, e condição que some precisa de quem a feche. Sem este par, arrumar o
+// direcionamento — ou soltar os aparelhos, ou desligar o recurso — deixava o
+// vermelho no painel para sempre, descrevendo algo que não existe mais. Foi o
+// que aconteceu na caixa de produção: os oito aparelhos foram soltos, o recurso
+// foi desligado, e o alerta continuou aberto sem ninguém para fechá-lo.
+//
+// Vermelho permanente ensina a ignorar vermelho, que é o mesmo motivo pelo qual
+// o BalancerNoWAN ganhou tipo próprio na #147.
+func (s *Service) SteerAtivo() {
+	s.AutoResolve(TypeSteerInativo, "")
 }
 
 // BackupFailed raises a warning alert when the periodic (or manual "enviar
