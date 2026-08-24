@@ -3602,6 +3602,149 @@ print(len({(a.get('type'),(a.get('link_id') or '').lower()) for a in d} & alvo))
   limpa_v
 }
 
+# ─── X. WAN em VLAN entra no balanceamento (issue #188) ──────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. O iproute2 acrescenta "@mãe" ao nome de
+# toda interface que tem interface-mãe — VLAN, veth, macvlan, ipvlan — e só a
+# física sai com o nome limpo. O produto lia esse campo inteiro como nome, a
+# consulta era pelo nome do link, e nunca casavam: a WAN era tratada como CAÍDA
+# e jogada fora do balanceamento, sem uma linha de log, aparecendo no painel
+# como excluída POR ESTAR FORA DO AR enquanto estava no ar e funcionando.
+#
+# PPPoE sobre VLAN e VLAN de operadora são o arranjo mais comum em firewall de
+# borda. O cliente contrata dois links e o produto usa um.
+#
+# O CONTROLE ESTÁ DENTRO DA BATERIA, e é o que a torna honesta: são DUAS VLANs,
+# uma no ar e uma derrubada. Se só houvesse a de cima, "entrou no plano"
+# passaria igual num produto que simplesmente parou de excluir qualquer coisa —
+# e aí um link de verdade fora do ar continuaria carregando tráfego, que é pior
+# do que o defeito consertado. A única diferença entre as duas é o estado do
+# link, que é precisamente o que o filtro existe para medir.
+battery_vlan_no_balanceamento() {
+  head_ "X. WAN em VLAN entra no balanceamento"
+
+  local M_X1=0 M_X2=0 tok=""
+
+  limpa_x() {
+    local id
+    if [[ -n "$tok" ]]; then
+      for id in $(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l.get('interface') in ('lgv0.100','lgv0.200'): print(l['id'])" 2>/dev/null); do
+        status DELETE "/api/links/$id" "$tok" >/dev/null 2>&1
+      done
+    fi
+    vm "ip link del lgv0.100 2>/dev/null; ip link del lgv0.200 2>/dev/null; ip link del lgv0 2>/dev/null; true" >/dev/null 2>&1
+    local sobra
+    sobra=$(vm "ip -br link show 2>/dev/null | grep -c lgv0" | tr -d '\r' | head -1)
+    if [[ "${sobra:-0}" != "0" ]]; then
+      bad "as interfaces de teste da bateria X não saíram; as baterias seguintes veriam WAN que não existe" "sobraram: $sobra"
+    fi
+  }
+
+  encerra_x() {
+    [[ "$M_X1" == 1 ]] || pular "X1. A VLAN no ar entra no balanceamento" "$1"
+    [[ "$M_X2" == 1 ]] || pular "X2. A VLAN derrubada continua fora" "$1"
+    limpa_x
+  }
+
+  local initial
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  if [[ -z "$tok" ]]; then
+    bad "sem sessão administrativa; a bateria X não roda"
+    encerra_x "sem sessão administrativa"
+    return
+  fi
+
+  # Uma interface-mãe de mentira (dummy, que não precisa de par) e duas VLANs em
+  # cima dela. A dummy é usada em vez da WAN real da VM para que derrubar uma
+  # das VLANs não mexa no enlace por onde esta própria suíte fala.
+  vm "ip link del lgv0 2>/dev/null
+      ip link add lgv0 type dummy && ip link set lgv0 up && \
+      ip link add link lgv0 name lgv0.100 type vlan id 100 && \
+      ip link add link lgv0 name lgv0.200 type vlan id 200 && \
+      ip addr add 10.58.100.1/24 dev lgv0.100 && ip link set lgv0.100 up && \
+      ip addr add 10.58.200.1/24 dev lgv0.200 && ip link set lgv0.200 down" >/dev/null 2>&1
+
+  # O CENÁRIO É CONFERIDO ANTES DE SER USADO. Se o kernel desta caixa não
+  # imprimisse o "@mãe", a bateria estaria medindo um defeito que não existe
+  # aqui e passaria por acidente — verde sem significado nenhum.
+  local nome_no_kernel estado_100 estado_200
+  nome_no_kernel=$(vm "ip -br link show lgv0.100 2>/dev/null | awk '{print \$1}'" | tr -d '\r' | head -1)
+  estado_100=$(vm "ip -br link show lgv0.100 2>/dev/null | awk '{print \$2}'" | tr -d '\r' | head -1)
+  estado_200=$(vm "ip -br link show lgv0.200 2>/dev/null | awk '{print \$2}'" | tr -d '\r' | head -1)
+  if [[ "$nome_no_kernel" != *"@"* ]]; then
+    bad "o kernel desta caixa não imprime o sufixo '@mãe'; a bateria mediria um defeito que não existe aqui" \
+        "nome lido: '${nome_no_kernel:-vazio}'"
+    encerra_x "o cenário do defeito não pôde ser montado"
+    return
+  fi
+  if [[ "$estado_100" != "UP" || "$estado_200" == "UP" ]]; then
+    bad "as duas VLANs de teste não ficaram nos estados que a bateria compara" \
+        "lgv0.100='$estado_100' (queria UP), lgv0.200='$estado_200' (queria não-UP)"
+    encerra_x "o par de comparação não pôde ser montado"
+    return
+  fi
+  ok "duas VLANs montadas, uma no ar e uma derrubada (o kernel as nomeia '$nome_no_kernel')"
+
+  local st_a st_b
+  st_a=$(status POST /api/links "$tok" '{"name":"VLAN no ar","interface":"lgv0.100","gateway":"10.58.100.2","ip_address":"10.58.100.1","weight":1,"enabled":true,"monitor_hosts":"10.58.100.2","dns_test":"10.58.100.2"}')
+  st_b=$(status POST /api/links "$tok" '{"name":"VLAN derrubada","interface":"lgv0.200","gateway":"10.58.200.2","ip_address":"10.58.200.1","weight":1,"enabled":true,"monitor_hosts":"10.58.200.2","dns_test":"10.58.200.2"}')
+  if [[ "$st_a" != "200" || "$st_b" != "200" ]]; then
+    bad "o painel não aceitou cadastrar as WANs em VLAN ($st_a / $st_b)"
+    encerra_x "as WANs de teste não entraram"
+    return
+  fi
+  sleep 3
+
+  # excluidos_x IFACE → "sim" se o balanceador a jogou fora, "nao" se não, e
+  # "erro" quando a interface não aparece em lado nenhum do plano: nesse caso a
+  # leitura falhou, e "nao" seria um verde comprado com uma leitura quebrada.
+  excluidos_x() {
+    body GET /api/routing/balance "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin); p=d.get('plan') or {}
+ex={n.get('interface') for n in (p.get('excluded') or [])}
+todos={n.get('interface') for n in (p.get('nexthops') or [])} | ex
+alvo=sys.argv[1]
+print('erro' if alvo not in todos else ('sim' if alvo in ex else 'nao'))" "$1" 2>/dev/null
+  }
+
+  # X1 — O CONSERTO: a VLAN no ar deixa de ser tratada como caída.
+  local fora_100; fora_100=$(excluidos_x lgv0.100)
+  if [[ "$fora_100" == "nao" ]]; then
+    ok "a WAN em VLAN no ar deixou de ser tratada como fora do ar"
+  elif [[ "$fora_100" == "sim" ]]; then
+    bad "A WAN EM VLAN CONTINUA SENDO EXCLUÍDA: o cliente contrata dois links e o produto usa um" \
+        "$(body GET /api/routing/balance "$tok" | head -c 220)"
+  else
+    bad "não consegui ler o plano do balanceador para a VLAN no ar; o conserto não foi medido" "$fora_100"
+  fi
+  M_X1=1
+
+  # X2 — A METADE DE SILÊNCIO: a VLAN derrubada CONTINUA fora.
+  #
+  # Sem esta, a X1 passaria igual num produto que parou de excluir qualquer
+  # coisa — e aí um link de verdade fora do ar seguiria carregando tráfego, que
+  # é pior do que o defeito consertado. As duas são VLAN, montadas na mesma
+  # interface-mãe: a única diferença entre elas é o estado do link.
+  local fora_200; fora_200=$(excluidos_x lgv0.200)
+  if [[ "$fora_200" == "sim" ]]; then
+    ok "a VLAN derrubada continua fora do balanceamento — o filtro não parou de filtrar"
+  elif [[ "$fora_200" == "nao" ]]; then
+    bad "O FILTRO PAROU DE FILTRAR: uma interface fora do ar entrou no balanceamento" \
+        "$(body GET /api/routing/balance "$tok" | head -c 220)"
+  else
+    bad "não consegui ler o plano do balanceador para a VLAN derrubada; a metade de silêncio não foi medida" "$fora_200"
+  fi
+  M_X2=1
+
+  limpa_x
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -3623,6 +3766,7 @@ battery_contencao
 battery_mapa_dns
 battery_metricas_host
 battery_comportamento
+battery_vlan_no_balanceamento
 battery_fechar_gerencia
 
 head_ "Resumo"
