@@ -444,10 +444,14 @@ func steerValid(c SteerConfig) bool {
 func (s *Service) EnsureSteerRouting(ctx context.Context) {
 	raw, _ := s.db.GetSetting(steerKey)
 	if raw == "" {
+		s.limparAlertaDeSteer()
 		return
 	}
 	var c SteerConfig
 	if json.Unmarshal([]byte(raw), &c) != nil || !c.Enabled || c.Table == "" {
+		// Recurso desligado é condição RESOLVIDA, não condição ignorada: quem
+		// desligou consertou o problema que o alerta descrevia.
+		s.limparAlertaDeSteer()
 		return
 	}
 	if !steerValid(c) {
@@ -521,6 +525,7 @@ func (s *Service) conferirSteer(ctx context.Context, c SteerConfig, falhas []str
 			slog.Warn("balancer: direcionamento por WAN está valendo, mas parte da configuração falhou",
 				"falhas", strings.Join(falhas, "; "))
 		}
+		s.limparAlertaDeSteer()
 		return
 	}
 	motivo := strings.Join(falhas, "; ")
@@ -547,17 +552,25 @@ func (s *Service) conferirSteer(ctx context.Context, c SteerConfig, falhas []str
 	} else if fixados == 0 {
 		slog.Warn("balancer: o direcionamento por WAN está configurado e não vale, mas nenhum aparelho está fixado nele",
 			"marca", c.Mark, "tabela", c.Table, "motivo", motivo)
+		// Sem aparelho fixado não há quem sofra, e um alerta levantado quando
+		// havia precisa ser fechado agora que não há mais.
+		s.limparAlertaDeSteer()
 		return
 	}
 
 	slog.Error("balancer: o direcionamento por WAN NÃO está valendo; os hosts fixados saem pelo balanceamento",
 		"marca", c.Mark, "tabela", c.Table, "interface", c.Interface, "aparelhos_fixados", fixados, "motivo", motivo)
 	if s.alertSvc != nil {
-		_ = s.alertSvc.Create(alerts.TypeSteerInativo, "warning",
-			"Direcionamento por WAN não está valendo",
-			fmt.Sprintf("Os aparelhos fixados recebem a marca %s, e não existe regra de roteamento que a atenda "+
-				"(tabela %q, interface %q). Eles estão saindo pelo balanceamento, e não pelo link escolhido. Motivo: %s",
-				c.Mark, c.Table, c.Interface, motivo), "")
+		_ = s.alertSvc.SteerInativo(c.Mark, c.Table, c.Interface, motivo, fixados)
+	}
+}
+
+// limparAlertaDeSteer fecha o alerta de direcionamento inativo quando a
+// condição que ele descreve deixou de existir — o recurso passou a valer, foi
+// desligado, ou não tem mais nenhum aparelho fixado.
+func (s *Service) limparAlertaDeSteer() {
+	if s.alertSvc != nil {
+		s.alertSvc.SteerAtivo()
 	}
 }
 
