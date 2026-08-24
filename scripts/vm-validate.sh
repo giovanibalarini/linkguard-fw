@@ -3693,7 +3693,11 @@ for l in json.load(sys.stdin):
   local st_a st_b
   st_a=$(status POST /api/links "$tok" '{"name":"VLAN no ar","interface":"lgv0.100","gateway":"10.58.100.2","ip_address":"10.58.100.1","weight":1,"enabled":true,"monitor_hosts":"10.58.100.2","dns_test":"10.58.100.2"}')
   st_b=$(status POST /api/links "$tok" '{"name":"VLAN derrubada","interface":"lgv0.200","gateway":"10.58.200.2","ip_address":"10.58.200.1","weight":1,"enabled":true,"monitor_hosts":"10.58.200.2","dns_test":"10.58.200.2"}')
-  if [[ "$st_a" != "200" || "$st_b" != "200" ]]; then
+  # 200 OU 201: o handler devolve Created, e é o que todas as outras baterias
+  # desta suíte já aceitam. Comparar só com 200 reprovava um cadastro que tinha
+  # dado certo — e a bateria acusava o painel de recusar o que ele acabara de
+  # aceitar.
+  if [[ ("$st_a" != "200" && "$st_a" != "201") || ("$st_b" != "200" && "$st_b" != "201") ]]; then
     bad "o painel não aceitou cadastrar as WANs em VLAN ($st_a / $st_b)"
     encerra_x "as WANs de teste não entraram"
     return
