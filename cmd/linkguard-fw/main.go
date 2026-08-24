@@ -983,6 +983,26 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			}
 			s.hostSvc.SincronizaBloqueiosPorMAC(ctx)
 
+			// Estruturas de alvo por domínio (#123): garantidas E ESVAZIADAS
+			// no boot.
+			//
+			// O esvaziamento é incondicional de propósito. O que elas guardam é
+			// cache do que o resolver respondeu, e endereço de CDN é de um site
+			// hoje e de outro daqui a dez minutos. Cache que sobrevive ao
+			// reboot afirma sobre endereços o que ninguém mais confirmou — a
+			// mesma razão pela qual o mapa da #116 vive só em memória.
+			//
+			// E há um caminho pelo qual esse cache VOLTARIA sozinho: Persist
+			// despeja o `nft list table` inteiro, elementos inclusive, em
+			// /etc/nftables.conf, e o nftables.service recarrega esse arquivo
+			// ANTES de o LinkGuard subir. Sem esta linha, endereços aprendidos
+			// há semanas voltariam a valer sem ninguém para reconfirmá-los.
+			if err := s.nftSvc.EnsureDomainStructures(ctx); err != nil {
+				slog.Warn("não foi possível garantir as estruturas de alvo por domínio no boot", "err", err)
+			} else if err := s.nftSvc.FlushDomainStructures(ctx); err != nil {
+				slog.Warn("não foi possível esvaziar as estruturas de alvo por domínio no boot", "err", err)
+			}
+
 			// Controle de fuga de DNS (#124), reconciliado no boot (#153). Era
 			// a única feature de firewall fora desta lista: o estado dela mora
 			// no banco e a tela lê de lá, então os toggles ficavam marcados

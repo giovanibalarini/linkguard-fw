@@ -202,6 +202,13 @@ func (s *Service) reconcileGroups(ctx context.Context, groups []StoredGroup) err
 	if err := s.EnsureBlockedMACSet(ctx); err != nil {
 		slog.Warn("não foi possível garantir a set de endereços físicos bloqueados; o bloqueio pode valer só para IPv4 nesta reconciliação", "err", err)
 	}
+	// As estruturas de alvo por domínio (#123), pela mesma razão das duas
+	// acima. Ainda não há chain nenhuma que as consulte — criá-las aqui é o
+	// que garante que, quando houver, a caixa atualizada já as tenha. Falhar
+	// aqui não pode derrubar a reconciliação: nada depende delas hoje.
+	if err := s.EnsureDomainStructures(ctx); err != nil {
+		slog.Warn("não foi possível garantir as estruturas de alvo por domínio", "err", err)
+	}
 
 	// Um nome de chain que não pode ir para o nft tira o grupo inteiro do
 	// jogo — os outros continuam. Filtrar aqui, uma vez, garante que os
