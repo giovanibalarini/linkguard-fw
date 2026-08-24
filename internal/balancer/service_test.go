@@ -355,6 +355,37 @@ func TestContarFixadosCasaAMarcaPorNumeroENaoPorTexto(t *testing.T) {
 		}
 		if n != c.quer {
 			t.Errorf("marca %s: contei %d, esperado %d", c.marca, n, c.quer)
+func TestInterfaceComMaeEhReconhecidaComoNoAr(t *testing.T) {
+	// O DEFEITO QUE ESTE TESTE PRENDE, e ele é de produção.
+	//
+	// O iproute2 acrescenta "@mãe" ao nome de toda interface que tem
+	// interface-mãe: VLAN, veth, macvlan, ipvlan. Só a física sai com o nome
+	// limpo. Sem tirar o sufixo, a chave do mapa nunca casava com o nome do
+	// link, selectNexthops lia isso como link CAÍDO, e uma WAN em VLAN — o
+	// arranjo mais comum em firewall de borda — sumia do balanceamento sem uma
+	// linha de log, aparecendo no painel como excluída por estar fora do ar.
+	//
+	// A saída abaixo é a do iproute2 de verdade, copiada da máquina de teste.
+	const saida = `lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> 
+enp0s2           UP             52:54:00:12:34:56 <BROADCAST,MULTICAST,UP,LOWER_UP> 
+enp0s2.100@enp0s2 UP            52:54:00:12:34:56 <BROADCAST,MULTICAST,UP,LOWER_UP> 
+lg-wana@if38     UP             aa:d7:00:fb:3c:b3 <BROADCAST,MULTICAST,UP,LOWER_UP> 
+lg-caida@if40    DOWN           aa:d7:00:fb:3c:b4 <BROADCAST,MULTICAST> `
+
+	up := parseUpInterfaces(saida)
+	for _, iface := range []string{"lo", "enp0s2", "enp0s2.100", "lg-wana"} {
+		if !up[iface] {
+			t.Errorf("%s devia estar no ar; o mapa tem %v", iface, up)
+		}
+	}
+	if up["lg-caida"] {
+		t.Error("interface DOWN entrou como no ar")
+	}
+	// E o nome sujo NÃO pode continuar no mapa: quem consulta usa o nome do
+	// link, e uma chave a mais só esconde o defeito de quem for depurar.
+	for _, sujo := range []string{"enp0s2.100@enp0s2", "lg-wana@if38"} {
+		if up[sujo] {
+			t.Errorf("o nome com @mãe ficou no mapa: %s", sujo)
 		}
 	}
 }
@@ -369,5 +400,21 @@ func TestOMapVazioNaoContaNinguem(t *testing.T) {
 }`
 	if got := len(reMarcaDoMap.FindAllStringSubmatch(vazio, -1)); got != 0 {
 		t.Errorf("map vazio casou %d marca(s)", got)
+func TestUmaWANEmVLANEntraNoPlano(t *testing.T) {
+	// A consequência do defeito acima, no lugar onde ela custa: selectNexthops
+	// joga em `excluded` todo link cuja interface não está na lista de no-ar.
+	const saida = `enp3s0.100@enp3s0 UP           aa:bb:cc:dd:ee:01 <BROADCAST,MULTICAST,UP,LOWER_UP> 
+enp4s0           UP             aa:bb:cc:dd:ee:02 <BROADCAST,MULTICAST,UP,LOWER_UP> `
+
+	todos := []storage.Link{
+		{ID: "a", Name: "WAN VLAN", Interface: "enp3s0.100", Gateway: "10.1.0.1", Weight: 50, Enabled: true, Status: links.StatusOnline},
+		{ID: "b", Name: "WAN física", Interface: "enp4s0", Gateway: "10.2.0.1", Weight: 50, Enabled: true, Status: links.StatusOnline},
+	}
+	escolhidos, excluidos := selectNexthops(todos, parseUpInterfaces(saida))
+	if len(escolhidos) != 2 {
+		t.Fatalf("o balanceamento ficou com %d caminho(s), esperado 2; excluídos: %v", len(escolhidos), excluidos)
+	}
+	if len(excluidos) != 0 {
+		t.Errorf("link excluído sem motivo: %v", excluidos)
 	}
 }
