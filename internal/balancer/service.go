@@ -1032,10 +1032,37 @@ func parseUpInterfaces(out string) map[string]bool {
 		// operstate UNKNOWN even when fully working, so excluding them would drop
 		// a healthy link from the route. Only an explicit DOWN counts as down.
 		if len(f) >= 2 && (f[1] == "UP" || f[1] == "UNKNOWN") {
-			up[strings.TrimSuffix(f[0], ":")] = true
+			up[nomeDaInterface(f[0])] = true
 		}
 	}
 	return up
+}
+
+// nomeDaInterface tira do primeiro campo do `ip -br link show` o que não é
+// nome: o `:` de algumas versões e o `@pai` que o iproute2 acrescenta em toda
+// interface que tem interface-mãe.
+//
+// O DEFEITO QUE ISTO CONSERTA, E ELE É DE PRODUÇÃO, NÃO DE LABORATÓRIO.
+// O iproute2 imprime VLAN como "enp3s0.100@enp3s0", veth como "lg-wana@if38",
+// macvlan e ipvlan do mesmo jeito. Só a interface física sai com o nome limpo.
+// Sem tirar o sufixo, a chave do mapa era "enp3s0.100@enp3s0" e a consulta era
+// por "enp3s0.100": nunca casavam.
+//
+// A consequência é cara e muda: selectNexthops trata "não está na lista de
+// interfaces no ar" como link CAÍDO e o joga em `excluded`. Uma WAN em VLAN —
+// PPPoE sobre VLAN, VLAN de operadora, o arranjo mais comum em firewall de
+// borda — some do balanceamento sem uma linha de log, e o painel a mostra como
+// excluída por estar fora do ar enquanto ela está no ar e funcionando. O
+// cliente contrata dois links e o produto usa um.
+//
+// Foi encontrado porque uma bateria de VM montou as WANs de teste com veth e o
+// plano do balanceador voltou vazio.
+func nomeDaInterface(campo string) string {
+	campo = strings.TrimSuffix(campo, ":")
+	if i := strings.IndexByte(campo, '@'); i >= 0 {
+		campo = campo[:i]
+	}
+	return campo
 }
 
 // normalizeWeights scales raw link weights into the kernel range 1..256 while
