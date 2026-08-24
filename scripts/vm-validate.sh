@@ -3217,6 +3217,9 @@ PYEOF
   # passadas do detector já se passaram e o tempo existe de graça.
   printf '       (gerando tráfego contabilizado; o passo gravado é conferido no fim, quando o balde de 15 min já fechou)\n'
   local i
+  # O INSTANTE EM QUE O TRÁFEGO COMEÇOU, porque a V2 depende de RELÓGIO e não de
+  # quantas asserções correram antes dela. Ver o comentário da V2 lá embaixo.
+  local t_traf; t_traf=$(vm "date +%s" | tr -d '\r' | tail -1)
 
   # ── Semeadura: o passado, que não tem rota ─────────────────────────────────
   local r_semeia; r_semeia=$(q1 semeia "$ALTO" "$PISO" "$CTRL")
@@ -3539,13 +3542,36 @@ print(len({(a.get('type'),(a.get('link_id') or '').lower()) for a in d} & alvo))
   # O tráfego parou lá atrás, e não faz diferença: o tick fecha o balde no prazo
   # mesmo sem amostra nova chegando. O que se mede é se o passo que o detector
   # CONSULTA aparece sozinho, para um aparelho que só existe nesta rodada.
-  local passos
-  for i in $(seq 1 8); do
+  # A ESPERA É CALCULADA, E NÃO CHUTADA. Um balde do tsdb fecha em MÚLTIPLO do
+  # passo, contado do epoch: o balde de 900s que contém o começo do tráfego só é
+  # escrito quando o relógio cruza a fronteira seguinte. Esperar "oito vezes 30
+  # segundos" faz a asserção medir QUANTO TEMPO A SUÍTE LEVOU até aqui — e ela
+  # mediu: a mesma versão do produto passou numa rodada com a bateria de upgrade
+  # (mais longa) e reprovou numa sem ela, acusando o produto de não gravar um
+  # passo que ele grava.
+  #
+  # Aqui a espera vai até a fronteira do balde mais uma folga, e o teto é dito em
+  # segundos de relógio, não em número de tentativas.
+  local passos="" alvo agora restante
+  if [[ "$t_traf" =~ ^[0-9]+$ ]]; then
+    alvo=$(( t_traf - t_traf % 900 + 900 + 60 ))
+  else
+    alvo=0
+  fi
+  while :; do
     passos=$(q1 passos "$mac_novo")
     [[ "$passos" == PASSOS\ * && "$passos" != "PASSOS -" ]] && grep -qE '(^|,)900(,|$)' <<<"${passos#PASSOS }" && break
-    sleep 30
+    agora=$(vm "date +%s" | tr -d '\r' | tail -1)
+    [[ "$agora" =~ ^[0-9]+$ ]] || break
+    restante=$(( alvo - agora ))
+    if [[ "$restante" -le 0 ]]; then break; fi
+    printf '       (faltam %ds para o balde de 15 min fechar)\n' "$restante"
+    sleep $(( restante > 60 ? 60 : restante ))
   done
-  if [[ "$passos" != PASSOS\ * ]]; then
+  if [[ "$alvo" == 0 ]]; then
+    pular "V2. O passo consultado é um passo que o produto grava" \
+          "não consegui ler o relógio da VM para saber quando o balde de 15 min fecharia"
+  elif [[ "$passos" != PASSOS\ * ]]; then
     bad "não consegui ler os passos gravados para o aparelho de teste; a asserção do passo não foi medida" "$passos"
   else
     passos="${passos#PASSOS }"
@@ -3557,9 +3583,14 @@ print(len({(a.get('type'),(a.get('link_id') or '').lower()) for a in d} & alvo))
             "o produto não gravou amostra alguma para o aparelho de teste; sem série real não dá para dizer em que passo ela é escrita"
     elif grep -qE '(^|,)900(,|$)' <<<"$passos"; then
       ok "o passo que o detector consulta (900s) é um dos que o produto grava sozinho ($passos)"
+    elif [[ "$(vm "date +%s" | tr -d '\r' | tail -1)" -lt "$alvo" ]] 2>/dev/null; then
+      # A fronteira não chegou: o produto não teve como gravar ainda, e dizer
+      # que ele não grava seria acusá-lo do relógio da bateria.
+      pular "V2. O passo consultado é um passo que o produto grava" \
+            "o balde de 15 min ainda não fechou desde o tráfego desta rodada (passos até agora: $passos)"
     else
       bad "O DETECTOR CONSULTA UM PASSO QUE NINGUÉM GRAVA: sem 900s, o alerta de consumo nunca sai numa caixa real" \
-          "passos que o produto gravou para $mac_novo: $passos"
+          "passos que o produto gravou para $mac_novo depois da fronteira do balde: $passos"
     fi
   fi
   M_V2=1
