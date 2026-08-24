@@ -3749,6 +3749,902 @@ print('erro' if alvo not in todos else ('sim' if alvo in ex else 'nao'))" "$1" 2
   limpa_x
 }
 
+# ─── W. Fixação de conexão de saída na WAN (issue #120, a outra ponta) ───────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Em modo balanceado a rota padrão é
+# multipath e o kernel escolhe o caminho por hash. Quando a rota é REESCRITA —
+# um peso muda, um link cai e volta, o DHCP do provedor renova o gateway — o
+# hash muda de resposta e as conexões ABERTAS pulam de link. Pular de link não
+# degrada: mata. O conntrack já guardou a tradução de origem para o endereço da
+# WAN antiga, o pacote sai pela nova levando o endereço da outra, e o provedor
+# descarta por uRPF. Download reabre e parece só "travar um instante"; chamada
+# de vídeo e jogo online morrem calados.
+#
+# A METADE DE SILÊNCIO, E ELA TEM NOME. Numa revisão adversarial descobriu-se
+# que uma versão anterior desta mudança mandava a RESPOSTA DA INTERNET de volta
+# para o provedor: a restauração de ENTRADA continuou lendo `ct mark != 0` com
+# o significado antigo ("a conexão entrou por uma WAN") depois de a memória de
+# saída passar a dar marca também a quem nasceu na LAN. Resultado: a LAN
+# inteira sem internet, no instante da reconciliação e persistido para o
+# próximo boot — enquanto a PRÓPRIA CAIXA continuava navegando, porque o
+# tráfego dela nasce no hook output e não atravessa o forward. É um apagão que
+# um handshake TCP de dois segundos pega, e é por isso que aqui quem fala é um
+# host da LAN atrás do firewall; a caixa é medida em SEPARADO, e só para dizer
+# no log que ela navegar não prova nada.
+#
+# O CENÁRIO NÃO EXISTE DE GRAÇA, E A PRIMEIRA VERSÃO DESTA BATERIA NÃO RODOU
+# POR ISSO. O modo PADRÃO é o failover (balancer/service.go), e em failover
+# ninguém escreve a default da `main`: o failover mexe só em `table <id>`. Uma
+# bateria que cadastra duas WANs e espera `ip route show default` adotá-las
+# espera para sempre — bate o teto, imprime uma falha que é do arnês e pula as
+# seis asserções. Aqui o balanceamento é LIGADO PELO PAINEL
+# (`PUT /api/routing/balance`), e a janela armada que essa troca abre é
+# CONFIRMADA na hora: sem o confirm, os 90 segundos de auto-reversão desfazem a
+# rota no meio da bateria e o sintoma seria "a conexão morreu na reescrita",
+# acusando o produto por um relógio do arnês.
+#
+# COMO SE MONTA ISSO SEM DUAS OPERADORAS. Duas WANs de mentira (veth + netns),
+# cada uma com a MESMA "internet" atrás dela (172.31.99.9 no lo) e cada
+# servidor devolvendo a própria etiqueta. A etiqueta que volta diz por qual WAN
+# a conexão saiu — e é assim que se prova que ela CONTINUOU saindo pela mesma
+# depois de a rota ser reescrita, em vez de se acreditar na ausência de erro.
+#
+# A REESCRITA E O CONTROLE, que é o que separa medir de torcer. O gatilho é uma
+# mudança de PESO pelo painel seguida de `POST /api/routing/balance/apply` — o
+# produto recalculando e reinstalando a própria rota, com quase todo o espaço
+# de hash jogado para a OUTRA WAN. Derrubar o link em uso seria mais dramático
+# e mediria outra coisa: link desabilitado sai da lista de WANs, e aí a
+# restauração de ENTRADA deixa de reconhecer a interface por onde a resposta
+# volta — a conexão morreria por um efeito de borda, não por falta de fixação.
+#
+# E o controle é uma conexão NOVA, aberta depois da reescrita, do mesmo host
+# para o mesmo destino: com o hash multipath fixado em L3 (o arnês fixa e
+# devolve o sysctl), ela responde exatamente a pergunta "para onde este par de
+# endereços vai agora?". Se a conexão nova mudou de WAN e a conexão ABERTA não
+# mudou, a diferença entre as duas é a marca — não é sorte. Se a conexão nova
+# NÃO mudou de WAN, a reescrita não moveu esta tupla e a asserção é dita NÃO
+# MEDIDA, em vez de verde.
+#
+# E a bateria termina pelo encaminhamento de porta, que é a metade da #120 que
+# uma versão errada desta mudança quebra: quem fixa a saída sem o guarda de
+# interface re-marca a resposta que vem de fora. O cliente dele fala de um
+# endereço FORA da sub-rede do enlace, senão a resposta acerta a WAN pela rota
+# conectada da `main` e a asserção passa com a marcação desligada.
+battery_fixacao_saida() {
+  head_ "W. Fixação de conexão de saída na WAN"
+
+  # Cada asserção tem um marcador. Quem sair pelo meio chama encerra_w, que
+  # PULA por nome tudo o que não chegou a ser medido — bateria que aborta
+  # calada deixa o resumo dizer "0 falhas" sobre asserção que nunca rodou. E
+  # asserção que já FALHOU marca o próprio marcador antes de sair: PULADA quer
+  # dizer "não medi", e dizer as duas coisas sobre a mesma linha é mentira nos
+  # dois sentidos.
+  local M_W1=0 M_W2=0 M_W3=0 M_W4=0 M_W4B=0 M_W5=0 M_W6=0
+  local desligados="" id_a="" id_b="" tab_a="" tab_b="" pf_criado=0
+  local usada="" outra="" if_usada="" if_outra="" marca="" sport=""
+  local tok="" modo_trocado=0 rota_original="" gw_orig="" dev_orig=""
+  local rpf_orig="" hash_orig="" etiqueta="" lan_ok=0 LINHA_CT=""
+
+  # limpa_w desfaz o que a bateria montou, e é chamada de TODO caminho de
+  # saída. Três pedaços dela não são arrumação, são a condição de existência
+  # das baterias seguintes — e por isso têm ASSERÇÃO, não `>/dev/null`:
+  # religar os links detectados, devolver o modo de roteamento ao failover e
+  # terminar com uma rota padrão que sai desta caixa. A lição da S é que sem
+  # WAN o produto nem emite as regras, e a bateria seguinte falharia dizendo
+  # que a feature não existe. Cada pedaço é independente do outro — nada aqui
+  # pode depender de uma etapa que talvez não tenha acontecido.
+  limpa_w() {
+    if [[ -n "$tok" ]]; then
+      # O DELETE do encaminhamento lê o id da QUERY STRING (handlers/
+      # portforward.go: `r.URL.Query().Get("id")`); com o id só no corpo o
+      # produto devolve 400 e o encaminhamento SOBREVIVE à bateria, apontando
+      # para um host da LAN que deixou de existir — e persistido no snapshot.
+      if [[ "$pf_criado" == 1 ]]; then
+        local pfid st_pf
+        pfid=$(body GET /api/portforward "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+ls=d if isinstance(d,list) else d.get('forwards',[])
+for f in ls:
+    if f.get('dest_ip')=='192.168.121.2': print(f.get('id',''))" 2>/dev/null)
+        if [[ -n "$pfid" ]]; then
+          st_pf=$(status DELETE "/api/portforward?id=$pfid" "$tok")
+          if [[ "$st_pf" == "200" ]]; then ok "o encaminhamento de teste foi removido pelo painel"
+          else bad "não consegui remover o encaminhamento de teste ($st_pf): ele fica na chain de DNAT apontando para um host que não existe mais" "id=$pfid"; fi
+        else
+          bad "não achei o id do encaminhamento de teste para removê-lo" "$(body GET /api/portforward "$tok" | head -c 200)"
+        fi
+      fi
+      local id
+      for id in $id_a $id_b; do
+        status DELETE "/api/links/$id" "$tok" >/dev/null 2>&1
+      done
+      # OS LINKS DETECTADOS VOLTAM, E ISSO É COBRADO. muda_link devolve pista
+      # quando falha; um PUT com corpo vazio (o GET que não veio, o python que
+      # morreu) deixaria a caixa sem WAN nenhuma em silêncio, e o custo seria a
+      # suíte inteira depois desta bateria.
+      local falhou="" pista
+      for id in $desligados; do
+        pista=$(muda_link "$id" enabled true) || falhou="$falhou $id($pista)"
+      done
+      if [[ -n "$desligados" ]]; then
+        if [[ -z "$falhou" ]]; then
+          local ainda
+          ainda=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+alvos=set(sys.argv[1].split())
+for l in json.load(sys.stdin):
+    if l.get('id') in alvos and not l.get('enabled'): print(l.get('interface',l['id']))" "$desligados" 2>/dev/null | tr '\n' ' ')
+          if [[ -z "$ainda" ]]; then ok "os links detectados voltaram ligados (as baterias seguintes têm WAN)"
+          else bad "link(s) continuam desligados depois da limpeza: as baterias seguintes rodam sem WAN" "$ainda"; fi
+        else
+          bad "não consegui religar link(s) detectado(s): as baterias seguintes rodam sem WAN" "$falhou"
+        fi
+      fi
+      # O modo volta ao failover, que é o padrão do produto. Sair daqui em
+      # modo balanceado deixaria o balanceador dono da rota padrão para as
+      # baterias seguintes, que não pediram isso.
+      if [[ "$modo_trocado" == 1 ]]; then
+        status POST "/api/routing/balance/apply?arm=false" "$tok" >/dev/null 2>&1
+        status PUT /api/routing/balance "$tok" '{"mode":"failover","table":"main","arm_seconds":90,"schedules":[]}' >/dev/null 2>&1
+      fi
+    fi
+
+    vm "pkill -f lgw_serv >/dev/null 2>&1; pkill -f lgw_fixa >/dev/null 2>&1
+        ip netns del wana 2>/dev/null; ip netns del wanb 2>/dev/null; ip netns del lanw 2>/dev/null
+        ip link del lg-wana 2>/dev/null; ip link del lg-wanb 2>/dev/null; ip link del lg-lanw 2>/dev/null
+        rm -f /tmp/lgw_serv.py /tmp/lgw_fala.py /tmp/lgw_fixa.py /tmp/lgw_fixa.out /tmp/lgw_go; true" >/dev/null 2>&1
+    [[ -n "$rpf_orig"  ]] && vm "sysctl -w net.ipv4.conf.all.rp_filter=$rpf_orig" >/dev/null 2>&1
+    [[ -n "$hash_orig" ]] && vm "sysctl -w net.ipv4.fib_multipath_hash_policy=$hash_orig" >/dev/null 2>&1
+    rm -f /tmp/lgw_link.json
+
+    # A ÚLTIMA COISA QUE ESTA BATERIA DEVE À SUÍTE: uma rota padrão que não
+    # aponta para uma interface que ela mesma acabou de apagar.
+    if [[ "$modo_trocado" == 1 || -n "$desligados" ]]; then
+      local rota_fim i
+      for i in $(seq 1 10); do
+        rota_fim=$(vm "ip route show default" | tr -d '\r' | tr '\n' ' ')
+        # Sem gateway de origem anotado não há o que esperar: espera com teto
+        # vira espera cega, e trinta segundos por bateria é o que ninguém vê.
+        [[ -z "$gw_orig" ]] && break
+        grep -qF "via $gw_orig" <<<"$rota_fim" && break
+        sleep 3
+      done
+      if [[ -n "$gw_orig" ]] && grep -qF "via $gw_orig" <<<"$rota_fim"; then
+        ok "a caixa termina a bateria com a rota padrão de antes (via $gw_orig)"
+      else
+        # Rede de segurança do arnês, e ela é FALHA mesmo funcionando: se o
+        # produto não devolveu a rota, quem devolveu foi este script.
+        [[ -n "$gw_orig" && -n "$dev_orig" ]] && vm "ip route replace default via $gw_orig dev $dev_orig" >/dev/null 2>&1
+        bad "a rota padrão não voltou ao que era; o arnês a restaurou à força para não derrubar as baterias seguintes" \
+            "antes: ${rota_original:-vazia} | depois: ${rota_fim:-vazia}"
+      fi
+    fi
+  }
+
+  encerra_w() {
+    local motivo="$1"
+    [[ "$M_W1"  == 1 ]] || pular "W1. As três chains e os caminhos por marca, lidos do kernel" "$motivo"
+    [[ "$M_W2"  == 1 ]] || pular "W2. Um host da LAN atravessa o firewall" "$motivo"
+    [[ "$M_W3"  == 1 ]] || pular "W3. A conexão de saída guarda a marca da WAN por onde saiu" "$motivo"
+    [[ "$M_W4"  == 1 ]] || pular "W4. A conexão aberta sobrevive à reescrita da rota" "$motivo"
+    [[ "$M_W4B" == 1 ]] || pular "W4b. A rota marcada, perguntada ao kernel" "$motivo"
+    [[ "$M_W5"  == 1 ]] || pular "W5. O encaminhamento de porta continua respondendo" "$motivo"
+    [[ "$M_W6"  == 1 ]] || pular "W6. A caixa navegar não conta como prova" "$motivo"
+    limpa_w
+  }
+
+  # ── Ajudantes de medição ───────────────────────────────────────────────────
+
+  # fala NETNS HOST PORTA [ORIGEM] → a etiqueta que o outro lado devolveu, ou
+  # "erro:X". NETNS vazio mede a PRÓPRIA CAIXA, que é uma medida diferente de
+  # propósito (ver W6). ORIGEM liga o cliente a um endereço específico, que é o
+  # que tira o encaminhamento de porta de cima da rota conectada do enlace.
+  # O cliente é um arquivo na VM e não um -c gigante: a versão com aspas dentro
+  # de aspas dentro do ssh já quebrou uma vez e a falha parecia do produto. E o
+  # `timeout` do shell é MAIOR que o pior caso do próprio cliente (4s+4s):
+  # menor, ele mataria o cliente antes do diagnóstico e "não conectou" chegaria
+  # igual a "conectou e não respondeu".
+  fala() {
+    local pre=""
+    [[ -n "$1" ]] && pre="ip netns exec $1 "
+    vm "${pre}timeout 12 python3 /tmp/lgw_fala.py $2 $3 ${4:-} 2>/dev/null" | tr -d '\r' | tail -1
+  }
+
+  # ler_link INTERFACE CAMPO → o campo daquele link, pelo painel.
+  ler_link() {
+    body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l.get('interface')==sys.argv[1]: print(l.get(sys.argv[2],''))" "$1" "$2" 2>/dev/null
+  }
+
+  # muda_link ID CAMPO VALOR → "ok", ou uma pista e código de saída != 0.
+  # Muda PELO PAINEL, com o objeto inteiro de volta: `ip link set down` não
+  # passa por reconciliação nenhuma e provaria outra coisa.
+  #
+  # Os três sumidouros que esta versão fecha, e que a bateria S ainda tem: o
+  # GET que não é JSON (o `>` já truncou o arquivo e o 2>/dev/null comeu o
+  # traceback), o corpo vazio (que o api() DESCARTA, mandando um PUT sem
+  # payload) e o status do PUT indo para /dev/null. Os três davam no-op mudo —
+  # e o no-op mudo desta função é a caixa sem WAN.
+  muda_link() {
+    local atual st
+    atual=$(body GET "/api/links/$1" "$tok")
+    python3 -c "
+import json,sys
+d=json.loads(sys.argv[1])
+v=sys.argv[3]
+d[sys.argv[2]] = (v=='true') if v in ('true','false') else int(v)
+print(json.dumps(d))" "$atual" "$2" "$3" > /tmp/lgw_link.json 2>/dev/null
+    if [[ ! -s /tmp/lgw_link.json ]]; then echo "sem-json:$(head -c 60 <<<"$atual")"; return 1; fi
+    st=$(status PUT "/api/links/$1" "$tok" "$(cat /tmp/lgw_link.json)")
+    [[ "$st" == "200" || "$st" == "204" ]] || { echo "http:$st"; return 1; }
+    echo ok
+  }
+
+  # plano_ifaces → as interfaces que o BALANCEADOR diz que vão carregar
+  # tráfego. É a resposta do próprio produto para "esta rota é multipath?", e
+  # por isso é ela que o portão espera — não um sleep.
+  plano_ifaces() {
+    body GET /api/routing/balance "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+nh=(d.get('plan') or {}).get('nexthops') or []
+print(' '.join(sorted(n.get('interface','') for n in nh)))" 2>/dev/null
+  }
+
+  rota_default() { vm "ip route show default" | tr -d '\r' | tr '\n' ' '; }
+
+  # marca_do_fluxo SPORT → a marca que o conntrack guardou PARA ESTA CONEXÃO,
+  # em decimal, ou vazio.
+  #
+  # A porta de origem não é preciosismo: quando o W3 roda já existem outros
+  # fluxos de 192.168.121.2 para a mesma internet de mentira (o handshake do W2
+  # ainda em TIME_WAIT), e um `head -1` sobre a ordem de hash do conntrack
+  # podia ler o fluxo errado — acusando o produto de guardar "a marca de outro
+  # caminho" por uma leitura do arnês. A porta de destino também é exclusiva da
+  # conexão longa (18097), que é cinto e suspensório de propósito.
+  #
+  # Duas fontes, porque a ausência da ferramenta não pode virar "a marca está
+  # errada": se nenhuma responder, a asserção é dita NÃO MEDIDA, e não verde.
+  # E o `mark=` é ANCORADO — sem a âncora ele casa dentro de `secmark=0`, que é
+  # a mesma família do "22," casando dentro de "2222," que esta suíte já pagou.
+  marca_do_fluxo() {
+    local linha
+    linha=$(vm "conntrack -L -p tcp --sport $1 --dport 18097 2>/dev/null | head -1" | tr -d '\r' | head -1)
+    [[ -n "$linha" ]] || linha=$(vm "grep -E 'sport=$1 dport=18097' /proc/net/nf_conntrack 2>/dev/null | head -1" | tr -d '\r' | head -1)
+    LINHA_CT="$linha"
+    [[ -n "$linha" ]] || { echo ""; return 0; }
+    grep -oE '(^| )mark=[0-9]+' <<<"$linha" | head -1 | cut -d= -f2
+  }
+
+  # ── Sessão ─────────────────────────────────────────────────────────────────
+  local initial
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  if [[ -z "$tok" ]]; then
+    bad "sem sessão administrativa; a bateria W não roda"
+    encerra_w "sem sessão administrativa"
+    return
+  fi
+
+  # A postura do que ATRAVESSA precisa ser accept, mas trocá-la por trocar abre
+  # uma janela de confirmação de 90 segundos que recusa toda mutação guardada
+  # enquanto durar. Lê-se antes; e se a troca acontecer, ela é CONFIRMADA na
+  # hora, como a bateria N aprendeu a fazer.
+  local postura
+  postura=$(body GET /api/nftables/policy "$tok" | jqk forward)
+  if [[ "$postura" != "accept" ]]; then
+    status PUT /api/nftables/policy "$tok" '{"policy":"accept","chain":"forward"}' >/dev/null
+    local janela
+    janela=$(body GET /api/nftables/pending "$tok" | jqk pending.id)
+    [[ -n "$janela" ]] && status POST /api/nftables/pending/confirm "$tok" "{\"id\":\"$janela\"}" >/dev/null
+  fi
+
+  rota_original=$(rota_default)
+  gw_orig=$(grep -oE 'via [0-9]+(\.[0-9]+){3}' <<<"$rota_original" | head -1 | cut -d' ' -f2)
+  dev_orig=$(grep -oE 'dev [A-Za-z0-9@._-]+' <<<"$rota_original" | head -1 | cut -d' ' -f2)
+
+  # ── Montagem: duas WANs de mentira e um host de LAN, cada um na sua netns ──
+  #
+  # As duas netns de WAN têm o MESMO endereço de "internet" (172.31.99.9 no lo)
+  # e etiquetas diferentes: a etiqueta que volta é o único jeito honesto de
+  # saber por onde a conexão saiu, e é ela que responde a pergunta da bateria.
+  # Cada uma tem também um endereço FORA da sub-rede do enlace (203.0.113.9 e
+  # .19), que é de onde o cliente do encaminhamento de porta vai falar.
+  vm "pkill -f lgw_serv >/dev/null 2>&1; pkill -f lgw_fixa >/dev/null 2>&1
+      ip netns del wana 2>/dev/null; ip netns del wanb 2>/dev/null; ip netns del lanw 2>/dev/null
+      ip link del lg-wana 2>/dev/null; ip link del lg-wanb 2>/dev/null; ip link del lg-lanw 2>/dev/null
+      rm -f /tmp/lgw_fixa.out /tmp/lgw_go; true" >/dev/null 2>&1
+  vm "ip netns add wana && ip netns add wanb && ip netns add lanw && \
+      ip link add lg-wana type veth peer name wana-far && \
+      ip link add lg-wanb type veth peer name wanb-far && \
+      ip link add lg-lanw type veth peer name lanw-far && \
+      ip link set wana-far netns wana && ip link set wanb-far netns wanb && ip link set lanw-far netns lanw && \
+      ip addr add 172.31.10.1/24 dev lg-wana && ip link set lg-wana up && \
+      ip addr add 172.31.20.1/24 dev lg-wanb && ip link set lg-wanb up && \
+      ip addr add 192.168.121.1/24 dev lg-lanw && ip link set lg-lanw up && \
+      ip netns exec wana sh -c 'ip link set lo up; ip addr add 172.31.10.2/24 dev wana-far; ip addr add 172.31.99.9/32 dev lo; ip addr add 203.0.113.9/32 dev lo; ip link set wana-far up; ip route add 172.31.10.1 dev wana-far; ip route add default via 172.31.10.1' && \
+      ip netns exec wanb sh -c 'ip link set lo up; ip addr add 172.31.20.2/24 dev wanb-far; ip addr add 172.31.99.9/32 dev lo; ip addr add 203.0.113.19/32 dev lo; ip link set wanb-far up; ip route add 172.31.20.1 dev wanb-far; ip route add default via 172.31.20.1' && \
+      ip netns exec lanw sh -c 'ip link set lo up; ip addr add 192.168.121.2/24 dev lanw-far; ip link set lanw-far up; ip route add default via 192.168.121.1'" >/dev/null 2>&1
+
+  # DOIS SYSCTLS DO ARNÊS, os dois lidos antes e devolvidos na limpeza.
+  #
+  # rp_filter: o cliente do encaminhamento fala de 203.0.113.9, cujo caminho de
+  # volta é a rota padrão — que estará pendendo para a OUTRA WAN. Com filtro
+  # estrito o kernel descarta esse pacote e a falha seria creditada ao produto.
+  #
+  # fib_multipath_hash_policy: fixado em L3 para que o CONTROLE do W4 (uma
+  # conexão nova, do mesmo par de endereços) responda pela mesma tupla de hash
+  # que a conexão medida. Com hash L4 as duas tuplas são diferentes e o
+  # controle deixaria de falar pelo fluxo que ele controla.
+  rpf_orig=$(vm "cat /proc/sys/net/ipv4/conf/all/rp_filter 2>/dev/null" | tr -d '\r' | head -1)
+  hash_orig=$(vm "cat /proc/sys/net/ipv4/fib_multipath_hash_policy 2>/dev/null" | tr -d '\r' | head -1)
+  vm "sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1
+      sysctl -w net.ipv4.conf.lg-wana.rp_filter=0 >/dev/null 2>&1
+      sysctl -w net.ipv4.conf.lg-wanb.rp_filter=0 >/dev/null 2>&1
+      sysctl -w net.ipv4.conf.lg-lanw.rp_filter=0 >/dev/null 2>&1
+      sysctl -w net.ipv4.fib_multipath_hash_policy=0 >/dev/null 2>&1; true" >/dev/null 2>&1
+
+  vm "cat > /tmp/lgw_serv.py <<'PYEOF'
+import socket, sys, threading
+etiqueta = sys.argv[1].encode()
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind((sys.argv[2], int(sys.argv[3])))
+srv.listen(16)
+def atende(c):
+    try:
+        while True:
+            if not c.recv(64): return
+            c.sendall(etiqueta + b'\n')
+    except Exception:
+        return
+    finally:
+        c.close()
+while True:
+    c, _ = srv.accept()
+    threading.Thread(target=atende, args=(c,), daemon=True).start()
+PYEOF
+      cat > /tmp/lgw_fala.py <<'PYEOF'
+import socket, sys
+try:
+    origem = sys.argv[3] if len(sys.argv) > 3 else ''
+    s = socket.socket()
+    if origem:
+        s.bind((origem, 0))
+    s.settimeout(4)
+    s.connect((sys.argv[1], int(sys.argv[2])))
+    s.sendall(b'oi\n')
+    print(s.recv(64).decode(errors='replace').strip())
+    s.close()
+except Exception as e:
+    print('erro:' + type(e).__name__)
+PYEOF
+      cat > /tmp/lgw_fixa.py <<'PYEOF'
+import os, socket, sys, time
+saida = open('/tmp/lgw_fixa.out', 'w', buffering=1)
+try:
+    s = socket.create_connection((sys.argv[1], int(sys.argv[2])), 6)
+    s.settimeout(10)
+    # A porta de origem vai para o arquivo ANTES da primeira troca: é por ela
+    # que o arnês acha ESTA conexão no conntrack, e não outra do mesmo host.
+    saida.write('sport=%d\n' % s.getsockname()[1])
+    s.sendall(b'1\n')
+    saida.write('r1=' + s.recv(64).decode(errors='replace').strip() + '\n')
+    # A conexão fica ABERTA e parada enquanto o arnês reescreve a rota. O
+    # gatilho é um arquivo e não um sleep: assim a segunda metade acontece
+    # DEPOIS da reescrita, e não perto dela.
+    t0 = time.time()
+    while not os.path.exists('/tmp/lgw_go') and time.time() - t0 < 240:
+        time.sleep(0.5)
+    s.settimeout(20)
+    s.sendall(b'2\n')
+    saida.write('r2=' + s.recv(64).decode(errors='replace').strip() + '\n')
+except Exception as e:
+    saida.write('erro=' + type(e).__name__ + '\n')
+saida.write('fim\n')
+PYEOF
+      ip netns exec wana setsid python3 /tmp/lgw_serv.py saude 172.31.10.2 443 >/dev/null 2>&1 < /dev/null &
+      ip netns exec wanb setsid python3 /tmp/lgw_serv.py saude 172.31.20.2 443 >/dev/null 2>&1 < /dev/null &
+      ip netns exec wana setsid python3 /tmp/lgw_serv.py wana 172.31.99.9 18099 >/dev/null 2>&1 < /dev/null &
+      ip netns exec wana setsid python3 /tmp/lgw_serv.py wana 172.31.99.9 18097 >/dev/null 2>&1 < /dev/null &
+      ip netns exec wanb setsid python3 /tmp/lgw_serv.py wanb 172.31.99.9 18099 >/dev/null 2>&1 < /dev/null &
+      ip netns exec wanb setsid python3 /tmp/lgw_serv.py wanb 172.31.99.9 18097 >/dev/null 2>&1 < /dev/null &
+      ip netns exec lanw setsid python3 /tmp/lgw_serv.py lan 192.168.121.2 18098 >/dev/null 2>&1 < /dev/null &
+      sleep 1" >/dev/null 2>&1
+
+  # PORTÃO: os servidores de mentira estão de pé DENTRO da própria netns? Esta
+  # medida não atravessa firewall nenhum. Sem ela, um servidor que não subiu
+  # faria a bateria inteira acusar o produto de um apagão que é do arnês.
+  local eco_a eco_b eco_l
+  eco_a=$(fala wana 172.31.99.9 18099)
+  eco_b=$(fala wanb 172.31.99.9 18099)
+  eco_l=$(fala lanw 192.168.121.2 18098)
+  if [[ "$eco_a" == "wana" && "$eco_b" == "wanb" && "$eco_l" == "lan" ]]; then
+    ok "as internets de mentira e o host da LAN respondem dentro da própria netns (rp_filter era '${rpf_orig:-?}', hash multipath era '${hash_orig:-?}'; o arnês devolve os dois na limpeza)"
+  else
+    bad "o cenário não subiu: os servidores de teste não respondem nem localmente (A='${eco_a:-nada}', B='${eco_b:-nada}', LAN='${eco_l:-nada}')" \
+        "$(vm "ip netns list 2>&1; ip -br addr show lg-wana lg-wanb lg-lanw 2>&1" | tr -d '\r' | tr '\n' ' ' | head -c 220)"
+    encerra_w "veth/netns não subiram nesta máquina"
+    return
+  fi
+
+  # As WANs entram PELO PAINEL, que é o que dispara a reconciliação — e é a
+  # única forma de a marcação de conexão e a tabela de rota existirem.
+  local st
+  st=$(status POST /api/links "$tok" '{"name":"WAN W-A","interface":"lg-wana","gateway":"172.31.10.2","ip_address":"172.31.10.1","weight":1,"enabled":true,"monitor_hosts":"172.31.10.2","dns_test":"172.31.10.2"}')
+  if [[ "$st" != "200" && "$st" != "201" ]]; then
+    bad "não consegui cadastrar a WAN de teste A: $st"
+    encerra_w "a WAN de teste A não foi aceita pelo painel"
+    return
+  fi
+  st=$(status POST /api/links "$tok" '{"name":"WAN W-B","interface":"lg-wanb","gateway":"172.31.20.2","ip_address":"172.31.20.1","weight":1,"enabled":true,"monitor_hosts":"172.31.20.2","dns_test":"172.31.20.2"}')
+  if [[ "$st" != "200" && "$st" != "201" ]]; then
+    bad "não consegui cadastrar a WAN de teste B: $st"
+    encerra_w "a WAN de teste B não foi aceita pelo painel"
+    return
+  fi
+  ok "as duas WANs de teste entraram pelo painel"
+  sleep 2
+
+  id_a=$(ler_link lg-wana id);        id_b=$(ler_link lg-wanb id)
+  tab_a=$(ler_link lg-wana table_id); tab_b=$(ler_link lg-wanb table_id)
+  # `table_id` é INTEGER NOT NULL DEFAULT 0 no banco, e um zero aqui envenena
+  # tudo o que vem depois: a marca esperada viraria 0, e um fluxo SEM MARCA
+  # NENHUMA lê 0 no conntrack — o W3 imprimiria verde para a feature desligada.
+  if [[ -z "$id_a" || -z "$id_b" ]] || ! [[ "$tab_a" =~ ^[1-9][0-9]*$ && "$tab_b" =~ ^[1-9][0-9]*$ ]]; then
+    bad "as WANs de teste não receberam identidade e tabela de rota utilizável" \
+        "id_a='$id_a' id_b='$id_b' tabela_a='$tab_a' tabela_b='$tab_b'"
+    encerra_w "sem tabela de rota, não há fixação para medir"
+    return
+  fi
+
+  # ISOLAMENTO DEPOIS DE AS WANS DE TESTE EXISTIREM, e a ordem é a lição da
+  # bateria S: desligar os links detectados ANTES deixa a caixa sem WAN
+  # nenhuma, e sem WAN a marcação de conexão nem sequer é emitida — as
+  # asserções seguintes falhariam dizendo que a feature não existe.
+  desligados=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l.get('enabled') and l.get('interface') not in ('lg-wana','lg-wanb'): print(l['id'])" 2>/dev/null)
+  local id pista falhou=""
+  for id in $desligados; do
+    pista=$(muda_link "$id" enabled false) || falhou="$falhou $id($pista)"
+  done
+  local n_desl; n_desl=$(wc -w <<<"$desligados")
+  if [[ "$n_desl" -gt 0 && -z "$falhou" ]]; then
+    ok "$n_desl link(s) detectado(s) saíram do caminho para o isolamento"
+  else
+    bad "o isolamento não desligou os links detectados: a WAN real divide a rota padrão com as de teste e o tráfego da LAN pode sair por ela" \
+        "desligados=$n_desl falhas=${falhou:-nenhuma} | $(body GET /api/links "$tok" | head -c 200)"
+    encerra_w "os links reais continuaram no caminho"
+    return
+  fi
+
+  # AS DUAS WANS DE TESTE PRECISAM FICAR ONLINE, e isto não é capricho de
+  # cenário bonito: o failover reage a link offline APAGANDO o default da
+  # tabela daquele link (failover/service.go, handleLinkDown). Sem esse default,
+  # a `ip rule fwmark` cai numa tabela vazia, escorrega para a main e a fixação
+  # deixa de existir — a bateria mediria o produto sem a metade de roteamento e
+  # chamaria isso de defeito da marcação. Por isso cada netns de WAN atende
+  # também na porta que o monitor do produto disca (443 no endereço do
+  # gateway): a saúde é medida pelo caminho do produto, não fingida no banco.
+  local estados="" i
+  for i in $(seq 1 18); do
+    estados=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+d={l.get('interface'):l.get('status') for l in json.load(sys.stdin)}
+print('%s/%s' % (d.get('lg-wana',''), d.get('lg-wanb','')))" 2>/dev/null)
+    [[ "$estados" == "online/online" ]] && break
+    sleep 5
+  done
+  if [[ "$estados" == "online/online" ]]; then
+    ok "as duas WANs de teste estão online pelo monitor do produto"
+  else
+    bad "as WANs de teste não ficaram online em 90s ('${estados:-nada}'): o failover apagaria o default da tabela do link e não haveria fixação para medir" \
+        "$(vm "ss -lnt 2>/dev/null | head -6" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
+    encerra_w "as WANs de teste não ficaram online"
+    return
+  fi
+
+  # O BALANCEAMENTO É LIGADO PELO PAINEL, e a janela armada é confirmada na
+  # hora. Sem o modo balanceado NÃO EXISTE rota multipath nesta caixa: o modo
+  # padrão é failover, e nele o produto só escreve `table <id>` — a premissa
+  # inteira desta bateria ("o kernel escolhe o caminho por hash") seria falsa e
+  # todas as asserções abaixo mediriam outra coisa.
+  st=$(status PUT /api/routing/balance "$tok" '{"mode":"balance","table":"main","arm_seconds":90,"evict_on_degrade":false,"schedules":[]}')
+  if [[ "$st" != "200" ]]; then
+    bad "o painel recusou ligar o balanceamento: $st"
+    encerra_w "sem modo balanceado não há rota multipath para reescrever"
+    return
+  fi
+  modo_trocado=1
+  status POST /api/routing/balance/confirm "$tok" >/dev/null 2>&1
+
+  # O portão espera o PRODUTO dizer que as duas WANs de teste carregam
+  # tráfego — e só elas. Esperar com sleep aqui daria o mesmo verde para uma
+  # rota de caminho único.
+  local plano=""
+  for i in $(seq 1 14); do
+    plano=$(plano_ifaces)
+    [[ "$plano" == "lg-wana lg-wanb" ]] && break
+    sleep 5
+  done
+  if [[ "$plano" != "lg-wana lg-wanb" ]]; then
+    bad "o balanceador não colocou as duas WANs de teste no plano em 70s: sem dois caminhos não há hash para mudar" "plano='${plano:-vazio}'"
+    encerra_w "o plano do balanceador não ficou multipath"
+    return
+  fi
+  st=$(status POST "/api/routing/balance/apply?arm=false" "$tok")
+  if [[ "$st" != "200" ]]; then
+    bad "o painel recusou aplicar a rota balanceada: $st"
+    encerra_w "a rota balanceada não foi aplicada"
+    return
+  fi
+
+  # E a rota vivida é conferida por EXCLUSIVIDADE, não por presença: uma linha
+  # de default que contenha as WANs de teste E a WAN real ainda deixaria o
+  # tráfego da LAN hashear para o enlace do qemu, e o apagão medido em seguida
+  # seria do arnês.
+  local rota=""
+  for i in $(seq 1 10); do
+    rota=$(rota_default)
+    grep -q 'via 172.31.10.2' <<<"$rota" && grep -q 'via 172.31.20.2' <<<"$rota" && break
+    sleep 3
+  done
+  if grep -q 'via 172.31.10.2' <<<"$rota" && grep -q 'via 172.31.20.2' <<<"$rota" &&
+     { [[ -z "$gw_orig" ]] || ! grep -qF "via $gw_orig" <<<"$rota"; }; then
+    ok "a rota padrão é multipath pelas duas WANs de teste, e só por elas"
+  else
+    bad "a rota padrão não ficou multipath só com as WANs de teste; o tráfego da LAN pode sair por outro caminho" "${rota:-vazia}"
+    encerra_w "a rota padrão não adotou exclusivamente as WANs de teste"
+    return
+  fi
+
+  # ── W1 — AS TRÊS CHAINS E OS CAMINHOS POR MARCA, LIDOS DO KERNEL ───────────
+  # O código Go não é fonte aqui: o que vale é o que o nft e o iproute2
+  # imprimem na máquina.
+  local pre fora saida_ch
+  pre=$(vm "nft list chain inet linkguard conn_mark 2>/dev/null" | tr -d '\r')
+  fora=$(vm "nft list chain inet linkguard conn_mark_out 2>/dev/null" | tr -d '\r')
+  saida_ch=$(vm "nft list chain inet linkguard output_mark 2>/dev/null" | tr -d '\r')
+
+  if grep -q 'hook prerouting priority mangle + 10' <<<"$pre"; then
+    ok "a memória de entrada está no prerouting, depois da mark_hosts (mangle + 10)"
+  else bad "a chain conn_mark não está no prerouting em mangle + 10 (ou não existe)" "$(tr '\n' ' ' <<<"${pre:-ausente}" | head -c 200)"; fi
+  # output_mark é a chain cujo defeito é invisível: com `type filter` a marca é
+  # escrita e ignorada — parece configurada e não faz nada. A H1 já cobra isso;
+  # a bateria que se anuncia como a das TRÊS chains não pode cobrar menos.
+  if grep -q 'type route hook output' <<<"$saida_ch"; then
+    ok "a chain de saída da própria caixa é type route (o kernel refaz a rota)"
+  else bad "a chain output_mark não é type route: a marca seria escrita e ignorada" "$(tr '\n' ' ' <<<"${saida_ch:-ausente}" | head -c 200)"; fi
+  if grep -q 'type filter hook forward priority mangle' <<<"$fora"; then
+    ok "a memória de saída está no forward, onde a interface de saída já está decidida"
+  else bad "a chain conn_mark_out não está no forward (ou não existe)" "$(tr '\n' ' ' <<<"${fora:-ausente}" | head -c 200)"; fi
+
+  # A memória de ENTRADA, uma regra por WAN, com `ct state new` — a condição
+  # que o próprio código diz não ser economia: sem ela um pacote que chega pela
+  # WAN errada no meio da conversa reescreve a marca e muda o caminho de volta
+  # no meio do caminho.
+  local hex_a hex_b faltando=""
+  hex_a=$(printf '%x' "$tab_a"); hex_b=$(printf '%x' "$tab_b")
+  grep -qE "iifname \"lg-wana\" ct state new .*ct mark set 0x0*$hex_a( |\$)" <<<"$pre" || faltando="$faltando lg-wana"
+  grep -qE "iifname \"lg-wanb\" ct state new .*ct mark set 0x0*$hex_b( |\$)" <<<"$pre" || faltando="$faltando lg-wanb"
+  if [[ -z "$faltando" ]]; then
+    ok "cada WAN grava, em conexão nova que entra por ela, a marca da tabela dela ($tab_a e $tab_b)"
+  else bad "falta a regra de memória de entrada (com ct state new e a marca da tabela) para:$faltando" "$(tr '\n' ' ' <<<"$pre" | head -c 240)"; fi
+
+  # AS DUAS RESTAURAÇÕES DO PREROUTING, CONFERIDAS UMA A UMA. Contar duas
+  # linhas e procurar o nome das WANs não distingue nada: os nomes aparecem
+  # DENTRO do conjunto negado das duas, então o grep estaria lendo o guarda, e
+  # duas cópias da regra de resposta passariam pelo mesmo teste.
+  local rest_reply rest_orig
+  rest_reply=$(grep 'meta mark set ct mark' <<<"$pre" | grep 'ct direction reply' | head -1)
+  rest_orig=$(grep 'meta mark set ct mark' <<<"$pre" | grep 'ct direction original' | head -1)
+  # É AQUI QUE MORA O APAGÃO: sem `iifname != { WANs }` na regra VELHA (a de
+  # resposta), a resposta da internet para um host da LAN é marcada com a WAN e
+  # mandada para a tabela do link, que só tem o default do provedor.
+  if [[ -n "$rest_reply" ]] && grep -q 'iifname != {' <<<"$rest_reply" &&
+     grep -q '"lg-wana"' <<<"$rest_reply" && grep -q '"lg-wanb"' <<<"$rest_reply" &&
+     ! grep -qE 'meta mark (== )?0x0+ ' <<<"$rest_reply"; then
+    ok "a restauração de resposta restaura só o que NÃO entrou por uma WAN, e sem exigir marca zerada (a memória da conexão vence o @host_wan)"
+  else
+    bad "a restauração de resposta está fora de forma: sem o guarda de interface, a resposta da internet sai de volta para o provedor e a LAN fica sem internet" \
+        "${rest_reply:-linha ausente} | conn_mark: $(tr '\n' ' ' <<<"$pre" | head -c 200)"
+  fi
+  if [[ -n "$rest_orig" ]] && grep -q 'iifname != {' <<<"$rest_orig" &&
+     grep -qE 'meta mark (== )?0x0+ ' <<<"$rest_orig"; then
+    ok "a restauração de saída casa a direção original, só o que veio da LAN, e cede a vez ao direcionamento por host"
+  else
+    bad "a restauração de saída perdeu uma das condições (direção original, guarda de interface, marca de pacote ainda zerada)" \
+        "${rest_orig:-linha ausente}"
+  fi
+
+  # A GRAVAÇÃO DE SAÍDA, uma por WAN — a asserção que não pode olhar só a
+  # primeira: se a regra da segunda WAN sumir, metade das conexões deixa de ter
+  # dono e ninguém percebe.
+  local grava_a grava_b
+  grava_a=$(grep 'oifname "lg-wana"' <<<"$fora" | head -1)
+  grava_b=$(grep 'oifname "lg-wanb"' <<<"$fora" | head -1)
+  local ok_grava=1
+  grep -q 'ct direction original'  <<<"$grava_a" || ok_grava=0
+  grep -qE 'ct mark (== )?0x0+ '   <<<"$grava_a" || ok_grava=0
+  grep -qE "ct mark set 0x0*$hex_a( |\$)" <<<"$grava_a" || ok_grava=0
+  grep -q 'ct direction original'  <<<"$grava_b" || ok_grava=0
+  grep -qE 'ct mark (== )?0x0+ '   <<<"$grava_b" || ok_grava=0
+  grep -qE "ct mark set 0x0*$hex_b( |\$)" <<<"$grava_b" || ok_grava=0
+  if [[ "$ok_grava" == 1 ]]; then
+    ok "cada WAN de saída grava a marca da tabela dela, só na direção original e só com a marca ainda zerada"
+  else
+    bad "a gravação de saída perdeu uma das condições ou uma das WANs" \
+        "A='${grava_a:-ausente}' B='${grava_b:-ausente}'"
+  fi
+
+  # E A METADE DE ROTEAMENTO, que é o que dá significado à marca. Sem a `ip
+  # rule` e sem o default na tabela do link, a consulta marcada do W4b cairia
+  # na main — e o que ela mediria seria o hash, não a fixação.
+  local regras
+  regras=$(vm "ip rule show" | tr -d '\r')
+  if grep -q "lookup $tab_a" <<<"$regras" && grep -q "lookup $tab_b" <<<"$regras"; then
+    ok "as duas WANs de teste têm ip rule por marca ($tab_a e $tab_b)"
+  else bad "falta ip rule por marca: a marca não muda rota nenhuma" "$(tr '\n' ' ' <<<"$regras" | head -c 240)"; fi
+  if vm "ip route show table $tab_a" | grep -q 'default via 172.31.10.2' &&
+     vm "ip route show table $tab_b" | grep -q 'default via 172.31.20.2'; then
+    ok "cada tabela de link tem o default do link dela"
+  else
+    bad "tabela de link sem o default do link: a marca apontaria para uma tabela vazia" \
+        "$tab_a: $(vm "ip route show table $tab_a" | tr -d '\r' | tr '\n' ' ' | head -c 100) | $tab_b: $(vm "ip route show table $tab_b" | tr -d '\r' | tr '\n' ' ' | head -c 100)"
+  fi
+  M_W1=1
+
+  # ── W2 — A ASSERÇÃO QUE TERIA PEGO O APAGÃO ───────────────────────────────
+  # Ela custa dois segundos: um host da LAN completa um handshake TCP ATRAVÉS
+  # do firewall, com as chains já aplicadas. Não é prova de que a fixação
+  # funciona — é o detector do apagão, e é a asserção mais barata desta bateria
+  # em relação ao que ela pega: a LAN inteira sem internet.
+  etiqueta=$(fala lanw 172.31.99.9 18099)
+  if [[ "$etiqueta" == "wana" || "$etiqueta" == "wanb" ]]; then
+    lan_ok=1
+    ok "um host da LAN atravessa o firewall e é respondido (saiu pela $etiqueta)"
+  else
+    # A MENSAGEM NÃO CONCLUI, e isso é a cicatriz da N6: masquerade ausente,
+    # postura do forward, rota da netns e a marcação errada dão o mesmo
+    # sintoma. A causa vai na EVIDÊNCIA, para quem lê decidir.
+    bad "O HOST DA LAN NÃO ATRAVESSA O FIREWALL" \
+        "resposta='${etiqueta:-nada}' | rota: $(rota_default | head -c 120) | masq: $(vm "nft list chain inet linkguard postrouting 2>&1" | tr -d '\r' | tr '\n' ' ' | head -c 140) | conn_mark: $(tr '\n' ' ' <<<"$pre" | head -c 200)"
+  fi
+  M_W2=1
+
+  # ── W6 — A CAIXA NAVEGAR NÃO CONTA COMO PROVA ─────────────────────────────
+  # Esta asserção existe para dizer isso NO LOG, onde alguém vai ler. O tráfego
+  # da própria máquina nasce no hook output e nunca atravessa o forward: no
+  # apagão de que esta bateria trata, a caixa continuava navegando com a LAN
+  # inteira parada. As duas medidas são separadas de propósito, e o desfecho
+  # tem três braços — nenhum deles nomeia uma chain como culpada, porque para
+  # tráfego nascido na caixa a marca nem chega a existir e o suspeito seria
+  # outro.
+  local caixa caixa_ok=0
+  caixa=$(fala "" 172.31.99.9 18099)
+  [[ "$caixa" == "wana" || "$caixa" == "wanb" ]] && caixa_ok=1
+  if [[ "$lan_ok" == 1 && "$caixa_ok" == 1 ]]; then
+    ok "a caixa e a LAN alcançam a internet de teste; as duas medidas foram feitas em separado"
+  elif [[ "$lan_ok" != 1 && "$caixa_ok" == 1 ]]; then
+    bad "A CAIXA NAVEGA E A LAN NÃO: é exatamente o apagão desta bateria, e o firewall navegar NÃO é prova de nada" \
+        "caixa='$caixa' lan='${etiqueta:-nada}'"
+  elif [[ "$lan_ok" == 1 && "$caixa_ok" != 1 ]]; then
+    bad "a LAN atravessa e a PRÓPRIA CAIXA não alcança a internet de teste" \
+        "caixa='${caixa:-nada}' | rota da caixa para 172.31.99.9: $(vm "ip route get 172.31.99.9 2>&1" | tr -d '\r' | tr '\n' ' ' | head -c 160)"
+  else
+    bad "nem a caixa nem a LAN alcançam a internet de teste; o cenário não estava de pé e o apagão não foi medido" \
+        "caixa='${caixa:-nada}' lan='${etiqueta:-nada}' rota: $(rota_default | head -c 160)"
+  fi
+  M_W6=1
+
+  if [[ "$lan_ok" != 1 ]]; then
+    encerra_w "o host da LAN não atravessa o firewall"
+    return
+  fi
+
+  # ── W3 — A CONEXÃO DE SAÍDA GANHA A MARCA DA WAN POR ONDE SAIU ────────────
+  # Lida do conntrack para ESTE fluxo, e não em geral. Abre-se aqui a conexão
+  # longa que o W4 vai atravessar: ela fica parada esperando o arnês reescrever
+  # a rota. `Mark == TableID` é a derivação única do produto
+  # (links/wanpath.go), e nenhuma outra chain grava `ct mark` em tráfego que
+  # entra pela LAN — então o número lido aqui só pode ter vindo do conn_mark_out.
+  vm "rm -f /tmp/lgw_fixa.out /tmp/lgw_go
+      ip netns exec lanw setsid python3 /tmp/lgw_fixa.py 172.31.99.9 18097 >/dev/null 2>&1 < /dev/null &
+      true" >/dev/null 2>&1
+  local cliente=""
+  for i in $(seq 1 20); do
+    cliente=$(vm "cat /tmp/lgw_fixa.out 2>/dev/null" | tr -d '\r')
+    grep -q '^r1=' <<<"$cliente" && break
+    sleep 1
+  done
+  usada=$(grep '^r1=' <<<"$cliente" | head -1 | cut -d= -f2)
+  sport=$(grep '^sport=' <<<"$cliente" | head -1 | cut -d= -f2)
+  if [[ "$usada" != "wana" && "$usada" != "wanb" || -z "$sport" ]]; then
+    bad "a conexão longa não chegou a ser estabelecida; a fixação não tem o que fixar" "${cliente:-sem saída do cliente}"
+    M_W3=1
+    encerra_w "a conexão longa não foi estabelecida"
+    return
+  fi
+  if [[ "$usada" == "wana" ]]; then outra="wanb"; if_usada="lg-wana"; if_outra="lg-wanb"
+  else outra="wana"; if_usada="lg-wanb"; if_outra="lg-wana"; fi
+  local esperada="$tab_a"; [[ "$usada" == "wanb" ]] && esperada="$tab_b"
+
+  marca=$(marca_do_fluxo "$sport")
+  if [[ -z "$marca" ]]; then
+    bad "não achei a conexão de teste no conntrack; a fixação da saída NÃO foi medida" \
+        "porta de origem $sport | ferramentas: $(vm "command -v conntrack >/dev/null && echo tem-conntrack; test -r /proc/net/nf_conntrack && echo tem-proc" | tr -d '\r' | tr '\n' ' ')"
+  elif [[ "$marca" == "0" ]]; then
+    bad "a conexão de saída ficou SEM MARCA (0): a memória de saída não gravou, e nada vai fixá-la quando a rota mudar" \
+        "fluxo: $(head -c 200 <<<"$LINHA_CT") | conn_mark_out: $(tr '\n' ' ' <<<"$fora" | head -c 200)"
+  elif [[ "$marca" == "$esperada" ]]; then
+    ok "a conexão de saída guardou a marca da WAN por onde saiu ($usada, marca $marca)"
+  else
+    bad "a conexão saiu pela $usada e guardou a marca $marca, que é de outro caminho (esperada $esperada)" \
+        "fluxo: $(head -c 200 <<<"$LINHA_CT")"
+  fi
+  M_W3=1
+
+  # ── W4 — A ASSERÇÃO CENTRAL: a rota é REESCRITA e a conexão ABERTA continua
+  # saindo pela mesma WAN ──────────────────────────────────────────────────
+  #
+  # A reescrita é do PRODUTO: o peso da outra WAN vai a 200 (que o balanceador
+  # normaliza para 256 contra 1) e o painel reinstala a rota. Quase todo o
+  # espaço de hash passa a apontar para a outra WAN — é a mesma coisa que um
+  # link caindo e voltando faz com o hash, sem tirar interface nenhuma do ar.
+  local id_outro="$id_b"; [[ "$usada" == "wanb" ]] && id_outro="$id_a"
+  local pista_peso
+  if ! pista_peso=$(muda_link "$id_outro" weight 200); then
+    bad "não consegui mudar o peso do outro link pelo painel; sem reescrita não há o que a conexão aberta sobreviver" "$pista_peso"
+    M_W4=1; M_W4B=1
+    encerra_w "a reescrita de rota não pôde ser disparada"
+    return
+  fi
+  st=$(status POST "/api/routing/balance/apply?arm=false" "$tok")
+  local rota_antes="$rota" rota_depois=""
+  for i in $(seq 1 10); do
+    rota_depois=$(rota_default)
+    grep -qE "dev $if_outra weight (25[0-6]|2[0-4][0-9])" <<<"$rota_depois" && break
+    sleep 3
+  done
+  if [[ "$st" == "200" ]] && grep -qE "dev $if_outra weight (25[0-6]|2[0-4][0-9])" <<<"$rota_depois" &&
+     grep -qE "dev $if_usada weight [1-9]?[0-9]( |\$)" <<<"$rota_depois"; then
+    ok "o produto reescreveu a rota padrão, jogando o hash para a $outra"
+  else
+    bad "a rota padrão NÃO foi reescrita (apply=$st): sem reescrita não há nada para a conexão aberta sobreviver" \
+        "antes: $rota_antes | depois: ${rota_depois:-vazia}"
+    M_W4=1; M_W4B=1
+    encerra_w "a rota padrão não foi reescrita"
+    return
+  fi
+
+  # O CONTROLE, e é ele que transforma "continuou funcionando" em prova: uma
+  # conexão NOVA, do mesmo host para o mesmo destino, tem de sair agora pela
+  # OUTRA WAN. Se ela sair, o par de endereços mudou de caminho e qualquer
+  # coisa que ainda saia pela WAN antiga só pode estar sendo decidida pela
+  # marca. Se ela NÃO sair, a reescrita não moveu esta tupla e não há o que
+  # medir — e aí a asserção é dita NÃO MEDIDA, em vez de verde.
+  local controle
+  controle=$(fala lanw 172.31.99.9 18099)
+  if [[ "$controle" == "$usada" ]]; then
+    pular "W4. A conexão aberta sobrevive à reescrita da rota" \
+          "a reescrita não moveu esta tupla de hash (conexão nova ainda sai pela $usada): sobreviver não distinguiria fixação de inércia"
+    pular "W4b. A rota marcada, perguntada ao kernel" \
+          "sem o controle mostrar mudança de caminho, a consulta marcada não separaria a marca do hash"
+    M_W4=1; M_W4B=1
+  elif [[ "$controle" != "$outra" ]]; then
+    bad "depois da reescrita o host da LAN parou de atravessar o firewall" \
+        "controle='${controle:-nada}' | rota: ${rota_depois:-vazia}"
+    M_W4=1; M_W4B=1
+    encerra_w "a LAN parou de atravessar depois da reescrita"
+    return
+  else
+    ok "depois da reescrita, uma conexão NOVA do mesmo host passa a sair pela $outra (o caminho deste par de endereços mudou)"
+
+    # W4b — A MESMA PERGUNTA, FEITA AO KERNEL, sem depender do desfecho do TCP:
+    # com a marca da conexão o caminho ainda é a WAN de origem; sem ela, é a
+    # nova. É um A/B de uma linha só, e é o núcleo aproveitável da bateria.
+    local com_marca sem_marca
+    com_marca=$(vm "ip route get 172.31.99.9 from 192.168.121.2 iif lg-lanw mark $marca 2>&1" | tr -d '\r' | tr '\n' ' ')
+    sem_marca=$(vm "ip route get 172.31.99.9 from 192.168.121.2 iif lg-lanw 2>&1" | tr -d '\r' | tr '\n' ' ')
+    if [[ -z "$marca" || "$marca" == "0" ]]; then
+      pular "W4b. A rota marcada, perguntada ao kernel" \
+            "sem marca lida do conntrack (W3) não existe consulta marcada para fazer"
+    elif ! grep -q ' dev ' <<<"$com_marca" || ! grep -q ' dev ' <<<"$sem_marca"; then
+      pular "W4b. A rota marcada, perguntada ao kernel" \
+            "o ip route get desta caixa não respondeu uma rota: com marca='$com_marca' sem marca='$sem_marca'"
+    elif grep -qE " dev $if_usada( |\$)" <<<"$com_marca" && grep -qE " dev $if_outra( |\$)" <<<"$sem_marca"; then
+      ok "o kernel resolve o pacote MARCADO pela WAN de origem ($if_usada) e o não marcado pela nova ($if_outra) — a marca é que decide"
+    else
+      bad "a consulta de rota não separou marca de hash: o pacote marcado devia sair por $if_usada e o não marcado por $if_outra" \
+          "com marca: $com_marca | sem marca: $sem_marca"
+    fi
+    M_W4B=1
+
+    # E o desfecho que quem opera sente: a MESMA conexão, ainda aberta, é
+    # respondida pela MESMA ponta. O gatilho é conferido — um `touch` que não
+    # aconteceu (ssh piscando, /tmp cheio) faria o cliente esperar 240s e a
+    # bateria acusar o produto de "a conexão morreu", que é o sintoma exato que
+    # ela procura.
+    if [[ "$(vm "touch /tmp/lgw_go && test -f /tmp/lgw_go && echo criado" | tr -d '\r' | tail -1)" != "criado" ]]; then
+      pular "W4. A conexão aberta sobrevive à reescrita da rota" \
+            "o gatilho /tmp/lgw_go não foi criado na VM; o desfecho da conexão aberta não foi medido"
+    else
+      cliente=""
+      for i in $(seq 1 40); do
+        cliente=$(vm "cat /tmp/lgw_fixa.out 2>/dev/null" | tr -d '\r')
+        grep -q '^fim$' <<<"$cliente" && break
+        sleep 1
+      done
+      local depois
+      depois=$(grep '^r2=' <<<"$cliente" | head -1 | cut -d= -f2)
+      if [[ "$depois" == "$usada" ]]; then
+        ok "a conexão aberta atravessou a reescrita de rota e continua saindo pela $usada, enquanto a conexão nova já sai pela $outra"
+      elif [[ "$depois" == "$outra" ]]; then
+        bad "a conexão aberta PULOU DE LINK: saiu pela $usada e agora responde a $outra — é a queda de fluxo longo que a mudança existe para impedir" \
+            "cliente: $(tr '\n' ' ' <<<"$cliente" | head -c 160)"
+      else
+        bad "a conexão aberta MORREU na reescrita de rota (nenhuma resposta depois dela)" \
+            "cliente: ${cliente:-sem saída} | marca agora: $(marca_do_fluxo "$sport") | fluxo lido no W3: $(head -c 140 <<<"$LINHA_CT") | estado dos links: $(body GET /api/links "$tok" | python3 -c "import json,sys; print(' '.join('%s=%s' % (l.get('interface'), l.get('status')) for l in json.load(sys.stdin)))" 2>/dev/null)"
+      fi
+    fi
+    M_W4=1
+  fi
+
+  # ── W5 — SILÊNCIO, E É A METADE DA #120 ───────────────────────────────────
+  # Fixar a saída não pode quebrar quem chega de fora. E esta asserção roda
+  # DEPOIS da reescrita de peso de propósito: com a rota padrão pendendo para a
+  # outra WAN, a resposta do host da LAN só chega ao cliente se a marca da
+  # conexão de ENTRADA a devolver pela WAN por onde ela entrou. O cliente fala
+  # de 203.0.113.x, FORA da sub-rede do enlace — dentro dela a rota conectada
+  # da `main` acertaria a WAN sozinha e a asserção passaria com a marcação
+  # desligada, que é a lacuna que a bateria P ainda tem.
+  local origem_pf="203.0.113.9" ip_pf="172.31.10.1"
+  [[ "$usada" == "wanb" ]] && { origem_pf="203.0.113.19"; ip_pf="172.31.20.1"; }
+  local antes_pf
+  antes_pf=$(fala "$usada" "$ip_pf" 18098 "$origem_pf")
+  if [[ "$antes_pf" == erro:* ]] && ! vm "nft list chain inet linkguard prerouting_dnat 2>/dev/null" | grep -q '192.168.121.2'; then
+    ok "sem encaminhamento, a porta não responde de fora e a chain de DNAT não conhece o host da LAN ('$antes_pf')"
+  else
+    bad "a linha de base do encaminhamento não vale: ou a porta já respondia, ou a tradução já estava lá" \
+        "resposta='${antes_pf:-nada}' | dnat: $(vm "nft list chain inet linkguard prerouting_dnat 2>&1" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
+  fi
+  st=$(status POST /api/portforward "$tok" "{\"name\":\"servidor interno W\",\"enabled\":true,\"proto\":\"tcp\",\"interface\":\"$if_usada\",\"ext_port\":18098,\"dest_ip\":\"192.168.121.2\",\"dest_port\":18098}")
+  if [[ "$st" == "200" || "$st" == "201" ]]; then
+    pf_criado=1
+    sleep 2
+    # Três tentativas, e todas têm de entregar: uma só poderia acertar a WAN
+    # por sorte de hash caso a marcação de entrada tivesse sumido.
+    local acertos=0 ultima=""
+    for i in 1 2 3; do
+      ultima=$(fala "$usada" "$ip_pf" 18098 "$origem_pf")
+      [[ "$ultima" == "lan" ]] && acertos=$((acertos+1))
+    done
+    if [[ "$acertos" == "3" ]]; then
+      ok "o encaminhamento de porta continua entregando ao host da LAN e a resposta volta pela WAN por onde entrou (3/3)"
+    else
+      # Sem hipótese no primeiro argumento (cicatriz da N6): re-marcação da
+      # resposta, DNAT ausente, rota da netns e liberação do forward dão o
+      # mesmo sintoma. A evidência é que decide.
+      bad "O ENCAMINHAMENTO DE PORTA NÃO ENTREGA MAIS AO HOST DA LAN ($acertos/3) — é a metade de entrada da #120" \
+          "última resposta='${ultima:-nada}' | dnat: $(vm "nft list chain inet linkguard prerouting_dnat 2>&1" | tr -d '\r' | tr '\n' ' ' | head -c 200) | conn_mark: $(vm "nft list chain inet linkguard conn_mark 2>/dev/null" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
+    fi
+  else
+    bad "não consegui criar o encaminhamento de porta ($st); a metade de entrada não foi medida"
+  fi
+  M_W5=1
+
+  # Limpeza: o encaminhamento sai pelo caminho que o produto aceita, as WANs de
+  # teste saem, o modo volta ao failover e — o que mais importa para a bateria
+  # seguinte — os links detectados voltam a ficar ligados, com asserção.
+  limpa_w
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -3771,6 +4667,7 @@ battery_mapa_dns
 battery_metricas_host
 battery_comportamento
 battery_vlan_no_balanceamento
+battery_fixacao_saida
 battery_fechar_gerencia
 
 head_ "Resumo"
