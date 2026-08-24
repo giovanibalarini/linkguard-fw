@@ -27,6 +27,7 @@ import (
 	"net"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -526,8 +527,31 @@ func (s *Service) conferirSteer(ctx context.Context, c SteerConfig, falhas []str
 	if motivo == "" {
 		motivo = fmt.Sprintf("nenhuma regra procura a marca %s", c.Mark)
 	}
+
+	// QUEM NÃO TEM APARELHO FIXADO NÃO TEM PROBLEMA, E NÃO PODE TER ALERTA.
+	//
+	// O alerta existe para dizer "os aparelhos que você fixou estão saindo pelo
+	// caminho errado". Sem nenhum aparelho fixado, a frase não descreve nada: a
+	// configuração está morta e não está prejudicando ninguém. Alertar assim
+	// mesmo transforma o painel num vermelho permanente sobre um recurso sem
+	// usuário — e vermelho permanente ensina a ignorar vermelho, que é o mesmo
+	// motivo pelo qual o BalancerNoWAN ganhou tipo próprio na #147.
+	//
+	// Fica em log, porque a configuração continua quebrada e alguém que fixar um
+	// aparelho amanhã precisa ter onde ver o porquê de não ter funcionado.
+	fixados, err := s.contarFixados(ctx, c.Mark)
+	if err != nil {
+		// Não saber quantos são não é motivo para calar: o alerta erra para o
+		// lado de avisar, que é o lado barato.
+		slog.Warn("balancer: não consegui contar os aparelhos fixados; alertando por precaução", "err", err)
+	} else if fixados == 0 {
+		slog.Warn("balancer: o direcionamento por WAN está configurado e não vale, mas nenhum aparelho está fixado nele",
+			"marca", c.Mark, "tabela", c.Table, "motivo", motivo)
+		return
+	}
+
 	slog.Error("balancer: o direcionamento por WAN NÃO está valendo; os hosts fixados saem pelo balanceamento",
-		"marca", c.Mark, "tabela", c.Table, "interface", c.Interface, "motivo", motivo)
+		"marca", c.Mark, "tabela", c.Table, "interface", c.Interface, "aparelhos_fixados", fixados, "motivo", motivo)
 	if s.alertSvc != nil {
 		_ = s.alertSvc.Create(alerts.TypeSteerInativo, "warning",
 			"Direcionamento por WAN não está valendo",
@@ -536,6 +560,33 @@ func (s *Service) conferirSteer(ctx context.Context, c SteerConfig, falhas []str
 				c.Mark, c.Table, c.Interface, motivo), "")
 	}
 }
+
+// contarFixados diz quantos aparelhos do map host_wan carregam a marca dada.
+//
+// A comparação é NUMÉRICA e não textual: o nft imprime a marca preenchida com
+// zeros ("0x0000012c") e a configuração guarda a forma curta ("0x12c"). Comparar
+// as duas como texto daria zero sempre, e o alerta que este contador existe para
+// segurar nunca mais apareceria — um silêncio que se pareceria com conserto.
+func (s *Service) contarFixados(ctx context.Context, marca string) (int, error) {
+	alvo, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(marca), "0x"), 16, 32)
+	if err != nil {
+		return 0, fmt.Errorf("marca %q não é hexadecimal: %w", marca, err)
+	}
+	out, err := s.exec.ExecuteRead(ctx, "nft", "list", "map", "inet", "linkguard", "host_wan")
+	if err != nil {
+		return 0, fmt.Errorf("ler o map host_wan: %w", err)
+	}
+	var n int
+	for _, m := range reMarcaDoMap.FindAllStringSubmatch(out, -1) {
+		if v, err := strconv.ParseUint(m[1], 16, 32); err == nil && v == alvo {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// reMarcaDoMap casa o lado direito de cada elemento do host_wan: "ip : 0x...".
+var reMarcaDoMap = regexp.MustCompile(`:\s*0x([0-9a-fA-F]+)`)
 
 // OnLinkChange is the monitor callback used while in balance mode. Besides
 // rebuilding the route, it raises alerts on up/down/degraded transitions so the
