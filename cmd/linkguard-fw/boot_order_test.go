@@ -665,3 +665,65 @@ func TestMainWiresTheBootPersistSource(t *testing.T) {
 		t.Fatal("o boot não liga mais metricsCollector.SetBootPersistSource(nftSvc): o item \"Regras no próximo boot\" some da Saúde do sistema e a falha do Persist volta a ser muda na tela (§10 da validação em VM)")
 	}
 }
+
+// TestMainWiresTheKeaAlerter guarda a ligação que faz o achado da issue #195
+// sair do journal e chegar ao operador.
+//
+// O keaunbound.Service verifica, ao reconciliar o resolv.conf, se a resolução
+// de nome da própria caixa CHEGA até ele — se o módulo dns do NSS é alcançado.
+// Sem SetAlerter essa verificação continua rodando e continua indo para o log,
+// e é exatamente aí que ela não serve: o defeito que ela mede é invisível (nada
+// falha, o painel mostra o resolver local no ar) e ninguém lê journal de uma
+// caixa que parece saudável. Nada quebra visivelmente se esta linha sumir —
+// que é o motivo de o guarda existir, sobre a árvore sintática do main.
+func TestMainWiresTheKeaAlerter(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("não foi possível localizar o arquivo de teste")
+	}
+	srcPath := filepath.Join(filepath.Dir(thisFile), "main.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parsear main.go: %v", err)
+	}
+
+	ligado := -1
+	verifica := -1
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, isCall := n.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		sel, isSel := call.Fun.(*ast.SelectorExpr)
+		if !isSel {
+			return true
+		}
+		recv, isIdent := sel.X.(*ast.Ident)
+		if !isIdent || recv.Name != "keaSvc" {
+			return true
+		}
+		switch sel.Sel.Name {
+		case "SetAlerter":
+			if ligado == -1 {
+				ligado = int(call.Pos())
+			}
+		case "EnsureResolvConf":
+			if verifica == -1 {
+				verifica = int(call.Pos())
+			}
+		}
+		return true
+	})
+
+	if ligado == -1 {
+		t.Fatal("o boot não liga mais keaSvc.SetAlerter(alertSvc): o resolver local fora do caminho de resolução (issue #195) volta a ser só uma linha de log numa caixa que parece saudável")
+	}
+	if verifica == -1 {
+		t.Fatal("o boot não chama mais keaSvc.EnsureResolvConf: sem ela ninguém reconcilia o resolv.conf nem mede o caminho de resolução")
+	}
+	if ligado > verifica {
+		t.Fatal("keaSvc.SetAlerter é chamado DEPOIS de EnsureResolvConf: a primeira verificação do boot roda sem alerter e o aviso se perde justamente na subida")
+	}
+}
