@@ -1237,7 +1237,7 @@ battery_host_quota() {
   # ─── o ruleset ANTES. Tudo o que vier depois é comparado com esta foto. ───
   # Os contadores e prazos dos sets mudam sozinhos: normalizar é o que faz o
   # diff falar de REGRA, e não de tráfego.
-  vm "nft list ruleset | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g; s/expires [0-9]+[a-z]*/expires N/g; /elements = \\{/,/\\}/d' > /tmp/rs-antes.txt" >/dev/null 2>&1
+  vm "nft list ruleset | grep -E '^[[:space:]]*(table|chain|type|policy|set|map|flags|timeout|size|counter|ip|ip6|meta|ct|tcp|udp|icmp|iifname|oifname|jump|goto|accept|drop|reject|return|log|limit|masquerade|snat|dnat|redirect|update|ether|th)[[:space:]]' | grep -vE '^[[:space:]]*elements' | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g' > /tmp/rs-antes.txt" >/dev/null 2>&1
   vm "tc qdisc show > /tmp/tc-antes.txt" >/dev/null 2>&1
 
   # Y3 — cota diária: o ciclo dura exatamente um dia. Se o dia de fechamento
@@ -1307,6 +1307,19 @@ for q in json.load(sys.stdin):
   # nenhum limit rate, nenhum drop. Declarar cota e estourá-la não toca no
   # firewall.
   #
+  # A COMPARAÇÃO MANTÉM SÓ O QUE É FORMA, EM VEZ DE APAGAR O QUE NÃO É.
+  #
+  # A primeira tentativa apagava o bloco de elementos por intervalo, e o
+  # intervalo comeu a chave de fechamento do set num lado só — o "antes" não
+  # tinha elementos, o "depois" tinha, e o diff acusou um `}` de diferença.
+  # Diff de texto de ruleset é frágil assim: qualquer regra de exclusão erra
+  # quando os dois lados têm formas diferentes.
+  #
+  # Manter só as linhas que SÃO forma (tabela, chain, tipo, política,
+  # declaração de set, regra) responde a pergunta certa e não depende de os dois
+  # lados terem o mesmo formato. Conferido contra a caixa de produção: 86 linhas
+  # de forma, zero elementos sobrando.
+  #
   # A COMPARAÇÃO IGNORA OS ELEMENTOS DOS SETS, E TEM DE IGNORAR. A primeira
   # versão comparava o ruleset inteiro e acusava a cota disto:
   #
@@ -1321,7 +1334,7 @@ for q in json.load(sys.stdin):
   # dinâmico é medição, muda a cada pacote, e não pertence a esta pergunta.
   # Quem cobra que a contabilidade não vire bloqueio são as asserções logo
   # abaixo, que olham a chain e o inventário.
-  vm "nft list ruleset | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g; s/expires [0-9]+[a-z]*/expires N/g; /elements = \\{/,/\\}/d' > /tmp/rs-depois.txt" >/dev/null 2>&1
+  vm "nft list ruleset | grep -E '^[[:space:]]*(table|chain|type|policy|set|map|flags|timeout|size|counter|ip|ip6|meta|ct|tcp|udp|icmp|iifname|oifname|jump|goto|accept|drop|reject|return|log|limit|masquerade|snat|dnat|redirect|update|ether|th)[[:space:]]' | grep -vE '^[[:space:]]*elements' | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g' > /tmp/rs-depois.txt" >/dev/null 2>&1
   local rsdiff
   rsdiff=$(vm "diff /tmp/rs-antes.txt /tmp/rs-depois.txt | head -40" | tr -d "\\r")
   if [[ -z "$rsdiff" ]]; then ok "nenhuma regra, chain ou veredito novo depois de declarar e estourar a cota"
