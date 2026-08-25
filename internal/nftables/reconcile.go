@@ -326,12 +326,25 @@ func (s *Service) ReconcileStructuralChains(ctx context.Context) error {
 // warning) — a partial firewall with the other rules intact is strictly
 // safer than an empty one.
 func (s *Service) rebuildChain(ctx context.Context, chain string, rules [][]string) error {
-	if _, err := s.exec.Execute(ctx, "nft", "flush", "chain", Family, Table, chain); err != nil {
+	return s.rebuildChainIn(ctx, Table, chain, rules)
+}
+
+// rebuildChainIn é o mesmo flush-e-reescreve, numa tabela nomeada.
+//
+// Existe porque o registro de conversa da #115 vive numa TABELA PRÓPRIA
+// (nftables.FlowsTable) — ver o topo de flows.go para a razão, que é o Persist
+// não poder despejar aquele set no /etc/nftables.conf. Sem este parâmetro a
+// feature nova teria de duplicar a sequência aqui, e é exatamente a duplicação
+// que o comentário acima existe para impedir: as duas cópias divergiriam, e a
+// que divergisse deixaria uma chain vazia num hook por onde passa todo o
+// tráfego da LAN.
+func (s *Service) rebuildChainIn(ctx context.Context, table, chain string, rules [][]string) error {
+	if _, err := s.exec.Execute(ctx, "nft", "flush", "chain", Family, table, chain); err != nil {
 		return fmt.Errorf("limpar chain %s: %w", chain, err)
 	}
 	var failures []string
 	for _, tokens := range rules {
-		args := append([]string{"add", "rule", Family, Table, chain}, tokens...)
+		args := append([]string{"add", "rule", Family, table, chain}, tokens...)
 		if _, err := s.exec.Execute(ctx, "nft", args...); err != nil {
 			expr := strings.Join(tokens, " ")
 			slog.Error("nft rejeitou uma regra ao reconciliar a chain; as demais continuam sendo aplicadas",

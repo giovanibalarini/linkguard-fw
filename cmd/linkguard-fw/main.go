@@ -35,6 +35,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
+	"github.com/giovanibalarini/linkguard-fw/internal/hostflows"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
@@ -372,6 +373,7 @@ type services struct {
 	keaSvc       *keaunbound.Service
 	netSvc       netsvc.Provider
 	trafficSvc   *hosttraffic.Service
+	fluxosSvc    *hostflows.Servico
 	hostSvc      *hosts.Service
 	netifSvc     *netif.Service
 	sysCollector *system.Collector
@@ -612,6 +614,11 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// conexão fechava. Ver internal/nftables/accounting.go.
 	trafficSvc.SetCounterSource(nftSvc)
 
+	// O registro de conversa por host (#115) fica numa TABELA nft PRÓPRIA, que o
+	// Persist não dumpa — ver o topo de internal/nftables/flows.go. Nasce
+	// desligado; quem liga é o administrador, na tela.
+	fluxosSvc := hostflows.NovoServico(nftSvc, db)
+
 	// A opção de registrar bloqueios (#122) é lida do banco a cada
 	// reconciliação, e não guardada em memória: o admin pode ligá-la pelo
 	// painel, e o valor tem de valer na reconciliação seguinte sem reiniciar
@@ -708,6 +715,11 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		return proprios
 	})
 	dnstapSvc.SetObservador(domSvc.Observar)
+	// O destino do fluxo ganha nome pelo mesmo mapa da #116. Sem coletor de
+	// dnstap ligado o mapa fica vazio e a tela mostra o endereço cru dizendo por
+	// quê — o que não pode é a tela deixar o admin achar que o destino não tem
+	// nome quando o produto é que não está olhando o DNS.
+	fluxosSvc.SetNomes(dnstapSvc.Mapa())
 	// Séries por aparelho para o coletor do cliente (#118). Fora do registro
 	// aberto do Prometheus de propósito — ver internal/metrics/exposicao.go.
 	porHost := metrics.NovoPorHost()
@@ -723,6 +735,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		CaptureExec: capExec,
 		DNSTap:      dnstapSvc,
 		PorHost:     porHost,
+		Fluxos:      fluxosSvc,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
@@ -751,6 +764,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		keaSvc:           keaSvc,
 		netSvc:           netSvc,
 		trafficSvc:       trafficSvc,
+		fluxosSvc:        fluxosSvc,
 		hostSvc:          hostSvc,
 		netifSvc:         netifSvc,
 		sysCollector:     sysCollector,
@@ -994,6 +1008,20 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// uma instalação existente nunca ganharia a chain.
 			if err := nftSvc.EnsureAccounting(ctx, enabledWANs); err != nil {
 				slog.Warn("não foi possível reconciliar a contabilidade por host no boot", "err", err)
+			}
+
+			// Registro de conversa por host (#115). Reconciliado em todo boot
+			// pelo mesmo motivo da contabilidade — EnsureTable é no-op em
+			// máquina já provisionada — e com uma diferença que importa: aqui a
+			// reconciliação também DERRUBA a tabela quando a feature está
+			// desligada, para uma caixa cujo admin desligou o registro não voltar
+			// do boot com a base chain de volta no hook forward.
+			//
+			// A tabela é própria e o Persist não a enxerga, então ela nunca
+			// sobrevive ao reboot sozinha: quem a recria é esta linha, e só se o
+			// admin tiver pedido.
+			if err := s.fluxosSvc.Reconciliar(ctx, enabledWANs); err != nil {
+				slog.Warn("não foi possível reconciliar o registro de conversa por host no boot", "err", err)
 			}
 
 			// Ajuste de MSS (#130): também deriva da lista de WANs, e é no-op

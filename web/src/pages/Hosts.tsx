@@ -8,6 +8,7 @@ import { blockEnforcement, KIND_BLOCKED_HOSTS } from '../lib/blockGroups';
 import type { NetHost, HostTraffic, FirewallGroup, FirewallGroupsData } from '../types';
 import Panel from '../components/ui/Panel';
 import HostHistory from '../components/HostHistory';
+import HostFlows from '../components/HostFlows';
 import Modal from '../components/ui/Modal';
 
 function fmtBytes(n: number): string {
@@ -23,6 +24,10 @@ export default function Hosts() {
   const { t } = useI18n();
   const canManage = can('hosts.block');
   const canReadFirewall = can('firewall.read');
+  // Ver COM QUEM um aparelho falou tem permissao propria (#115): ver o
+  // grafico de consumo e uma coisa, ler os destinos de cada aparelho da rede
+  // e outra. Ver auth.PermTrafficFlows.
+  const canReadFlows = can('traffic.flows');
   const [hosts, setHosts] = useState<NetHost[]>([]);
   // Os grupos do firewall, só para saber se o bloqueio de host está mesmo em
   // vigor. Desde que os bloqueios viraram grupos reordenáveis, marcar um host
@@ -419,6 +424,17 @@ export default function Hosts() {
             mac={historyFor.mac}
             titulo={historyFor.alias || historyFor.hostname || historyFor.ip || historyFor.mac}
           />
+        )}
+
+        {/* O registro de conversa (#115) entra no MESMO modal do historico: as
+            duas perguntas -- "quanto" e "com quem" -- sao sobre o mesmo
+            aparelho, e separa-las em duas telas obrigaria o admin a casar os
+            dois na cabeca. So aparece com a permissao propria e com IP: a
+            medicao desta fase e IPv4, e sem endereco nao ha o que consultar. */}
+        {historyFor && canReadFlows && historyFor.ip && (
+          <div className="mt-6 pt-6 border-t border-gray-800">
+            <HostFlows ip={historyFor.ip} />
+          </div>
         )}
       </Modal>
 
