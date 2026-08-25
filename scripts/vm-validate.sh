@@ -4686,6 +4686,1202 @@ print('%s/%s' % (d.get('lg-wana',''), d.get('lg-wanb','')))" 2>/dev/null)
   limpa_w
 }
 
+# ─── Z. Registro de conversa por host (issue #115) ───────────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Esta feature põe uma base chain no hook
+# forward — por onde passa TODO o tráfego da LAN — e guarda, num set do kernel,
+# com quem cada aparelho da rede falou. Duas coisas que teste em Go não alcança
+# decidem se ela pode existir nesta forma:
+#
+#   1. ONDE O DADO MORA. O Persist do produto grava o dump de `inet linkguard`
+#      em /etc/nftables.conf, e o dump inclui os ELEMENTOS dos sets dinâmicos —
+#      a #198 mediu isso na caixa de produção: 86 elementos de contabilidade
+#      carimbados no arquivo de boot, que o systemd replaya ANTES de o LinkGuard
+#      subir. Se a conversa morasse na tabela do firewall, o arquivo de boot
+#      cresceria com o tráfego da rede e ressuscitaria, a cada boot, a afirmação
+#      de que um aparelho falou com um destino. O desenho evita isso com uma
+#      TABELA IRMÃ (`inet linkguard_flows`) que o Persist não enxerga — e "não
+#      enxerga" é uma afirmação sobre um arquivo numa máquina de verdade, não
+#      sobre uma função. Z4 é essa asserção, e a Z4c mede o CONTRASTE que lhe dá
+#      peso em vez de afirmá-lo em prosa: o mesmo arquivo tem de estar guardando
+#      elemento de contabilidade, senão a premissa mudou e ninguém saberia.
+#
+#   2. SE A MEDIÇÃO MEDE. Um set alimentado por duas regras de nftables só prova
+#      alguma coisa com pacote que ATRAVESSA a caixa, gerado de um netns, do
+#      jeito que as baterias G, V e W geram. A própria caixa falando nasce no
+#      hook output e nunca passa pelo forward: mediria outra coisa.
+#
+# E METADE DA BATERIA É SILÊNCIO, porque sem ela "apareceu" não significa nada:
+#
+#   Z1 — DESLIGADO NÃO MEDE. O mesmo tráfego que depois vira conversa é gerado
+#        com o recurso desligado, e a tabela não pode existir. Sem esta metade,
+#        a Z3 passaria igual numa versão que registra a rede inteira desde o
+#        boot, sem ninguém ter pedido — que é o que o padrão desligado existe
+#        para impedir.
+#   Z6 — A IDENTIDADE NÃO SAI PELO ABERTO, dito com a precisão que a entrega
+#        merece, e não com a frase larga que a primeira versão desta bateria
+#        usava. O /metrics NUNCA publicou fluxo: `git diff main..` em
+#        internal/metrics/ é vazio, nenhum coletor ganhou série de conversa.
+#        A asserção do /metrics é GUARDA DE REGRESSÃO, e está escrita como tal.
+#        Onde o dado de fato vazava é outro lugar, e está no corpo do commit da
+#        feature: Ruleset e Save eram `nft list ruleset` — o kernel inteiro,
+#        tabela de conversa junto — e isso saía por GET /api/nftables/ruleset
+#        atrás de firewall.read (papel de Operador E de Visualizador, sem
+#        auditoria) e por POST /api/nftables/backup, que CONGELAVA a janela numa
+#        linha de banco. O conserto foi um só (`nft list table inet linkguard`)
+#        e vale para os dois; a bateria cobra os DOIS, porque o segundo é o pior
+#        — o que era retenção configurável em memória vira linha permanente em
+#        disco.
+#   Z8 — DESLIGAR APAGA. Não basta parar de mostrar: a base chain some do hook
+#        forward e o dado some com ela.
+#
+# E a Z5 é a asserção que impede a tela de mentir sobre o que ela mostra: o
+# contador do set NÃO obedece à janela. Uma conversa que nunca fica quieta
+# renova o próprio prazo a cada pacote e acumula desde o primeiro — então o
+# número da coluna de volume pode ser de muito antes dos minutos anunciados no
+# topo da tela. Isso é MEDIDO no kernel aqui (o prazo volta ao topo e o contador
+# não zera), e depois é cobrado no texto que o produto de fato entrega ao
+# navegador — e cobrado de um jeito que distingue "a frase existe no dicionário"
+# de "a tela mostra a frase" (Z5b).
+#
+# Esta bateria NÃO precisa de conntrack (a W descobriu que a caixa pode não
+# ter): a medição é por pacote, no forward, e não pelo fim do fluxo.
+battery_registro_de_fluxo() {
+  head_ "Z. Registro de conversa por host"
+
+  # Cada asserção tem um marcador, INCLUSIVE as de sufixo. Quem sair pelo meio
+  # chama encerra_z, que PULA por nome tudo o que não chegou a ser medido — a
+  # lição desta suíte é que bateria que aborta calada deixa o resumo dizer "0
+  # falhas" sobre asserção que nunca rodou. E o marcador só é ligado depois de a
+  # asserção ter sido FEITA (ok ou bad): ligá-lo ao sair por falha de arnês
+  # transformaria "não medi" em "medi", que é a mentira oposta.
+  local M_Z1=0 M_Z2=0 M_Z3=0 M_Z3B=0 M_Z3C=0 M_Z4=0 M_Z4B=0 M_Z4C=0
+  local M_Z5=0 M_Z5B=0 M_Z6=0 M_Z6B=0 M_Z6C=0 M_Z6D=0 M_Z7=0 M_Z8=0
+  local tok="" salvou=0 limpou=0 postura_trocada=0 postura_ini=""
+  local JAN_INI=60 TETO_INI=32768
+  local LAN_IP="192.168.115.2" DEST_IP="172.31.115.2" PORTA=18115
+
+  # tabela_z → "existe", "ausente" ou VAZIO. O terceiro valor é o ponto: o idiom
+  # `nft list table ... && echo existe || echo ausente` devolve vazio quando o
+  # ssh morre, e um vazio lido como "existe" faz esta bateria imprimir as três
+  # FALHAS mais graves que ela tem (a tabela existe desligada / desligar não
+  # apagou / o produto não desligou) por causa de um soluço de rede. Perguntar
+  # ao nft se ELE está de pé separa "não existe" de "não consegui perguntar".
+  tabela_z() {
+    vm "if nft list table inet linkguard_flows >/dev/null 2>&1; then echo existe
+        elif nft list tables >/dev/null 2>&1; then echo ausente; fi" 2>/dev/null \
+      | tr -d '\r' | grep -E '^(existe|ausente)$' | head -1
+  }
+
+  # espera_z ESTADO TENTATIVAS → espera com teto pelo estado, devolve o último
+  # lido (que pode ser vazio: ver acima).
+  espera_z() {
+    local alvo="$1" n="$2" i estado=""
+    for i in $(seq 1 "$n"); do
+      estado=$(tabela_z)
+      [[ "$estado" == "$alvo" ]] && break
+      sleep 1
+    done
+    echo "$estado"
+  }
+
+  # limpa_z desfaz o que a bateria montou, e roda em TODO caminho de saída —
+  # inclusive num Ctrl-C, via trap: Z é a primeira bateria da suíte a montar uma
+  # base chain no hook forward, e interromper aqui custa mais do que em qualquer
+  # outra.
+  #
+  # O guarda NÃO é "eu liguei?", é "há o que desligar?". A diferença é a que
+  # deixava a chain de pé nos dois caminhos em que ela mais importa: o 409 do
+  # ErrSemWAN GRAVA `ligado:true` no banco antes de recusar o kernel (o handler
+  # diz isso com todas as letras), e o Z8 que descobre "desligar não apagou" é
+  # justamente o caso em que a rede de segurança precisa correr. Por isso a
+  # limpeza olha a intenção (salvou) E o kernel (tabela viva), e por isso o
+  # BANCO é conferido no fim: é o setting que faz qualquer mudança de link
+  # remontar a chain sozinha, no auto-detect da bateria seguinte ou no boot.
+  limpa_z() {
+    [[ "$limpou" == 1 ]] && return
+    limpou=1
+    local estado
+    estado=$(tabela_z)
+    if [[ -n "$tok" && ( "$salvou" == 1 || "$estado" == "existe" ) ]]; then
+      # A janela e o teto voltam aos que a caixa TINHA, não aos desta bateria:
+      # sair daqui com teto 1024 gravado deixaria a próxima instalação medindo
+      # com o mínimo sem ninguém ter escolhido isso.
+      status PUT /api/hosts/traffic/flows/config "$tok" \
+        "{\"ligado\":false,\"janela_minutos\":$JAN_INI,\"teto\":$TETO_INI}" >/dev/null 2>&1
+      estado=$(espera_z ausente 10)
+      case "$estado" in
+        ausente)
+          ok "a limpeza desligou o registro pelo painel e a tabela saiu do kernel" ;;
+        existe)
+          # Rede de segurança do arnês, e ela é FALHA mesmo funcionando: se o
+          # produto não derrubou a tabela, quem derrubou foi este script — e as
+          # baterias seguintes rodariam com uma chain a mais no forward.
+          vm "nft delete table inet linkguard_flows" >/dev/null 2>&1
+          bad "o registro não foi desligado pelo painel; o arnês derrubou a tabela à força para não deixar a medição de pé nas baterias seguintes" \
+              "$(vm "nft list table inet linkguard_flows 2>&1 | head -4" | tr -d '\r' | tr '\n' ' ' | head -c 200)" ;;
+        *)
+          bad "não consegui perguntar ao kernel se a tabela de conversa saiu; a bateria pode estar deixando uma base chain no hook forward para as seguintes" \
+              "a consulta por ssh não respondeu" ;;
+      esac
+      local cfg_fim lig_fim
+      cfg_fim=$(body GET /api/hosts/traffic/flows/config "$tok")
+      lig_fim=$(jqk config.ligado <<<"$cfg_fim")
+      if [[ "$lig_fim" == "False" ]]; then
+        ok "e o registro ficou DESLIGADO no banco (é o setting que remonta a chain sozinho a cada mudança de link e a cada boot)"
+      else
+        bad "o registro continua LIGADO no banco depois da limpeza ('$lig_fim'): a próxima mudança de link — o auto-detect de qualquer bateria — remonta a base chain no forward sem ninguém ter pedido" \
+            "$(head -c 200 <<<"$cfg_fim")"
+      fi
+    fi
+    # A POSTURA VOLTA AO QUE ESTAVA. Deixar a forward em accept é decidir pelas
+    # baterias seguintes uma coisa que elas não pediram.
+    if [[ "$postura_trocada" == 1 && -n "$tok" ]]; then
+      status PUT /api/nftables/policy "$tok" "{\"policy\":\"$postura_ini\",\"chain\":\"forward\"}" >/dev/null 2>&1
+      local jan agora
+      jan=$(body GET /api/nftables/pending "$tok" | jqk pending.id)
+      [[ -n "$jan" ]] && status POST /api/nftables/pending/confirm "$tok" "{\"id\":\"$jan\"}" >/dev/null 2>&1
+      agora=$(body GET /api/nftables/policy "$tok" | jqk forward)
+      if [[ "$agora" == "$postura_ini" ]]; then
+        ok "a postura do que atravessa voltou ao que esta bateria encontrou ($postura_ini)"
+      else
+        bad "a postura do que atravessa ficou em '${agora:-nada}' e não no '$postura_ini' que esta bateria encontrou: as baterias seguintes herdam uma decisão que ninguém tomou"
+      fi
+    fi
+    vm "pkill -f lgz_serv >/dev/null 2>&1
+        ip netns del lanz 2>/dev/null; ip netns del intz 2>/dev/null
+        ip link del lg-flan 2>/dev/null; ip link del lg-fint 2>/dev/null
+        nft delete table inet lgz_probe 2>/dev/null
+        rm -f /tmp/lgz_serv.py /tmp/lgz_fala.py /tmp/lgz_enche.py /tmp/lgz_probe.nft; true" >/dev/null 2>&1
+    trap - INT TERM
+  }
+
+  encerra_z() {
+    local motivo="$1"
+    [[ "$M_Z1"  == 1 ]] || pular "Z1. Desligado, a medição não existe e a tela diz isso" "$motivo"
+    [[ "$M_Z2"  == 1 ]] || pular "Z2. A medição monta, com as duas regras, depois da filtragem" "$motivo"
+    [[ "$M_Z3"  == 1 ]] || pular "Z3. A conversa de um aparelho da LAN aparece, com destino e porta" "$motivo"
+    [[ "$M_Z3B" == 1 ]] || pular "Z3b. O volume da conversa sobe com o tráfego" "$motivo"
+    [[ "$M_Z3C" == 1 ]] || pular "Z3c. A ocupação que o produto devolve é a do kernel" "$motivo"
+    [[ "$M_Z4"  == 1 ]] || pular "Z4. A tabela é separada da do firewall no kernel" "$motivo"
+    [[ "$M_Z4B" == 1 ]] || pular "Z4b. O arquivo de boot não ganha conversa" "$motivo"
+    [[ "$M_Z4C" == 1 ]] || pular "Z4c. O arquivo de boot guarda elemento de contabilidade (o perigo da #198 é real)" "$motivo"
+    [[ "$M_Z5"  == 1 ]] || pular "Z5. O contador não obedece à janela" "$motivo"
+    [[ "$M_Z5B" == 1 ]] || pular "Z5b. A tela entregue ao navegador não mente sobre o volume" "$motivo"
+    [[ "$M_Z6"  == 1 ]] || pular "Z6. A identidade não sai pelo /metrics aberto" "$motivo"
+    [[ "$M_Z6B" == 1 ]] || pular "Z6b. O dump de ruleset e o backup são escopados à tabela do firewall" "$motivo"
+    [[ "$M_Z6C" == 1 ]] || pular "Z6c. A permissão de ver conversa nasce fora dos papéis de fábrica" "$motivo"
+    [[ "$M_Z6D" == 1 ]] || pular "Z6d. A consulta de conversa fica no log de auditoria, com o alvo" "$motivo"
+    [[ "$M_Z7"  == 1 ]] || pular "Z7. O teto aparece na leitura, em vez de sumir" "$motivo"
+    [[ "$M_Z8"  == 1 ]] || pular "Z8. Desligar apaga a medição do kernel" "$motivo"
+    limpa_z
+  }
+
+  # ── Ajudantes de medição ───────────────────────────────────────────────────
+  #
+  # Nenhum deles crava endereço: mudar a constante lá em cima e ver a Z5 virar
+  # PULADA permanente ("não consegui ler o prazo nesta caixa") é falha do arnês
+  # disfarçada de limitação da máquina.
+
+  # fala_z KB → "ok:KB" quando o host da LAN atravessou o firewall e o outro
+  # lado respondeu, ou "erro:X". O cliente é um arquivo na VM e não um -c
+  # gigante: a versão com aspas dentro de aspas dentro do ssh já quebrou uma vez
+  # nesta suíte e a falha parecia do produto.
+  fala_z() {
+    vm "ip netns exec lanz timeout 20 python3 /tmp/lgz_fala.py $DEST_IP $PORTA $1 2>/dev/null" \
+      | tr -d '\r' | tail -1
+  }
+
+  # tupla_z → "pacotes bytes prazo_em_segundos" da conversa desta bateria, lidos
+  # DO KERNEL, ou vazio. É a leitura crua que a Z5 usa.
+  tupla_z() {
+    vm "nft list set inet linkguard_flows flows 2>/dev/null" | tr -d '\r' | python3 -c "
+import re,sys
+lan,dest,porta=sys.argv[1],sys.argv[2],sys.argv[3]
+t=sys.stdin.read()
+alvo=(re.escape(lan)+r'\s*\.\s*'+re.escape(dest)+r'\s*\.\s*'+re.escape(porta)
+      +r' counter packets (\d+) bytes (\d+)([^,}]*)')
+m=re.search(alvo,t)
+if not m:
+    print('')
+    raise SystemExit
+e=re.search(r'expires (?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m(?!s))?(?:(\d+)s)?', m.group(3))
+seg=0
+if e:
+    for v,mult in zip(e.groups(), (86400,3600,60,1)):
+        if v:
+            seg += int(v)*mult
+print(m.group(1), m.group(2), seg)
+" "$LAN_IP" "$DEST_IP" "$PORTA" 2>/dev/null
+  }
+
+  # elemento_cru → o elemento como o nft imprime, para o diagnóstico não ser uma
+  # adivinhação quando a leitura acima não casar.
+  elemento_cru() {
+    vm "nft list set inet linkguard_flows flows 2>/dev/null | grep -o '$LAN_IP[^,}]*' | head -1" \
+      | tr -d '\r' | head -1
+  }
+
+  # ocupa_z → quantas tuplas o set tem AGORA, contadas no kernel. É `grep -o` e
+  # não `grep -c` de propósito: o nft imprime vários elementos por linha.
+  ocupa_z() {
+    vm "nft list set inet linkguard_flows flows 2>/dev/null | grep -o 'counter packets' | wc -l" \
+      | tr -d '\r' | head -1
+  }
+
+  # campo_z CORPO CAMPO → um campo da resposta do produto.
+  campo_z() {
+    python3 -c "
+import json,sys
+d=json.loads(sys.argv[1])
+v=d.get(sys.argv[2])
+print('' if v is None else v)" "$1" "$2" 2>/dev/null
+  }
+
+  # conta_z CORPO → quantas conversas o produto devolveu.
+  conta_z() {
+    python3 -c "
+import json,sys
+print(len(json.loads(sys.argv[1]).get('conversas') or []))" "$1" 2>/dev/null
+  }
+
+  # linha_z CORPO → "origem destino porta bytes" da conversa de teste, como o
+  # PRODUTO a devolve. A ORIGEM entra na conferência: a rota já filtra por ?ip=,
+  # mas o tráfego de volta desta montagem entra por uma interface que não é WAN,
+  # casa a regra de SUBIDA e cria a tupla espelhada `destino . origem . porta
+  # efêmera` — um filtro de host quebrado no produto passaria despercebido se a
+  # asserção olhasse só o destino.
+  linha_z() {
+    python3 -c "
+import json,sys
+d=json.loads(sys.argv[1])
+lan,dest,porta=sys.argv[2],sys.argv[3],int(sys.argv[4])
+for c in (d.get('conversas') or []):
+    if c.get('origem')==lan and c.get('destino')==dest and int(c.get('porta') or 0)==porta:
+        print(c.get('origem'), c.get('destino'), c.get('porta'), c.get('bytes'))
+        break" "$1" "$LAN_IP" "$DEST_IP" "$PORTA" 2>/dev/null
+  }
+
+  # ── Sessão ─────────────────────────────────────────────────────────────────
+  local initial
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  if [[ -z "$tok" ]]; then
+    bad "sem sessão administrativa; a bateria Z não roda"
+    encerra_z "sem sessão administrativa"
+    return
+  fi
+
+  trap 'limpa_z; exit 130' INT TERM
+
+  # NENHUMA JANELA DE CONFIRMAÇÃO ABERTA. Enquanto ela existe, toda mutação
+  # guardada é recusada com 409 — e o 409 do PUT de configuração é o MESMO
+  # código do ErrSemWAN. Ler o 409 errado faria a Z2 pular acusando falta de
+  # WAN numa caixa que tem WAN. Aqui a bateria não confirma a mudança de outra
+  # bateria: ela se recusa a rodar e diz por quê.
+  local pend
+  pend=$(body GET /api/nftables/pending "$tok" | jqk pending.id)
+  if [[ -n "$pend" ]]; then
+    encerra_z "há uma mudança de firewall aguardando confirmação ($pend): enquanto a janela de 90 s durar, toda mutação guardada é recusada com 409 e a bateria mediria a janela, não a feature"
+    return
+  fi
+
+  # A postura do que ATRAVESSA precisa ser accept — sem tráfego passando não há
+  # o que medir, e a falha apareceria como se fosse do registro. A troca é
+  # CONFIRMADA na hora (senão a janela de 90 s recusa o PUT que monta a medição
+  # e bloqueia o Persist de que a Z4 depende), e o valor original é guardado
+  # para a limpeza devolver.
+  postura_ini=$(body GET /api/nftables/policy "$tok" | jqk forward)
+  if [[ -z "$postura_ini" ]]; then
+    bad "não consegui ler a postura do que atravessa; sem saber se o tráfego passa, tudo o que esta bateria medisse seria ambíguo"
+    encerra_z "não consegui ler a postura do forward"
+    return
+  fi
+  if [[ "$postura_ini" == "accept" ]]; then
+    ok "a postura do que atravessa já é accept: o tráfego da montagem passa e o que a bateria medir é do registro"
+  else
+    local st_pol janela_pol agora_pol
+    st_pol=$(status PUT /api/nftables/policy "$tok" '{"policy":"accept","chain":"forward"}')
+    janela_pol=$(body GET /api/nftables/pending "$tok" | jqk pending.id)
+    [[ -n "$janela_pol" ]] && status POST /api/nftables/pending/confirm "$tok" "{\"id\":\"$janela_pol\"}" >/dev/null
+    agora_pol=$(body GET /api/nftables/policy "$tok" | jqk forward)
+    if [[ "$agora_pol" == "accept" ]]; then
+      postura_trocada=1
+      ok "a postura do que atravessa foi liberada e a troca foi confirmada na hora (era '$postura_ini'; a limpeza devolve)"
+    else
+      bad "não consegui liberar a postura do que atravessa (PUT=$st_pol, janela='${janela_pol:-nenhuma}', postura='${agora_pol:-nada}'); sem tráfego passando, a bateria acusaria o registro por uma falha do arnês"
+      encerra_z "não consegui liberar a postura do forward"
+      return
+    fi
+  fi
+
+  # A medição só monta sabendo o que é WAN (ErrSemWAN), e a lista sai dos links
+  # HABILITADOS no banco. O auto-detect é o caminho do próprio produto; sem
+  # nenhum link habilitado a bateria mediria a recusa, não a feature. O
+  # auto-detect é uma MUTAÇÃO (cria link habilitado) e por isso tem asserção:
+  # se ele falhar, o sintoma reapareceria lá na frente como "a medição não
+  # montou", com o nome errado.
+  local st_ad
+  st_ad=$(status POST /api/links/auto-detect "$tok")
+  local wans
+  wans=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+print(' '.join(l.get('interface','') for l in json.load(sys.stdin) if l.get('enabled')))" 2>/dev/null)
+  if [[ -z "${wans// /}" ]]; then
+    encerra_z "nenhum link WAN habilitado nesta caixa (auto-detect=$st_ad): a medição se recusa a montar (ErrSemWAN) e a bateria mediria a recusa, não a feature"
+    return
+  fi
+  ok "há link WAN habilitado para escopar a medição ($wans)"
+
+  # ── PORTÃO: o nft desta caixa aceita a forma que o produto emite? ──────────
+  # Chave de três dimensões, set dinâmico com timeout e contador, e os DOIS
+  # `update` — o da subida e o da descida — dentro de uma base chain no forward,
+  # com a lista de WANs de verdade desta caixa. Se o nft recusar qualquer
+  # pedaço, o cenário não existe nesta máquina, e isso é PULAR dizendo por quê.
+  #
+  # O QUE ESTE PORTÃO NÃO COBRE, dito para quem vier depois: ele reproduz a
+  # forma à mão. Se flowsSetSpec/flowsChainRules ganharem um atributo novo
+  # (gc-interval, um size derivado), o portão continua PROBE_OK e a recusa
+  # aparece na Z2 como se fosse defeito do produto — por isso a Z2 traz o
+  # journal na evidência quando a montagem falha.
+  local wanset="" w
+  for w in $wans; do wanset="$wanset\"$w\", "; done
+  wanset="{ ${wanset%, } }"
+  local probe
+  probe=$(vm "cat > /tmp/lgz_probe.nft <<'NFTEOF'
+table inet lgz_probe {
+  set p { type ipv4_addr . ipv4_addr . inet_service; size 32768; flags dynamic,timeout; timeout 5m; counter; }
+  chain c {
+    type filter hook forward priority filter + 15; policy accept;
+    iifname != $wanset meta l4proto { tcp, udp } update @p { ip saddr . ip daddr . th dport }
+    iifname $wanset meta l4proto { tcp, udp } update @p { ip daddr . ip saddr . th sport }
+  }
+}
+NFTEOF
+nft -f /tmp/lgz_probe.nft 2>&1 && echo PROBE_OK
+nft delete table inet lgz_probe >/dev/null 2>&1; rm -f /tmp/lgz_probe.nft" | tr -d '\r')
+  if grep -q 'PROBE_OK' <<<"$probe"; then
+    ok "o nft desta caixa aceita a forma que a medição emite (chave de três dimensões, set dinâmico com contador, os dois update no forward)"
+  else
+    encerra_z "o nft desta caixa recusou a forma da medição: $(tr '\n' ' ' <<<"$probe" | head -c 200)"
+    return
+  fi
+
+  # ── Montagem: um aparelho de LAN e uma internet de mentira, cada um na sua
+  # netns. O tráfego medido ATRAVESSA a caixa — é a única medida que vale, e é
+  # por isso que nada aqui fala a partir da própria caixa. ────────────────────
+  #
+  # A internet de mentira NÃO é cadastrada como WAN, de propósito: cadastrá-la
+  # traria junto o monitor de saúde, o failover e a rota padrão (a bateria W
+  # paga esse preço porque precisa dele), e a pergunta desta bateria não depende
+  # disso. O custo, dito por inteiro: (a) só a metade de SUBIDA da conversa é
+  # exercitada com pacote — a regra de DESCIDA, o par que soma o volume de volta
+  # na mesma tupla, é cobrada no kernel, na Z2; e (b) como o retorno entra por
+  # uma interface que não é WAN, ele casa a regra de SUBIDA e cria uma tupla
+  # ESPELHADA por porta efêmera. Isso não invalida nada — a linha_z confere a
+  # origem —, mas conta para a ocupação do set, e é por isso que a Z7 enche o
+  # set com uma folga em vez de contar exatamente.
+  vm "pkill -f lgz_serv >/dev/null 2>&1
+      ip netns del lanz 2>/dev/null; ip netns del intz 2>/dev/null
+      ip link del lg-flan 2>/dev/null; ip link del lg-fint 2>/dev/null; true" >/dev/null 2>&1
+  vm "ip netns add lanz && ip netns add intz && \
+      ip link add lg-flan type veth peer name flan-far && \
+      ip link add lg-fint type veth peer name fint-far && \
+      ip link set flan-far netns lanz && ip link set fint-far netns intz && \
+      ip addr add 192.168.115.1/24 dev lg-flan && ip link set lg-flan up && \
+      ip addr add 172.31.115.1/24 dev lg-fint && ip link set lg-fint up && \
+      ip netns exec lanz sh -c 'ip link set lo up; ip addr add $LAN_IP/24 dev flan-far; ip link set flan-far up; ip route add default via 192.168.115.1' && \
+      ip netns exec intz sh -c 'ip link set lo up; ip addr add $DEST_IP/24 dev fint-far; ip link set fint-far up; ip route add default via 172.31.115.1'" >/dev/null 2>&1
+
+  vm "cat > /tmp/lgz_serv.py <<'PYEOF'
+import socket, sys, threading
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind((sys.argv[1], int(sys.argv[2])))
+srv.listen(16)
+def atende(c):
+    try:
+        while True:
+            d = c.recv(65536)
+            if not d:
+                return
+            if d.endswith(b'FIM'):
+                c.sendall(b'ok\n')
+                return
+    except Exception:
+        return
+    finally:
+        c.close()
+while True:
+    c, _ = srv.accept()
+    threading.Thread(target=atende, args=(c,), daemon=True).start()
+PYEOF
+      cat > /tmp/lgz_fala.py <<'PYEOF'
+import socket, sys
+try:
+    kb = int(sys.argv[3])
+    s = socket.create_connection((sys.argv[1], int(sys.argv[2])), 6)
+    s.settimeout(10)
+    bloco = b'z' * 1024
+    for _ in range(kb):
+        s.sendall(bloco)
+    s.sendall(b'FIM')
+    s.recv(64)
+    s.close()
+    print('ok:' + str(kb))
+except Exception as e:
+    print('erro:' + type(e).__name__)
+PYEOF
+      cat > /tmp/lgz_enche.py <<'PYEOF'
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+alvo = sys.argv[1]
+inicio = int(sys.argv[2])
+quantas = int(sys.argv[3])
+enviados = 0
+for p in range(inicio, inicio + quantas):
+    try:
+        s.sendto(b'z', (alvo, p))
+        enviados += 1
+    except Exception:
+        pass
+print(enviados)
+PYEOF
+      ip netns exec intz setsid python3 /tmp/lgz_serv.py $DEST_IP $PORTA >/dev/null 2>&1 < /dev/null &
+      sleep 1" >/dev/null 2>&1
+
+  # PORTÃO: o servidor de mentira está de pé DENTRO da própria netns? Esta
+  # medida não atravessa firewall nenhum. Sem ela, um servidor que não subiu
+  # faria a bateria acusar o produto de uma medição vazia que é do arnês.
+  local eco
+  eco=$(vm "ip netns exec intz timeout 10 python3 /tmp/lgz_fala.py $DEST_IP $PORTA 1 2>/dev/null" | tr -d '\r' | tail -1)
+  if [[ "$eco" == ok:* ]]; then
+    ok "a internet de mentira responde dentro da própria netns"
+  else
+    bad "o cenário não subiu: o servidor de teste não responde nem localmente ('${eco:-nada}')" \
+        "$(vm "ip netns list 2>&1; ip -br addr show lg-flan lg-fint 2>&1" | tr -d '\r' | tr '\n' ' ' | head -c 220)"
+    encerra_z "veth/netns não subiram nesta máquina"
+    return
+  fi
+
+  # ── Z1 — SILÊNCIO: DESLIGADO NÃO MEDE ─────────────────────────────────────
+  # O padrão de fábrica é desligado, o kernel não tem a tabela, e o MESMO
+  # tráfego que depois vira conversa passa sem deixar rastro. A última é a que
+  # torna a Z3 honesta — sem ela, "apareceu" poderia ser uma medição que já
+  # estava lá.
+  local cfg_ini lig_ini j_ini t_ini
+  cfg_ini=$(body GET /api/hosts/traffic/flows/config "$tok")
+  lig_ini=$(jqk config.ligado <<<"$cfg_ini")
+  j_ini=$(jqk config.janela_minutos <<<"$cfg_ini")
+  t_ini=$(jqk config.teto <<<"$cfg_ini")
+  # O que a caixa tinha é o que a limpeza devolve.
+  [[ -n "$j_ini" ]] && JAN_INI="$j_ini"
+  [[ -n "$t_ini" ]] && TETO_INI="$t_ini"
+  if [[ "$lig_ini" == "False" ]]; then
+    ok "o registro nasce DESLIGADO: ligar uma medição de quem-falou-com-quem é decisão do admin, não padrão de fábrica"
+  else
+    bad "o registro de conversa veio ligado ('$lig_ini'): a rede passa a ser registrada sem ninguém ter pedido" \
+        "$(head -c 200 <<<"$cfg_ini")"
+    # E a bateria devolve a caixa ao estado desligado PELO PRODUTO antes de
+    # medir o resto — senão a asserção seguinte mediria uma tabela herdada, e a
+    # bateria inteira rodaria (e terminaria) com uma medição que não montou.
+    salvou=1
+    status PUT /api/hosts/traffic/flows/config "$tok" \
+      "{\"ligado\":false,\"janela_minutos\":$JAN_INI,\"teto\":$TETO_INI}" >/dev/null 2>&1
+    espera_z ausente 10 >/dev/null
+  fi
+
+  local atravessou
+  atravessou=$(fala_z 200)
+  if [[ "$atravessou" != ok:* ]]; then
+    # A mensagem NÃO CONCLUI: postura do forward, rota da netns e ip_forward dão
+    # o mesmo sintoma. A causa vai na EVIDÊNCIA, para quem lê decidir. E o
+    # marcador do Z1 NÃO é ligado: nada do que o Z1 afirma foi medido, e o que
+    # falhou é o arnês.
+    bad "O HOST DA LAN NÃO ATRAVESSA O FIREWALL; nada do que esta bateria mede existiria" \
+        "resposta='${atravessou:-nada}' | forward: $(body GET /api/nftables/policy "$tok" | head -c 80) | ip_forward: $(vm "cat /proc/sys/net/ipv4/ip_forward" | tr -d '\r') | rota: $(vm "ip route get $DEST_IP from $LAN_IP iif lg-flan 2>&1" | tr -d '\r' | tr '\n' ' ' | head -c 140)"
+    encerra_z "o host da LAN não atravessa o firewall"
+    return
+  fi
+
+  local tabela_off corpo_off lig_off mont_off jan_off
+  tabela_off=$(tabela_z)
+  case "$tabela_off" in
+    ausente)
+      ok "com o registro desligado, 200 KB atravessaram a caixa e a tabela de conversa não existe no kernel" ;;
+    existe)
+      bad "A TABELA DE CONVERSA EXISTE COM O RECURSO DESLIGADO: a rede está sendo registrada sem ninguém ter ligado" \
+          "$(vm "nft list table inet linkguard_flows 2>&1 | head -8" | tr -d '\r' | tr '\n' ' ' | head -c 240)" ;;
+    *)
+      pular "Z1b. Com o registro desligado, o kernel não tem a tabela" \
+            "não consegui perguntar ao kernel se a tabela existe (ssh/nft não responderam); afirmar ausência sem ter lido seria verde sem medida" ;;
+  esac
+  # E A TELA. Esta linha é uma conferência de CONTRATO, não uma medição
+  # independente, e está escrita sabendo disso: com o registro desligado o
+  # produto devolve um literal só (Ligado:false, lista vazia, montada falsa,
+  # janela zero — hostflows/servico.go), então os campos não se confirmam entre
+  # si. O que ela pega é a versão que responde "ninguém falou" no lugar de "não
+  # estou olhando". A medição de verdade do desligado é a do kernel, acima.
+  corpo_off=$(body GET "/api/hosts/traffic/flows?ip=$LAN_IP" "$tok")
+  lig_off=$(campo_z "$corpo_off" ligado)
+  mont_off=$(campo_z "$corpo_off" montada)
+  jan_off=$(campo_z "$corpo_off" janela_minutos)
+  if [[ "$lig_off" == "False" && "$mont_off" == "False" && "${jan_off:-x}" == "0" ]]; then
+    ok "e a tela diz DESLIGADO e NÃO MONTADA, sem anunciar janela nenhuma — que é diferente de 'ninguém falou'"
+  else
+    bad "a tela não distinguiu 'desligado' de 'ninguém falou' (ligado='$lig_off', montada='$mont_off', janela='$jan_off')" \
+        "$(head -c 200 <<<"$corpo_off")"
+  fi
+  M_Z1=1
+
+  # ── Z2 — A MEDIÇÃO MONTA, COM AS DUAS REGRAS, DEPOIS DA FILTRAGEM ─────────
+  # A janela vai no MÍNIMO (5 min) de propósito: é o que torna o prazo do
+  # elemento observável dentro de uma bateria, e é o que a Z5 usa.
+  #
+  # A INTENÇÃO É MARCADA ANTES DO PUT, e não depois do 200. SalvarConfig grava
+  # no banco ANTES de tocar no kernel: tanto o 409 do ErrSemWAN quanto um 500 no
+  # meio da montagem deixam `ligado:true` gravado, e uma limpeza que só roda
+  # depois de um 200 sairia daqui deixando a caixa configurada para remontar a
+  # chain sozinha na próxima mudança de link.
+  salvou=1
+  local resp_cfg st_cfg corpo_cfg
+  resp_cfg=$(api PUT /api/hosts/traffic/flows/config "$tok" '{"ligado":true,"janela_minutos":5,"teto":32768}')
+  st_cfg=$(head -1 <<<"$resp_cfg"); corpo_cfg=$(tail -n +2 <<<"$resp_cfg")
+  if [[ "$st_cfg" == "409" ]]; then
+    # O MESMO 409 tem duas causas, e nomear a errada é pior do que não nomear:
+    # falta de WAN é a recusa documentada da feature; janela de confirmação
+    # aberta é estado do firewall que nada tem a ver com ela.
+    if grep -q 'aguardando confirmação' <<<"$corpo_cfg"; then
+      encerra_z "uma janela de confirmação de firewall abriu no meio da bateria e recusou a montagem (409); o que a bateria mediria é a janela, não a feature"
+    else
+      encerra_z "o produto recusou montar por não haver WAN habilitada (409, ErrSemWAN) — é a recusa documentada, não um defeito: $(head -c 140 <<<"$corpo_cfg")"
+    fi
+    return
+  fi
+  if [[ "$st_cfg" != "200" ]]; then
+    bad "o painel recusou ligar o registro de conversa ($st_cfg)" "$(head -c 200 <<<"$corpo_cfg")"
+    M_Z2=1
+    encerra_z "não consegui ligar o registro pelo painel"
+    return
+  fi
+
+  local chain="" i
+  for i in $(seq 1 10); do
+    chain=$(vm "nft list chain inet linkguard_flows flows 2>/dev/null" | tr -d '\r')
+    [[ -n "$chain" ]] && break
+    sleep 1
+  done
+  if [[ -z "$chain" ]]; then
+    bad "ligar respondeu 200 e a chain não existe no kernel: a tela diria LIGADO sobre uma medição que não está lá" \
+        "$(vm "nft list tables 2>&1; journalctl -u linkguard-fw --since '2 min ago' --no-pager | grep -i -e conversa -e flows | tail -3" | tr -d '\r' | tr '\n' ' ' | head -c 260)"
+    M_Z2=1
+    encerra_z "a medição não montou no kernel"
+    return
+  fi
+
+  # DEPOIS DA FILTRAGEM. Prioridade errada aqui registra como conversa um
+  # destino que uma regra de firewall bloqueou — a tela afirmaria que o aparelho
+  # falou com quem ele não falou.
+  if grep -q 'hook forward priority filter + 15' <<<"$chain" && grep -q 'policy accept' <<<"$chain"; then
+    ok "a chain de conversa está no forward DEPOIS da filtragem (filter + 15) e com policy accept"
+  else
+    bad "a chain de conversa não está no forward em filter + 15, ou não é accept: ela contaria destino bloqueado como conversa" \
+        "$(tr '\n' ' ' <<<"$chain" | head -c 240)"
+  fi
+
+  # AS DUAS REGRAS, uma a uma. A de descida é a que a primeira entrega desta
+  # feature esqueceu: sem ela o volume seria só o que o aparelho ENVIOU, e um
+  # host baixando 4 GB apareceria com dezenas de MB de ACK. E elas têm de ser
+  # MUTUAMENTE EXCLUSIVAS (`!=` a lista, e depois a lista): com `oifname !=` na
+  # segunda, todo pacote LAN→LAN casaria as duas e seria contado em dobro, em
+  # duas tuplas espelhadas.
+  #
+  # O `iifname (\{|")` da descida não é frouxidão: esta VM tem UMA NIC (é a
+  # premissa do battery_fechar_gerencia), a lista de WANs sai com um elemento só
+  # e o nft normaliza set anônimo unitário para a forma crua `iifname "enp0s3"`.
+  # Exigir chave aqui reprovaria o produto por causa da caixa — a G2 evita a
+  # mesma armadilha do mesmo jeito. O que separa a forma certa da errada são as
+  # DUAS NEGATIVAS: nem `iifname !=`, nem `oifname`.
+  local sobe desce
+  sobe=$(grep -F 'ip saddr . ip daddr . th dport' <<<"$chain" | head -1)
+  desce=$(grep -F 'ip daddr . ip saddr . th sport' <<<"$chain" | head -1)
+  if [[ -n "$sobe" ]] && grep -q 'iifname !=' <<<"$sobe" && grep -F -q 'update @flows' <<<"$sobe"; then
+    ok "a regra de subida casa o que NÃO entra por uma WAN e chaveia origem . destino . porta"
+  else
+    bad "a regra de subida está fora de forma: sem o escopo por interface, cada endereço da internet que responde vira uma tupla e o set enche em minutos" \
+        "${sobe:-linha ausente}"
+  fi
+  if [[ -n "$desce" ]] && grep -qE 'iifname (\{|")' <<<"$desce" && ! grep -q 'iifname !=' <<<"$desce" &&
+     ! grep -q 'oifname' <<<"$desce" && grep -F -q 'update @flows' <<<"$desce"; then
+    ok "a regra de descida casa o que ENTRA pela WAN e inverte a chave — a resposta soma na mesma tupla da ida, sem contar ninguém duas vezes"
+  else
+    bad "a regra de descida está ausente ou fora de forma: faltando, o volume é só o que o aparelho enviou; com 'oifname !=' no lugar de 'iifname', o tráfego LAN→LAN é contado em dobro" \
+        "${desce:-linha ausente} | chain: $(tr '\n' ' ' <<<"$chain" | head -c 200)"
+  fi
+
+  # A JANELA E O TETO QUE O KERNEL APLICA. As duas leituras são ancoradas em
+  # linha inteira, como as regexes do próprio produto (reFlowSize/reFlowTimeout
+  # são `^\s*... \s*$` exatamente porque a palavra timeout também aparece na
+  # lista de flags): um `grep -q '5m'` frouxo daria OK para `timeout 15m`,
+  # `45m` ou `1h5m`, e a bateria estaria mais frouxa que o código que audita.
+  local decl_jan decl_size
+  decl_jan=$(vm "nft list set inet linkguard_flows flows 2>/dev/null | grep -E '^[[:space:]]*timeout [^[:space:]]+[[:space:]]*$'" | tr -d '\r' | head -1)
+  decl_size=$(vm "nft list set inet linkguard_flows flows 2>/dev/null | grep -E '^[[:space:]]*size [0-9]+[[:space:]]*$'" | tr -d '\r' | head -1)
+  if [[ "${decl_jan//[[:space:]]/}" == "timeout5m" ]]; then
+    ok "o set no kernel guarda EXATAMENTE a janela escolhida (${decl_jan//[[:space:]]/})"
+  else
+    bad "o kernel não ficou com a janela de 5 min que foi salva: a tela anunciaria uma retenção que o set não tem" \
+        "declaração: ${decl_jan:-ausente}"
+  fi
+  if [[ "${decl_size//[[:space:]]/}" == "size32768" ]]; then
+    ok "e guarda o teto escolhido (${decl_size//[[:space:]]/}): a metade do contrato que cobra memória de kernel também chegou lá"
+  else
+    bad "o kernel não ficou com o teto de 32768 que foi salvo: a tela prometeria uma capacidade que o set não tem" \
+        "declaração: ${decl_size:-ausente}"
+  fi
+  M_Z2=1
+
+  # ── Z3 — A CONVERSA APARECE, COM O DESTINO CERTO E O VOLUME SUBINDO ───────
+  # A leitura é a do PRODUTO (a mesma rota que a tela chama); o kernel entra só
+  # como testemunha quando ela falha.
+  local enviou1
+  enviou1=$(fala_z 200)
+  if [[ "$enviou1" != ok:* ]]; then
+    bad "o host da LAN parou de atravessar o firewall depois de a medição montar" \
+        "resposta='${enviou1:-nada}' | chain: $(tr '\n' ' ' <<<"$chain" | head -c 200)"
+    encerra_z "a LAN parou de atravessar com a medição montada"
+    return
+  fi
+
+  # Espera com teto, não sleep cego: a leitura do produto tem cache de 10 s
+  # (hostflows.ValidadeDoCache), então a conversa pode existir no kernel e ainda
+  # não estar na resposta.
+  local corpo1="" linha1="" bytes1=0
+  for i in $(seq 1 15); do
+    corpo1=$(body GET "/api/hosts/traffic/flows?ip=$LAN_IP" "$tok")
+    linha1=$(linha_z "$corpo1")
+    [[ -n "$linha1" ]] && break
+    sleep 2
+  done
+  if [[ -n "$linha1" ]]; then
+    bytes1=$(awk '{print $4}' <<<"$linha1")
+    ok "o produto devolve a conversa do aparelho da LAN com a origem, o destino e a porta certos ($linha1)"
+  else
+    bad "A CONVERSA NÃO APARECEU na leitura do produto — é a pergunta da issue sem resposta" \
+        "kernel: $(elemento_cru | head -c 160) | resposta: $(head -c 240 <<<"$corpo1")"
+  fi
+
+  # Montada, e a janela lida do KERNEL. "Ligado no banco" e "existe no kernel"
+  # são estados diferentes, e a tela tem nome para cada um.
+  local montada janela_api
+  montada=$(campo_z "$corpo1" montada)
+  janela_api=$(campo_z "$corpo1" janela_minutos)
+  if [[ "$montada" == "True" && "$janela_api" == "5" ]]; then
+    ok "a resposta diz MONTADA e anuncia a janela que o kernel aplica (5 min)"
+  else
+    bad "a resposta não afirma o estado real da medição (montada='$montada', janela='$janela_api')" \
+        "$(head -c 240 <<<"$corpo1")"
+  fi
+  M_Z3=1
+
+  # O VOLUME SOBE. Um número parado é indistinguível de um número inventado no
+  # boot: a segunda rajada é o que prova que a coluna mede tráfego.
+  local enviou2 bytes2=0 corpo2="" linha2=""
+  if [[ -z "$linha1" ]]; then
+    pular "Z3b. O volume da conversa sobe com o tráfego" \
+          "a conversa não chegou a aparecer; não há linha para ver subir"
+  else
+    enviou2=$(fala_z 300)
+    if [[ "$enviou2" != ok:* ]]; then
+      bad "a segunda rajada não atravessou o firewall ('$enviou2'); a subida do volume não foi medida"
+      M_Z3B=1
+    else
+      for i in $(seq 1 15); do
+        corpo2=$(body GET "/api/hosts/traffic/flows?ip=$LAN_IP" "$tok")
+        linha2=$(linha_z "$corpo2")
+        bytes2=$(awk '{print $4}' <<<"${linha2:-0 0 0 0}")
+        [[ -n "$linha2" && "${bytes2:-0}" -gt "${bytes1:-0}" ]] && break
+        sleep 2
+      done
+      if [[ "${bytes2:-0}" -gt "${bytes1:-0}" ]]; then
+        ok "mais tráfego, mais volume na mesma conversa (${bytes1} → ${bytes2} bytes)"
+      else
+        bad "o volume da conversa não subiu depois de mais 300 KB atravessarem (${bytes1} → ${bytes2:-nada})" \
+            "kernel: $(elemento_cru | head -c 160)"
+      fi
+      M_Z3B=1
+    fi
+  fi
+
+  # ── Z3c — A OCUPAÇÃO QUE O PRODUTO DEVOLVE É A DO KERNEL ──────────────────
+  # Medida AQUI, com o set LONGE do teto, e não lá na Z7: com o set preso em
+  # `size 1024` e os dois lados esperando por "≥ 1024", uma igualdade só poderia
+  # passar. Aqui a ocupação é um número qualquer, e a asserção é que ele está
+  # entre as duas leituras de kernel que cercam a chamada — o intervalo existe
+  # porque a resposta pode vir do cache de 10 s.
+  local ok_ocup=0 k1 k2 ocup_api menor maior teto_api
+  for i in $(seq 1 8); do
+    k1=$(ocupa_z)
+    corpo2=$(body GET "/api/hosts/traffic/flows?ip=$LAN_IP" "$tok")
+    ocup_api=$(campo_z "$corpo2" ocupacao)
+    teto_api=$(campo_z "$corpo2" teto)
+    k2=$(ocupa_z)
+    if [[ -n "$k1" && -n "$k2" && -n "$ocup_api" ]]; then
+      menor="$k1"; maior="$k2"
+      [[ "$k2" -lt "$k1" ]] && { menor="$k2"; maior="$k1"; }
+      if [[ "$ocup_api" -ge "$menor" && "$ocup_api" -le "$maior" && "$ocup_api" -gt 0 ]]; then
+        ok_ocup=1
+        break
+      fi
+    fi
+    sleep 3
+  done
+  if [[ "$ok_ocup" == 1 && "$teto_api" == "32768" ]]; then
+    ok "a ocupação que o produto devolve é a que o kernel tem ($ocup_api tuplas, de um teto de $teto_api) — lida do set, não inventada"
+  else
+    bad "a ocupação do produto não bate com a do kernel (produto='${ocup_api:-nada}', kernel entre '${k1:-?}' e '${k2:-?}', teto='${teto_api:-nada}')" \
+        "$(head -c 240 <<<"$corpo2")"
+  fi
+  M_Z3C=1
+
+  # ── Z4 — A TABELA É SEPARADA DA DO FIREWALL ──────────────────────────────
+  # A metade de kernel primeiro: duas tabelas irmãs, e o set de conversa FORA da
+  # tabela que o Persist despeja.
+  #
+  # A ausência só é afirmada depois de um CONTROLE POSITIVO. `nft list table`
+  # com 2>/dev/null e duas negativas transforma string vazia — nft recusando,
+  # tabela ausente, ssh caindo — em OK, e o OK afirmaria sobre um texto que
+  # ninguém leu.
+  local tabelas tabela_fw
+  tabelas=$(vm "nft list tables 2>/dev/null" | tr -d '\r')
+  tabela_fw=$(vm "nft list table inet linkguard 2>/dev/null" | tr -d '\r')
+  if grep -q 'table inet linkguard_flows' <<<"$tabelas" && grep -q 'table inet linkguard$' <<<"$tabelas"; then
+    ok "a conversa mora numa tabela IRMÃ (inet linkguard_flows), ao lado da do firewall e não dentro dela"
+  else
+    bad "não achei as duas tabelas separadas no kernel" "$(tr '\n' ' ' <<<"$tabelas" | head -c 200)"
+  fi
+  if ! grep -q 'chain forward' <<<"$tabela_fw"; then
+    pular "Z4. A tabela é separada da do firewall no kernel" \
+          "não consegui ler a tabela do firewall (nem a chain forward apareceu); dizer que o set de conversa não está nela seria afirmar sobre um texto vazio"
+  elif ! grep -qE '^[[:space:]]*(set|chain) flows \{' <<<"$tabela_fw" &&
+       ! grep -F -q "$LAN_IP . $DEST_IP" <<<"$tabela_fw"; then
+    ok "a tabela do firewall foi lida inteira e não tem o set de conversa nem tupla nenhuma dentro dela"
+    M_Z4=1
+  else
+    bad "O SET DE CONVERSA ESTÁ DENTRO DA TABELA DO FIREWALL: é o defeito da #198 acontecendo de novo, e todo boot passaria a ressuscitar conversa velha" \
+        "$(grep -nE '(set|chain) flows \{' <<<"$tabela_fw" | head -2 | tr '\n' ' ' | head -c 200)"
+    M_Z4=1
+  fi
+
+  # E a metade que só uma máquina de verdade prova: o ARQUIVO DE BOOT. Um
+  # Persist de verdade é disparado pelo caminho do produto (mudança de link
+  # reconcilia a contabilidade, que persiste), e a reescrita é CONFERIDA — sem
+  # isso a asserção passaria sobre um arquivo que ninguém reescreveu.
+  #
+  # O mtime é ATRASADO à força antes do gatilho. `stat -c %Y` tem resolução de
+  # segundo: uma reescrita que caia no mesmo segundo da leitura anterior é
+  # indistinguível de reescrita nenhuma, e a asserção que só uma máquina de
+  # verdade prova viraria PULADA por artefato de relógio.
+  local existe_conf
+  existe_conf=$(vm "test -f /etc/nftables.conf && echo sim || echo nao" | tr -d '\r' | head -1)
+  if [[ "$existe_conf" != "sim" ]]; then
+    pular "Z4b. O arquivo de boot não ganha conversa" \
+          "não há /etc/nftables.conf nesta caixa; não há arquivo de boot sobre o qual afirmar coisa nenhuma"
+    pular "Z4c. O arquivo de boot guarda elemento de contabilidade (o perigo da #198 é real)" \
+          "não há /etc/nftables.conf nesta caixa"
+  else
+    vm "touch -d '1 hour ago' /etc/nftables.conf" >/dev/null 2>&1
+    local mtime_antes mtime_depois="" st_ad2
+    mtime_antes=$(vm "stat -c %Y /etc/nftables.conf" | tr -d '\r' | head -1)
+    st_ad2=$(status POST /api/links/auto-detect "$tok")
+    for i in $(seq 1 12); do
+      mtime_depois=$(vm "stat -c %Y /etc/nftables.conf" | tr -d '\r' | head -1)
+      [[ -n "$mtime_depois" && "$mtime_depois" != "$mtime_antes" ]] && break
+      sleep 2
+    done
+    if [[ -z "$mtime_antes" || -z "$mtime_depois" || "$mtime_depois" == "$mtime_antes" ]]; then
+      pular "Z4b. O arquivo de boot não ganha conversa" \
+            "o /etc/nftables.conf não foi reescrito nesta janela (auto-detect=$st_ad2, mtime '${mtime_antes:-ausente}' → '${mtime_depois:-ausente}'); afirmar que a conversa não está nele seria verde sem medida"
+      pular "Z4c. O arquivo de boot guarda elemento de contabilidade (o perigo da #198 é real)" \
+            "o /etc/nftables.conf não foi reescrito nesta janela; o contraste que dá peso à Z4 não pôde ser medido"
+    else
+      local conf_flows conf_tupla conf_acct_host conf_acct_qq
+      conf_flows=$(vm "grep -c linkguard_flows /etc/nftables.conf 2>/dev/null; true" | tr -d '\r' | head -1)
+      conf_tupla=$(vm "grep -c '$LAN_IP . $DEST_IP' /etc/nftables.conf 2>/dev/null; true" | tr -d '\r' | head -1)
+      if [[ "${conf_flows:-1}" == "0" && "${conf_tupla:-1}" == "0" ]]; then
+        ok "o arquivo de boot foi reescrito e NÃO ganhou nem a tabela de conversa nem elemento de conversa"
+      else
+        bad "O /etc/nftables.conf GANHOU A CONVERSA: o arquivo de boot passa a crescer com o tráfego da rede e a ressuscitar, a cada boot, a afirmação de que este aparelho falou com aquele destino" \
+            "linkguard_flows=${conf_flows:-?} tuplas=${conf_tupla:-?} | $(vm "grep -o 'linkguard_flows.\{0,80\}' /etc/nftables.conf 2>/dev/null | head -1" | tr -d '\r' | head -c 160)"
+      fi
+      M_Z4B=1
+
+      # Z4c — O CONTRASTE, MEDIDO. É ele que dá peso à Z4 inteira: o MESMO
+      # arquivo guarda elementos de set dinâmico da contabilidade (é a #198,
+      # viva em produção). Se o Persist parasse de despejar elementos, a tabela
+      # irmã deixaria de ser necessária e ninguém saberia — então isto é
+      # asserção, e não uma frase bonita dentro de um OK de outra coisa.
+      conf_acct_host=$(vm "grep -c '$LAN_IP counter packets' /etc/nftables.conf 2>/dev/null; true" | tr -d '\r' | head -1)
+      conf_acct_qq=$(vm "grep -c 'counter packets' /etc/nftables.conf 2>/dev/null; true" | tr -d '\r' | head -1)
+      if [[ "${conf_acct_host:-0}" -gt 0 ]]; then
+        ok "e o mesmo arquivo guarda ${conf_acct_host} contador(es) de contabilidade DESTE host: o perigo da #198 é real e medido, e a conversa escapa dele por morar noutra tabela"
+      elif [[ "${conf_acct_qq:-0}" -gt 0 ]]; then
+        ok "e o mesmo arquivo guarda ${conf_acct_qq} elemento(s) de contabilidade com contador: o perigo da #198 é real e medido (embora não com o host desta bateria)"
+      else
+        bad "o /etc/nftables.conf não guarda elemento de contabilidade nenhum: a premissa da #198 — Persist despeja os elementos dos sets dinâmicos — não se confirma nesta caixa, e a Z4 passou a afirmar uma separação cujo perigo ninguém mediu" \
+            "$(vm "grep -c . /etc/nftables.conf 2>/dev/null; grep -o 'set acct[^ ]*' /etc/nftables.conf 2>/dev/null | head -2" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
+      fi
+      M_Z4C=1
+    fi
+  fi
+
+  # ── Z5 — O CONTADOR NÃO OBEDECE À JANELA, E A TELA NÃO PODE MENTIR ───────
+  # MEDIDO no kernel, não deduzido: um elemento de set `dynamic,timeout` renova
+  # o prazo a cada pacote, e o contador dele NÃO zera junto. Logo uma conversa
+  # que nunca fica quieta acumula desde o PRIMEIRO pacote, muito além dos
+  # minutos anunciados no topo da tela — e como a lista é ordenada por volume,
+  # VoIP, VPN e backup sobem acima de quem de fato pesou na janela.
+  local t1 b1 e1
+  t1=$(tupla_z); b1=$(awk '{print $2}' <<<"$t1"); e1=$(awk '{print $3}' <<<"$t1")
+  if [[ -z "$t1" || -z "${e1:-}" || "${e1:-0}" -le 0 ]]; then
+    pular "Z5. O contador não obedece à janela" \
+          "não consegui ler o prazo do elemento nesta caixa (o nft desta versão pode imprimir de outra forma); o elemento cru é: $(elemento_cru | head -c 140)"
+  else
+    # Primeiro o prazo TEM de andar para baixo — senão não há renovação nenhuma
+    # para observar depois, e "voltou ao topo" não significaria nada.
+    local e2="" t2=""
+    for i in $(seq 1 20); do
+      sleep 3
+      t2=$(tupla_z); e2=$(awk '{print $3}' <<<"$t2")
+      [[ -z "$t2" ]] && break
+      [[ -n "$e2" && "$e2" -le $(( e1 - 12 )) ]] && break
+    done
+    if [[ -z "$t2" ]]; then
+      bad "a conversa SUMIU do set enquanto o prazo era observado; o volume passaria a ser lido como 'este aparelho não falou'" \
+          "antes: ${t1:-nada} | agora: $(elemento_cru | head -c 140)"
+      M_Z5=1
+    elif [[ -z "$e2" || "$e2" -gt $(( e1 - 12 )) ]]; then
+      pular "Z5. O contador não obedece à janela" \
+            "o prazo do elemento não andou nesta caixa em 60 s (${e1}s → ${e2:-nada}); sem ele andar, renovação não é observável"
+    else
+      local enviou3="" t3="" b3="" e3=""
+      enviou3=$(fala_z 100)
+      for i in $(seq 1 15); do
+        t3=$(tupla_z); b3=$(awk '{print $2}' <<<"$t3"); e3=$(awk '{print $3}' <<<"$t3")
+        [[ -n "$e3" && "$e3" -gt "$e2" ]] && break
+        sleep 2
+      done
+      if [[ "$enviou3" != ok:* ]]; then
+        pular "Z5. O contador não obedece à janela" \
+              "a rajada de renovação não atravessou o firewall ('$enviou3')"
+      elif [[ -z "$e3" || -z "$b3" ]]; then
+        bad "a conversa SUMIU do set durante a medição de prazo; o volume passaria a ser lido como 'este aparelho não falou'" \
+            "antes: ${t1:-nada} | agora: $(elemento_cru | head -c 140)"
+        M_Z5=1
+      elif [[ "$e3" -gt "$e2" && "$b3" -gt "$b1" ]]; then
+        ok "a conversa que não fica quieta RENOVA o prazo (${e2}s → ${e3}s, de um teto de 300s) e o contador NÃO zera junto (${b1} → ${b3} bytes): o volume é desde o primeiro pacote, não o da janela"
+        M_Z5=1
+      elif [[ "$e3" -le "$e2" ]]; then
+        # A Z2 já leu `update @flows` no kernel desta caixa, então isto não
+        # absolve um `add @flows` que nunca renovaria: o que resta é o kernel
+        # não renovar o timeout no update.
+        pular "Z5. O contador não obedece à janela" \
+              "o prazo não voltou a subir (${e2}s → ${e3}s) numa chain que a Z2 leu com 'update @flows': este kernel não renova o timeout no update, e a premissa da asserção não vale aqui"
+      else
+        bad "o contador ZEROU junto com a renovação do prazo (${b1} → ${b3} bytes)" \
+            "elemento: $(elemento_cru | head -c 160)"
+        M_Z5=1
+      fi
+    fi
+  fi
+
+  # ── Z5b — E O TEXTO QUE O PRODUTO REALMENTE ENTREGA ───────────────────────
+  # A tela mostra "conversas dos últimos N min" ao lado de uma coluna de volume
+  # que NÃO é dos últimos N min: sem uma frase que desfaça isso, a tela mente
+  # com números certos. O texto é buscado do binário no ar (o painel é
+  # embutido), e não do repositório — o que vale é o que chega ao navegador.
+  #
+  # E A CHAVE É CONTADA, não só procurada. As strings moram num objeto literal
+  # com pt e en importado estaticamente: a frase está no pacote porque alguém a
+  # escreveu no YAML, não porque algum componente a renderiza. Se o componente
+  # parar de chamar t('svc.fluxos.limits.volume'), um grep pela frase continua
+  # verde e o admin nunca vê o aviso — que é a asserção inteira. Três ocorrências
+  # da chave é o padrão do bundle deste projeto (dicionário pt + dicionário en +
+  # a chamada); duas querem dizer "a frase existe e ninguém a mostra".
+  #
+  # Os literais com acento são procurados sem o Ç por precaução de codificação,
+  # não por necessidade: o Vite deste projeto emite UTF-8 literal no bundle.
+  local idx assets js="" p
+  idx=$(curl -s --max-time 10 "$API/" 2>/dev/null)
+  assets=$(grep -oE '/assets/[A-Za-z0-9_.-]+\.js' <<<"$idx" | sort -u)
+  for p in $assets; do
+    js="$js$(curl -s --max-time 20 "$API$p" 2>/dev/null)"
+  done
+  if [[ -z "$assets" || -z "$js" ]]; then
+    pular "Z5b. A tela entregue ao navegador não mente sobre o volume" \
+          "não consegui baixar o pacote do painel para ler o texto entregue (assets='${assets:-nenhum}')"
+  else
+    local falta="" n_volume n_janela
+    n_volume=$(grep -o 'svc\.fluxos\.limits\.volume' <<<"$js" | wc -l)
+    n_janela=$(grep -o 'svc\.fluxos\.window' <<<"$js" | wc -l)
+    grep -F -q 'SINCE IT STARTED' <<<"$js"                 || falta="$falta en:volume-acumulado"
+    grep -F -q 'DESDE QUE ELA COME' <<<"$js"               || falta="$falta pt:volume-acumulado"
+    grep -F -q 'not the period the volume covers' <<<"$js" || falta="$falta en:janela-nao-e-o-volume"
+    [[ "${n_volume:-0}" -ge 3 ]] || falta="$falta volume:so-no-dicionario($n_volume)"
+    [[ "${n_janela:-0}" -ge 3 ]] || falta="$falta janela:so-no-dicionario($n_janela)"
+    if [[ -z "$falta" ]]; then
+      ok "a tela entregue ao navegador diz, nos dois idiomas, que a janela é de QUEM falou e que o volume é o acumulado desde o começo da conversa — e as duas frases são CHAMADAS por um componente, não só declaradas no dicionário"
+    else
+      bad "A TELA NÃO DESFAZ A LEITURA ERRADA: ela anuncia uma janela de minutos ao lado de um volume que não é da janela, e o texto que corrige isso não chega ao navegador (faltando:$falta)" \
+          "tamanho do pacote lido: ${#js} bytes | ocorrências: volume=$n_volume janela=$n_janela"
+    fi
+    M_Z5B=1
+  fi
+
+  # ── Z6 — SILÊNCIO: A IDENTIDADE NÃO SAI PELO /metrics ABERTO ─────────────
+  # A medição está LIGADA e cheia de dado neste ponto — é o único momento em que
+  # esta asserção significa alguma coisa.
+  #
+  # E ela é GUARDA DE REGRESSÃO, com todas as letras: esta entrega não registrou
+  # série nenhuma de fluxo em coletor nenhum, então não existe hoje caminho de
+  # código que publique conversa aqui. O que a asserção protege é a regra que
+  # internal/metrics/exposicao.go escreve e que as issues #115, #117 e #118
+  # herdam — endereço de host da LAN é inventário da rede do cliente e não sai
+  # por canal não autenticado. Por onde este dado de fato quase escapou é a
+  # asserção seguinte.
+  local aberto
+  aberto=$(curl -s --max-time 8 "$API/metrics" 2>/dev/null)
+  if [[ -z "$aberto" ]]; then
+    bad "o /metrics não respondeu; a asserção de silêncio não pôde ser feita"
+  else
+    if ! grep -q "$LAN_IP" <<<"$aberto" && ! grep -q "$DEST_IP" <<<"$aberto" &&
+       ! grep -qiE 'linkguard_(flow|conversa|host_)' <<<"$aberto"; then
+      ok "o /metrics aberto não publica endereço de aparelho, destino nem conversa"
+    else
+      bad "QUEM-FALOU-COM-QUEM NO /metrics SEM AUTENTICAÇÃO: é o inventário da rede do cliente num endpoint público" \
+          "$(grep -E "$LAN_IP|$DEST_IP|linkguard_(flow|conversa|host_)" <<<"$aberto" | head -2 | tr '\n' ' ' | head -c 200)"
+    fi
+    # E continua servindo o que sempre serviu: sem isto, "não tem identidade"
+    # passaria também com o endpoint quebrado.
+    if grep -q 'linkguard_' <<<"$aberto"; then
+      ok "o /metrics aberto continua servindo as métricas agregadas (agregado não é identidade)"
+    else
+      bad "o /metrics não serve mais nada; o silêncio acima não prova nada" "$(head -c 150 <<<"$aberto")"
+    fi
+  fi
+  M_Z6=1
+
+  # ── Z6b — O DUMP DE RULESET E O BACKUP SÃO ESCOPADOS ─────────────────────
+  # É por aqui que o dado quase escapou, e por dois canais, não um: Ruleset e
+  # Save eram `nft list ruleset`. O primeiro sai por firewall.read — que está no
+  # papel de Operador E dentro do de Visualizador — sem auditoria; o segundo é
+  # pior, porque CONGELA a janela numa linha de banco: o que era retenção
+  # configurável em memória vira registro permanente em disco.
+  #
+  # Os dois têm CONTROLE POSITIVO. `body` nunca devolve vazio numa resposta de
+  # erro — devolve {"error":...} —, então um 403, um 500 ou um token expirado
+  # passariam por um teste de "não contém linkguard_flows" e a bateria
+  # declararia silêncio sobre um endpoint que não respondeu.
+  local rs
+  rs=$(body GET /api/nftables/ruleset "$tok")
+  if ! grep -F -q 'table inet linkguard' <<<"$rs"; then
+    bad "a rota de ruleset não devolveu a tabela do firewall; a asserção de escopo não pôde ser feita (a ausência de 'linkguard_flows' aqui não prova nada)" \
+        "$(head -c 200 <<<"$rs")"
+  elif ! grep -F -q 'linkguard_flows' <<<"$rs" && ! grep -F -q "$LAN_IP . $DEST_IP" <<<"$rs"; then
+    ok "o dump de ruleset devolve a tabela do firewall e SÓ ela — a tabela de conversa não sai por firewall.read"
+  else
+    bad "A TABELA DE CONVERSA SAI PELO DUMP DE RULESET: quem tem firewall.read (o papel de Visualizador inclusive) lê com quem cada aparelho falou, sem a permissão criada para isso e sem auditoria" \
+        "$(grep -o 'linkguard_flows.\{0,80\}' <<<"$rs" | head -1 | head -c 160)"
+  fi
+
+  # O backup é uma MUTAÇÃO e deixa uma linha em iptables_backups (não há rota
+  # para removê-la): é o preço de medir o canal que congela o dado, e é barato
+  # perto de não medi-lo. O corpo da resposta E a linha guardada são conferidos,
+  # porque o vazamento aconteceria nos dois.
+  local resp_bk st_bk corpo_bk rotulo_bk="lgz-escopo-$$"
+  resp_bk=$(api POST /api/nftables/backup "$tok" "{\"label\":\"$rotulo_bk\"}")
+  st_bk=$(head -1 <<<"$resp_bk"); corpo_bk=$(tail -n +2 <<<"$resp_bk")
+  if [[ "$st_bk" != "201" && "$st_bk" != "200" ]]; then
+    pular "Z6b2. O backup de ruleset não congela a conversa numa linha de banco" \
+          "o painel não criou o backup de teste ($st_bk): $(head -c 140 <<<"$corpo_bk")"
+  else
+    local guardado
+    guardado=$(body GET /api/nftables/backups "$tok" | python3 -c "
+import json,sys
+rot=sys.argv[1]
+for b in json.load(sys.stdin):
+    if b.get('label')==rot:
+        print(b.get('rules') or '')
+        break" "$rotulo_bk" 2>/dev/null)
+    if ! grep -F -q 'table inet linkguard' <<<"$corpo_bk" || ! grep -F -q 'table inet linkguard' <<<"$guardado"; then
+      bad "o backup não guardou a tabela do firewall; a asserção de escopo não pôde ser feita sobre ele" \
+          "corpo: $(head -c 120 <<<"$corpo_bk") | guardado: $(head -c 120 <<<"$guardado")"
+    elif ! grep -F -q 'linkguard_flows' <<<"$corpo_bk" && ! grep -F -q "$LAN_IP . $DEST_IP" <<<"$corpo_bk" &&
+         ! grep -F -q 'linkguard_flows' <<<"$guardado" && ! grep -F -q "$LAN_IP . $DEST_IP" <<<"$guardado"; then
+      ok "o backup de ruleset guarda a tabela do firewall e não a de conversa: a janela rolante não vira linha permanente em disco"
+    else
+      bad "O BACKUP CONGELOU A CONVERSA NUMA LINHA DE BANCO: a retenção configurável de quem-falou-com-quem virou registro permanente em disco, fora da janela e fora da permissão criada para ela" \
+          "$(grep -o 'linkguard_flows.\{0,60\}' <<<"$corpo_bk$guardado" | head -1 | head -c 160)"
+    fi
+  fi
+  M_Z6B=1
+
+  # ── Z6c — A PERMISSÃO NASCE FORA DOS PAPÉIS DE FÁBRICA ───────────────────
+  # Se 'traffic.flows' entrar no papel de Operador ou de Visualizador, no dia do
+  # upgrade todo mundo que já tinha "ver monitoramento" ganha o histórico de
+  # navegação da empresa sem ninguém ter decidido.
+  #
+  # O papel de administrador entra junto por um motivo de medição, não de
+  # simetria: se os ids de fábrica não existirem mais nesta caixa, `role_perms`
+  # devolve vazio e a asserção de silêncio passaria SOZINHA, dizendo "não está no
+  # operador" sobre um papel que ninguém consultou.
+  local perms_adm perms_op perms_vis p_op p_vis p_adm
+  perms_adm=$(role_perms "$tok" role-admin)
+  perms_op=$(role_perms "$tok" role-operator)
+  perms_vis=$(role_perms "$tok" role-viewer)
+  p_adm=$(grep -cx 'traffic.flows' <<<"$perms_adm")
+  p_op=$(grep -cx 'traffic.flows' <<<"$perms_op")
+  p_vis=$(grep -cx 'traffic.flows' <<<"$perms_vis")
+  if [[ -z "$perms_adm" ]]; then
+    pular "Z6c. A permissão de ver conversa nasce fora dos papéis de fábrica" \
+          "não consegui ler as permissões do papel de administrador de fábrica (role-admin) nesta caixa; sem essa leitura, 'não está no operador' não prova nada"
+  elif [[ "${p_adm:-0}" == "0" ]]; then
+    bad "nem o administrador tem traffic.flows: a permissão não chegou ao papel que é sincronizado no upgrade, e a tela não existe para ninguém"
+    M_Z6C=1
+  elif [[ "${p_op:-1}" == "0" && "${p_vis:-1}" == "0" ]]; then
+    ok "a permissão de ver com quem os aparelhos falaram está no administrador e NÃO vem de brinde nos papéis de Operador nem de Visualizador"
+    M_Z6C=1
+  else
+    bad "A PERMISSÃO DE VER O HISTÓRICO DE CONVERSA ESTÁ NUM PAPEL DE FÁBRICA (operador=$p_op, visualizador=$p_vis): quem já tinha 'ver monitoramento' ganhou o histórico de navegação da empresa sem ninguém decidir"
+    M_Z6C=1
+  fi
+
+  # ── Z6d — A LEITURA FICA REGISTRADA, COM O ALVO ──────────────────────────
+  # É a primeira consulta de LEITURA auditada do produto, e é o que responde
+  # "quem olhou" no dia em que alguém reclamar. A conferência é no MESMO
+  # registro: dois greps soltos dariam OK para um 'traffic.flows.read' com alvo
+  # "rede inteira" mais um endereço qualquer noutra linha — e "fulano abriu uma
+  # tela" é exatamente o registro inútil que a issue existe para não produzir.
+  local casou
+  casou=$(body GET "/api/logs?limit=200" "$tok" | python3 -c "
+import json,sys
+alvo=sys.argv[1]
+n=0
+for l in json.load(sys.stdin):
+    if l.get('action')=='traffic.flows.read' and l.get('resource')==alvo:
+        n+=1
+print(n)" "$LAN_IP" 2>/dev/null)
+  if [[ "${casou:-0}" -gt 0 ]]; then
+    ok "as consultas desta bateria ficaram no log de auditoria com o aparelho consultado NOMEADO no mesmo registro ($casou)"
+  else
+    bad "a consulta de quem-falou-com-quem NÃO ficou no log de auditoria com o alvo: o cliente não tem como responder quem olhou o histórico da rede dele" \
+        "$(body GET "/api/logs?limit=20" "$tok" | head -c 200)"
+  fi
+  M_Z6D=1
+
+  # ── Z7 — O TETO APARECE NA LEITURA, EM VEZ DE SUMIR ──────────────────────
+  # O teto vai ao mínimo (1024) e o set é enchido com tuplas de verdade: uma
+  # rajada de UDP para portas distintas, que é o que um cliente de torrent ou de
+  # VoIP produz sozinho numa hora. Salvar a configuração RECRIA o set (é o que o
+  # nft oferece: não dá para trocar o timeout de um set mantendo os elementos),
+  # então a contagem daqui não herda nada do que veio antes.
+  #
+  # A asserção NÃO é uma igualdade contra o kernel: com o set preso em size 1024
+  # e as duas esperas saindo em ">= 1024", uma igualdade só poderia passar — e
+  # qualquer defasagem legítima do cache de 10 s viraria falha. Que a ocupação
+  # vem do kernel já foi medido na Z3c, com o set longe do teto. O que se cobra
+  # aqui é o que só o teto batido revela: o número aparece, e a resposta AVISA.
+  local st_teto
+  st_teto=$(status PUT /api/hosts/traffic/flows/config "$tok" '{"ligado":true,"janela_minutos":5,"teto":1024}')
+  if [[ "$st_teto" != "200" ]]; then
+    pular "Z7. O teto aparece na leitura, em vez de sumir" \
+          "o painel recusou baixar o teto para 1024 ($st_teto); sem teto pequeno não dá para enchê-lo dentro de uma bateria"
+  else
+    local enviados ocup_kernel=""
+    enviados=$(vm "ip netns exec lanz timeout 60 python3 /tmp/lgz_enche.py $DEST_IP 20000 1400 2>/dev/null" | tr -d '\r' | tail -1)
+    for i in $(seq 1 15); do
+      ocup_kernel=$(ocupa_z)
+      [[ -n "$ocup_kernel" && "$ocup_kernel" -ge 1024 ]] && break
+      sleep 2
+    done
+    if [[ -z "$ocup_kernel" || "$ocup_kernel" -lt 1024 ]]; then
+      # Não encher o set é falha de MEDIÇÃO, não do produto: sem o set cheio,
+      # "a leitura mostrou cheio" não teria o que mostrar.
+      pular "Z7. O teto aparece na leitura, em vez de sumir" \
+            "não consegui encher o set nesta caixa (${enviados:-0} pacotes enviados, ${ocup_kernel:-0} tuplas no kernel de 1024)"
+    else
+      local corpo_cheio="" ocup="" teto cheio ja_cheio
+      for i in $(seq 1 10); do
+        corpo_cheio=$(body GET "/api/hosts/traffic/flows?ip=$LAN_IP" "$tok")
+        ocup=$(campo_z "$corpo_cheio" ocupacao)
+        [[ -n "$ocup" && "$ocup" -ge 900 ]] && break
+        sleep 2
+      done
+      teto=$(campo_z "$corpo_cheio" teto)
+      cheio=$(campo_z "$corpo_cheio" cheio)
+      ja_cheio=$(campo_z "$corpo_cheio" ja_esteve_cheio)
+      if [[ -n "$ocup" && "$ocup" -ge 900 && "$ocup" -le 1024 && "$teto" == "1024" ]]; then
+        ok "a leitura do produto devolve a ocupação do set saturado ($ocup de $teto) — o teto batido aparece como número, não some"
+      else
+        bad "a leitura escondeu a ocupação do set: o kernel tem $ocup_kernel tuplas e o produto devolveu '${ocup:-nada}' de um teto '${teto:-nada}'" \
+            "$(head -c 240 <<<"$corpo_cheio")"
+      fi
+      if [[ "$cheio" == "True" || "$ja_cheio" == "True" ]]; then
+        ok "e a resposta AVISA que a medição encheu (cheio=$cheio, já esteve cheio=$ja_cheio): o que falta da lista é a conversa mais nova, não a menos importante"
+      else
+        bad "O SET ESTÁ CHEIO E A RESPOSTA NÃO AVISA (cheio=$cheio, já esteve cheio=$ja_cheio): a tela mostra uma lista incompleta como se fosse a rede inteira" \
+            "$(head -c 240 <<<"$corpo_cheio")"
+      fi
+      M_Z7=1
+    fi
+  fi
+
+  # ── Z8 — SILÊNCIO: DESLIGAR APAGA A MEDIÇÃO ──────────────────────────────
+  # Desligar não é parar de mostrar: a base chain sai do hook forward (some o
+  # custo por pacote da rede inteira) e o dado some junto — que é exatamente o
+  # que o admin pediu ao desligar um registro de quem falou com quem.
+  #
+  # O `salvou` NÃO é zerado aqui. Zerá-lo depois do 200 desarmava a rede de
+  # segurança no único caso para o qual ela existe: o produto responde 200 e
+  # deixa a tabela de pé — e a limpeza, achando que não havia nada ligado, ia
+  # embora deixando a chain no forward das baterias seguintes. Quem decide se há
+  # o que limpar é o kernel, no limpa_z.
+  local st_off
+  st_off=$(status PUT /api/hosts/traffic/flows/config "$tok" '{"ligado":false,"janela_minutos":5,"teto":1024}')
+  if [[ "$st_off" != "200" ]]; then
+    bad "o painel recusou desligar o registro de conversa ($st_off)"
+  else
+    local sumiu corpo_fim lig_fim mont_fim
+    sumiu=$(espera_z ausente 10)
+    case "$sumiu" in
+      ausente)
+        ok "desligar apagou a tabela inteira: a chain saiu do hook forward, e o set e as conversas foram com ela" ;;
+      existe)
+        bad "DESLIGAR NÃO APAGOU: a chain continua no caminho de todo o tráfego da LAN e as conversas continuam guardadas depois de o admin ter dito não" \
+            "$(vm "nft list table inet linkguard_flows 2>&1 | head -6" | tr -d '\r' | tr '\n' ' ' | head -c 240)" ;;
+      *)
+        pular "Z8b. Desligar tira a tabela do kernel" \
+              "não consegui perguntar ao kernel se a tabela saiu (ssh/nft não responderam); a limpeza ainda vai tentar, e ela cobra o resultado" ;;
+    esac
+    corpo_fim=$(body GET "/api/hosts/traffic/flows?ip=$LAN_IP" "$tok")
+    lig_fim=$(campo_z "$corpo_fim" ligado)
+    mont_fim=$(campo_z "$corpo_fim" montada)
+    if [[ "$lig_fim" == "False" && "$mont_fim" == "False" ]]; then
+      ok "e a tela volta a dizer DESLIGADO e NÃO MONTADA, sem conversa nenhuma para mostrar"
+    else
+      bad "depois de desligar, a tela não diz desligado (ligado='$lig_fim', montada='$mont_fim')" \
+          "$(head -c 240 <<<"$corpo_fim")"
+    fi
+  fi
+  M_Z8=1
+
+  # A limpeza cobra o resto: o setting desligado no banco (é ele que remonta a
+  # chain sozinho a cada mudança de link), a janela e o teto originais de volta,
+  # e a postura do forward como esta bateria a encontrou.
+  limpa_z
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -4709,6 +5905,7 @@ battery_metricas_host
 battery_comportamento
 battery_vlan_no_balanceamento
 battery_fixacao_saida
+battery_registro_de_fluxo
 battery_fechar_gerencia
 
 head_ "Resumo"
