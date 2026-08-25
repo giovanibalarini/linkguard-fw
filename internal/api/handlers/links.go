@@ -22,7 +22,25 @@ type LinksHandler struct {
 	// reconciliando NAT e contabilidade, só não mexe em rota. É o que mantém
 	// os testes que constroem o handler à mão funcionando.
 	routeSvc *routes.Service
+	// fluxos reconcilia o registro de conversa por host (#115). Opcional, como
+	// routeSvc: um handler construído sem ele continua reconciliando o resto.
+	//
+	// É INTERFACE, e não o *hostflows.Servico, para links.go não ganhar mais um
+	// pacote interno — o teto por arquivo do TestPackageBoundary existe
+	// justamente para a camada HTTP não acumular domínio sem ninguém notar.
+	fluxos reconciliadorDeFluxos
 }
+
+// reconciliadorDeFluxos é o que o handler de links precisa do registro de
+// conversa: quando a lista de WANs muda, a regra que escopa a medição por
+// interface fica com o nome antigo — a medição calada, com cara de ligada, que
+// é o mesmo defeito que a #112 já teve na contabilidade.
+type reconciliadorDeFluxos interface {
+	Reconciliar(ctx context.Context, wans []string) error
+}
+
+// SetFluxos liga o registro de conversa ao handler de links.
+func (h *LinksHandler) SetFluxos(r reconciliadorDeFluxos) { h.fluxos = r }
 
 // NewLinksHandler creates the handler. nftSvc is needed because changing a
 // link's interface must also rebuild the firewall's NAT rule — before
@@ -60,6 +78,15 @@ func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
 	}
 	if err := h.nftSvc.EnsureMSSClamp(ctx, ifaces); err != nil {
 		slog.Warn("não foi possível reconciliar o ajuste de MSS após mudança de link", "err", err)
+	}
+
+	// O registro de conversa (#115) escopa a medição pela lista de WANs, igual
+	// à contabilidade: sem reconciliar aqui, uma interface renomeada deixa o
+	// nome antigo na regra e a medição para de registrar sem dizer nada.
+	if h.fluxos != nil {
+		if err := h.fluxos.Reconciliar(ctx, ifaces); err != nil {
+			slog.Warn("não foi possível reconciliar o registro de conversa após mudança de link", "err", err)
+		}
 	}
 
 	// A proteção de entrada da chain input (#119) casa por `iifname` das WANs:

@@ -176,6 +176,12 @@ var allowedInternalImports = map[string]bool{
 	// leitura dos três formatos — Frame Streams, protobuf e o fio do DNS — e a
 	// decisão de prazo moram lá.
 	"internal/dnstap": true,
+	// internal/hostflows entrou com o registro de conversa por host (#115): o
+	// handler traduz a consulta HTTP e grava a auditoria, e delega o resto. A
+	// janela rolante no kernel, o cache da leitura, a agregação com o corte
+	// declarado e a decisão de derrubar a tabela antes de trocar a janela moram
+	// lá — e é onde estão testadas sem kernel.
+	"internal/hostflows": true,
 	// internal/metrics entrou com as séries por aparelho (#118). O handler só
 	// serve o texto já renderizado e confere o token; quem mede é o amostrador
 	// de #113, e a decisão de essas séries viverem FORA do registro aberto do

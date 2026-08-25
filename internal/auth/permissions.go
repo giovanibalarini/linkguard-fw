@@ -44,6 +44,23 @@ const (
 	// monitoramento" para todo mundo que já tinha essa.
 	PermTrafficCapture Permission = "traffic.capture"
 
+	// PermTrafficFlows é a permissão de ver COM QUEM cada aparelho da rede
+	// falou (#115). Nasce FORA de todos os papéis de fábrica menos o de
+	// administrador, e isso não é esquecimento.
+	//
+	// A captura de pacotes já mostra a conversa de terceiros, mas ela é um ato
+	// pontual, pedido, com janela e registro. O registro de fluxo é o oposto:
+	// está sempre lá, cobre a rede inteira e responde "com quem esse aparelho
+	// falou" sem ninguém precisar prever nada. Numa PME, isso é o histórico de
+	// navegação de todo funcionário.
+	//
+	// Se esta chave entrar na lista do papel de operador, no dia do upgrade
+	// todo mundo que já tinha "ver monitoramento" ganha esse histórico sem
+	// ninguém ter decidido. Quem precisar dela recebe de um administrador, num
+	// papel escolhido a dedo — que é a única forma de essa decisão ser tomada
+	// por uma pessoa.
+	PermTrafficFlows Permission = "traffic.flows"
+
 	// Administrative.
 	PermUsersManage Permission = "users.manage" // criar/editar/remover usuários
 	PermRolesManage Permission = "roles.manage" // criar/editar/remover papéis
@@ -64,6 +81,7 @@ var Catalog = []CatalogEntry{
 	{PermMonitoringRead, "Monitoramento", "Ver monitoramento", "Métricas em tempo real e histórico de tráfego"},
 	{PermMonitoringWrite, "Monitoramento", "Resolver alertas", "Marcar um alerta como resolvido, tirando-o do painel"},
 	{PermTrafficCapture, "Monitoramento", "Capturar pacotes", "Capturar cabeçalhos de pacote numa interface, por tempo limitado (fica no log de auditoria)"},
+	{PermTrafficFlows, "Monitoramento", "Ver com quem os aparelhos falaram", "Ver os destinos com que cada aparelho da LAN conversou na última janela (fica no log de auditoria)"},
 	{PermLogsRead, "Auditoria", "Ver logs", "Consultar o log de auditoria"},
 
 	{PermLinksRead, "Links WAN", "Ver links", "Listar links e seu status"},

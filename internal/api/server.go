@@ -27,6 +27,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
+	"github.com/giovanibalarini/linkguard-fw/internal/hostflows"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
@@ -88,6 +89,8 @@ type Server struct {
 	dnstapSvc *dnstap.Servico
 	// metricasHostH serve as séries por aparelho e o token delas (#118).
 	metricasHostH *handlers.MetricasHostHandler
+	// fluxosSvc é o registro de conversa por host (#115).
+	fluxosSvc *hostflows.Servico
 }
 
 // Config holds server configuration.
@@ -115,6 +118,13 @@ type Config struct {
 	DNSTap *dnstap.Servico
 	// PorHost são as séries por aparelho servidas em /api/metrics/hosts (#118).
 	PorHost *metrics.PorHost
+	// Fluxos é o registro de conversa por host (#115). Opcional: nil responde
+	// a tela com "desligado" em vez de quebrar.
+	//
+	// VEM PELA Config, E NÃO POR SETTER, pela mesma razão documentada no campo
+	// dnstapSvc: New monta o roteador na mesma chamada, então um setter chamado
+	// depois nunca chega a tempo e as rotas ficam registradas com o campo nil.
+	Fluxos *hostflows.Servico
 }
 
 // New creates and wires up the HTTP server.
@@ -157,6 +167,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	}
 
 	s.dnstapSvc = cfg.DNSTap
+	s.fluxosSvc = cfg.Fluxos
 	s.router = s.buildRouter(cfg)
 	return s
 }
@@ -253,6 +264,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// Links
 		linksH := handlers.NewLinksHandler(s.linkSvc, s.db, s.nftSvc, s.routeSvc)
+		// Mudar a interface de um link muda o escopo da medição de conversa
+		// (#115) — a regra casa por iifname. Sem esta ligação, o nome antigo
+		// ficaria na regra até o próximo boot, com a medição calada.
+		if s.fluxosSvc != nil {
+			linksH.SetFluxos(s.fluxosSvc)
+		}
 		r.With(require(auth.PermLinksRead)).Get("/api/links", linksH.List)
 		r.With(require(auth.PermLinksWrite)).Post("/api/links", linksH.Create)
 		r.With(require(auth.PermLinksWrite)).Post("/api/links/auto-detect", linksH.AutoDetect)
@@ -541,6 +558,27 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		trafficH := handlers.NewTrafficHandler(s.trafficSvc, s.db, s.rrdSvc)
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts/traffic", trafficH.TopTalkers)
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts/traffic/history", trafficH.HostHistory)
+
+		// Registro de conversa por host (#115): com quem cada aparelho da LAN
+		// falou na janela.
+		//
+		// PERMISSÃO PRÓPRIA, e ela nasce fora de todo papel de fábrica que não
+		// seja o de administrador — ver auth.PermTrafficFlows. Ver o gráfico de
+		// consumo é uma coisa; ler os destinos de cada aparelho da rede é
+		// outra, e numa PME a segunda é o histórico de navegação de cada
+		// funcionário.
+		//
+		// A CONFIGURAÇÃO NÃO ESTÁ ATRÁS DA MESMA PERMISSÃO, de propósito: quem
+		// decide se a caixa registra isso, e por quanto tempo, é quem administra
+		// a caixa (system.write, a mesma de retenção e ajustes globais) — não
+		// quem tem licença para olhar o registro. Separar as duas impede que a
+		// permissão de OLHAR traga junto a de aumentar a retenção.
+		if s.fluxosSvc != nil {
+			fluxosH := handlers.NewFluxosHandler(s.fluxosSvc, s.db)
+			r.With(require(auth.PermTrafficFlows)).Get("/api/hosts/traffic/flows", fluxosH.Consultar)
+			r.With(require(auth.PermSystemWrite)).Get("/api/hosts/traffic/flows/config", fluxosH.GetConfig)
+			r.With(require(auth.PermSystemWrite)).Put("/api/hosts/traffic/flows/config", fluxosH.SetConfig)
+		}
 		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/alias", hostsH.SetAlias)
 		r.With(require(auth.PermHostsBlock)).Post("/api/hosts/block", hostsH.SetBlocked)
 

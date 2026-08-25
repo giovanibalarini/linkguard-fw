@@ -492,3 +492,93 @@ svc.dns.check.dnstap:
 svc.dns.hint.dnstap:
   pt: "Sem isto, o firewall sabe que alguém perguntou por um site e não sabe qual endereço foi devolvido — então toda tela mostra o destino como número. As respostas saem por um canal binário, mais barato que o registro de consultas, e ficam só na memória: o mapa se esvazia ao reiniciar e cada endereço é esquecido quando o prazo do próprio DNS vence."
   en: "Without this, the firewall knows someone asked for a site but not which address came back — so every screen shows destinations as numbers. Answers travel over a binary channel, cheaper than the query log, and stay in memory only: the map empties on restart and each address is forgotten when its own DNS lifetime expires."
+
+# ─── Registro de conversa por host (issue #115) ──────────────────────────────
+# O que a tela mostra é COM QUEM cada aparelho falou. Duas coisas são
+# obrigatórias no texto e não são enfeite: (1) que a janela é rolante e curta, e
+# (2) as quatro coisas que a medição NÃO sabe. Sem isso, o admin lê uma lista
+# parcial como se fosse o registro completo do que aconteceu na rede.
+svc.fluxos.title:
+  pt: "Com quem este aparelho falou"
+  en: "Who this device talked to"
+svc.fluxos.window:
+  pt: "Janela dos últimos {min} min, mantida na memória do kernel."
+  en: "Rolling window of the last {min} min, kept in kernel memory."
+svc.fluxos.loading:
+  pt: "Lendo a medição…"
+  en: "Reading the measurement…"
+svc.fluxos.error:
+  pt: "Não consegui ler a medição. Isto não quer dizer que o aparelho não falou com ninguém — quer dizer que não sei."
+  en: "Could not read the measurement. This does not mean the device talked to nobody — it means I do not know."
+svc.fluxos.empty:
+  pt: "Nenhuma conversa registrada nesta janela."
+  en: "No conversation recorded in this window."
+svc.fluxos.col.destination:
+  pt: "Destino"
+  en: "Destination"
+svc.fluxos.col.port:
+  pt: "Porta"
+  en: "Port"
+svc.fluxos.col.volume:
+  pt: "Volume"
+  en: "Volume"
+svc.fluxos.count:
+  pt: "Mostrando {shown} de {total} destinos."
+  en: "Showing {shown} of {total} destinations."
+svc.fluxos.full:
+  pt: "Medição cheia: o teto de {teto} conversas foi atingido, e há conversa que não coube. O que falta aqui não é o que não aconteceu."
+  en: "Measurement full: the ceiling of {teto} conversations was reached, and some did not fit. What is missing here is not what did not happen."
+svc.fluxos.names.off:
+  pt: "O mapa de nomes está desligado, então o destino aparece como endereço. Ligue-o em Serviços de rede para ver o nome do site."
+  en: "The name map is off, so destinations show as addresses. Turn it on under network services to see site names."
+svc.fluxos.limits.title:
+  pt: "O que esta medição não sabe"
+  en: "What this measurement does not know"
+svc.fluxos.limits.duration:
+  pt: "Quanto tempo cada conversa durou — só o volume acumulado na janela."
+  en: "How long each conversation lasted — only the volume accumulated in the window."
+svc.fluxos.limits.wan:
+  pt: "Por qual link a conversa saiu."
+  en: "Which link the conversation went out through."
+svc.fluxos.limits.family:
+  pt: "Conversa em IPv6 e tráfego que não seja TCP ou UDP (ping, por exemplo) não entram."
+  en: "IPv6 conversations and non-TCP/UDP traffic (ping, for instance) are not counted."
+svc.fluxos.limits.reboot:
+  pt: "Nada disto sobrevive a um reinício da caixa: a janela recomeça vazia."
+  en: "None of this survives a reboot: the window starts empty again."
+svc.fluxos.off.title:
+  pt: "Registro de conversa desligado"
+  en: "Conversation record is off"
+svc.fluxos.off.body:
+  pt: "Enquanto estiver desligado, a caixa não guarda com quem os aparelhos falaram. Ligar acrescenta uma medição no caminho de todo o tráfego da rede e passa a registrar os destinos de cada aparelho — numa empresa, isso é o histórico de navegação de quem usa a rede. É uma decisão de quem administra a caixa, não um padrão."
+  en: "While off, the box keeps no record of who the devices talked to. Turning it on adds a measurement in the path of all network traffic and starts recording each device's destinations — in a company, that is the browsing history of whoever uses the network. It is a decision for whoever administers the box, not a default."
+svc.fluxos.off.noPermission:
+  pt: "Peça a um administrador para ligar o registro de conversa."
+  en: "Ask an administrator to turn the conversation record on."
+svc.fluxos.config.title:
+  pt: "Registro de conversa"
+  en: "Conversation record"
+svc.fluxos.config.window:
+  pt: "Guardar por (minutos)"
+  en: "Keep for (minutes)"
+svc.fluxos.config.windowHint:
+  pt: "Entre {min} e {max} minutos. Quanto maior, mais tempo os destinos de cada aparelho ficam legíveis para quem tiver permissão."
+  en: "Between {min} and {max} minutes. The longer it is, the longer each device's destinations stay readable to anyone with permission."
+svc.fluxos.config.ceiling:
+  pt: "Teto de conversas"
+  en: "Conversation ceiling"
+svc.fluxos.config.ceilingHint:
+  pt: "Entre {min} e {max}. É memória do kernel: acima do teto, conversa nova não entra e a tela avisa que a medição está cheia."
+  en: "Between {min} and {max}. This is kernel memory: past the ceiling new conversations are dropped and the screen says the measurement is full."
+svc.fluxos.config.resetWarning:
+  pt: "Salvar zera a janela atual. Trocar o prazo exige recriar a medição, e não há como manter o que já foi registrado."
+  en: "Saving clears the current window. Changing the retention requires recreating the measurement, and there is no way to keep what was already recorded."
+svc.fluxos.config.enable:
+  pt: "Ligar registro"
+  en: "Turn record on"
+svc.fluxos.config.disable:
+  pt: "Desligar e apagar"
+  en: "Turn off and erase"
+svc.fluxos.config.saveError:
+  pt: "Não consegui salvar a configuração do registro de conversa."
+  en: "Could not save the conversation record settings."
