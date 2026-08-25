@@ -4349,6 +4349,11 @@ print('%s/%s' % (d.get('lg-wana',''), d.get('lg-wanb','')))" 2>/dev/null)
   # no meio do caminho.
   local hex_a hex_b faltando=""
   hex_a=$(printf '%x' "$tab_a"); hex_b=$(printf '%x' "$tab_b")
+  # A marca de SAÍDA é o table_id com o bit 0x10000. O valor tem de ser
+  # calculado inteiro: colar "1" na frente do hex do table_id dá 0x166 quando
+  # o certo é 0x10066, e a asserção reprova uma regra que está correta.
+  local saida_a saida_b
+  saida_a=$(printf '%x' $(( tab_a + 65536 ))); saida_b=$(printf '%x' $(( tab_b + 65536 )))
   grep -qE "iifname \"lg-wana\" ct state new .*ct mark set 0x0*$hex_a( |\$)" <<<"$pre" || faltando="$faltando lg-wana"
   grep -qE "iifname \"lg-wanb\" ct state new .*ct mark set 0x0*$hex_b( |\$)" <<<"$pre" || faltando="$faltando lg-wanb"
   if [[ -z "$faltando" ]]; then
@@ -4393,10 +4398,10 @@ print('%s/%s' % (d.get('lg-wana',''), d.get('lg-wanb','')))" 2>/dev/null)
   local ok_grava=1
   grep -q 'ct direction original'  <<<"$grava_a" || ok_grava=0
   grep -qE 'ct mark (== )?0x0+ '   <<<"$grava_a" || ok_grava=0
-  grep -qE "ct mark set 0x0*1$hex_a( |\$)" <<<"$grava_a" || ok_grava=0
+  grep -qE "ct mark set 0x0*$saida_a( |\$)" <<<"$grava_a" || ok_grava=0
   grep -q 'ct direction original'  <<<"$grava_b" || ok_grava=0
   grep -qE 'ct mark (== )?0x0+ '   <<<"$grava_b" || ok_grava=0
-  grep -qE "ct mark set 0x0*1$hex_b( |\$)" <<<"$grava_b" || ok_grava=0
+  grep -qE "ct mark set 0x0*$saida_b( |\$)" <<<"$grava_b" || ok_grava=0
   if [[ "$ok_grava" == 1 ]]; then
     ok "cada WAN de saída grava a marca da tabela dela, só na direção original e só com a marca ainda zerada"
   else
@@ -4578,8 +4583,15 @@ print('%s/%s' % (d.get('lg-wana',''), d.get('lg-wanb','')))" 2>/dev/null)
     # W4b — A MESMA PERGUNTA, FEITA AO KERNEL, sem depender do desfecho do TCP:
     # com a marca da conexão o caminho ainda é a WAN de origem; sem ela, é a
     # nova. É um A/B de uma linha só, e é o núcleo aproveitável da bateria.
-    local com_marca sem_marca
-    com_marca=$(vm "ip route get 172.31.99.9 from 192.168.121.2 iif lg-lanw mark $marca 2>&1" | tr -d '\r' | tr '\n' ' ')
+    # A MARCA DA CONSULTA É A DO PACOTE, NÃO A DA CONEXÃO. O conntrack guarda o
+    # table_id COM o bit de saída (0x10066), e a restauração devolve ao pacote
+    # apenas o table_id (`meta mark set ct mark and 0xffff`), porque é isso que a
+    # `ip rule fwmark 0x66 lookup 102` casa. Perguntar com 0x10066 é perguntar
+    # com um valor que pacote nenhum carrega — o kernel responde pelo hash, com
+    # razão, e a asserção acusaria o produto do erro da pergunta.
+    local com_marca sem_marca marca_do_pacote
+    marca_do_pacote=$(( marca & 65535 ))
+    com_marca=$(vm "ip route get 172.31.99.9 from 192.168.121.2 iif lg-lanw mark $marca_do_pacote 2>&1" | tr -d '\r' | tr '\n' ' ')
     sem_marca=$(vm "ip route get 172.31.99.9 from 192.168.121.2 iif lg-lanw 2>&1" | tr -d '\r' | tr '\n' ' ')
     if [[ -z "$marca" || "$marca" == "0" ]]; then
       pular "W4b. A rota marcada, perguntada ao kernel" \
