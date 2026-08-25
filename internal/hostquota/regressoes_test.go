@@ -77,7 +77,7 @@ func TestReinicioDepoisDaViradaResolveOAlertaDoCicloAnterior(t *testing.T) {
 	al1 := &alerterFalso{}
 	svc1 := NewService(db, al1)
 	svc1.nowFn = func() time.Time { return ontem }
-	if err := svc1.Save(storage.HostQuota{MAC: macA, LimitGB: 0.001, Period: storage.HostPeriodDaily, CycleDay: 1, AlertPct: 80}); err != nil {
+	if err := svc1.Save(storage.HostQuota{MAC: macA, LimitGB: 0.001, Period: storage.HostPeriodDaily, CycleDay: 1, AlertPct: 80, AlertEnabled: true}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	medir(svc1, macA, 2_000_000, 0)
@@ -118,7 +118,7 @@ func TestTrocarODiaDeFechamentoNaoZeraOConsumoNemDeixaOAlertaAberto(t *testing.T
 	agora := time.Date(2026, 8, 10, 12, 0, 0, 0, loc)
 	svc.nowFn = func() time.Time { return agora }
 
-	if err := svc.Save(storage.HostQuota{MAC: macA, LimitGB: 0.001, Period: storage.HostPeriodMonthly, CycleDay: 1, AlertPct: 80}); err != nil {
+	if err := svc.Save(storage.HostQuota{MAC: macA, LimitGB: 0.001, Period: storage.HostPeriodMonthly, CycleDay: 1, AlertPct: 80, AlertEnabled: true}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	medir(svc, macA, 950_000, 0) // 95%
@@ -136,7 +136,7 @@ func TestTrocarODiaDeFechamentoNaoZeraOConsumoNemDeixaOAlertaAberto(t *testing.T
 
 	// O admin muda o fechamento para o dia 28. A chave do ciclo vigente muda.
 	al.resolvidos = nil
-	if err := svc.Save(storage.HostQuota{MAC: macA, LimitGB: 0.001, Period: storage.HostPeriodMonthly, CycleDay: 28, AlertPct: 80}); err != nil {
+	if err := svc.Save(storage.HostQuota{MAC: macA, LimitGB: 0.001, Period: storage.HostPeriodMonthly, CycleDay: 28, AlertPct: 80, AlertEnabled: true}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	depois, err := svc.Snapshot()
@@ -261,7 +261,7 @@ func TestFalhaAoGravarNaoTiraOAparelhoDoControleDeCiclo(t *testing.T) {
 	al := &alerterFalso{}
 	svc := NewService(db, al)
 	aparelho(t, db, macA, "192.168.3.50", "notebook")
-	if err := svc.Save(storage.HostQuota{MAC: macA, LimitGB: 1, Period: storage.HostPeriodDaily, CycleDay: 1, AlertPct: 80}); err != nil {
+	if err := svc.Save(storage.HostQuota{MAC: macA, LimitGB: 1, Period: storage.HostPeriodDaily, CycleDay: 1, AlertPct: 80, AlertEnabled: true}); err != nil {
 		t.Fatal(err)
 	}
 
