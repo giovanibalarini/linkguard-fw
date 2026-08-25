@@ -1196,12 +1196,20 @@ battery_host_quota() {
   # Y1 — todo aparelho do inventário aparece, com ou sem cota declarada. Um
   # aparelho ausente da lista é um aparelho que ninguém consegue proteger.
   #
-  # A ESPERA NÃO É CAPRICHO. O aparelho acabou de aparecer na vizinhança, e o
-  # inventário é populado pelo caminho do produto — não pelo instante em que o
-  # veth subiu. Perguntar na hora media a velocidade do amostrador, não a
-  # existência da lista, e reprovava um produto que responde certo 20 segundos
-  # depois. É o mesmo defeito que a asserção V2 tinha: medir o relógio da
-  # bateria e chamar isso de defeito do produto.
+  # O AVISTAMENTO É GRAVADO PELO CAMINHO DO PRODUTO, e a bateria tem de percorrê-lo.
+  #
+  # Snapshot() lista quem está no INVENTÁRIO (host_metadata), e quem popula o
+  # inventário é o handler de GET /api/hosts, ao ver o aparelho na vizinhança.
+  # Estar no `ip neigh` do kernel não basta: é o produto que decide o que entra
+  # no inventário dele. A primeira versão desta asserção olhava a vizinhança e
+  # pulava esse passo — cobrava do produto uma lista que ninguém tinha mandado
+  # ele montar. A bateria V já tinha aprendido isso e documentado lá.
+  #
+  # A espera continua porque o upsert é best-effort dentro do handler, mas agora
+  # ela espera algo que foi PEDIDO, em vez de torcer.
+  body GET /api/hosts "$tok" >/dev/null 2>&1
+  sleep 2
+  body GET /api/hosts "$tok" >/dev/null 2>&1
   local i
   for i in $(seq 1 12); do
     resp=$(body GET /api/hosts/quotas "$tok")
@@ -1209,7 +1217,7 @@ battery_host_quota() {
     sleep 5
   done
   if grep -qi "$mac" <<<"$resp"; then ok "o aparelho aparece na lista de cotas"
-  else bad "o aparelho não veio em /api/hosts/quotas em 60s" "$(head -c 200 <<<"$resp")"; fi
+  else bad "o aparelho não veio em /api/hosts/quotas em 60s, mesmo depois de o inventário ser consultado" "$(head -c 200 <<<"$resp")"; fi
 
   # Y2 — o que não existe é recusado na entrada, e não gravado para falhar
   # depois em silêncio.
