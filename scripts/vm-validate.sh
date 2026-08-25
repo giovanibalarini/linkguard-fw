@@ -1195,9 +1195,21 @@ battery_host_quota() {
 
   # Y1 — todo aparelho do inventário aparece, com ou sem cota declarada. Um
   # aparelho ausente da lista é um aparelho que ninguém consegue proteger.
-  resp=$(body GET /api/hosts/quotas "$tok")
+  #
+  # A ESPERA NÃO É CAPRICHO. O aparelho acabou de aparecer na vizinhança, e o
+  # inventário é populado pelo caminho do produto — não pelo instante em que o
+  # veth subiu. Perguntar na hora media a velocidade do amostrador, não a
+  # existência da lista, e reprovava um produto que responde certo 20 segundos
+  # depois. É o mesmo defeito que a asserção V2 tinha: medir o relógio da
+  # bateria e chamar isso de defeito do produto.
+  local i
+  for i in $(seq 1 12); do
+    resp=$(body GET /api/hosts/quotas "$tok")
+    grep -qi "$mac" <<<"$resp" && break
+    sleep 5
+  done
   if grep -qi "$mac" <<<"$resp"; then ok "o aparelho aparece na lista de cotas"
-  else bad "o aparelho não veio em /api/hosts/quotas"; fi
+  else bad "o aparelho não veio em /api/hosts/quotas em 60s" "$(head -c 200 <<<"$resp")"; fi
 
   # Y2 — o que não existe é recusado na entrada, e não gravado para falhar
   # depois em silêncio.
@@ -1217,7 +1229,7 @@ battery_host_quota() {
   # ─── o ruleset ANTES. Tudo o que vier depois é comparado com esta foto. ───
   # Os contadores e prazos dos sets mudam sozinhos: normalizar é o que faz o
   # diff falar de REGRA, e não de tráfego.
-  vm "nft list ruleset | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g; s/expires [0-9]+[a-z]*/expires N/g' > /tmp/rs-antes.txt" >/dev/null 2>&1
+  vm "nft list ruleset | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g; s/expires [0-9]+[a-z]*/expires N/g; /elements = \\{/,/\\}/d' > /tmp/rs-antes.txt" >/dev/null 2>&1
   vm "tc qdisc show > /tmp/tc-antes.txt" >/dev/null 2>&1
 
   # Y3 — cota diária: o ciclo dura exatamente um dia. Se o dia de fechamento
@@ -1283,13 +1295,29 @@ for q in json.load(sys.stdin):
 
   # ─── ASSERÇÕES DE SILÊNCIO. Sem estas, Y4 e Y6 não significam nada. ───
 
-  # S1 — o ruleset não mudou. Nenhuma regra nova, nenhuma chain nova, nenhum
-  # limit rate, nenhum drop. Declarar cota e estourá-la não toca no firewall.
-  vm "nft list ruleset | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g; s/expires [0-9]+[a-z]*/expires N/g' > /tmp/rs-depois.txt" >/dev/null 2>&1
+  # S1 — o ruleset não mudou de FORMA. Nenhuma regra nova, nenhuma chain nova,
+  # nenhum limit rate, nenhum drop. Declarar cota e estourá-la não toca no
+  # firewall.
+  #
+  # A COMPARAÇÃO IGNORA OS ELEMENTOS DOS SETS, E TEM DE IGNORAR. A primeira
+  # versão comparava o ruleset inteiro e acusava a cota disto:
+  #
+  #   48a49 > elements = { 192.168.3.200 counter N expires N58m... }
+  #
+  # Aquele elemento é a CONTABILIDADE ganhando uma linha porque esta mesma
+  # bateria gerou tráfego daquele endereço — o comportamento normal que
+  # ALIMENTA a cota. A bateria acusava a si mesma, e acusava a cota do crime
+  # que ela existe para não cometer, com a prova errada na mão.
+  #
+  # O que se mede aqui é forma: chain, regra, veredito. Elemento de set
+  # dinâmico é medição, muda a cada pacote, e não pertence a esta pergunta.
+  # Quem cobra que a contabilidade não vire bloqueio são as asserções logo
+  # abaixo, que olham a chain e o inventário.
+  vm "nft list ruleset | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g; s/expires [0-9]+[a-z]*/expires N/g; /elements = \\{/,/\\}/d' > /tmp/rs-depois.txt" >/dev/null 2>&1
   local rsdiff
   rsdiff=$(vm "diff /tmp/rs-antes.txt /tmp/rs-depois.txt | head -40" | tr -d "\\r")
-  if [[ -z "$rsdiff" ]]; then ok "o ruleset ficou idêntico depois de declarar e estourar a cota"
-  else bad "a cota mexeu no ruleset vivo" "$(tr "\\n" " " <<<"$rsdiff")"; fi
+  if [[ -z "$rsdiff" ]]; then ok "nenhuma regra, chain ou veredito novo depois de declarar e estourar a cota"
+  else bad "a cota mexeu na FORMA do ruleset" "$(tr "\\n" " " <<<"$rsdiff")"; fi
 
   # S2 — ninguém foi bloqueado. Estourar cota NÃO pode trancar aparelho: o que
   # estourou pode ser o do próprio admin.
