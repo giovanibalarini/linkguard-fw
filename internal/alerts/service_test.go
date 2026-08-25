@@ -131,7 +131,7 @@ func TestCaminhoDNSForaDoLocalEWarning(t *testing.T) {
 	fn := &fakeNotifier{}
 	s.SetNotifier(fn)
 
-	const detalhe = "o módulo \"resolve\" responde antes do dns e a ação [!UNAVAIL=return] encerra a busca ali"
+	const detalhe = "a linha hosts: põe o módulo \"resolve\" antes do dns com a ação [!UNAVAIL=return], que encerra a busca ali"
 	if err := s.CaminhoDNSForaDoLocal(detalhe); err != nil {
 		t.Fatal(err)
 	}
@@ -180,10 +180,72 @@ func TestCaminhoDNSNoLocalFechaEAnuncia(t *testing.T) {
 	}
 }
 
-// TestCaminhoDNSNoLocalNaoAnunciaSemNadaAberto: o EnsureResolvConf chama isto a
-// cada boot. Anunciar recuperação sem nada aberto arquivaria uma linha por boot
-// e soterraria a lista de alertas com histórico de uma caixa que sempre esteve
-// certa.
+// TestResolucaoSemModuloDNSEhCritico e o defeito P5: quando a linha hosts: nao
+// lista modulo dns nenhum, a caixa nao resolve nome externo algum. Mandar ali a
+// frase do Warning ("a caixa continua resolvendo nomes") poe o operador a cacar
+// um problema silencioso enquanto o barulhento esta na cara — e a severidade
+// tem de acompanhar: isso e queda, nao perda de visibilidade.
+func TestResolucaoSemModuloDNSEhCritico(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.ResolucaoSemModuloDNS("a linha hosts: não lista o módulo dns (hosts: files myhostname)"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fn.normal) != 1 || !strings.HasPrefix(fn.normal[0], "critical|") {
+		t.Errorf("normal notifies = %v, queria um critical", fn.normal)
+	}
+	abertos, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasOpenAlertOfType(abertos, TypeResolucaoSemModuloDNS) {
+		t.Fatal("o alerta não ficou aberto")
+	}
+	var msg string
+	for _, a := range abertos {
+		if a.Type == TypeResolucaoSemModuloDNS {
+			msg = a.Message
+		}
+	}
+	if strings.Contains(msg, "continua resolvendo") {
+		t.Errorf("a mensagem afirma que a caixa resolve nomes justamente no caso em que ela não resolve: %q", msg)
+	}
+	if !strings.Contains(msg, "hosts: files myhostname") {
+		t.Errorf("a mensagem perdeu o detalhe medido: %q", msg)
+	}
+}
+
+// TestCaminhoDNSNoLocalFechaTambemOCasoGrave: os dois alertas descrevem o mesmo
+// caminho de resolucao e sao medidos pelo mesmo vigia. Sair do caso grave direto
+// para o bom (o admin poe `dns` de volta na linha) e transicao normal, e deixar
+// o Critical aceso porque quem fechou foi o Warning e o vermelho eterno que este
+// par existe para evitar.
+func TestCaminhoDNSNoLocalFechaTambemOCasoGrave(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+
+	if err := s.ResolucaoSemModuloDNS("a linha hosts: não lista o módulo dns"); err != nil {
+		t.Fatal(err)
+	}
+	s.CaminhoDNSNoLocal()
+
+	abertos, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasOpenAlertOfType(abertos, TypeResolucaoSemModuloDNS) {
+		t.Error("o alerta grave continuou aberto depois de a caixa voltar ao normal")
+	}
+}
+
+// TestCaminhoDNSNoLocalNaoAnunciaSemNadaAberto: o vigia de caminho de resolução
+// chama isto a cada tique. Anunciar recuperação sem nada aberto arquivaria uma
+// linha a cada 30 segundos e soterraria a lista de alertas com histórico de uma
+// caixa que sempre esteve certa.
 func TestCaminhoDNSNoLocalNaoAnunciaSemNadaAberto(t *testing.T) {
 	db := openTestDB(t)
 	s := NewService(db)
