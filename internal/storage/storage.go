@@ -206,6 +206,7 @@ var schemaMigrations = []migration{
 	{12, "traffic.capture nos papéis que administram papéis", upGrantTrafficCapture},
 	{13, "firewall_groups: janela de horário", upAddFirewallGroupSchedule},
 	{14, "domain_targets", upDomainTargets},
+	{15, "cota por aparelho: host_quota e host_usage", upHostQuota},
 }
 
 const createSchemaMigrationsTable = `
@@ -1245,4 +1246,60 @@ func (db *DB) runOneMigrationForTest(up func(*sql.Tx) error) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ─── Cota por aparelho (issue #126) ──────────────────────────────────────────
+
+// host_quota é a cota DECLARADA de um aparelho e host_usage é o consumo MEDIDO
+// dentro do ciclo vigente — o mesmo par de link_quota/link_usage, um andar
+// abaixo.
+//
+// SÃO DUAS TABELAS, E NÃO COLUNAS EM host_metadata, pela razão que valeu para o
+// link e vale em dobro aqui: a cota é opcional (a esmagadora maioria dos
+// aparelhos não tem), e o consumo é escrita frequente. host_metadata é lido em
+// TODA abertura da tela de aparelhos; misturar o acumulador ali faria a leitura
+// do inventário disputar com ele.
+const createHostQuotaTable = `
+CREATE TABLE IF NOT EXISTS host_quota (
+    mac        TEXT PRIMARY KEY,
+    limit_gb   REAL NOT NULL,
+    period     TEXT NOT NULL DEFAULT 'monthly',
+    cycle_day  INTEGER NOT NULL DEFAULT 1,
+    alert_pct  INTEGER NOT NULL DEFAULT 80,
+    enabled    INTEGER NOT NULL DEFAULT 1
+);`
+
+// A chave inclui cycle_start, como em link_usage: o histórico dos ciclos
+// anteriores fica, e o ciclo novo nasce zerado sem precisar apagar nada.
+//
+// Com ciclo DIÁRIO isso nasce uma linha por aparelho por dia, e não por mês.
+// Continua barato — um aparelho com cota diária gera 365 linhas por ano, e só
+// gera linha em dia que teve tráfego —, mas é a diferença que justifica o
+// índice implícito da chave primária ser (mac, cycle_start) nessa ordem: toda
+// leitura da tela é por aparelho.
+const createHostUsageTable = `
+CREATE TABLE IF NOT EXISTS host_usage (
+    mac         TEXT NOT NULL,
+    cycle_start INTEGER NOT NULL,
+    rx_bytes    INTEGER NOT NULL DEFAULT 0,
+    tx_bytes    INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (mac, cycle_start)
+);`
+
+// upHostQuota cria as duas tabelas da cota por aparelho.
+//
+// Migração NUMERADA, e não mais uma linha na lista de CREATE TABLE IF NOT
+// EXISTS do migrate(): toda mudança de schema deste projeto roda em transação
+// desde o incidente de 2026-07-24, em que uma que não rodava travou o boot de
+// uma máquina de produção por mais de 50 minutos. As tabelas de link_quota
+// nasceram na lista simples antes dessa regra existir; as novas não repetem
+// isso.
+func upHostQuota(tx *sql.Tx) error {
+	for _, ddl := range []string{createHostQuotaTable, createHostUsageTable} {
+		if _, err := tx.Exec(ddl); err != nil {
+			return fmt.Errorf("criar as tabelas de cota por aparelho: %w", err)
+		}
+	}
+	return nil
 }

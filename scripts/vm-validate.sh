@@ -1137,6 +1137,227 @@ print(sum(1 for p in d.get('points',[]) if (p.get('rx_bps') or 0) > 0))" 2>/dev/
   else bad "MAC inválido devolveu $st_mac"; fi
 
   vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
+
+# ─── Y. Cota por aparelho (issue #126, metade "por host") ────────────────────
+#
+# O que só uma máquina de verdade prova aqui: o consumo sai dos contadores por
+# endereço do nftables, é resolvido para MAC pela tabela de vizinhança, passa
+# pelo amostrador de 10 s e só vira linha no banco no flush de um minuto. Teste
+# em Go exercita a aritmética; ele não prova que o número do painel é o que o
+# kernel contou.
+#
+# E METADE DESTA BATERIA É SILÊNCIO. A decisão de produto desta entrega é que a
+# cota AVISA e não corta: sem as asserções de que o ruleset não mudou, de que
+# ninguém foi bloqueado e de que não apareceu qdisc nenhuma, as asserções
+# positivas não significam nada — elas passariam igual numa versão que trancou
+# o aparelho do admin.
+battery_host_quota() {
+  head_ "Y. Cota por aparelho"
+
+  local initial tok
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d "\\r\\n")
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria Y não roda"; return; }
+
+  # Sem tráfego atravessando não há o que contar, e a falha apareceria como se
+  # fosse da cota. Mesma precaução da bateria G.
+  status PUT /api/nftables/policy "$tok" '{"policy":"accept"}' >/dev/null
+  status POST /api/links/auto-detect "$tok" >/dev/null
+
+  # Cliente de verdade atrás do firewall: a cota é medida no FORWARD, e ping
+  # para a própria caixa não atravessa nada.
+  vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
+  vm "nft flush set inet linkguard acct_up; nft flush set inet linkguard acct_down" >/dev/null 2>&1
+  vm "ip netns add lgclient && \
+      ip link add veth-lgfw type veth peer name veth-lgcl && \
+      ip link set veth-lgcl netns lgclient && \
+      ip addr add 192.168.3.1/24 dev veth-lgfw && ip link set veth-lgfw up && \
+      ip netns exec lgclient ip link set lo up && \
+      ip netns exec lgclient ip addr add 192.168.3.200/24 dev veth-lgcl && \
+      ip netns exec lgclient ip link set veth-lgcl up && \
+      ip netns exec lgclient ip route add default via 192.168.3.1" >/dev/null 2>&1
+  # Um pacote para o firewall aprender o MAC do cliente: sem vizinhança
+  # resolvida o amostrador não tem como atribuir os bytes a um aparelho.
+  vm "ip netns exec lgclient ping -c 2 192.168.3.1" >/dev/null 2>&1
+  local mac
+  mac=$(vm "ip netns exec lgclient cat /sys/class/net/veth-lgcl/address" | tr -d "\\r")
+  [[ -n "$mac" ]] || { bad "não consegui descobrir o endereço físico do cliente de teste"; return; }
+  if vm "ip neigh" | grep -qi "$mac"; then ok "o firewall enxerga o endereço físico do cliente ($mac)"
+  else bad "o cliente de teste não apareceu na tabela de vizinhança; a cota não teria como nomeá-lo"; fi
+
+  local resp st
+
+  # Y1 — todo aparelho do inventário aparece, com ou sem cota declarada. Um
+  # aparelho ausente da lista é um aparelho que ninguém consegue proteger.
+  resp=$(body GET /api/hosts/quotas "$tok")
+  if grep -qi "$mac" <<<"$resp"; then ok "o aparelho aparece na lista de cotas"
+  else bad "o aparelho não veio em /api/hosts/quotas"; fi
+
+  # Y2 — o que não existe é recusado na entrada, e não gravado para falhar
+  # depois em silêncio.
+  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":31,"alert_pct":80,"enabled":true}')
+  if [[ "$st" == "400" ]]; then ok "dia de fechamento 31 recusado (400)"
+  else bad "dia 31 aceito ($st) — o ciclo sumiria em fevereiro"; fi
+  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":10,"alert_pct":150,"enabled":true}')
+  if [[ "$st" == "400" ]]; then ok "aviso em 150% recusado (400)"
+  else bad "percentual fora da faixa aceito ($st)"; fi
+  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"semanal","cycle_day":1,"alert_pct":80,"enabled":true}')
+  if [[ "$st" == "400" ]]; then ok "período inventado recusado (400)"
+  else bad "período semanal aceito ($st)"; fi
+  st=$(status PUT "/api/hosts/quotas/nao-eh-mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":1,"alert_pct":80,"enabled":true}')
+  if [[ "$st" == "400" ]]; then ok "endereço físico malformado recusado (400)"
+  else bad "MAC malformado aceito ($st) — a cota nasceria numa chave que nunca casa"; fi
+
+  # ─── o ruleset ANTES. Tudo o que vier depois é comparado com esta foto. ───
+  # Os contadores e prazos dos sets mudam sozinhos: normalizar é o que faz o
+  # diff falar de REGRA, e não de tráfego.
+  vm "nft list ruleset | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g; s/expires [0-9]+[a-z]*/expires N/g' > /tmp/rs-antes.txt" >/dev/null 2>&1
+  vm "tc qdisc show > /tmp/tc-antes.txt" >/dev/null 2>&1
+
+  # Y3 — cota diária: o ciclo dura exatamente um dia. Se o dia de fechamento
+  # vazasse para o diário, o ciclo duraria um mês e a cota "de hoje" mentiria.
+  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":0.001,"period":"daily","cycle_day":1,"alert_pct":80,"enabled":true}')
+  if [[ "$st" == "200" ]]; then ok "cota diária de 1 MB declarada (200)"
+  else bad "declarar cota diária devolveu $st"; fi
+  local ini fim
+  resp=$(body GET /api/hosts/quotas "$tok")
+  ini=$(python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['mac'].lower()=='$mac'.lower(): print(q['cycle_start'])" <<<"$resp" 2>/dev/null)
+  fim=$(python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['mac'].lower()=='$mac'.lower(): print(q['cycle_end'])" <<<"$resp" 2>/dev/null)
+  if [[ -n "$ini" && -n "$fim" && $(( fim - ini )) -eq 86400 ]]; then
+    ok "o ciclo diário dura exatamente 24 horas"
+  else bad "ciclo diário inválido: início=$ini fim=$fim"; fi
+
+  # Y4 — A CADEIA INTEIRA. Sem esta, tudo o mais é aritmética em Go.
+  # ~2 MB atravessando o firewall: 1400 pacotes de 1400 bytes.
+  vm "ip netns exec lgclient ping -c 1400 -s 1400 -i 0.01 10.0.2.2" >/dev/null 2>&1
+  local kernel_bytes
+  kernel_bytes=$(vm "nft list set inet linkguard acct_up 2>/dev/null" | grep -oE "192\\.168\\.3\\.200 counter packets [0-9]+ bytes [0-9]+" | grep -oE "bytes [0-9]+" | grep -oE "[0-9]+")
+  if [[ -n "$kernel_bytes" && "$kernel_bytes" -gt 0 ]]; then
+    ok "o kernel contou $kernel_bytes bytes do cliente"
+  else bad "o contador do kernel ficou vazio; a cota não teria de onde ler"; fi
+
+  printf "       (aguardando o flush de 1 minuto do acumulador)\\n"
+  sleep 70
+  local usado
+  usado=$(body GET /api/hosts/quotas "$tok" | python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['mac'].lower()=='$mac'.lower(): print(q['used_bytes'])" 2>/dev/null)
+  if [[ -n "$usado" && "$usado" -gt 0 ]]; then
+    ok "o consumo medido chegou ao painel para o aparelho ($usado bytes)"
+  else bad "o consumo do aparelho continuou zerado depois do flush — a cadeia de medição não fechou"; fi
+
+  # Y5 — o número BATE com o kernel, com folga declarada. Não é rigor de
+  # contador: é a prova de que ninguém está integrando host.rx_bps, que erraria
+  # por ordens de grandeza e não por 10%.
+  if [[ -n "$usado" && -n "$kernel_bytes" && "$kernel_bytes" -gt 0 ]]; then
+    local piso teto
+    piso=$(( kernel_bytes / 2 ))
+    teto=$(( kernel_bytes * 3 ))
+    if [[ "$usado" -ge "$piso" && "$usado" -le "$teto" ]]; then
+      ok "o consumo do painel tem a mesma ordem de grandeza do contador do kernel"
+    else bad "o painel diz $usado e o kernel contou $kernel_bytes — alguém está integrando taxa em vez de somar bytes"; fi
+  fi
+
+  # Y6 — o alerta nasce, com número LEGÍVEL. Cota de 1 MB com 2 MB gastos: é
+  # exatamente o caso em que "%.1f GB" produzia "0.0 GB de 0 GB".
+  local alertas
+  alertas=$(body GET "/api/alerts?limit=50" "$tok")
+  if grep -q "host_quota_exceeded" <<<"$alertas"; then ok "o alerta de cota estourada existe"
+  else bad "a cota de 1 MB foi estourada e nenhum alerta apareceu"; fi
+  if grep -q "0.0 GB" <<<"$alertas"; then
+    bad "o alerta saiu ilegível (contém \\"0.0 GB\\") — é o defeito que a metade de link já pagou"
+  else ok "o texto do alerta usa unidade compatível com a grandeza"; fi
+
+  # ─── ASSERÇÕES DE SILÊNCIO. Sem estas, Y4 e Y6 não significam nada. ───
+
+  # S1 — o ruleset não mudou. Nenhuma regra nova, nenhuma chain nova, nenhum
+  # limit rate, nenhum drop. Declarar cota e estourá-la não toca no firewall.
+  vm "nft list ruleset | sed -E 's/counter packets [0-9]+ bytes [0-9]+/counter N/g; s/expires [0-9]+[a-z]*/expires N/g' > /tmp/rs-depois.txt" >/dev/null 2>&1
+  local rsdiff
+  rsdiff=$(vm "diff /tmp/rs-antes.txt /tmp/rs-depois.txt | head -40" | tr -d "\\r")
+  if [[ -z "$rsdiff" ]]; then ok "o ruleset ficou idêntico depois de declarar e estourar a cota"
+  else bad "a cota mexeu no ruleset vivo" "$(tr "\\n" " " <<<"$rsdiff")"; fi
+
+  # S2 — ninguém foi bloqueado. Estourar cota NÃO pode trancar aparelho: o que
+  # estourou pode ser o do próprio admin.
+  local bh bm
+  bh=$(vm "nft list set inet linkguard blocked_hosts 2>/dev/null" | grep -oE "elements = \\{[^}]*\\}" | tr -d "\\r")
+  bm=$(vm "nft list set inet linkguard blocked_mac 2>/dev/null" | grep -oE "elements = \\{[^}]*\\}" | tr -d "\\r")
+  if [[ -z "$bh" && -z "$bm" ]]; then ok "nenhum aparelho foi bloqueado pelo estouro da cota"
+  else bad "a cota bloqueou alguém — é a tranca que esta entrega existe para NÃO fazer" "hosts=$bh mac=$bm"; fi
+  local bloqueado
+  bloqueado=$(body GET /api/hosts "$tok" | python3 -c "
+import json,sys
+for h in json.load(sys.stdin):
+    if (h.get('mac') or '').lower()=='$mac'.lower(): print(str(h['blocked']).lower())" 2>/dev/null)
+  if [[ "$bloqueado" != "true" ]]; then ok "o aparelho que estourou continua liberado no inventário"
+  else bad "o aparelho que estourou a cota aparece bloqueado"; fi
+
+  # S3 — nada de tc. Se aparecer cake ou htb, alguém entregou a #121 por
+  # acidente — e limitação de banda não estava nesta entrega.
+  vm "tc qdisc show > /tmp/tc-depois.txt" >/dev/null 2>&1
+  local tcdiff
+  tcdiff=$(vm "diff /tmp/tc-antes.txt /tmp/tc-depois.txt | head -20" | tr -d "\\r")
+  if [[ -z "$tcdiff" ]]; then ok "nenhuma qdisc nova apareceu"
+  else bad "a cota mexeu na disciplina de fila" "$(tr "\\n" " " <<<"$tcdiff")"; fi
+
+  # S4 — a contabilidade não foi contaminada: nenhum endereço fora da LAN no
+  # acct_up. Um endereço público ali é o set caminhando para o teto de 65.535.
+  local forasteiros
+  forasteiros=$(vm "nft list set inet linkguard acct_up 2>/dev/null" | grep -oE "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+" | grep -vcE "^(192\\.168\\.|10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)" || true)
+  if [[ "${forasteiros:-0}" == "0" ]]; then ok "o set de contabilidade só tem endereços da LAN"
+  else bad "$forasteiros endereço(s) fora da LAN no acct_up — o set vai encher"; fi
+
+  # S5 — a chain de contabilidade continua idêntica: duas regras, nem uma a
+  # mais. Acrescentar regra ali derruba a medição de todo mundo em silêncio.
+  local nregras
+  nregras=$(vm "nft list chain inet linkguard acct 2>/dev/null" | grep -cE "update @acct_(up|down)")
+  if [[ "$nregras" == "2" ]]; then ok "a chain de contabilidade continua com as duas regras de sempre"
+  else bad "a chain acct tem $nregras regra(s) de update — a cota não pode escrever ali"; fi
+
+  # Y7 — remover a cota NÃO pode esconder o consumo já medido. É o defeito de
+  # 2026-08-20, agora na chave (aparelho, início do ciclo).
+  st=$(status DELETE "/api/hosts/quotas/$mac" "$tok")
+  if [[ "$st" == "200" ]]; then ok "cota removida (200)"
+  else bad "remover a cota devolveu $st"; fi
+  resp=$(body GET /api/hosts/quotas "$tok")
+  local aindaUsado config
+  aindaUsado=$(python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['mac'].lower()=='$mac'.lower(): print(q['used_bytes'])" <<<"$resp" 2>/dev/null)
+  config=$(python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['mac'].lower()=='$mac'.lower(): print(str(q['configured']).lower())" <<<"$resp" 2>/dev/null)
+  if [[ "$config" == "false" ]]; then ok "a cota saiu da configuração"
+  else bad "a cota continua declarada depois do DELETE"; fi
+  if [[ -n "$aindaUsado" && "$aindaUsado" -gt 0 ]]; then
+    ok "o consumo medido sobreviveu à remoção da cota ($aindaUsado bytes)"
+  else bad "remover a cota escondeu o consumo já medido — a chave do ciclo mudou debaixo da leitura"; fi
+
+  # Y8 — o aparelho SEM cota declarada continua sendo medido. É o que permite
+  # ao admin descobrir ONDE declarar um teto.
+  if [[ -n "$aindaUsado" && "$aindaUsado" -gt 0 && "$config" == "false" ]]; then
+    ok "aparelho sem cota declarada continua medido"
+  fi
+
+  # Y9 — auditoria. Declarar e remover cota são atos administrativos sobre um
+  # aparelho: sem rastro de quem fez, a feature não deveria existir.
+  local logs; logs=$(body GET "/api/logs?limit=60" "$tok")
+  if grep -q "host_quota" <<<"$logs"; then ok "as mudanças de cota foram para a auditoria"
+  else bad "cota alterada sem registro de auditoria"; fi
+
+  vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
+}
 }
 
 
@@ -5889,6 +6110,7 @@ battery_policy
 battery_capture
 battery_quota
 battery_accounting
+battery_host_quota
 battery_replyrouting
 battery_dnsleak
 battery_mssclamp

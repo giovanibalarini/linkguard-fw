@@ -401,12 +401,12 @@ func TestHumanBytesAcompanhaAGrandeza(t *testing.T) {
 		{300_000, "300 KB"},
 	}
 	for _, c := range casos {
-		if got := humanBytes(c.in); got != c.want {
-			t.Errorf("humanBytes(%v) = %q, queria %q", c.in, got, c.want)
+		if got := HumanBytes(c.in); got != c.want {
+			t.Errorf("HumanBytes(%v) = %q, queria %q", c.in, got, c.want)
 		}
 	}
-	if got := humanGB(0.5); got != "500.0 MB" {
-		t.Errorf("humanGB(0.5) = %q, queria 500.0 MB — plano fracionário existe", got)
+	if got := HumanGB(0.5); got != "500.0 MB" {
+		t.Errorf("HumanGB(0.5) = %q, queria 500.0 MB — plano fracionário existe", got)
 	}
 }
 

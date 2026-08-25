@@ -28,6 +28,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/hostflows"
+	"github.com/giovanibalarini/linkguard-fw/internal/hostquota"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
@@ -52,33 +53,34 @@ import (
 
 // Server holds all dependencies needed to serve HTTP requests.
 type Server struct {
-	router      *chi.Mux
-	db          *storage.DB
-	exec        firewall.Executor
-	linkSvc     *links.Service
-	iptSvc      *iptables.Service
-	routeSvc    *routes.Service
-	failoverSvc *failover.Service
-	balancerSvc *balancer.Service
-	alertSvc    *alerts.Service
-	authSvc     *auth.Service
-	hostSvc     *hosts.Service
-	netifSvc    *netif.Service
-	nftSvc      *nftables.Service
-	frSvc       *firewallrules.Service
-	netSvc      netsvc.Provider
-	notifySvc   *notify.Service
-	trafficSvc  *hosttraffic.Service
-	quotaSvc    *linkquota.Service
-	ddnsSvc     *ddns.Service
-	sysCol      *system.Collector
-	rrdSvc      *tsdb.Service
-	promReg     *prometheus.Registry
-	mon         *monitoring.Collector
-	sec         secrets.Secrets
-	aiClient    *ai.Client
-	backupSched *backup.Scheduler
-	webFS       fs.FS
+	router       *chi.Mux
+	db           *storage.DB
+	exec         firewall.Executor
+	linkSvc      *links.Service
+	iptSvc       *iptables.Service
+	routeSvc     *routes.Service
+	failoverSvc  *failover.Service
+	balancerSvc  *balancer.Service
+	alertSvc     *alerts.Service
+	authSvc      *auth.Service
+	hostSvc      *hosts.Service
+	netifSvc     *netif.Service
+	nftSvc       *nftables.Service
+	frSvc        *firewallrules.Service
+	netSvc       netsvc.Provider
+	notifySvc    *notify.Service
+	trafficSvc   *hosttraffic.Service
+	quotaSvc     *linkquota.Service
+	hostQuotaSvc *hostquota.Service
+	ddnsSvc      *ddns.Service
+	sysCol       *system.Collector
+	rrdSvc       *tsdb.Service
+	promReg      *prometheus.Registry
+	mon          *monitoring.Collector
+	sec          secrets.Secrets
+	aiClient     *ai.Client
+	backupSched  *backup.Scheduler
+	webFS        fs.FS
 	// dnstapSvc é o coletor de respostas de DNS (#116).
 	//
 	// VEM PELA Config, E NÃO POR SETTER, e a diferença custou uma validação
@@ -125,6 +127,11 @@ type Config struct {
 	// dnstapSvc: New monta o roteador na mesma chamada, então um setter chamado
 	// depois nunca chega a tempo e as rotas ficam registradas com o campo nil.
 	Fluxos *hostflows.Servico
+	// HostQuota é a cota de dados por aparelho (#126). Vem pela Config, e não
+	// por setter, pelo mesmo motivo do DNSTap logo acima: New monta o roteador
+	// na mesma chamada, e um setter chamado depois chegaria com as rotas já
+	// registradas apontando para um campo nil.
+	HostQuota *hostquota.Service
 }
 
 // New creates and wires up the HTTP server.
@@ -168,6 +175,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 
 	s.dnstapSvc = cfg.DNSTap
 	s.fluxosSvc = cfg.Fluxos
+	s.hostQuotaSvc = cfg.HostQuota
 	s.router = s.buildRouter(cfg)
 	return s
 }
@@ -581,6 +589,22 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		}
 		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/alias", hostsH.SetAlias)
 		r.With(require(auth.PermHostsBlock)).Post("/api/hosts/block", hostsH.SetBlocked)
+
+		// Cota de dados por aparelho (#126). MESMO PAR DE PERMISSÕES das rotas
+		// de aparelho acima — leitura com hosts.read, escrita com hosts.block —,
+		// pelo mesmo desenho de /api/quotas: uma permissão de leitura para ver o
+		// consumo e a de escrita da área para declarar o teto. Ler consumo por
+		// aparelho é inventário da rede do cliente e não pode cair em rota mais
+		// aberta que a lista de aparelhos; declarar cota é ato administrativo
+		// sobre o mesmo objeto que bloquear.
+		//
+		// O caminho fica sob /api/hosts/ e não colide com o {id} de nada: as
+		// rotas de aparelho acima são todas literais.
+		hostQuotaH := handlers.NewHostQuotaHandler(s.hostQuotaSvc, s.db)
+		r.With(require(auth.PermHostsRead)).Get("/api/hosts/quotas", hostQuotaH.List)
+		r.With(require(auth.PermHostsRead)).Get("/api/hosts/quotas/{mac}/history", hostQuotaH.History)
+		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/quotas/{mac}", hostQuotaH.Save)
+		r.With(require(auth.PermHostsBlock)).Delete("/api/hosts/quotas/{mac}", hostQuotaH.Delete)
 
 		// Captura de pacotes sob demanda (só cabeçalho, janela limitada).
 		// Permissão própria: ver gráfico de tráfego é uma coisa, observar a
