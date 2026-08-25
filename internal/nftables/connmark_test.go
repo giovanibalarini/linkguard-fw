@@ -161,7 +161,6 @@ func TestAChainDeSaidaEhDoTipoRoute(t *testing.T) {
 	}
 }
 
-
 func TestConexaoDaLANEhFixadaNaWANEmQueSaiu(t *testing.T) {
 	// O DEFEITO QUE ESTE TESTE PRENDE. Conexão nascida na LAN não tinha dono: a
 	// rota padrão em modo balanceado é multipath e o kernel escolhe por hash.
@@ -229,7 +228,6 @@ func TestFixacaoPorHostGanhaDaMemoriaDeConexao(t *testing.T) {
 		t.Fatalf("sem o guarda, a memória de conexão sobrescreveria o direcionamento por host: %q", r)
 	}
 }
-
 
 // TestARestauracaoDeOutputIgnoraConexaoNascidaNaLAN é a regressão do segundo
 // apagão que esta mudança quase entregou, e que a bateria I pegou.
