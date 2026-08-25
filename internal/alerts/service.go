@@ -97,6 +97,26 @@ const (
 	TypeFirewallBootPersistFailed = "firewall_boot_persist_failed"
 	TypeFirewallBootPersistOK     = "firewall_boot_persist_ok"
 
+	// TypeCaminhoDNSForaDoLocal / TypeCaminhoDNSNoLocal: o resolv.conf aponta
+	// para o unbound e a resolução da própria caixa NÃO chega até lá (issue
+	// #195).
+	//
+	// É um alerta separado do dns_resolver_drift logo acima de propósito: aquele
+	// pergunta "o que está escrito no resolv.conf?", este pergunta "alguém lê o
+	// resolv.conf?". Numa caixa com systemd-resolved ativo e
+	// `hosts: files myhostname resolve [!UNAVAIL=return] dns` as duas respostas
+	// divergem — o arquivo está perfeito e o módulo `dns` do NSS nunca roda.
+	// Consertar o primeiro não move o segundo, então fundir os dois faria o
+	// painel apagar um vermelho que continua verdadeiro.
+	//
+	// Warning, não Critical: a caixa RESOLVE nomes, só que por fora do unbound.
+	// Nada está fora do ar. O que se perde é silencioso — bloqueio por domínio,
+	// mapa endereço→nome (#116) e controle de fuga de DNS deixam de enxergar o
+	// tráfego da própria caixa. Gritar Critical por algo que não derruba nada
+	// treina o operador a ignorar Critical.
+	TypeCaminhoDNSForaDoLocal = "caminho_dns_fora_do_local"
+	TypeCaminhoDNSNoLocal     = "caminho_dns_no_local"
+
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
 	SeverityCritical = "critical"
@@ -148,6 +168,7 @@ var stateAlertTypes = []string{
 	TypeFirewallNATDrift,
 	TypeWANInterfaceMissing,
 	TypeDNSResolverDrift,
+	TypeCaminhoDNSForaDoLocal,
 	TypeSecurityUpdatesPending,
 	TypeBalancerNoWAN,
 	TypeBaseDepsMissing,
@@ -809,6 +830,53 @@ func (s *Service) DNSResolverOK() error {
 	s.AutoResolve(TypeDNSResolverDrift, "")
 	return s.createRecovery(TypeDNSResolverOK, "Resolver DNS local em uso",
 		"O sistema voltou a usar o resolver local (unbound).", "")
+}
+
+// CaminhoDNSForaDoLocal abre o aviso de que o resolver local está configurado
+// e NÃO está no caminho de resolução da própria caixa: o /etc/resolv.conf
+// aponta para o unbound, e a resolução de nome nem chega a consultá-lo porque
+// o módulo `dns` do NSS não é alcançado (issue #195).
+//
+// Por que isto precisa de alerta e não só de log: o sintoma é invisível. Nada
+// falha, o painel mostra o resolver local no ar, o log dizia que o resolv.conf
+// foi apontado — e as consultas da caixa saem por outro lugar. O detalhe
+// carrega a linha `hosts:` de verdade e o módulo que corta a cadeia, porque
+// quem lê o alerta precisa saber ONDE olhar; sem isso o aviso vira só um
+// vermelho sem próximo passo.
+//
+// O produto deliberadamente NÃO conserta isto sozinho: nsswitch.conf é arquivo
+// de sistema fora do escopo declarado, e errar ali quebra resolução de nome na
+// caixa inteira. Medir e dizer é a entrega.
+func (s *Service) CaminhoDNSForaDoLocal(detail string) error {
+	return s.Create(TypeCaminhoDNSForaDoLocal, SeverityWarning, "Resolver local fora do caminho de resolução",
+		"O /etc/resolv.conf aponta para o resolver local (unbound), mas a resolução de nome da própria caixa não passa por ele: "+detail+
+			". A caixa continua resolvendo nomes, porém o bloqueio por domínio, o mapa endereço→nome e o controle de fuga de DNS não enxergam esse tráfego.", "")
+}
+
+// CaminhoDNSNoLocal fecha CaminhoDNSForaDoLocal — e anuncia a volta, mas SÓ
+// quando havia mesmo algo aberto. Sem o fechamento o aviso ficaria vermelho
+// para sempre depois de o admin arrumar o nsswitch.conf (ou parar o
+// systemd-resolved), que é como se ensina o operador a ignorar vermelho; sem a
+// condicional, o EnsureResolvConf de cada boot arquivaria uma recuperação numa
+// caixa que nunca esteve errada e soterraria a lista de alertas com histórico.
+func (s *Service) CaminhoDNSNoLocal() {
+	open, err := s.db.GetAlerts(true, 0)
+	if err != nil {
+		return
+	}
+	found := false
+	for _, a := range open {
+		if a.Type == TypeCaminhoDNSForaDoLocal && a.LinkID == "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+	s.AutoResolve(TypeCaminhoDNSForaDoLocal, "")
+	_ = s.createRecovery(TypeCaminhoDNSNoLocal, "Resolver local no caminho de resolução",
+		"A resolução de nome da própria caixa volta a passar pelo resolver local (unbound).", "")
 }
 
 // SecurityUpdatesPending raises a warning when security updates are waiting

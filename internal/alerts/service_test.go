@@ -121,6 +121,90 @@ func TestBackupSucceededDeliversViaRecovery(t *testing.T) {
 	}
 }
 
+// TestCaminhoDNSForaDoLocalEWarning: a caixa RESOLVE nomes, só que por fora do
+// unbound — nada está no chão, então Critical aqui treinaria o operador a
+// ignorar Critical. O detalhe medido tem de chegar inteiro na mensagem, senão
+// o alerta não diz onde olhar.
+func TestCaminhoDNSForaDoLocalEWarning(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	const detalhe = "o módulo \"resolve\" responde antes do dns e a ação [!UNAVAIL=return] encerra a busca ali"
+	if err := s.CaminhoDNSForaDoLocal(detalhe); err != nil {
+		t.Fatal(err)
+	}
+	if len(fn.normal) != 1 || fn.normal[0] != "warning|Resolver local fora do caminho de resolução" {
+		t.Errorf("normal notifies = %v", fn.normal)
+	}
+	abertos, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasOpenAlertOfType(abertos, TypeCaminhoDNSForaDoLocal) {
+		t.Fatal("o alerta não ficou aberto")
+	}
+	var msg string
+	for _, a := range abertos {
+		if a.Type == TypeCaminhoDNSForaDoLocal {
+			msg = a.Message
+		}
+	}
+	if !strings.Contains(msg, "[!UNAVAIL=return]") {
+		t.Errorf("a mensagem perdeu o detalhe medido: %q", msg)
+	}
+}
+
+// TestCaminhoDNSNoLocalFechaEAnuncia: o par tem de fechar o que abriu.
+func TestCaminhoDNSNoLocalFechaEAnuncia(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	if err := s.CaminhoDNSForaDoLocal("resolve corta antes do dns"); err != nil {
+		t.Fatal(err)
+	}
+	s.CaminhoDNSNoLocal()
+
+	abertos, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasOpenAlertOfType(abertos, TypeCaminhoDNSForaDoLocal) {
+		t.Error("o alerta continuou aberto depois da caixa voltar ao normal")
+	}
+	if len(fn.recovery) != 1 {
+		t.Errorf("recovery notifies = %v, want 1", fn.recovery)
+	}
+}
+
+// TestCaminhoDNSNoLocalNaoAnunciaSemNadaAberto: o EnsureResolvConf chama isto a
+// cada boot. Anunciar recuperação sem nada aberto arquivaria uma linha por boot
+// e soterraria a lista de alertas com histórico de uma caixa que sempre esteve
+// certa.
+func TestCaminhoDNSNoLocalNaoAnunciaSemNadaAberto(t *testing.T) {
+	db := openTestDB(t)
+	s := NewService(db)
+	fn := &fakeNotifier{}
+	s.SetNotifier(fn)
+
+	s.CaminhoDNSNoLocal()
+	s.CaminhoDNSNoLocal()
+
+	if len(fn.recovery) != 0 {
+		t.Errorf("anunciou recuperação sem nada aberto: %v", fn.recovery)
+	}
+	todos, err := db.GetAlerts(false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(todos) != 0 {
+		t.Errorf("arquivou %d alerta(s) numa caixa que nunca esteve errada", len(todos))
+	}
+}
+
 func TestNTPUnsyncedIsWarning(t *testing.T) {
 	db := openTestDB(t)
 	s := NewService(db)
