@@ -76,6 +76,12 @@ func (s *Servico) Mapa() *Mapa { return s.mapa }
 // deste arquivo), e o preço de esquecer isso é contrapressão no resolver da
 // rede inteira por causa de um consumidor lento.
 //
+// E O CONTRATO É TAMBÉM NÃO ENTRAR EM PÂNICO. O laço que chama isto é o que
+// drena o socket: um pânico no observador derruba a goroutine da conexão e o
+// mapa para de aprender. A chamada é envolvida em recover mesmo assim — o ponto
+// deste arquivo é que o consumidor não pode machucar o caminho do resolver, e
+// isso tem de valer por construção, não por inspeção do consumidor da vez.
+//
 // Chamar ANTES de Run: o campo é lido pelas goroutines de conexão sem lock, e
 // o único ponto em que trocá-lo é seguro é antes de existir conexão.
 func (s *Servico) SetObservador(f func(*Resposta)) { s.observador = f }
@@ -164,10 +170,28 @@ func (s *Servico) atender(conn net.Conn) {
 		// (Mapa.Nome, Mapa.Amostra) e a limpeza de 5 minutos presas ao que o
 		// observador fizer. Mesmo aqui fora, este laço é o que DRENA o socket
 		// do unbound — por isso o contrato de SetObservador é não bloquear.
-		if s.observador != nil {
-			s.observador(r)
-		}
+		s.avisarObservador(r)
 	}
+}
+
+// avisarObservador chama o consumidor com recover em volta.
+//
+// Três linhas que compram uma garantia por CONSTRUÇÃO. Sem elas, um pânico
+// dentro do observador derruba a goroutine desta conexão — quer dizer, o
+// consumidor de dnstap machucando o caminho do resolver, que é exatamente o que
+// o cabeçalho deste arquivo diz não poder acontecer. Que o observador de hoje
+// não tenha como entrar em pânico é uma propriedade do observador de hoje.
+func (s *Servico) avisarObservador(r *Resposta) {
+	if s.observador == nil {
+		return
+	}
+	defer func() {
+		p := recover()
+		if p != nil {
+			slog.Error("dnstap: o observador entrou em pânico", "panico", p)
+		}
+	}()
+	s.observador(r)
 }
 
 // A regra de AppArmor que deixa o unbound entregar (issue #116).
