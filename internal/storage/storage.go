@@ -205,6 +205,7 @@ var schemaMigrations = []migration{
 	{11, "pending_firewall_change.applied_state", upAddPendingChangeAppliedState},
 	{12, "traffic.capture nos papéis que administram papéis", upGrantTrafficCapture},
 	{13, "firewall_groups: janela de horário", upAddFirewallGroupSchedule},
+	{14, "domain_targets", upDomainTargets},
 }
 
 const createSchemaMigrationsTable = `
@@ -572,6 +573,30 @@ func upAddFirewallGroupSchedule(tx *sql.Tx) error {
 		if _, err := tx.Exec(`ALTER TABLE firewall_groups ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("adicionar coluna %s: %w", col, err)
 		}
+	}
+	return nil
+}
+
+// upDomainTargets cria a tabela domain_targets (#123) — os domínios que o
+// admin listou para barrar ou para direcionar.
+//
+// Migração imperativa em transação, no molde de upDashboardLayout, e não uma
+// linha a mais na lista de CREATE TABLE IF NOT EXISTS: toda migração deste
+// projeto roda em transação desde o incidente de 2026-07-24, em que uma que
+// não rodava travou o boot de uma máquina de produção por mais de 50 minutos.
+func upDomainTargets(tx *sql.Tx) error {
+	var count int
+	err := tx.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='domain_targets'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checar a tabela domain_targets: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	if _, err := tx.Exec(createDomainTargetsTable); err != nil {
+		return fmt.Errorf("criar a tabela domain_targets: %w", err)
 	}
 	return nil
 }
@@ -1154,6 +1179,38 @@ const createDashboardLayoutTable = `
 CREATE TABLE IF NOT EXISTS dashboard_layout (
     user_id    TEXT PRIMARY KEY,
     items      TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+// ─── Alvo de regra por domínio (#123) ─────────────────────────────────────
+//
+// Criada por upDomainTargets (em transação), NÃO pela lista de CREATE TABLE
+// IF NOT EXISTS acima — ver o doc-comment daquela função.
+//
+// domain É ÚNICO. Duas linhas para o mesmo nome deixariam "qual capacidade
+// vale para este domínio" sem resposta, e a resposta seria a ordem de leitura
+// do SELECT — quer dizer, um domínio que barra ou direciona conforme o dia.
+//
+// stage NASCE EM 'ensaio', NO BANCO, e não só no código. É a mesma decisão do
+// índice em memória, escrita no lugar onde nenhum caminho de gravação pode
+// esquecê-la: um INSERT novo que não preencha a coluna não pode produzir um
+// domínio que já escreve no firewall. Promover é uma ação explícita, e sair do
+// ensaio é a única coisa nesta capacidade que muda o que passa na rede.
+//
+// mark é a marca da WAN escolhida, guardada resolvida em vez de um link_id com
+// FK: a marca é o que vai para o kernel, e amarrar o boot do alimentador à
+// integridade da tabela de links faria um link apagado derrubar o carregamento
+// da lista inteira. link_name fica junto só para a tela ter o que mostrar.
+const createDomainTargetsTable = `
+CREATE TABLE IF NOT EXISTS domain_targets (
+    id         TEXT PRIMARY KEY,
+    domain     TEXT NOT NULL UNIQUE,
+    capability TEXT NOT NULL DEFAULT 'barrar',
+    stage      TEXT NOT NULL DEFAULT 'ensaio',
+    link_name  TEXT NOT NULL DEFAULT '',
+    mark       INTEGER NOT NULL DEFAULT 0,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 

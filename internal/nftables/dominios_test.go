@@ -161,3 +161,55 @@ func TestAsDeclaracoesNaoTemDynamicNemInterval(t *testing.T) {
 		}
 	}
 }
+
+// TestALeituraDeVoltaExtraiOEnderecoDeSetEDeMap.
+//
+// Sem a leitura de volta, este arquivo é escrita-só e a tela teria de contar o
+// índice em memória do alimentador — que é um espelho, e espelho atrasa: o
+// elemento pode ter expirado sozinho, o lote pode ter falhado, alguém pode ter
+// dado flush por fora. Quem responde "quantos endereços estão barrados agora" é
+// quem barra.
+//
+// O map é o caso que quebra um parser ingênuo: cada item termina em ` : 0x12c`,
+// e o endereço é o PRIMEIRO campo, nunca o último.
+func TestALeituraDeVoltaExtraiOEnderecoDeSetEDeMap(t *testing.T) {
+	saidaSet := `table inet linkguard {
+	set dom_blocked {
+		type ipv4_addr
+		flags timeout
+		timeout 1h
+		size 8192
+		elements = { 142.250.219.14 timeout 1h expires 59m28s,
+			     1.1.1.1 timeout 1h expires 30m }
+	}
+}`
+	got := enderecosNft(saidaSet)
+	if len(got) != 2 || got[0].String() != "142.250.219.14" || got[1].String() != "1.1.1.1" {
+		t.Fatalf("set lido errado: %v", got)
+	}
+
+	saidaMap := `table inet linkguard {
+	map dom_wan {
+		type ipv4_addr : mark
+		elements = { 8.8.8.8 timeout 1h expires 59m : 0x12c }
+	}
+}`
+	got = enderecosNft(saidaMap)
+	if len(got) != 1 || got[0].String() != "8.8.8.8" {
+		t.Fatalf("map lido errado: %v", got)
+	}
+}
+
+// TestEstruturaVaziaOuAusenteLeComoVazia, e não como erro.
+//
+// Estrutura ausente é o estado de toda caixa entre o upgrade e a primeira
+// reconciliação. Um erro aqui viraria faixa vermelha na tela por causa de uma
+// caixa que está bem.
+func TestEstruturaVaziaOuAusenteLeComoVazia(t *testing.T) {
+	if got := enderecosNft("table inet linkguard {\n\tset dom_blocked {\n\t\ttype ipv4_addr\n\t}\n}"); len(got) != 0 {
+		t.Fatalf("set vazio virou %v", got)
+	}
+	if got := enderecosNft(""); len(got) != 0 {
+		t.Fatalf("saída vazia virou %v", got)
+	}
+}

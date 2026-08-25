@@ -31,6 +31,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
+	"github.com/giovanibalarini/linkguard-fw/internal/domtargets"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
@@ -390,6 +391,9 @@ type services struct {
 	monitor   *links.Monitor
 	server    *api.Server
 	dnstapSvc *dnstap.Servico
+	// domSvc é o alimentador de alvo por domínio (#123). Escreve no KERNEL e
+	// não no banco, então não é um spawnWriter — ver startBackground.
+	domSvc *domtargets.Servico
 
 	// ntpInputState é a MESMA fonte que foi entregue a
 	// nftSvc.SetInputChainSources, guardada aqui porque a reconciliação de
@@ -675,6 +679,12 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// Criado ANTES do servidor: api.New monta o roteador na mesma chamada, e as
 	// rotas leem o coletor na hora do registro (#116).
 	dnstapSvc := dnstap.NovoServico()
+	// Alvo por domínio (#123): o alimentador ouve as respostas que o coletor já
+	// extraiu, em vez de abrir um segundo consumidor do socket. Ligado AQUI,
+	// antes de qualquer Run, porque o observador é lido sem lock pelas
+	// goroutines de conexão — ver SetObservador.
+	domSvc := domtargets.NovoServico(nftSvc)
+	dnstapSvc.SetObservador(domSvc.Observar)
 	// Séries por aparelho para o coletor do cliente (#118). Fora do registro
 	// aberto do Prometheus de propósito — ver internal/metrics/exposicao.go.
 	porHost := metrics.NovoPorHost()
@@ -737,6 +747,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		ntpInputState:    ntpInputState,
 		interval:         interval,
 		dnstapSvc:        dnstapSvc,
+		domSvc:           domSvc,
 	}, nil
 }
 
@@ -1292,6 +1303,23 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			slog.Warn("dnstap: o coletor não subiu; o mapa endereço → nome fica vazio", "err", err)
 		}
 	}()
+	// Alimentador de alvo por domínio (#123). NÃO é spawnWriter: ele escreve no
+	// kernel, não no banco, e o que ele guarda em memória é cache de resposta de
+	// DNS — perder no desligamento é o comportamento certo, porque cache que
+	// sobrevive ao reboot afirma sobre endereços o que ninguém mais confirmou.
+	//
+	// Nesta entrega ele não muda um pacote: as estruturas que ele enche não são
+	// olhadas por nenhuma chain, e todo domínio nasce em ensaio.
+	go s.domSvc.Run(ctx)
+	go func() {
+		alvos, err := s.db.ListDomainTargets()
+		if err != nil {
+			slog.Warn("alvo por domínio: não consegui carregar a lista", "err", err)
+			return
+		}
+		s.domSvc.DefinirAlvos(ctx, alvosDeDominio(alvos))
+	}()
+
 	go balancerSvc.Run(ctx)
 	spawnWriter("backup", func() { backupSched.Run(ctx) })
 	go journalSched.Run(ctx)
@@ -1309,6 +1337,36 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	})
 
 	return &writers
+}
+
+// alvosDeDominio traduz as linhas do banco para o índice do alimentador.
+//
+// A tradução mora aqui, no ponto de montagem, e não dentro de domtargets: o
+// alimentador não conhece o banco de propósito, e é isso que deixa a parte que
+// decide (o índice) ser testada sem um arquivo de SQLite por perto.
+//
+// Estágio que não seja exatamente "ativo" vira ensaio. É a mesma decisão que a
+// coluna do banco já toma no DEFAULT, repetida aqui porque este é o último
+// ponto em que um valor estranho — de um backup antigo, de uma edição à mão no
+// banco — ainda pode ser recusado antes de virar escrita no firewall.
+func alvosDeDominio(linhas []storage.DomainTarget) []domtargets.Alvo {
+	out := make([]domtargets.Alvo, 0, len(linhas))
+	for _, l := range linhas {
+		a := domtargets.Alvo{
+			Dominio:    l.Domain,
+			Capacidade: domtargets.Barrar,
+			Estagio:    domtargets.Ensaio,
+			Marca:      l.Mark,
+		}
+		if l.Capability == storage.DomainCapDirecionar {
+			a.Capacidade = domtargets.Direcionar
+		}
+		if l.Stage == storage.DomainStageAtivo {
+			a.Estagio = domtargets.Ativo
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // serveHTTP é o fim do boot: sobe o painel e fica nele até o processo receber

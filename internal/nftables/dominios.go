@@ -294,3 +294,80 @@ func (s *Service) rodarScriptNft(ctx context.Context, script string) (string, er
 	}
 	return s.exec.Execute(ctx, "nft", "-f", f.Name())
 }
+
+// DomKernel é o que o kernel TEM, lido de volta das três estruturas.
+//
+// POR QUE A LEITURA DE VOLTA EXISTE. Sem ela este arquivo é escrita-só: dá
+// para encher, esvaziar e renovar, e não dá para perguntar o que está lá
+// dentro. Uma tela que contasse o índice em memória do alimentador afirmaria
+// coisas que o kernel pode não ter — o elemento expirou sozinho, o lote falhou,
+// alguém deu flush por fora — e este produto já entregou uma vez uma tela que
+// dizia o que o kernel não tinha. Quem responde "quantos endereços estão
+// barrados agora" é quem barra.
+type DomKernel struct {
+	Bloq  []netip.Addr
+	Bloq6 []netip.Addr
+	Wan   []netip.Addr
+}
+
+// DomElementos lê as três estruturas.
+//
+// Usa ExecuteRead: é leitura, e precisa funcionar também em --dry-run. Em
+// dry-run o produto não escreve, mas continua tendo de dizer a verdade sobre o
+// que existe — e o que existe ali é o que sobrou de antes.
+//
+// Estrutura ausente NÃO é erro: é "vazia". A criação delas é do boot, e um erro
+// aqui viraria faixa vermelha na tela por causa de uma caixa que ainda não
+// passou pelo EnsureDomainStructures — que é exatamente o estado de todo
+// upgrade entre o boot e a primeira reconciliação.
+func (s *Service) DomElementos(ctx context.Context) (DomKernel, error) {
+	var k DomKernel
+	for _, e := range []struct {
+		tipo, nome string
+		destino    *[]netip.Addr
+	}{
+		{"set", DomBlockedSet, &k.Bloq},
+		{"set", DomBlockedSet6, &k.Bloq6},
+		{"map", DomWanMap, &k.Wan},
+	} {
+		out, err := s.exec.ExecuteRead(ctx, "nft", "list", e.tipo, Family, Table, e.nome)
+		if err != nil {
+			continue
+		}
+		*e.destino = enderecosNft(out)
+	}
+	return k, nil
+}
+
+// enderecosNft extrai os endereços de um `nft list set/map`.
+//
+// O formato é `elements = { 1.2.3.4 timeout 1h expires 59m28s, ... }`, e no map
+// cada item ainda termina em ` : 0x12c`. Em todos os casos o endereço é o
+// PRIMEIRO campo do item, que é o que este parser lê e o único que ele promete.
+//
+// Endereço que não parseia é DESCARTADO em silêncio de propósito: a alternativa
+// seria devolver erro e transformar uma linha estranha na saída do nft numa
+// tela quebrada. O que importa aqui é o que dá para reconhecer.
+func enderecosNft(out string) []netip.Addr {
+	i := strings.Index(out, "elements = {")
+	if i < 0 {
+		return nil
+	}
+	corpo := out[i+len("elements = {"):]
+	if j := strings.Index(corpo, "}"); j >= 0 {
+		corpo = corpo[:j]
+	}
+	var res []netip.Addr
+	for _, item := range strings.Split(corpo, ",") {
+		campos := strings.Fields(item)
+		if len(campos) == 0 {
+			continue
+		}
+		a, err := netip.ParseAddr(campos[0])
+		if err != nil {
+			continue
+		}
+		res = append(res, a)
+	}
+	return res
+}
