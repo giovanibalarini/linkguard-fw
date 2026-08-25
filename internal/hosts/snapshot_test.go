@@ -17,7 +17,12 @@ type fakeExec struct{ ruleset string }
 
 func (f *fakeExec) Execute(context.Context, string, ...string) (string, error) { return "", nil }
 func (f *fakeExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
-	if cmd == "nft" && len(args) >= 2 && args[0] == "list" && args[1] == "ruleset" {
+	// ESCOPADO: Ruleset() passou a ler `nft list table inet linkguard`, e não o
+	// ruleset inteiro do kernel — ver o doc-comment de Service.Ruleset e
+	// TestRulesetNaoPublicaOSetDeConversas. Este dublê acompanha a mudança;
+	// deixá-lo casando "list ruleset" faria os testes de snapshot passarem a
+	// gravar string vazia sem dizer por quê.
+	if cmd == "nft" && len(args) >= 4 && args[0] == "list" && args[1] == "table" {
 		return f.ruleset, nil
 	}
 	return "", nil

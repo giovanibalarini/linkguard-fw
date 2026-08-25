@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, Info, AlertTriangle } from 'lucide-react';
+import { Loader2, Info, AlertTriangle, RefreshCw } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../i18n';
@@ -23,8 +23,15 @@ interface RespostaFluxos {
   total_conversas: number;
   total_bytes: number;
   cheio: boolean;
+  /** Pegajoso dentro da janela: encheu em ALGUM momento. Ver o backend. */
+  ja_esteve_cheio: boolean;
+  ocupacao: number;
   teto: number;
+  /** Ligado no banco mas ausente do kernel. Nao e lista vazia nem erro. */
+  montada: boolean;
   nomes_ligados: boolean;
+  nomes_cheio: boolean;
+  lido_em: string;
 }
 
 interface ConfigFluxos {
@@ -48,6 +55,15 @@ const ROTA_CONFIG = ROTA + '/config';
 interface Props {
   /** Endereço do aparelho. A medição é IPv4: sem IP não há o que consultar. */
   ip: string;
+}
+
+/** Acima disto a tela avisa por proximidade do teto. Ver svc.fluxos.nearFull. */
+const LIMIAR_QUASE_CHEIO = 0.9;
+
+function fmtHora(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString();
 }
 
 function fmtBytes(n: number): string {
@@ -130,8 +146,15 @@ export default function HostFlows({ ip }: Props) {
       await client.put(ROTA_CONFIG, { ligado, janela_minutos: janela, teto });
       await carregarConfig();
       await carregar();
-    } catch {
-      setErroConfig(t('svc.fluxos.config.saveError'));
+    } catch (e: unknown) {
+      // O 409 de "sem link WAN" traz um recado do servidor que NOMEIA a causa.
+      // Engoli-lo no texto generico devolveria o admin ao estado que este
+      // conserto existe para acabar: salvou, parece ligado, nao mede nada.
+      const err = e as { response?: { status?: number; data?: { error?: string } } };
+      const doServidor = err?.response?.data?.error;
+      setErroConfig(err?.response?.status === 409 && doServidor
+        ? doServidor
+        : t('svc.fluxos.config.saveError'));
     } finally {
       setSalvando(false);
     }
@@ -142,6 +165,13 @@ export default function HostFlows({ ip }: Props) {
   const tetoMin = limites?.teto_minimo ?? 1024;
   const tetoMax = limites?.teto_maximo ?? 32768;
   const desligado = dados !== null && !dados.ligado;
+  // LIGADO E NAO MONTADA e um TERCEIRO estado, e nao um dos dois anteriores:
+  // nao e "desligado" (o admin pediu a medicao) e nao e lista vazia (nao se
+  // sabe se alguem falou). Ver nftables.ErrFlowsAusente.
+  const naoMontada = dados !== null && dados.ligado && !dados.montada;
+  const hora = dados?.lido_em ? fmtHora(dados.lido_em) : '';
+  const quaseCheio = dados !== null && dados.teto > 0
+    && dados.ocupacao / dados.teto >= LIMIAR_QUASE_CHEIO;
 
   // O painel de configuracao aparece para quem administra a caixa. Ele fica
   // visivel tambem com o registro LIGADO, porque desligar (e apagar) tem de ser
@@ -231,28 +261,83 @@ export default function HostFlows({ ip }: Props) {
     );
   }
 
+  if (naoMontada) {
+    return (
+      <div className="space-y-4">
+        <p className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-amber-300 text-sm">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>{t('svc.fluxos.notMounted')}</span>
+        </p>
+        {painelDeConfig}
+      </div>
+    );
+  }
+
   if (!dados) return null;
 
   return (
     <div className="space-y-4">
-      <div>
-        <p className="text-white text-sm font-semibold">{t('svc.fluxos.title')}</p>
-        <p className="text-gray-500 text-xs mt-1">
-          {t('svc.fluxos.window', { min: dados.janela_minutos })}
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-white text-sm font-semibold">{t('svc.fluxos.title')}</p>
+          <p className="text-gray-500 text-xs mt-1">
+            {t('svc.fluxos.window', { min: dados.janela_minutos })}
+          </p>
+          {/* O CARIMBO NAO E ENFEITE. Este componente busca uma vez e fica
+              parado enquanto o modal estiver aberto -- sem a hora da leitura,
+              nada na tela distingue um numero de agora de um de quarenta
+              minutos atras, que e o congelamento que o cache do backend recusa
+              cometer do lado dele. O botao ao lado e a saida deliberada: um
+              setInterval gravaria uma linha de auditoria por ciclo (a consulta
+              e auditada), trocando um registro de QUEM OLHOU por ruido. */}
+          {hora && <p className="text-gray-600 text-xs mt-1">{t('svc.fluxos.readAt', { hora })}</p>}
+        </div>
+        <button
+          className="btn-secondary text-xs flex items-center gap-1.5 shrink-0"
+          disabled={carregando}
+          onClick={() => carregar()}
+        >
+          <RefreshCw className="w-3.5 h-3.5" /> {t('svc.fluxos.refresh')}
+        </button>
       </div>
 
-      {dados.cheio && (
+      {dados.cheio ? (
         <p className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-amber-300 text-xs">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>{t('svc.fluxos.full', { teto: dados.teto })}</span>
         </p>
-      )}
+      ) : dados.ja_esteve_cheio ? (
+        /* PEGAJOSO. Um set que estourou o teto as 3h05 pode estar em 60% as
+           3h20: sem este aviso, o silencio se le como "nada se perdeu". */
+        <p className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-amber-300 text-xs">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>{t('svc.fluxos.wasFull')}</span>
+        </p>
+      ) : quaseCheio ? (
+        /* Por PROXIMIDADE, porque a igualdade exata quase nunca e flagrada:
+           os elementos vencem sem parar e a ocupacao oscila logo abaixo do
+           teto enquanto conversa nova ja esta sendo recusada em rajada. */
+        <p className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-amber-300 text-xs">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>{t('svc.fluxos.nearFull', {
+            pct: Math.round((dados.ocupacao / dados.teto) * 100),
+            ocupacao: dados.ocupacao,
+            teto: dados.teto,
+          })}</span>
+        </p>
+      ) : null}
 
       {!dados.nomes_ligados && (
         <p className="flex items-start gap-2 text-gray-500 text-xs">
           <Info className="w-4 h-4 mt-0.5 shrink-0" />
           <span>{t('svc.fluxos.names.off')}</span>
+        </p>
+      )}
+
+      {dados.nomes_ligados && dados.nomes_cheio && (
+        <p className="flex items-start gap-2 text-gray-500 text-xs">
+          <Info className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>{t('svc.fluxos.names.full')}</span>
         </p>
       )}
 
@@ -296,6 +381,13 @@ export default function HostFlows({ ip }: Props) {
           <p className="text-gray-600 text-xs mt-2">
             {t('svc.fluxos.count', { shown: dados.conversas.length, total: dados.total_conversas })}
           </p>
+          {/* total_bytes era calculado, serializado e nunca renderizado. Numa
+              lista cortada em 50 de 312, o admin somava as 50 visiveis e
+              concluia que aquilo era o trafego do aparelho -- e o numero que
+              corrige isso ja vinha na resposta. */}
+          <p className="text-gray-600 text-xs mt-1">
+            {t('svc.fluxos.total', { bytes: fmtBytes(dados.total_bytes), total: dados.total_conversas })}
+          </p>
         </div>
       )}
 
@@ -303,8 +395,11 @@ export default function HostFlows({ ip }: Props) {
         <p className="text-gray-400 text-xs font-semibold">{t('svc.fluxos.limits.title')}</p>
         <ul className="text-gray-500 text-xs mt-1 space-y-1 list-disc list-inside">
           <li>{t('svc.fluxos.limits.duration')}</li>
+          <li>{t('svc.fluxos.limits.volume')}</li>
           <li>{t('svc.fluxos.limits.wan')}</li>
           <li>{t('svc.fluxos.limits.family')}</li>
+          <li>{t('svc.fluxos.limits.lanlan')}</li>
+          <li>{t('svc.fluxos.limits.naming')}</li>
           <li>{t('svc.fluxos.limits.reboot')}</li>
         </ul>
       </div>

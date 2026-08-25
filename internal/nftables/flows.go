@@ -2,6 +2,7 @@ package nftables
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -60,12 +61,53 @@ import (
 // conta o que REALMENTE passou, e um destino bloqueado por regra de filtro nunca
 // aparece no set.
 //
-// ─── POR QUE ESCOPADO POR INTERFACE ───
+// ─── POR QUE ESCOPADO POR INTERFACE, E POR QUE SÃO DUAS REGRAS ───
 //
-// A regra casa `iifname !=` a lista de WANs, igual à contabilidade: sem esse
-// escopo, o tráfego de ENTRADA criaria uma tupla para cada endereço da internet
-// que responde, e o set encheria em minutos. Escopando pelo que não é WAN, a
-// origem é sempre um endereço local.
+// A primeira regra casa `iifname !=` a lista de WANs: sem esse escopo, o
+// tráfego de ENTRADA criaria uma tupla para cada endereço da internet que
+// responde, e o set encheria em minutos. Escopando pelo que não é WAN, a origem
+// é sempre um endereço local.
+//
+// A segunda regra existe porque a primeira, sozinha, mede METADE da conversa.
+// Um pacote de resposta (WAN→LAN) tem `iifname == wan` e não casa com ela —
+// então o volume seria só o que o aparelho ENVIOU, e um host baixando 4 GB
+// apareceria com dezenas de MB de ACK. A contabilidade da #112 já resolve isso
+// com um par de regras (acct_up/acct_down), e esta entrega copiou metade do par.
+// A segunda regra casa `iifname {wan}` e inverte a chave — `ip daddr . ip saddr
+// . th sport` —, o que mapeia o pacote de volta na MESMA tupla da ida e soma os
+// dois sentidos no mesmo contador.
+//
+// As duas são mutuamente exclusivas de propósito (`!=` a lista, e depois a
+// lista): nenhum pacote paga dois `update`, então o custo por pacote continua
+// sendo uma escrita de set, e o que se acrescenta é uma comparação de iifname
+// no caminho de entrada. Se fossem `iifname !=` e `oifname !=`, todo pacote
+// LAN→LAN casaria com AS DUAS e seria contado duas vezes, em duas tuplas
+// espelhadas.
+//
+// ─── O QUE UM SET CHEIO FAZ COM O PACOTE (MEDIDO, NÃO DEDUZIDO) ───
+//
+// Medido com `unshare -rn` + nft 1.1.3, set de `size 1` saturado: o `update`
+// que não cabe devolve NFT_BREAK, que encerra A REGRA, não o pacote — os cinco
+// pacotes seguintes foram entregues e uma regra de counter colocada DEPOIS do
+// `update` contou todos eles. Somado a esta chain estar sozinha numa tabela
+// própria com `policy accept`, a conclusão é estrutural e não sorte: uma
+// medição cheia NÃO derruba tráfego. Era a asserção que, se falhasse,
+// proibiria a feature nesta forma.
+//
+// ─── O CUSTO POR PACOTE, DECLARADO E NÃO MEDIDO ───
+//
+// O `update` é hash + escrita com trava de bucket em TODO pacote encaminhado,
+// somado aos dois `update` da contabilidade da #112 e a mais uma travessia de
+// base chain no forward. Num link saturado a população dominante é segmento a
+// granel de meia dúzia de fluxos já conhecidos, e cada um paga a escrita
+// inteira só para incrementar um contador.
+//
+// A alternativa barata é um `ct state new` antes do `update`, que moveria o
+// custo de por-pacote para por-conexão — ao preço da coluna de volume, que
+// deixaria de existir. NÃO foi medida, e isto está escrito aqui para quem
+// revisar a próxima mudança ter onde se segurar: a escolha atual é deliberada
+// (a coluna de volume é metade do valor da tela) e não foi pesada contra um
+// número real de pps.
 const (
 	// FlowsTable é a tabela SEPARADA da do firewall. Ver o bloco acima antes
 	// de mover qualquer coisa daqui para a tabela do firewall.
@@ -93,14 +135,36 @@ const (
 	// semanas transforma um diagnóstico em arquivo de vigilância.
 	FlowsJanelaMaxima = 1440
 
-	// FlowsTetoPadrao é conservador de propósito. O tamanho do set é o teto
-	// REAL de memória de kernel: cada elemento carrega chave, contador e
-	// timeout, e a appliance de referência tem 2 GB.
-	FlowsTetoPadrao = 8192
+	// FlowsTetoPadrao dimensiona o set para a CARDINALIDADE DA CHAVE, e o
+	// primeiro valor desta entrega (8192) não dimensionava — dimensionava para
+	// a contagem de aparelhos.
+	//
+	// A chave aqui tem TRÊS dimensões (origem . destino . porta), então o que
+	// enche o set é hosts × destinos distintos × portas ao longo da janela
+	// inteira, não hosts. Um navegador abre dezenas de endereços de CDN por
+	// site; um cliente de BitTorrent ou de VoIP produz centenas de pares por
+	// hora. Trinta aparelhos × ~200 destinos/hora já passam de 8192 — ou seja,
+	// o padrão anterior entregava a feature SATURADA na instalação típica, e
+	// (por causa do teto batido) respondendo errado à própria pergunta da issue.
+	//
+	// A comparação que expõe a inversão está no arquivo ao lado: accounting.go
+	// dá `size 65535` a uma chave de UMA dimensão (o endereço do host, algumas
+	// centenas nesta caixa). A chave de três dimensões ganhava oito vezes menos.
+	//
+	// A aritmética do custo: ~100 B por elemento (chave, contador, timeout),
+	// então 32768 ≈ 3,2 MB e o teto máximo ≈ 13 MB, contra os 2 GB da appliance
+	// de referência. O que dói aqui é memória de kernel, e nesta ordem de
+	// grandeza ela não dói.
+	//
+	// ISTO AINDA NÃO É UMA MEDIÇÃO. O valor certo sai de olhar a ocupação numa
+	// rede de verdade — que é justamente o que FlowSnapshot.Ocupacao passou a
+	// reportar. Enquanto ninguém mediu, errar para o lado do teto largo é o
+	// lado barato: teto sobrando custa memória, teto faltando custa a resposta.
+	FlowsTetoPadrao = 32768
 	// FlowsTetoMinimo mantém a medição útil mesmo no valor mais baixo.
 	FlowsTetoMinimo = 1024
 	// FlowsTetoMaximo é o limite superior aceito. Ver o comentário do padrão.
-	FlowsTetoMaximo = 32768
+	FlowsTetoMaximo = 131072
 )
 
 // FlowsConfig é o que o admin escolhe: se registra, por quanto tempo e até
@@ -173,8 +237,17 @@ func flowsChainRules(wanIfaces []string) [][]string {
 	}
 	set := "{ " + strings.Join(quoted, ", ") + " }"
 	return [][]string{
+		// SUBIDA e LAN→LAN: a origem é local, a chave sai na ordem natural.
 		{"iifname", "!=", set, "meta", "l4proto", "{", "tcp,", "udp", "}",
 			"update", "@" + FlowsSet, "{", "ip", "saddr", ".", "ip", "daddr", ".", "th", "dport", "}"},
+		// DESCIDA: o pacote veio da WAN, então quem é local é o DESTINO e a
+		// porta do serviço é a de ORIGEM. Invertendo os três campos, o pacote
+		// de volta cai na mesma tupla da ida e soma no mesmo contador — sem
+		// isto a coluna de volume seria só o que o aparelho enviou. Ver o
+		// bloco "POR QUE SÃO DUAS REGRAS" no topo, inclusive a razão de esta
+		// casar `iifname {wan}` e não `oifname !=`.
+		{"iifname", set, "meta", "l4proto", "{", "tcp,", "udp", "}",
+			"update", "@" + FlowsSet, "{", "ip", "daddr", ".", "ip", "saddr", ".", "th", "sport", "}"},
 	}
 }
 
@@ -205,9 +278,23 @@ func (s *Service) EnsureFlows(ctx context.Context, wanInterfaces []string, cfg F
 		// de endereço da internet, e registrar tudo encheria o set com o
 		// tráfego de entrada. Mesma decisão de EnsureAccounting diante de fonte
 		// vazia: não agir é mais seguro do que agir errado.
+		//
+		// MAS DEVOLVE ERRO, e é aí que esta função difere de EnsureAccounting.
+		// O silêncio dela pode ser silêncio porque o que se perde é telemetria
+		// invisível. Aqui o que se perde é a feature inteira: devolvendo nil, o
+		// SalvarConfig lia sucesso, o handler respondia 200 com ligado=true, e a
+		// tela dizia LIGADO com nada no kernel — e a consulta seguinte batia
+		// numa tabela inexistente e virava faixa vermelha sem pista nenhuma da
+		// causa. "Configurado ≠ funcionando tem que ser visível na tela" é regra
+		// deste projeto (ver o doc-comment de Persist), e um nil aqui a viola.
+		//
+		// É sentinela, e não erro genérico, porque quem chama precisa
+		// DISTINGUIR: o handler traduz em recado ("não há link WAN configurado")
+		// e a reconciliação do boot a tolera com WARN — no boot a lista de WANs
+		// pode estar legitimamente vazia numa caixa recém-instalada.
 		slog.Warn("registro de conversa: nenhuma interface WAN configurada; a chain não foi reconciliada",
 			"solicitado", wanInterfaces)
-		return nil
+		return ErrSemWAN
 	}
 
 	if out, err := s.exec.Execute(ctx, "nft", "add", "table", Family, FlowsTable); err != nil {
@@ -220,6 +307,20 @@ func (s *Service) EnsureFlows(ctx context.Context, wanInterfaces []string, cfg F
 		return fmt.Errorf("criar chain %s: %w (%s)", FlowsChain, err, strings.TrimSpace(out))
 	}
 	if err := s.rebuildChainIn(ctx, FlowsTable, FlowsChain, flowsChainRules(ifaces)); err != nil {
+		// DERRUBA O QUE FOI MONTADO. rebuildChainIn coleta as recusas e segue em
+		// frente, então uma regra rejeitada deixava DE PÉ a tabela, o set e a
+		// base chain no hook forward: uma chain que atravessa todo o tráfego da
+		// LAN sem medir nada, e um Flows() que responde com sucesso um set
+		// vazio. A tela lia isso como "esta rede não falou com ninguém" — a
+		// mentira exata que o comentário de NormalizeFlowsConfig diz não poder
+		// acontecer, e invisível por construção, porque os dois chamadores
+		// rebaixam este erro para slog.Warn.
+		//
+		// Derrubando, sobra um estado que não mente: a medição não está montada,
+		// Flows() devolve ErrFlowsAusente, e a tela diz "não pude montar a
+		// medição" em vez de "ninguém falou". O erro do delete é descartado de
+		// propósito — o que importa reportar é a recusa da regra.
+		_, _ = s.exec.Execute(ctx, "nft", "delete", "table", Family, FlowsTable)
 		return err
 	}
 	norm := NormalizeFlowsConfig(cfg)
@@ -227,6 +328,24 @@ func (s *Service) EnsureFlows(ctx context.Context, wanInterfaces []string, cfg F
 		"janela_minutos", norm.JanelaMinutos, "teto", norm.Teto)
 	return nil
 }
+
+// ErrSemWAN é a recusa de montar a medição sem saber o que é a internet. Ver
+// EnsureFlows.
+var ErrSemWAN = errors.New("nenhum link WAN configurado: a medição precisa saber o que é a WAN para saber o que é a LAN")
+
+// ErrFlowsAusente é "a medição não está montada no kernel" — tabela, set ou
+// chain não existem.
+//
+// É sentinela SEPARADA de um erro de leitura qualquer porque as duas exigem
+// telas diferentes. Erro de leitura é "não sei"; isto é "está ligado no banco e
+// não existe no kernel", que tem causa conhecida e conserto conhecido. O caminho
+// que produz isto na prática não é hipotético: a unidade nftables do Debian
+// declara `ExecStop=/usr/sbin/nft flush ruleset` (ver internal/bootstrapdeps), e
+// o bootstrapdeps HABILITA essa unidade — então qualquer upgrade do pacote
+// nftables varre o ruleset vivo. O /etc/nftables.conf traz `inet linkguard` de
+// volta; `inet linkguard_flows` não está lá por construção (é o ponto da
+// feature) e ninguém a recria até alguém reiniciar o serviço.
+var ErrFlowsAusente = errors.New("a medição de conversa não está montada no kernel")
 
 // DisableFlows derruba a tabela inteira — chain, set e tuplas.
 //
@@ -282,9 +401,24 @@ type FlowSnapshot struct {
 	Fluxos        []Flow `json:"fluxos"`
 	JanelaMinutos int    `json:"janela_minutos"`
 	Teto          int    `json:"teto"`
-	// Cheio diz que o set bateu o teto. Sem isto, uma conversa ausente parece
-	// "não aconteceu" quando pode ser "aconteceu e não coube" — a mesma
-	// honestidade que o Estado().Cheio do mapa de domínios já entrega.
+	// Ocupacao é quantos elementos o set tem AGORA. Vai junto do teto porque
+	// é ele, e não o booleano abaixo, que a tela consegue usar: ver Cheio.
+	Ocupacao int `json:"ocupacao"`
+	// Cheio diz que o set está saturado NO INSTANTE DA LEITURA, e só isso.
+	//
+	// NÃO É O MESMO SINAL que o Estado().Cheio do mapa de domínios, apesar de a
+	// primeira versão deste arquivo ter afirmado que era. Aquele é PEGAJOSO —
+	// marca que o teto foi atingido alguma vez, justamente porque quem o
+	// escreveu viu que um teto batido às 3h05 não deixa vestígio às 3h20. Este
+	// aqui é uma igualdade contra o `size`, e os elementos expiram
+	// continuamente: a ocupação oscila logo abaixo do teto e `len < Teto` na
+	// maior parte do tempo, mesmo com o kernel recusando conversa nova o tempo
+	// todo. O nft não expõe contador de inserção recusada por set, então esta
+	// igualdade é o único sinal instantâneo que existe — e ela é fraca.
+	//
+	// As duas metades que faltam moram uma camada acima, em hostflows.Servico,
+	// que é onde há estado entre leituras: o pegajoso (JaEsteveCheio) e o aviso
+	// por proximidade, calculado de Ocupacao contra Teto.
 	Cheio bool `json:"cheio"`
 }
 
@@ -318,25 +452,50 @@ var (
 func (s *Service) Flows(ctx context.Context) (FlowSnapshot, error) {
 	out, err := s.exec.ExecuteRead(ctx, "nft", "list", "set", Family, FlowsTable, FlowsSet)
 	if err != nil {
+		if tabelaAusente(out, err) {
+			// "Não existe" não é "não consegui ler": tem causa e conserto
+			// conhecidos, e quem chama consegue se curar sozinho. Ver
+			// ErrFlowsAusente.
+			return FlowSnapshot{}, ErrFlowsAusente
+		}
 		return FlowSnapshot{}, fmt.Errorf("ler set %s: %w", FlowsSet, err)
 	}
-	return parseFlowSet(out), nil
+	return parseFlowSet(out)
 }
 
 // parseFlowSet extrai as tuplas e a declaração de um listar-set do nft.
 //
 // Set sem a linha de elementos devolve lista vazia — que é a resposta certa
 // logo depois do boot: a chain existe e ninguém falou ainda.
-func parseFlowSet(out string) FlowSnapshot {
+//
+// SEM A DECLARAÇÃO, DEVOLVE ERRO, e essa é a diferença que importa. Antes, uma
+// saída que esta função não reconhecesse — deriva de formato entre versões do
+// nft, um `-S` acrescentado por alguém na leitura, uma mensagem em vez de um
+// set — caía silenciosamente em Teto=0, JanelaMinutos=0 e lista vazia, e a tela
+// afirmava, com confiança máxima e nenhum erro propagado, "Janela dos últimos 0
+// min" e "Nenhuma conversa registrada nesta janela". A decisão de não mostrar
+// silêncio no lugar de falha já estava escrita no doc-comment de Flows, mas
+// valia só para o Execute que falha; o parse que não reconhece nada escapava
+// por baixo dela. As âncoras de linha inteira de reFlowSize/reFlowTimeout são
+// exatamente o que torna esse desencontro possível e detectável: se NENHUMA das
+// duas casou, o que chegou aqui não é a declaração de um set.
+func parseFlowSet(out string) (FlowSnapshot, error) {
 	snap := FlowSnapshot{Fluxos: []Flow{}}
 
+	viuDeclaracao := false
 	if m := reFlowSize.FindStringSubmatch(out); m != nil {
 		if n, err := strconv.Atoi(m[1]); err == nil {
 			snap.Teto = n
+			viuDeclaracao = true
 		}
 	}
 	if m := reFlowTimeout.FindStringSubmatch(out); m != nil {
 		snap.JanelaMinutos = minutosDeNft(m[1])
+		viuDeclaracao = true
+	}
+	if !viuDeclaracao {
+		return FlowSnapshot{}, fmt.Errorf(
+			"não reconheci a resposta do nft como a declaração do set %s (nem `size` nem `timeout` em linha própria)", FlowsSet)
 	}
 
 	for _, m := range reFlowElement.FindAllStringSubmatch(out, -1) {
@@ -359,8 +518,9 @@ func parseFlowSet(out string) FlowSnapshot {
 	// banco mentiria justamente no caso que interessa: o admin baixou o teto, a
 	// tabela ainda não foi recriada, e o set real já está recusando tupla nova
 	// enquanto a tela diria que há folga.
-	snap.Cheio = snap.Teto > 0 && len(snap.Fluxos) >= snap.Teto
-	return snap
+	snap.Ocupacao = len(snap.Fluxos)
+	snap.Cheio = snap.Teto > 0 && snap.Ocupacao >= snap.Teto
+	return snap, nil
 }
 
 // minutosDeNft converte o timeout impresso pelo nft (1h, 15m, 1h30m, 1d) para
@@ -369,12 +529,32 @@ func parseFlowSet(out string) FlowSnapshot {
 // Não usa time.ParseDuration porque o nft imprime a unidade de DIA, que aquela
 // função recusa — e recusar justamente a unidade que o nosso teto máximo (1440
 // min) produz deixaria a tela sem saber a janela na configuração mais longa.
-// Segundos soltos sobem para um minuto cheio pelo mesmo motivo: zero na tela
-// seria lido como "sem janela".
+//
+// TRATA `ms` COMO MILISSEGUNDO. A versão anterior consumia o `m` de `ms` como
+// minuto, e só não produzia lixo porque reFlowTimeout é ancorada em linha
+// inteira e portanto nunca captura o `expires` de um elemento — que é onde o
+// nft imprime milissegundo (medido: `expires 59m59s996ms`). Isso é uma
+// salvaguarda a uma função de distância, e a próxima pessoa que quiser a idade
+// de um elemento vai chamar isto com aquele texto e receber 1056 minutos sem
+// nenhum aviso. Duas linhas de guarda custam menos do que essa surpresa.
+//
+// ARREDONDA PARA BAIXO nos segundos. Para cima, `2m30s` viraria 3 e a tela
+// afirmaria uma janela MAIOR do que o kernel guarda — errar para baixo é o lado
+// seguro, porque subestimar a retenção nunca faz o admin concluir que uma
+// conversa ausente não aconteceu.
+//
+// O PISO DE 1 MINUTO sobrevive para o caso em que a conta inteira daria zero
+// mas houve segundos de verdade (`30s`): ali o arredondamento honesto e o "zero
+// na tela é lido como SEM JANELA" se chocam, e vale mais dizer "1 min" do que
+// deixar a tela afirmar que não há janela nenhuma. Milissegundo não conta como
+// segundo para esse piso — `500ms` continua zero.
 func minutosDeNft(v string) int {
 	var total, num int
 	temNumero := false
-	for _, r := range v {
+	viuSegundos := false
+	runas := []rune(v)
+	for i := 0; i < len(runas); i++ {
+		r := runas[i]
 		switch {
 		case r >= '0' && r <= '9':
 			num = num*10 + int(r-'0')
@@ -386,14 +566,20 @@ func minutosDeNft(v string) int {
 			total += num * 60
 			num, temNumero = 0, false
 		case r == 'm':
-			// Cuidado: ms é milissegundo, e ele nunca aparece na DECLARAÇÃO do
-			// set (só no expires dos elementos). Tratar como minuto aqui é
-			// correto para a linha que esta função recebe.
+			if i+1 < len(runas) && runas[i+1] == 's' {
+				// `ms`: milissegundo. Descarta e pula o 's', para ele não ser
+				// lido como um campo de segundos vazio na volta seguinte.
+				i++
+				num, temNumero = 0, false
+				continue
+			}
 			total += num
 			num, temNumero = 0, false
 		case r == 's':
+			// Segundos não sobem para um minuto: ver o comentário acima. Só
+			// ficam registrados para o piso.
 			if num > 0 {
-				total++
+				viuSegundos = true
 			}
 			num, temNumero = 0, false
 		default:
@@ -403,6 +589,9 @@ func minutosDeNft(v string) int {
 	if temNumero && total == 0 {
 		// Valor sem unidade: é o que o nft imprime com -T (segundos crus).
 		total = (num + 59) / 60
+	}
+	if total == 0 && viuSegundos {
+		total = 1
 	}
 	return total
 }

@@ -502,8 +502,14 @@ svc.fluxos.title:
   pt: "Com quem este aparelho falou"
   en: "Who this device talked to"
 svc.fluxos.window:
-  pt: "Janela dos últimos {min} min, mantida na memória do kernel."
-  en: "Rolling window of the last {min} min, kept in kernel memory."
+  pt: "Conversas ativas nos últimos {min} min, mantidas na memória do kernel. A janela diz quem falou — não é o período do volume."
+  en: "Conversations active in the last {min} min, kept in kernel memory. The window says who talked — it is not the period the volume covers."
+svc.fluxos.readAt:
+  pt: "Lido do kernel às {hora}."
+  en: "Read from the kernel at {hora}."
+svc.fluxos.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
 svc.fluxos.loading:
   pt: "Lendo a medição…"
   en: "Reading the measurement…"
@@ -523,23 +529,47 @@ svc.fluxos.col.volume:
   pt: "Volume"
   en: "Volume"
 svc.fluxos.count:
-  pt: "Mostrando {shown} de {total} destinos."
-  en: "Showing {shown} of {total} destinations."
+  pt: "Mostrando {shown} de {total} conversas (cada linha é um destino em uma porta; o mesmo destino em três portas são três linhas)."
+  en: "Showing {shown} of {total} conversations (each row is one destination on one port; the same destination on three ports is three rows)."
+svc.fluxos.total:
+  pt: "Total da janela: {bytes}, somando as {total} conversas — inclusive as que não couberam na lista acima."
+  en: "Window total: {bytes} across all {total} conversations — including the ones that did not fit in the list above."
 svc.fluxos.full:
-  pt: "Medição cheia: o teto de {teto} conversas foi atingido, e há conversa que não coube. O que falta aqui não é o que não aconteceu."
-  en: "Measurement full: the ceiling of {teto} conversations was reached, and some did not fit. What is missing here is not what did not happen."
+  pt: "Medição cheia agora: o teto de {teto} conversas está batido. Com o teto cheio o kernel recusa a conversa NOVA — o que falta desta lista é o mais recente, não o menos importante, mesmo a lista estando ordenada por volume."
+  en: "Measurement full right now: the ceiling of {teto} conversations is reached. When it is full the kernel refuses the NEW conversation — what is missing from this list is the most recent, not the least important, even though the list is sorted by volume."
+svc.fluxos.wasFull:
+  pt: "A medição encheu em algum momento desta janela: houve conversa que não coube. Ela pode não estar cheia agora — as conversas vencem e abrem espaço — e ainda assim faltar coisa aqui."
+  en: "The measurement filled up at some point in this window: some conversations did not fit. It may not be full right now — entries expire and free space — and things can still be missing here."
+svc.fluxos.nearFull:
+  pt: "Medição em {pct}% do teto ({ocupacao} de {teto}). Perto do teto, conversa nova começa a ser recusada em rajada: esta lista pode estar incompleta."
+  en: "Measurement at {pct}% of the ceiling ({ocupacao} of {teto}). Near the ceiling, new conversations start being refused in bursts: this list may be incomplete."
+svc.fluxos.notMounted:
+  pt: "O registro está ligado, mas a medição não está montada no kernel — isto NÃO quer dizer que ninguém falou. Costuma acontecer depois de uma atualização do pacote nftables, que limpa o que está valendo. Tentei remontar sozinho e não consegui; salvar a configuração de novo, ou reiniciar o serviço, recria a medição."
+  en: "The record is on, but the measurement is not mounted in the kernel — this does NOT mean nobody talked. It usually happens after an nftables package upgrade, which clears the live ruleset. I tried to remount it and could not; saving the settings again, or restarting the service, recreates it."
 svc.fluxos.names.off:
   pt: "O mapa de nomes está desligado, então o destino aparece como endereço. Ligue-o em Serviços de rede para ver o nome do site."
   en: "The name map is off, so destinations show as addresses. Turn it on under network services to see site names."
+svc.fluxos.names.full:
+  pt: "O mapa de nomes já encheu e descartou os endereços mais antigos: um destino sem nome aqui pode ter sido consultado e ter saído do mapa para caber outro."
+  en: "The name map filled up and dropped its oldest addresses: a destination with no name here may have been looked up and evicted to make room for another."
 svc.fluxos.limits.title:
   pt: "O que esta medição não sabe"
   en: "What this measurement does not know"
 svc.fluxos.limits.duration:
-  pt: "Quanto tempo cada conversa durou — só o volume acumulado na janela."
-  en: "How long each conversation lasted — only the volume accumulated in the window."
+  pt: "Quanto tempo cada conversa durou."
+  en: "How long each conversation lasted."
+svc.fluxos.limits.volume:
+  pt: "O volume é o acumulado da conversa DESDE QUE ELA COMEÇOU, não o da janela: uma conversa que nunca fica quieta não vence, e o número dela cresce além dos minutos anunciados acima. Como a lista é ordenada por volume, as conversas sempre ligadas (VoIP, VPN, backup) sobem acima das que de fato pesaram na última janela."
+  en: "The volume is what the conversation has accumulated SINCE IT STARTED, not within the window: a conversation that never goes quiet never expires, and its number grows past the minutes announced above. Because the list is sorted by volume, always-on conversations (VoIP, VPN, backup) rank above the ones that actually weighed in the last window."
 svc.fluxos.limits.wan:
   pt: "Por qual link a conversa saiu."
   en: "Which link the conversation went out through."
+svc.fluxos.limits.lanlan:
+  pt: "Conversa entre dois aparelhos da própria LAN aparece duas vezes, uma de cada lado — não há como saber qual dos dois começou sem seguir a conexão."
+  en: "A conversation between two devices on the LAN itself shows up twice, once from each side — there is no way to tell which of the two started it without tracking the connection."
+svc.fluxos.limits.naming:
+  pt: "O nome do destino é o último domínio que a REDE INTEIRA resolveu para aquele endereço, não necessariamente o que este aparelho pediu: um endereço de CDN atende vários sites."
+  en: "The destination name is the last domain the WHOLE NETWORK resolved to that address, not necessarily what this device asked for: one CDN address serves many sites."
 svc.fluxos.limits.family:
   pt: "Conversa em IPv6 e tráfego que não seja TCP ou UDP (ping, por exemplo) não entram."
   en: "IPv6 conversations and non-TCP/UDP traffic (ping, for instance) are not counted."
@@ -568,8 +598,8 @@ svc.fluxos.config.ceiling:
   pt: "Teto de conversas"
   en: "Conversation ceiling"
 svc.fluxos.config.ceilingHint:
-  pt: "Entre {min} e {max}. É memória do kernel: acima do teto, conversa nova não entra e a tela avisa que a medição está cheia."
-  en: "Between {min} and {max}. This is kernel memory: past the ceiling new conversations are dropped and the screen says the measurement is full."
+  pt: "Entre {min} e {max}. É memória do kernel (~100 B por conversa). O que conta para o teto é destino × porta, não aparelho: um só navegador abre dezenas de destinos por site. Acima do teto, conversa NOVA não entra e a tela avisa."
+  en: "Between {min} and {max}. This is kernel memory (~100 B per conversation). What counts toward the ceiling is destination × port, not device: a single browser opens dozens of destinations per site. Past the ceiling, NEW conversations are refused and the screen says so."
 svc.fluxos.config.resetWarning:
   pt: "Salvar zera a janela atual. Trocar o prazo exige recriar a medição, e não há como manter o que já foi registrado."
   en: "Saving clears the current window. Changing the retention requires recreating the measurement, and there is no way to keep what was already recorded."

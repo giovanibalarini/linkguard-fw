@@ -719,7 +719,20 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// dnstap ligado o mapa fica vazio e a tela mostra o endereço cru dizendo por
 	// quê — o que não pode é a tela deixar o admin achar que o destino não tem
 	// nome quando o produto é que não está olhando o DNS.
-	fluxosSvc.SetNomes(dnstapSvc.Mapa())
+	//
+	// O SEGUNDO ARGUMENTO NÃO É ENFEITE. dnstap.Servico.Mapa() nunca devolve
+	// nil, e esta chamada é incondicional — então um `s.nomes != nil` do outro
+	// lado dava `true` em toda máquina, e o aviso "o mapa está desligado" era
+	// código morto. Quem sabe se o coletor está ligado é a configuração de
+	// serviços de rede, lida A CADA CONSULTA porque o admin liga e desliga o
+	// dnstap na tela sem reiniciar nada.
+	fluxosSvc.SetNomes(dnstapSvc.Mapa(), func() bool {
+		netCfg := netsvc.DefaultConfig()
+		if raw, _ := db.GetSetting("netsvc_config"); raw != "" {
+			_ = json.Unmarshal([]byte(raw), &netCfg)
+		}
+		return netCfg.DNSTapEnabled
+	})
 	// Séries por aparelho para o coletor do cliente (#118). Fora do registro
 	// aberto do Prometheus de propósito — ver internal/metrics/exposicao.go.
 	porHost := metrics.NovoPorHost()
