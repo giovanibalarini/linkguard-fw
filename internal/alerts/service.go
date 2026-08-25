@@ -66,6 +66,17 @@ const (
 	// escolha explícita — ver tiposQueNomeiamAparelho.
 	TypeHostNovoNaRede    = "host_novo_na_rede"
 	TypeHostAcimaDoNormal = "host_acima_do_normal"
+	// TypeHostQuotaWarning e TypeHostQuotaExceeded são a cota por aparelho
+	// (issue #126): consumo declarado, medido e avisado — nunca cortado. Quem
+	// os levanta é internal/hostquota; eles moram AQUI, e não lá, porque
+	// precisam estar em tiposQueNomeiamAparelho, e essa lista é uma decisão
+	// deste arquivo.
+	//
+	// Os dois nomeiam um aparelho (o apelido dele vai no texto), então valem a
+	// mesma regra do par acima: aparecem na tela sempre, e só saem por
+	// Telegram/e-mail com escolha explícita.
+	TypeHostQuotaWarning  = "host_quota_warning"
+	TypeHostQuotaExceeded = "host_quota_exceeded"
 	// TypeBalancerNoWAN é o balanceamento sem nenhuma WAN ativa (issue #147).
 	//
 	// Existe porque isto é um ESTADO, e estava sendo levantado como rule_error —
@@ -302,6 +313,8 @@ func (s *Service) Create(alertType, severity, title, message, linkID string) err
 var tiposQueNomeiamAparelho = map[string]bool{
 	TypeHostNovoNaRede:    true,
 	TypeHostAcimaDoNormal: true,
+	TypeHostQuotaWarning:  true,
+	TypeHostQuotaExceeded: true,
 }
 
 // podeNotificar decide se um alerta pode sair da caixa.

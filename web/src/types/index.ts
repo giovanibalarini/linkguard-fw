@@ -956,3 +956,33 @@ export interface DdnsView {
   interface: string;
   secret_set: boolean;
 }
+
+// ─── Cota por aparelho (issue #126) ──────────────────────────────────────────
+// limit_gb e o consumo são em GB DECIMAIS (10^9). O consumo é medido dos
+// contadores por endereço do nftables, que são IPv4 — a tela diz isso.
+//
+// Não existe campo de "cortar" nem de "limitar banda", e não é esquecimento:
+// ver o cabeçalho de internal/hostquota no backend.
+
+export type HostQuotaPeriod = 'monthly' | 'daily';
+
+export interface HostQuotaStatus {
+  mac: string;
+  /** Apelido, com queda para nome de host, IP e MAC. */
+  name: string;
+  ip: string;
+  configured: boolean;
+  enabled: boolean;
+  limit_gb: number;
+  period: HostQuotaPeriod;
+  cycle_day: number;
+  alert_pct: number;
+  cycle_start: number;
+  cycle_end: number;
+  rx_bytes: number;
+  tx_bytes: number;
+  used_bytes: number;
+  used_pct: number;
+  /** false = cota órfã: o aparelho não está mais no inventário. */
+  present: boolean;
+}

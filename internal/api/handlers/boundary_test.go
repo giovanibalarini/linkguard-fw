@@ -141,7 +141,7 @@ const maxInternalImportsPerFile = 6
 // Congelar antes seria congelar a foto errada: a lista carregaria os pacotes
 // que o restore arrastava para dentro do handler.
 //
-// São 28 pacotes internos em arquivos não-teste. A diferença para a auditoria
+// São 29 pacotes internos em arquivos não-teste. A diferença para a auditoria
 // é de dois: a lista nominal do ARQ-10 tem 26 nomes (o cabeçalho dele diz
 // "24", mas a própria enumeração traz 26 — divergência do documento, anotada e
 // não corrigida aqui), e hoje há esses 26 mais internal/validate, o pacote
@@ -190,9 +190,14 @@ var allowedInternalImports = map[string]bool{
 	"internal/dnslog":        true,
 	"internal/failover":      true,
 	"internal/firewallrules": true,
-	"internal/hosts":         true,
-	"internal/hosttraffic":   true,
-	"internal/iptables":      true,
+	// internal/hostquota entrou com a cota por aparelho (#126, metade "por
+	// host"): o handler decodifica, chama e traduz erro em status. A validação
+	// (endereço físico canônico, período, dia de fechamento, percentual), o
+	// ciclo e a decisão de NÃO cortar nada moram lá.
+	"internal/hostquota":   true,
+	"internal/hosts":       true,
+	"internal/hosttraffic": true,
+	"internal/iptables":    true,
 	// internal/linkquota entrou com a franquia por link (#126): o handler
 	// decodifica, chama e traduz erro em status. A validação (dia de
 	// fechamento, percentual) e o ciclo moram lá.

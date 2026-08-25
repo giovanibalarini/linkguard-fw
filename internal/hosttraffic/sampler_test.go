@@ -213,3 +213,122 @@ func TestSemContadoresNaoGravaNada(t *testing.T) {
 		t.Errorf("gravou sem contadores: %+v", g.gravou)
 	}
 }
+
+// ─── sink de bytes para a cota por aparelho (#126) ───────────────────────────
+
+type sinkFalso struct{ bytes map[string][2]uint64 }
+
+func novoSink() *sinkFalso { return &sinkFalso{bytes: map[string][2]uint64{}} }
+
+func (s *sinkFalso) AddHostBytes(mac string, rx, tx uint64) {
+	v := s.bytes[mac]
+	s.bytes[mac] = [2]uint64{v[0] + rx, v[1] + tx}
+}
+
+func TestSinkRecebeBytesENaoTaxa(t *testing.T) {
+	c := &contadoresFalso{dados: map[string]nftables.HostCounter{
+		"192.168.3.50": {RxBytes: 1000, TxBytes: 500},
+	}}
+	g := &gravadorFalso{}
+	s := NewSampler(c, &macsFalso{mapa: map[string]string{"192.168.3.50": "aa:bb:cc:dd:ee:ff"}}, g)
+	sink := novoSink()
+	s.SetUsageSink(sink)
+
+	s.SampleOnce(context.Background(), 100)
+	c.dados = map[string]nftables.HostCounter{"192.168.3.50": {RxBytes: 11000, TxBytes: 1500}}
+	s.SampleOnce(context.Background(), 110) // 10 s depois
+
+	got := sink.bytes["aa:bb:cc:dd:ee:ff"]
+	// 10.000 bytes em 10 s. A série grava 1000 bps; a cota tem de receber os
+	// 10.000 bytes. Se aqui chegasse a taxa, a cota erraria por um fator igual
+	// ao intervalo de amostragem.
+	if got[0] != 10000 || got[1] != 1000 {
+		t.Errorf("sink recebeu rx=%d tx=%d, queria 10000/1000", got[0], got[1])
+	}
+	if rx, _ := g.valor("host.rx_bps", "aa:bb:cc:dd:ee:ff"); rx != 1000 {
+		t.Errorf("a série mudou de valor: %v", rx)
+	}
+}
+
+func TestAPrimeiraAmostraNaoAlimentaOSink(t *testing.T) {
+	// O contador é acumulado desde que existe. Se a semeadura fosse para o sink,
+	// todo reinício do serviço somaria de novo tudo o que já tinha passado — o
+	// aparelho estouraria a cota no boot, sem ter transmitido nada.
+	s, _, _ := novoSampler(
+		map[string]nftables.HostCounter{"192.168.3.50": {RxBytes: 5_000_000_000}},
+		map[string]string{"192.168.3.50": "aa:bb:cc:dd:ee:ff"},
+	)
+	sink := novoSink()
+	s.SetUsageSink(sink)
+	s.SampleOnce(context.Background(), 100)
+	if len(sink.bytes) != 0 {
+		t.Errorf("a semeadura foi para a cota: %v", sink.bytes)
+	}
+}
+
+func TestSinkRecebeAntesDoCorteDeMaxHosts(t *testing.T) {
+	// O TESTE QUE AMARRA O CONSUMIDOR AO PRODUTOR.
+	//
+	// maxHosts corta o RANKING da amostra: quem fica de fora vira o rótulo
+	// "outros" na série. Se a cota lesse depois desse corte, o aparelho de menor
+	// tráfego numa rede movimentada ficaria mudo — e ficaria mudo exatamente na
+	// hora em que outros cinquenta estão consumindo, que é a hora em que alguém
+	// declarou cota para ele.
+	dados := map[string]nftables.HostCounter{}
+	macs := map[string]string{}
+	const n = maxHosts + 10
+	for i := 0; i < n; i++ {
+		ip := "10.0.0." + strconv.Itoa(i)
+		dados[ip] = nftables.HostCounter{}
+		macs[ip] = "aa:bb:cc:00:00:" + strconv.FormatInt(int64(i), 16)
+	}
+	c := &contadoresFalso{dados: dados}
+	g := &gravadorFalso{}
+	s := NewSampler(c, &macsFalso{mapa: macs}, g)
+	sink := novoSink()
+	s.SetUsageSink(sink)
+	s.SampleOnce(context.Background(), 100) // semeadura
+
+	// Segunda leitura: cada host consome (i+1) KB, então o host 0 é o MENOR de
+	// todos e cai fora do corte com folga.
+	novos := map[string]nftables.HostCounter{}
+	for i := 0; i < n; i++ {
+		novos["10.0.0."+strconv.Itoa(i)] = nftables.HostCounter{RxBytes: uint64(i+1) * 1000}
+	}
+	c.dados = novos
+	s.SampleOnce(context.Background(), 110)
+
+	menor := macs["10.0.0.0"]
+	if got := sink.bytes[menor]; got[0] != 1000 {
+		t.Errorf("o aparelho fora do top-%d não chegou à cota: %v", maxHosts, got)
+	}
+	if len(sink.bytes) != n {
+		t.Errorf("a cota recebeu %d aparelhos, queria %d", len(sink.bytes), n)
+	}
+	// E a série continua cortando, como sempre cortou: o corte é do histórico,
+	// não da medição.
+	if _, ok := g.valor("host.rx_bps", menor); ok {
+		t.Errorf("o corte de maxHosts deixou de valer para a série")
+	}
+}
+
+func TestSinkNaoRecebeQuemNaoTemMAC(t *testing.T) {
+	// Sem MAC o consumo vai para o rótulo "outros" da série. Mandá-lo à cota
+	// criaria uma linha de consumo que nenhum aparelho pode reivindicar — e que
+	// apareceria na tela como uma cota que ninguém consegue remover.
+	c := &contadoresFalso{dados: map[string]nftables.HostCounter{"192.168.3.99": {}}}
+	g := &gravadorFalso{}
+	s := NewSampler(c, &macsFalso{mapa: map[string]string{}}, g)
+	sink := novoSink()
+	s.SetUsageSink(sink)
+	s.SampleOnce(context.Background(), 100)
+	c.dados = map[string]nftables.HostCounter{"192.168.3.99": {RxBytes: 5000}}
+	s.SampleOnce(context.Background(), 110)
+
+	if len(sink.bytes) != 0 {
+		t.Errorf("a cota recebeu tráfego sem dono: %v", sink.bytes)
+	}
+	if v, ok := g.valor("host.rx_bps", OtherLabel); !ok || v != 500 {
+		t.Errorf("o tráfego sem dono sumiu da série: %v %v", v, ok)
+	}
+}

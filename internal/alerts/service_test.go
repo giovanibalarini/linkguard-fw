@@ -1179,3 +1179,46 @@ var errTeste = errTipo("banco fora")
 type errTipo string
 
 func (e errTipo) Error() string { return string(e) }
+
+// TestCotaPorAparelhoTambemPassaPeloPortao: os tipos da cota por aparelho
+// (#126) nomeiam o aparelho no texto — o apelido dele vai no título e na
+// mensagem. Sem esta linha eles sairiam por Telegram/e-mail por padrão, porque
+// a severidade mínima é "warning" e o crítico é "critical".
+//
+// Este teste é o que impede um tipo novo de entrar no produto por fora da
+// decisão escrita em internal/metrics/exposicao.go.
+func TestCotaPorAparelhoTambemPassaPeloPortao(t *testing.T) {
+	db := openTestDB(t)
+	svc := NewService(db)
+	n := &fakeNotifier{}
+	svc.SetNotifier(n)
+
+	for _, tipo := range []string{TypeHostQuotaWarning, TypeHostQuotaExceeded} {
+		if !tiposQueNomeiamAparelho[tipo] {
+			t.Errorf("%s nomeia aparelho e não está no portão", tipo)
+		}
+	}
+
+	// Fonte não ligada = ninguém escolheu = não sai da caixa.
+	if err := svc.Create(TypeHostQuotaExceeded, SeverityCritical,
+		"Cota estourada: tablet da sala", "consumiu 1.9 MB de 1.0 MB do ciclo", "aa:bb:cc:dd:ee:ff"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(n.normal) != 0 {
+		t.Errorf("a cota estourada saiu da caixa sem escolha explícita (%d)", len(n.normal))
+	}
+	// Mas ela EXISTE na tela: o portão controla a saída, não a criação.
+	abertos, err := db.GetAlerts(true, 0)
+	if err != nil {
+		t.Fatalf("GetAlerts: %v", err)
+	}
+	var achou bool
+	for _, a := range abertos {
+		if a.Type == TypeHostQuotaExceeded {
+			achou = true
+		}
+	}
+	if !achou {
+		t.Error("o alerta de cota não foi criado; o portão não pode calar a tela")
+	}
+}

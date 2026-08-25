@@ -9,6 +9,7 @@ import type { NetHost, HostTraffic, FirewallGroup, FirewallGroupsData } from '..
 import Panel from '../components/ui/Panel';
 import HostHistory from '../components/HostHistory';
 import HostFlows from '../components/HostFlows';
+import HostQuota from '../components/HostQuota';
 import Modal from '../components/ui/Modal';
 
 function fmtBytes(n: number): string {
@@ -260,6 +261,11 @@ export default function Hosts() {
           </div>
         </Panel>
       )}
+
+      {/* Cota por aparelho (#126). Depois do "quem mais consome agora" e antes
+          da lista: a pergunta "quanto já foi neste ciclo" é a continuação
+          natural, e é o lugar onde o admin decide onde declarar um teto. */}
+      {can('hosts.read') && <HostQuota canEdit={canManage} />}
 
       <Panel>
         {loading && hosts.length === 0 ? (

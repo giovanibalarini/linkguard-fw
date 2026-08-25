@@ -612,3 +612,88 @@ svc.fluxos.config.disable:
 svc.fluxos.config.saveError:
   pt: "Não consegui salvar a configuração do registro de conversa."
   en: "Could not save the conversation record settings."
+# ─── Cota de dados por aparelho (issue #126) ─────────────────────────────────
+# As DUAS frases de honestidade desta tela são obrigatórias, e não decoração:
+# sem "só IPv4" o número subconta em silêncio, e sem "avisa, não corta" a tela
+# vende um controle que o produto deliberadamente não tem.
+svc.hosts.quota.title:
+  pt: "Cota por aparelho"
+  en: "Per-device data cap"
+svc.hosts.quota.subtitle:
+  pt: "Quanto cada aparelho já consumiu no ciclo, e aviso antes de passar do teto declarado."
+  en: "How much each device has used in the current cycle, with a warning before it passes the declared cap."
+svc.hosts.quota.help.title:
+  pt: "De onde vem este número"
+  en: "Where this number comes from"
+svc.hosts.quota.help1:
+  pt: "O consumo é"
+  en: "Usage is"
+svc.hosts.quota.helpMeasuredTerm:
+  pt: "medido pelo firewall, só IPv4"
+  en: "measured by the firewall, IPv4 only"
+svc.hosts.quota.help2:
+  pt: ", a partir dos contadores por endereço do nftables — os mesmos que desenham os gráficos por aparelho. O tráfego IPv6 NÃO entra nesta conta. GB aqui é 10⁹."
+  en: ", from the nftables per-address counters — the same ones that draw the per-device charts. IPv6 traffic is NOT counted here. GB means 10⁹."
+svc.hosts.quota.warnNoEnforcement:
+  pt: "Isto avisa: não corta o aparelho nem limita a banda dele."
+  en: "This warns only: it does not cut the device off, nor limit its bandwidth."
+svc.hosts.quota.used:
+  pt: "{used} de {limit} · {pct}%"
+  en: "{used} of {limit} · {pct}%"
+svc.hosts.quota.usedNoLimit:
+  pt: "{used} no ciclo · sem cota declarada"
+  en: "{used} this cycle · no cap set"
+svc.hosts.quota.cycle:
+  pt: "Ciclo"
+  en: "Cycle"
+svc.hosts.quota.absent:
+  pt: "fora do inventário"
+  en: "not in inventory"
+svc.hosts.quota.define:
+  pt: "Declarar cota"
+  en: "Set cap"
+svc.hosts.quota.edit:
+  pt: "Editar"
+  en: "Edit"
+svc.hosts.quota.remove:
+  pt: "Remover"
+  en: "Remove"
+svc.hosts.quota.limit:
+  pt: "Cota (GB)"
+  en: "Cap (GB)"
+svc.hosts.quota.period:
+  pt: "Período"
+  en: "Period"
+svc.hosts.quota.period.monthly:
+  pt: "Mensal"
+  en: "Monthly"
+svc.hosts.quota.period.daily:
+  pt: "Diário"
+  en: "Daily"
+svc.hosts.quota.cycleDay:
+  pt: "Fecha no dia"
+  en: "Cycle day"
+svc.hosts.quota.alertAt:
+  pt: "Avisar em (%)"
+  en: "Warn at (%)"
+svc.hosts.quota.cycleDayHint:
+  pt: "De 1 a 28 — todo mês tem dia 28, e um fechamento em 29, 30 ou 31 não existiria em fevereiro. No período diário o ciclo vira à meia-noite e este campo não vale."
+  en: "From 1 to 28 — every month has a 28th, and a cycle day of 29, 30 or 31 would not exist in February. On the daily period the cycle turns at midnight and this field does not apply."
+svc.hosts.quota.removeHint:
+  pt: "Remover a cota não apaga o consumo já medido: o número continua na tela, só deixa de ter teto."
+  en: "Removing the cap does not erase measured usage: the number stays on screen, it just no longer has a ceiling."
+svc.hosts.quota.save:
+  pt: "Salvar"
+  en: "Save"
+svc.hosts.quota.cancel:
+  pt: "Cancelar"
+  en: "Cancel"
+svc.hosts.quota.empty:
+  pt: "Nenhum aparelho medido ainda. A contagem começa quando um aparelho da LAN atravessa o firewall."
+  en: "No device measured yet. Counting starts when a LAN device passes traffic through the firewall."
+svc.hosts.quota.error.save:
+  pt: "Não foi possível salvar a cota."
+  en: "Could not save the cap."
+svc.hosts.quota.error.remove:
+  pt: "Não foi possível remover a cota."
+  en: "Could not remove the cap."

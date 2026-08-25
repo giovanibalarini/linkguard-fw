@@ -50,11 +50,11 @@ const (
 	// esta feature exista para apoiar.
 	flushInterval = time.Minute
 
-	// maxCycleDay é 28 porque todo mês tem dia 28. Fechamento em 29, 30 ou 31
+	// MaxCycleDay é 28 porque todo mês tem dia 28. Fechamento em 29, 30 ou 31
 	// simplesmente não existe em fevereiro, e a alternativa (deslizar para o
 	// último dia do mês) faria o ciclo mudar de tamanho e o admin não
 	// conseguir prever quando ele vira.
-	maxCycleDay = 28
+	MaxCycleDay = 28
 )
 
 // Alerter é o pedaço do alerts.Service que esta feature usa. Interface local
@@ -228,18 +228,18 @@ func (s *Service) evaluate(linkName, linkID string, q storage.LinkQuota, used ui
 			fmt.Sprintf("Franquia esgotada: %s", linkName),
 			fmt.Sprintf("O link %s já consumiu %s dos %s do ciclo (%.0f%%). "+
 				"O que acontece a partir daqui é com a operadora — o LinkGuard não corta tráfego.",
-				linkName, humanBytes(float64(used)), humanGB(q.LimitGB), pct),
+				linkName, HumanBytes(float64(used)), HumanGB(q.LimitGB), pct),
 			linkID)
 	case pct >= float64(q.AlertPct):
 		_ = s.alertSvc.Create(TypeQuotaWarning, "warning",
 			fmt.Sprintf("Franquia em %.0f%%: %s", pct, linkName),
 			fmt.Sprintf("O link %s consumiu %s dos %s do ciclo.",
-				linkName, humanBytes(float64(used)), humanGB(q.LimitGB)),
+				linkName, HumanBytes(float64(used)), HumanGB(q.LimitGB)),
 			linkID)
 	}
 }
 
-// humanBytes e humanGB existem porque a primeira versão formatava tudo em
+// HumanBytes e HumanGB existem porque a primeira versão formatava tudo em
 // "%.1f GB" e "%.0f GB", e numa validação em máquina real o alerta saiu como
 // "consumiu 0.0 GB dos 0 GB do ciclo" — franquia de 20 MB, consumo de 18 MB.
 // Um plano de 500 MB (existe, e é justamente o tipo de plano de backup móvel
@@ -247,7 +247,12 @@ func (s *Service) evaluate(linkName, linkID string, q storage.LinkQuota, used ui
 //
 // A unidade acompanha a grandeza e continua DECIMAL: MB é 10^6, GB é 10^9 — o
 // que a operadora usa. Ver storage.LinkQuota.
-func humanBytes(b float64) string {
+//
+// SÃO EXPORTADAS porque a cota por aparelho (internal/hostquota, #126) escreve
+// a mesma frase um andar abaixo. Duplicar dez linhas de formatação faria os
+// dois alertas do produto divergirem na unidade — e o defeito que essas
+// funções existem para impedir voltaria só na metade nova.
+func HumanBytes(b float64) string {
 	switch {
 	case b >= bytesPerGB:
 		return fmt.Sprintf("%.1f GB", b/bytesPerGB)
@@ -258,10 +263,10 @@ func humanBytes(b float64) string {
 	}
 }
 
-// humanGB formata a franquia declarada, que vem em GB decimais e pode ser
+// HumanGB formata a franquia declarada, que vem em GB decimais e pode ser
 // fracionária (0,5 GB = 500 MB).
-func humanGB(gb float64) string {
-	return humanBytes(gb * bytesPerGB)
+func HumanGB(gb float64) string {
+	return HumanBytes(gb * bytesPerGB)
 }
 
 // Snapshot devolve o estado de todos os links para o painel.
@@ -322,8 +327,8 @@ func (s *Service) Save(q storage.LinkQuota) error {
 	if q.LimitGB < 0 {
 		return fmt.Errorf("franquia inválida")
 	}
-	if q.CycleDay < 1 || q.CycleDay > maxCycleDay {
-		return fmt.Errorf("dia de fechamento deve estar entre 1 e %d", maxCycleDay)
+	if q.CycleDay < 1 || q.CycleDay > MaxCycleDay {
+		return fmt.Errorf("dia de fechamento deve estar entre 1 e %d", MaxCycleDay)
 	}
 	if q.AlertPct < 1 || q.AlertPct > 100 {
 		return fmt.Errorf("o aviso deve estar entre 1%% e 100%%")
@@ -382,8 +387,8 @@ func CycleStart(now time.Time, day int) time.Time {
 	if day < 1 {
 		day = 1
 	}
-	if day > maxCycleDay {
-		day = maxCycleDay
+	if day > MaxCycleDay {
+		day = MaxCycleDay
 	}
 	loc := now.Location()
 	start := time.Date(now.Year(), now.Month(), day, 0, 0, 0, 0, loc)

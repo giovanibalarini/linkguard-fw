@@ -83,6 +83,10 @@ type Sampler struct {
 	// depender daquele: o amostrador é medição, e medição não deve saber quem
 	// consome.
 	porHost RegistroPorHost
+
+	// usage é o terceiro consumidor da MESMA medição (#126): a cota por
+	// aparelho. Opcional, como o porHost.
+	usage UsageSink
 }
 
 // RegistroPorHost é o que o amostrador precisa do registro de métricas por
@@ -94,6 +98,25 @@ type RegistroPorHost interface {
 
 // SetPorHost liga o registro de métricas por aparelho (#118).
 func (s *Sampler) SetPorHost(r RegistroPorHost) { s.porHost = r }
+
+// UsageSink recebe os bytes medidos por aparelho, em bruto — gêmeo do
+// tsdb.UsageSink que alimenta a franquia por link (#132).
+//
+// POR QUE BYTES, E NÃO A TAXA QUE O AMOSTRADOR JÁ GRAVA. A série host.rx_bps
+// não pode ser integrada para virar consumo: o tsdb fecha o balde com a média
+// das amostras PRESENTES (internal/tsdb/service.go), e este amostrador pula o
+// aparelho parado. Um aparelho que transmitiu dez segundos dentro de uma hora
+// deixa uma amostra só, com taxa alta, e o balde de 3600 s guarda essa taxa
+// como média da hora inteira: multiplicar por 3600 superestima em cerca de
+// 360 vezes. Somado ao teto de maxHosts e ao rótulo "outros", a integração
+// seria um número errado com cara de número certo.
+type UsageSink interface {
+	AddHostBytes(mac string, rx, tx uint64)
+}
+
+// SetUsageSink liga o acumulador de consumo por aparelho (#126). Nil mantém o
+// comportamento de hoje, byte por byte — mesma promessa do UsageSink do tsdb.
+func (s *Sampler) SetUsageSink(u UsageSink) { s.usage = u }
 
 // NewSampler cria o amostrador.
 func NewSampler(counters CounterSource, macs MACSource, rec Recorder) *Sampler {
@@ -153,17 +176,33 @@ func (s *Sampler) SampleOnce(ctx context.Context, now int64) {
 		// Contador do kernel é uint64 e zera quando o set é recriado. Comparar
 		// ANTES de subtrair evita formar o número gigante do underflow — mesma
 		// proteção do amostrador de interfaces.
-		var drx, dtx float64
+		var brx, btx uint64
 		if c.RxBytes >= ant.rx {
-			drx = float64(c.RxBytes - ant.rx)
+			brx = c.RxBytes - ant.rx
 		}
 		if c.TxBytes >= ant.tx {
-			dtx = float64(c.TxBytes - ant.tx)
+			btx = c.TxBytes - ant.tx
 		}
-		if drx == 0 && dtx == 0 {
+		if brx == 0 && btx == 0 {
 			continue
 		}
+		drx, dtx := float64(brx), float64(btx)
 		mac := macs[ip]
+		// A COTA RECEBE OS BYTES AQUI, no mesmo ponto em que o delta existe, e
+		// NÃO depois do corte de maxHosts logo abaixo.
+		//
+		// O corte é do RANKING da amostra: os aparelhos além do quinquagésimo
+		// viram o rótulo "outros" para o histórico não multiplicar séries. Se a
+		// cota lesse dali, o aparelho com cota declarada ficaria mudo
+		// exatamente na hora em que outros cinquenta estão consumindo — que é
+		// a hora em que a cota importa.
+		//
+		// Sem MAC não vai nada: "outros" é um rótulo de gráfico, não um
+		// aparelho, e acumular cota nele criaria uma linha no banco que nenhum
+		// aparelho pode reivindicar nem remover.
+		if mac != "" && s.usage != nil {
+			s.usage.AddHostBytes(mac, brx, btx)
+		}
 		if mac == "" {
 			// Sem MAC não é host da LAN no modelo do produto (ver
 			// hosts.Service.List). Vai para "outros" em vez de sumir.

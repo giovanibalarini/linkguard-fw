@@ -36,6 +36,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/hostflows"
+	"github.com/giovanibalarini/linkguard-fw/internal/hostquota"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosts"
 	"github.com/giovanibalarini/linkguard-fw/internal/hosttraffic"
 	"github.com/giovanibalarini/linkguard-fw/internal/iptables"
@@ -380,6 +381,7 @@ type services struct {
 	rrdSvc       *tsdb.Service
 	hostSampler  *hosttraffic.Sampler
 	quotaSvc     *linkquota.Service
+	hostQuotaSvc *hostquota.Service
 	ddnsSvc      *ddns.Service
 	aiClient     *ai.Client
 
@@ -655,6 +657,16 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// antes de rrdSvc.Run, que é quem monta o amostrador.
 	quotaSvc := linkquota.NewService(db, alertSvc)
 
+	// A cota por APARELHO (#126) consome os MESMOS deltas de byte que alimentam
+	// as séries por host — ver hosttraffic.UsageSink. O sink é ligado aqui,
+	// antes de qualquer Run: o amostrador lê o campo sem lock dentro do
+	// SampleOnce, e ligá-lo depois do laço começar seria escrita concorrente.
+	//
+	// Ele MEDE E AVISA, e não corta nem limita nada. Ver o cabeçalho do pacote
+	// antes de considerar ligar qualquer enforcement aqui.
+	hostQuotaSvc := hostquota.NewService(db, alertSvc)
+	hostSampler.SetUsageSink(hostQuotaSvc)
+
 	// DNS dinâmico por link (#129). A descoberta do endereço usa a MESMA
 	// leitura de `ip addr` que o balanceador — duas leituras com parsers
 	// diferentes divergiriam no primeiro formato inesperado, e o sintoma seria
@@ -749,6 +761,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		DNSTap:      dnstapSvc,
 		PorHost:     porHost,
 		Fluxos:      fluxosSvc,
+		HostQuota:   hostQuotaSvc,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
@@ -784,6 +797,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		rrdSvc:           rrdSvc,
 		hostSampler:      hostSampler,
 		quotaSvc:         quotaSvc,
+		hostQuotaSvc:     hostQuotaSvc,
 		ddnsSvc:          ddnsSvc,
 		aiClient:         aiClient,
 		promReg:          promReg,
@@ -878,6 +892,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	trafficSvc, keaSvc, alertSvc := s.trafficSvc, s.keaSvc, s.alertSvc
 	monitor, metricsCollector, rrdSvc := s.monitor, s.metricsCollector, s.rrdSvc
 	quotaSvc := s.quotaSvc
+	hostQuotaSvc := s.hostQuotaSvc
 	ddnsSvc := s.ddnsSvc
 	hostSampler := s.hostSampler
 	backupSched, journalSched, updatesSched := s.backupSched, s.journalSched, s.updatesSched
@@ -1334,6 +1349,10 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	// cada reinício abriria um buraco justamente na contagem que a franquia
 	// existe para fazer.
 	spawnWriter("cota", func() { quotaSvc.Run(ctx) })
+	// Escritor pelo mesmo motivo da cota por link: o Run grava o acumulado do
+	// minuto na saída, e perder isso a cada reinício abriria um buraco na
+	// contagem que a cota existe para fazer.
+	spawnWriter("cota-por-aparelho", func() { hostQuotaSvc.Run(ctx) })
 	// Escritor: grava a série por host, e perder a última amostra num
 	// reinício abre buraco justamente na série que o histórico existe para ter.
 	spawnWriter("consumo-por-host", func() { hostSampler.Run(ctx) })
