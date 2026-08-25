@@ -131,9 +131,16 @@ func IsPrivate(a netip.Addr) bool {
 	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsPrivate() || a.IsUnspecified() {
 		return true
 	}
-	cgnat := netip.MustParsePrefix("100.64.0.0/10")
-	return cgnat.Contains(a)
+	return prefixoCGNAT.Contains(a)
 }
+
+// prefixoCGNAT é montado UMA vez, e não a cada chamada.
+//
+// Deixou de ser detalhe quando o alimentador de domínios (#123) passou a
+// chamar IsPrivate para todo endereço de toda resposta de DNS que o resolver
+// entrega: um MustParsePrefix por endereço é alocação no caminho mais quente
+// do produto, e o valor é constante.
+var prefixoCGNAT = netip.MustParsePrefix("100.64.0.0/10")
 
 // BuildURL põe o nome e o endereço no modelo do provedor.
 //

@@ -51,6 +51,8 @@ const (
 type Servico struct {
 	caminho string
 	mapa    *Mapa
+	// observador é avisado de cada resposta aprendida. Ver SetObservador.
+	observador func(*Resposta)
 }
 
 // NovoServico cria o coletor.
@@ -64,6 +66,19 @@ func (s *Servico) SetCaminho(p string) { s.caminho = p }
 
 // Mapa devolve o mapa endereço → nome.
 func (s *Servico) Mapa() *Mapa { return s.mapa }
+
+// SetObservador liga um segundo consumidor das respostas aprendidas.
+//
+// O CONTRATO É NÃO BLOQUEAR, e não é recomendação. O observador é chamado de
+// dentro do laço que lê o frame stream do unbound, que é o mesmo laço que drena
+// o socket unix: parar ali para de drenar, o buffer enche e o unbound passa a
+// DESCARTAR entrega. dnstap foi feito para poder ser ignorado (ver o cabeçalho
+// deste arquivo), e o preço de esquecer isso é contrapressão no resolver da
+// rede inteira por causa de um consumidor lento.
+//
+// Chamar ANTES de Run: o campo é lido pelas goroutines de conexão sem lock, e
+// o único ponto em que trocá-lo é seguro é antes de existir conexão.
+func (s *Servico) SetObservador(f func(*Resposta)) { s.observador = f }
 
 // Run escuta até o contexto acabar.
 //
@@ -144,6 +159,14 @@ func (s *Servico) atender(conn net.Conn) {
 			continue
 		}
 		s.mapa.Aprender(r)
+		// FORA do lock do mapa, e o lugar não é acidente: Aprender solta o
+		// m.mu no defer dele, e chamar o observador lá dentro deixaria a tela
+		// (Mapa.Nome, Mapa.Amostra) e a limpeza de 5 minutos presas ao que o
+		// observador fizer. Mesmo aqui fora, este laço é o que DRENA o socket
+		// do unbound — por isso o contrato de SetObservador é não bloquear.
+		if s.observador != nil {
+			s.observador(r)
+		}
 	}
 }
 
