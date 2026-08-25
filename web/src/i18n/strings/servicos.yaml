@@ -632,11 +632,23 @@ svc.hosts.quota.helpMeasuredTerm:
   pt: "medido pelo firewall, só IPv4"
   en: "measured by the firewall, IPv4 only"
 svc.hosts.quota.help2:
-  pt: ", a partir dos contadores por endereço do nftables — os mesmos que desenham os gráficos por aparelho. O tráfego IPv6 NÃO entra nesta conta. GB aqui é 10⁹."
-  en: ", from the nftables per-address counters — the same ones that draw the per-device charts. IPv6 traffic is NOT counted here. GB means 10⁹."
+  pt: ", a partir dos contadores por endereço do nftables — os mesmos que desenham os gráficos por aparelho. Ela conta TUDO o que o firewall encaminha, inclusive de uma rede interna para outra (uma cópia para o NAS da casa entra na conta), e o tráfego IPv6 NÃO entra. GB aqui é 10⁹."
+  en: ", from the nftables per-address counters — the same ones that draw the per-device charts. It counts EVERYTHING the firewall forwards, including traffic between internal networks (a copy to the local NAS is counted), and IPv6 traffic is NOT counted. GB means 10⁹."
 svc.hosts.quota.warnNoEnforcement:
   pt: "Isto avisa: não corta o aparelho nem limita a banda dele."
   en: "This warns only: it does not cut the device off, nor limit its bandwidth."
+svc.hosts.quota.warnWhereItStops:
+  pt: "O aviso pára no painel. Para ele sair por Telegram, WhatsApp, e-mail ou webhook, ligue \"deixar os alertas que nomeiam um aparelho saírem da caixa\" em Configurações › Notificações."
+  en: "The warning stops on the dashboard. To let it go out over Telegram, WhatsApp, e-mail or webhook, turn on \"let alerts that name a device leave the box\" under Settings › Notifications."
+svc.hosts.quota.noMeasure:
+  pt: "sem medição neste ciclo"
+  en: "no measurement this cycle"
+svc.hosts.quota.noMeasureHint:
+  pt: "A cota está declarada e nada foi medido para este aparelho no ciclo vigente. Pode ser um aparelho parado — ou um endereço físico que não existe mais na rede (telefones modernos trocam o endereço a cada associação)."
+  en: "The cap is set and nothing has been measured for this device in the current cycle. It may be an idle device — or a physical address that is no longer on the network (modern phones rotate it on every association)."
+svc.hosts.quota.periodChangeWarning:
+  pt: "Trocar o período ou o dia de fechamento redefine o ciclo: o consumo já medido é levado para o ciclo novo e os alertas abertos deste aparelho são fechados."
+  en: "Changing the period or the cycle day redefines the cycle: usage measured so far is carried into the new cycle and this device's open alerts are closed."
 svc.hosts.quota.used:
   pt: "{used} de {limit} · {pct}%"
   en: "{used} of {limit} · {pct}%"

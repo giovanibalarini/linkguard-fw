@@ -216,13 +216,19 @@ func TestSemContadoresNaoGravaNada(t *testing.T) {
 
 // ─── sink de bytes para a cota por aparelho (#126) ───────────────────────────
 
-type sinkFalso struct{ bytes map[string][2]uint64 }
+type sinkFalso struct {
+	bytes     map[string][2]uint64
+	instantes map[string][]int64
+}
 
-func novoSink() *sinkFalso { return &sinkFalso{bytes: map[string][2]uint64{}} }
+func novoSink() *sinkFalso {
+	return &sinkFalso{bytes: map[string][2]uint64{}, instantes: map[string][]int64{}}
+}
 
-func (s *sinkFalso) AddHostBytes(mac string, rx, tx uint64) {
+func (s *sinkFalso) AddHostBytes(mac string, ts int64, rx, tx uint64) {
 	v := s.bytes[mac]
 	s.bytes[mac] = [2]uint64{v[0] + rx, v[1] + tx}
+	s.instantes[mac] = append(s.instantes[mac], ts)
 }
 
 func TestSinkRecebeBytesENaoTaxa(t *testing.T) {

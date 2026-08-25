@@ -934,17 +934,17 @@ print(ls[0]['id'] if ls else '')" 2>/dev/null)
   else bad "o link não veio em /api/quotas"; fi
 
   # F2 — dia de fechamento acima de 28 não existe em fevereiro.
-  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":31,"alert_pct":80,"enabled":true}')
+  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":31,"alert_pct":80}')
   if [[ "$st" == "400" ]]; then ok "dia de fechamento 31 recusado (400)"
   else bad "dia 31 aceito ($st) — o ciclo sumiria em fevereiro"; fi
 
   # F3 — percentual de aviso fora da faixa.
-  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":10,"alert_pct":150,"enabled":true}')
+  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":10,"alert_pct":150}')
   if [[ "$st" == "400" ]]; then ok "aviso em 150% recusado (400)"
   else bad "percentual fora da faixa aceito ($st)"; fi
 
   # F4 — franquia válida, e o ciclo calculado.
-  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":28,"alert_pct":80,"enabled":true}')
+  st=$(status PUT "/api/quotas/$link" "$tok" '{"limit_gb":1,"cycle_day":28,"alert_pct":80}')
   if [[ "$st" == "200" ]]; then ok "franquia declarada (200)"
   else bad "declarar franquia devolveu $st"; fi
 
@@ -1137,6 +1137,7 @@ print(sum(1 for p in d.get('points',[]) if (p.get('rx_bps') or 0) > 0))" 2>/dev/
   else bad "MAC inválido devolveu $st_mac"; fi
 
   vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
+}
 
 # ─── Y. Cota por aparelho (issue #126, metade "por host") ────────────────────
 #
@@ -1158,7 +1159,11 @@ battery_host_quota() {
   initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d "\\r\\n")
   tok=$(login admin "$initial")
   [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
-  [[ -n "$tok" ]] || { bad "sem sessão administrativa; a bateria Y não roda"; return; }
+  # PULAR, e não só FALHAR: sem isto o resumo conta cobertura que não houve.
+  # As asserções de silêncio desta bateria são a única prova executável de que
+  # a cota não tranca ninguém — dizer em voz alta que elas não rodaram é a
+  # diferença entre nada quebrou e ninguém olhou.
+  [[ -n "$tok" ]] || { pular "Y. Cota por aparelho" "sem sessão administrativa"; return; }
 
   # Sem tráfego atravessando não há o que contar, e a falha apareceria como se
   # fosse da cota. Mesma precaução da bateria G.
@@ -1196,16 +1201,16 @@ battery_host_quota() {
 
   # Y2 — o que não existe é recusado na entrada, e não gravado para falhar
   # depois em silêncio.
-  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":31,"alert_pct":80,"enabled":true}')
+  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":31,"alert_pct":80}')
   if [[ "$st" == "400" ]]; then ok "dia de fechamento 31 recusado (400)"
   else bad "dia 31 aceito ($st) — o ciclo sumiria em fevereiro"; fi
-  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":10,"alert_pct":150,"enabled":true}')
+  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":10,"alert_pct":150}')
   if [[ "$st" == "400" ]]; then ok "aviso em 150% recusado (400)"
   else bad "percentual fora da faixa aceito ($st)"; fi
-  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"semanal","cycle_day":1,"alert_pct":80,"enabled":true}')
+  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":1,"period":"semanal","cycle_day":1,"alert_pct":80}')
   if [[ "$st" == "400" ]]; then ok "período inventado recusado (400)"
   else bad "período semanal aceito ($st)"; fi
-  st=$(status PUT "/api/hosts/quotas/nao-eh-mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":1,"alert_pct":80,"enabled":true}')
+  st=$(status PUT "/api/hosts/quotas/nao-eh-mac" "$tok" '{"limit_gb":1,"period":"monthly","cycle_day":1,"alert_pct":80}')
   if [[ "$st" == "400" ]]; then ok "endereço físico malformado recusado (400)"
   else bad "MAC malformado aceito ($st) — a cota nasceria numa chave que nunca casa"; fi
 
@@ -1217,7 +1222,7 @@ battery_host_quota() {
 
   # Y3 — cota diária: o ciclo dura exatamente um dia. Se o dia de fechamento
   # vazasse para o diário, o ciclo duraria um mês e a cota "de hoje" mentiria.
-  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":0.001,"period":"daily","cycle_day":1,"alert_pct":80,"enabled":true}')
+  st=$(status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":0.001,"period":"daily","cycle_day":1,"alert_pct":80}')
   if [[ "$st" == "200" ]]; then ok "cota diária de 1 MB declarada (200)"
   else bad "declarar cota diária devolveu $st"; fi
   local ini fim
@@ -1323,6 +1328,28 @@ for h in json.load(sys.stdin):
   if [[ "$nregras" == "2" ]]; then ok "a chain de contabilidade continua com as duas regras de sempre"
   else bad "a chain acct tem $nregras regra(s) de update — a cota não pode escrever ali"; fi
 
+
+  # Y10 — TROCAR O PERÍODO NÃO PODE ESCONDER O CONSUMO. É o mesmo defeito de
+  # 2026-08-20 que a Y7 protege no DELETE, entrando pela porta do PUT: mexer em
+  # período ou dia de fechamento move a chave (aparelho, período, início do
+  # ciclo), e sem migrar o consumo junto a barra volta a 0% com o alerta ainda
+  # aberto no painel.
+  status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":0.001,"period":"daily","cycle_day":1,"alert_pct":80}' >/dev/null
+  local antesDaTroca depoisDaTroca
+  antesDaTroca=$(body GET /api/hosts/quotas "$tok" | python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['mac'].lower()=='$mac'.lower(): print(q['used_bytes'])" 2>/dev/null)
+  status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":0.001,"period":"monthly","cycle_day":15,"alert_pct":80}' >/dev/null
+  depoisDaTroca=$(body GET /api/hosts/quotas "$tok" | python3 -c "
+import json,sys
+for q in json.load(sys.stdin):
+    if q['mac'].lower()=='$mac'.lower(): print(q['used_bytes'])" 2>/dev/null)
+  if [[ -n "$antesDaTroca" && "$antesDaTroca" -gt 0 && "$depoisDaTroca" == "$antesDaTroca" ]]; then
+    ok "trocar o período levou o consumo já medido junto ($depoisDaTroca bytes)"
+  else bad "o consumo caiu de ${antesDaTroca:-?} para ${depoisDaTroca:-?} ao trocar o período — a chave do ciclo mudou debaixo da leitura"; fi
+  # E volta para o diário, que é o estado que a Y7 espera logo abaixo.
+  status PUT "/api/hosts/quotas/$mac" "$tok" '{"limit_gb":0.001,"period":"daily","cycle_day":1,"alert_pct":80}' >/dev/null
   # Y7 — remover a cota NÃO pode esconder o consumo já medido. É o defeito de
   # 2026-08-20, agora na chave (aparelho, início do ciclo).
   st=$(status DELETE "/api/hosts/quotas/$mac" "$tok")
@@ -1356,8 +1383,47 @@ for q in json.load(sys.stdin):
   if grep -q "host_quota" <<<"$logs"; then ok "as mudanças de cota foram para a auditoria"
   else bad "cota alterada sem registro de auditoria"; fi
 
+  # ─── S6/S7. A OUTRA metade do silêncio: a superfície de EXPOSIÇÃO. ─────────
+  #
+  # S1-S5 provam que o FIREWALL ficou calado. Nenhuma delas toca em quem
+  # consegue LER o que a cota mede — e o que ela mede é "o aparelho X consumiu N
+  # bytes neste mês", que é histórico de comportamento, não evento.
+
+  # S6 — as quatro rotas novas estão DENTRO do grupo autenticado. Sem token,
+  # 401. Um /api/hosts/quotas aberto publicaria o inventário da rede do cliente
+  # com o consumo de cada aparelho, sem senha.
+  local semtok
+  for rota in "GET /api/hosts/quotas" "GET /api/hosts/quotas/$mac/history" "PUT /api/hosts/quotas/$mac" "DELETE /api/hosts/quotas/$mac"; do
+    semtok=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 -X "${rota%% *}" "$API${rota##* }" 2>/dev/null)
+    if [[ "$semtok" == "401" ]]; then ok "sem token, $rota devolve 401"
+    else bad "$rota respondeu $semtok sem autenticação — inventário da LAN sem senha"; fi
+  done
+
+  # S7 — nada de identidade de aparelho no /metrics, que é ABERTO e que a
+  # própria suíte exige que responda pela WAN. A regra está escrita em
+  # internal/metrics/exposicao.go; aqui ela é medida na caixa.
+  local metricas
+  metricas=$(curl -s --max-time 6 "$API/metrics" 2>/dev/null)
+  if [[ -z "$metricas" ]]; then
+    bad "o /metrics não respondeu — a asserção de exposição não mediu nada"
+  else
+    if grep -qiF "$mac" <<<"$metricas"; then
+      bad "o endereço físico do aparelho aparece no /metrics, que é aberto"
+    else ok "o /metrics não publica o endereço físico do aparelho"; fi
+    if grep -qE '^linkguard_(host|hostquota|cota|device|client)_' <<<"$metricas"; then
+      bad "há série de identidade de aparelho no /metrics aberto" "$(grep -oE '^linkguard_(host|hostquota|cota|device|client)_[a-z_]+' <<<"$metricas" | sort -u | tr '\n' ' ')"
+    else ok "nenhuma série por aparelho no /metrics aberto"; fi
+  fi
+
+  # S8 — o aviso não atravessou a fronteira da caixa. notificar_aparelho é
+  # falso por padrão, e nenhum canal está configurado nesta VM: se algo tivesse
+  # saído, teria falhado no envio e deixado rastro.
+  local envio
+  envio=$(vm "journalctl -u linkguard-fw --since '-5 min' --no-pager 2>/dev/null | grep -ci 'notify' || true" | tr -d "\\r")
+  if [[ "${envio:-0}" == "0" ]]; then ok "o alerta de cota não tentou sair da caixa"
+  else bad "houve $envio linha(s) de notificação com o portão de identidade fechado"; fi
+
   vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
-}
 }
 
 

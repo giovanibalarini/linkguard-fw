@@ -42,6 +42,8 @@ package metrics
 // decisão de que a mudança é DELIBERADA, e não efeito colateral de uma issue de
 // métrica, é o que este arquivo preserva.
 
+import "strings"
+
 // SerieDeAparelho diz se uma série carrega identidade de aparelho e, portanto,
 // não pode sair pelo /metrics não autenticado.
 //
@@ -63,4 +65,31 @@ var prefixosDeAparelho = []string{
 	"linkguard_host_",
 	"linkguard_device_",
 	"linkguard_client_",
+	// linkguard_hostquota_ e linkguard_cota_ são o vizinho de colisão
+	// quase-perfeita: os prefixos acima terminam em "_", então
+	// "linkguard_hostquota_used_bytes" NÃO começa por "linkguard_host_" (a
+	// posição 15 é um "q", não um "_"). O pacote da cota por aparelho se chama
+	// literalmente hostquota, e esse é o nome de métrica mais natural que
+	// alguém escreveria para a feature — exatamente o que o guarda não pegava.
+	"linkguard_hostquota_",
+	"linkguard_cota_",
+}
+
+// RotuloDeAparelho diz se um NOME DE RÓTULO carrega identidade de aparelho.
+//
+// Existe separada de SerieDeAparelho porque o vazamento mais provável não é
+// pelo nome da série: linkguard_quota_used_bytes{apelido="tablet da sala"}
+// tem nome perfeitamente inocente e publica o inventário da rede do cliente
+// sem senha. A lista cobre as palavras que alguém escreveria sem pensar,
+// incluindo as que descrevem o aparelho sem citar o endereço físico.
+func RotuloDeAparelho(nome string) bool {
+	switch strings.ToLower(nome) {
+	case "mac", "macaddr", "mac_address",
+		"host", "hostname", "device", "aparelho",
+		"apelido", "alias", "nome", "name",
+		"ip", "endereco", "endereço",
+		"cliente", "client":
+		return true
+	}
+	return false
 }
