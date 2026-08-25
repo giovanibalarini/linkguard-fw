@@ -5598,7 +5598,13 @@ PYEOF
   # DEPOIS DA FILTRAGEM. Prioridade errada aqui registra como conversa um
   # destino que uma regra de firewall bloqueou — a tela afirmaria que o aparelho
   # falou com quem ele não falou.
-  if grep -q 'hook forward priority filter + 15' <<<"$chain" && grep -q 'policy accept' <<<"$chain"; then
+  #
+  # A ASSERÇÃO CASA A SAÍDA RENDERIZADA, NÃO A SINTAXE DA DECLARAÇÃO. O produto
+  # escreve `priority filter + 15` e o nft imprime `priority 15`, porque
+  # `filter` vale zero. Cobrar o texto da declaração reprovava uma chain que
+  # está exatamente onde deveria — o mesmo erro que a bateria W cometeu ao
+  # perguntar ao kernel por uma marca que pacote nenhum carrega.
+  if grep -qE 'hook forward priority (filter \+ )?15;' <<<"$chain" && grep -q 'policy accept' <<<"$chain"; then
     ok "a chain de conversa está no forward DEPOIS da filtragem (filter + 15) e com policy accept"
   else
     bad "a chain de conversa não está no forward em filter + 15, ou não é accept: ela contaria destino bloqueado como conversa" \
