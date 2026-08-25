@@ -171,26 +171,58 @@ func (l Lote) Vazio() bool {
 		len(l.AdicionarBloq)+len(l.AdicionarBloq6)+len(l.AdicionarWan) == 0
 }
 
-// AplicarLote escreve o lote inteiro num único `nft -f`.
+// ResultadoLote é o que a transação CONSEGUIU fazer, e não só se ela deu erro.
 //
-// POR QUE UM ARQUIVO SÓ, E NÃO UM COMANDO POR ELEMENTO. Um `nft -f` é UMA
+// Existe porque AplicarLote tem um caminho que devolve nil sem ter feito o que
+// foi pedido: o reenvio. Quando a primeira transação cai por causa de um
+// delete de elemento ausente, o reenvio entra só com o que ainda faz sentido —
+// e o chamador precisa saber o que ficou de fora, senão o índice dele passa a
+// acreditar num prazo que o kernel não tem.
+type ResultadoLote struct {
+	// Reenviado diz que a primeira transação falhou e a segunda foi tentada.
+	Reenviado bool
+	// NaoConfirmados são endereços cuja RENOVAÇÃO não aconteceu.
+	//
+	// Renovar é delete+add na mesma transação. Se a transação cai, o reenvio
+	// não pode repetir o add sozinho: medido, add sobre elemento existente é
+	// aceito em silêncio e NÃO mexe no prazo. Repetir seria gastar um fork para
+	// produzir a ilusão de ter renovado — e o índice, achando que renovou, só
+	// voltaria a mexer nesse endereço DEPOIS de ele já ter vencido no kernel.
+	// Por isso o reenvio os omite, e eles saem daqui nominalmente.
+	NaoConfirmados []netip.Addr
+	// RemocoesPerdidas são endereços que o chamador mandou TIRAR e que não
+	// saíram, porque o reenvio é sem delete.
+	//
+	// É a metade cara: uma remoção perdida é o kernel continuar barrando por
+	// até uma hora um domínio que a tela já mostra desligado.
+	RemocoesPerdidas []netip.Addr
+}
+
+// Completo diz que a transação fez tudo o que foi pedido.
+func (r ResultadoLote) Completo() bool {
+	return !r.Reenviado && len(r.NaoConfirmados) == 0 && len(r.RemocoesPerdidas) == 0
+}
+
+// AplicarLote escreve o lote inteiro num único "nft -f".
+//
+// POR QUE UM ARQUIVO SÓ, E NÃO UM COMANDO POR ELEMENTO. Um "nft -f" é UMA
 // transação netlink: ou tudo entra, ou nada entra. Renovar com dois forks
-// (`delete` e depois `add`) abre uma janela de milissegundos em que o endereço
-// NÃO ESTÁ na estrutura — e no direcionamento essa janela é o pacote saindo
-// pela WAN errada com o endereço de origem da outra, que o provedor descarta.
+// (delete e depois add) abre uma janela de milissegundos em que o endereço NÃO
+// ESTÁ na estrutura — e no direcionamento essa janela é o pacote saindo pela
+// WAN errada com o endereço de origem da outra, que o provedor descarta.
 //
-// POR QUE RENOVAR EXIGE `delete` ANTES DO `add`. Medido no nft da caixa:
+// POR QUE RENOVAR EXIGE delete ANTES DO add. Medido no nft da caixa:
 //
 //	add element ... { 1.2.3.4 timeout 1800s : 0x12c }   → aceito, sem erro
 //	expires antes: 29m54s   expires depois: 29m54s      → NÃO RENOVOU
 //	delete + add na mesma transação → expires 29m59s    → renovou
 //
-// Um `add` sobre elemento existente é aceito em silêncio e não mexe no prazo.
-// Sem o `delete`, "renovação" seria um comando que não faz nada, e o endereço
+// Um add sobre elemento existente é aceito em silêncio e não mexe no prazo.
+// Sem o delete, "renovação" seria um comando que não faz nada, e o endereço
 // sairia no meio do uso — a falha mais cara possível, porque parece funcionar.
 //
-// E O QUE ACONTECE QUANDO O `delete` ERRA. Também medido: um `delete` de
-// elemento AUSENTE derruba o lote INTEIRO — o `add` que ia junto não entra:
+// E O QUE ACONTECE QUANDO O delete ERRA. Também medido: um delete de elemento
+// AUSENTE derruba o lote INTEIRO — o add que ia junto não entra:
 //
 //	delete element ... { 9.9.9.9 }   ← ausente
 //	add    element ... { 5.6.7.8 ... }
@@ -199,46 +231,119 @@ func (l Lote) Vazio() bool {
 //
 // Isso acontece de verdade: o kernel pode expirar o elemento entre o feeder
 // decidir renovar e o arquivo chegar. Por isso o erro é tratado com UM reenvio
-// só com os `add` — quem sumiu já não precisa ser apagado. O reenvio é único e
-// contado; insistir viraria laço em cima de uma corrida que se resolve sozinha.
-func (s *Service) AplicarLote(ctx context.Context, l Lote) error {
+// só com os add — quem sumiu já não precisa ser apagado.
+//
+// O REENVIO OMITE AS RENOVAÇÕES, e isso é a correção de um defeito que morava
+// aqui: um add de renovação sem o delete é exatamente o comando que a medição
+// acima declarou inútil. Emiti-lo custaria um fork para não renovar nada e —
+// pior — devolveria nil, deixando o índice do chamador convicto de um prazo que
+// o kernel não concedeu. Elas saem em NaoConfirmados, para o chamador poder
+// desfazer a crença. O mesmo vale para as remoções, que o reenvio não leva:
+// elas saem em RemocoesPerdidas.
+func (s *Service) AplicarLote(ctx context.Context, l Lote) (ResultadoLote, error) {
+	var res ResultadoLote
 	if s.exec.IsDryRun() || l.Vazio() {
-		return nil
+		return res, nil
 	}
-	script := montarLote(l, true)
-	out, err := s.rodarScriptNft(ctx, script)
+	out, err := s.rodarScriptNft(ctx, montarLote(l, true))
 	if err == nil {
-		return nil
+		return res, nil
 	}
-	// Segunda e última tentativa, sem os `delete`. Quem não estava lá não
-	// precisa sair; o que importa é o endereço entrar.
+	// Segunda e última tentativa, sem os delete e sem os add que só fazem
+	// sentido acompanhados de um. O que sobra é endereço ENTRANDO, que é o
+	// que não pode esperar a próxima janela.
+	res.Reenviado = true
+	res.NaoConfirmados = renovacoesDoLote(l)
+	res.RemocoesPerdidas = remocoesDoLote(l)
 	soAdds := montarLote(l, false)
 	if soAdds == "" {
-		return fmt.Errorf("aplicar o lote de domínios: %w (%s)", err, strings.TrimSpace(out))
+		return res, fmt.Errorf("aplicar o lote de domínios: %w (%s)", err, strings.TrimSpace(out))
 	}
-	if out2, err2 := s.rodarScriptNft(ctx, soAdds); err2 != nil {
-		return fmt.Errorf("aplicar o lote de domínios (mesmo sem as remoções): %w (%s)", err2, strings.TrimSpace(out2))
+	out2, err2 := s.rodarScriptNft(ctx, soAdds)
+	if err2 != nil {
+		return res, fmt.Errorf("aplicar o lote (mesmo sem as remoções): %w (%s)", err2, strings.TrimSpace(out2))
 	}
-	return nil
+	return res, nil
 }
 
-// montarLote rende o script. Com comRemocoes=false ele omite os `delete`, que é
-// o reenvio descrito em AplicarLote.
+// renovacoesDoLote acha os endereços que aparecem nas DUAS listas da mesma
+// estrutura — que é, por construção, a forma de uma renovação.
+func renovacoesDoLote(l Lote) []netip.Addr {
+	var out []netip.Addr
+	for _, par := range paresDoLote(l) {
+		rem := conjunto(par.remover)
+		for _, e := range par.adicionar {
+			if rem[e.Addr] {
+				out = append(out, e.Addr)
+			}
+		}
+	}
+	return out
+}
+
+// remocoesDoLote são os delete que NÃO são metade de uma renovação — quer
+// dizer, os que o chamador pediu porque o endereço tem mesmo de sair.
+func remocoesDoLote(l Lote) []netip.Addr {
+	var out []netip.Addr
+	for _, par := range paresDoLote(l) {
+		add := make(map[netip.Addr]bool, len(par.adicionar))
+		for _, e := range par.adicionar {
+			add[e.Addr] = true
+		}
+		for _, a := range par.remover {
+			if !add[a] {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+type parDeEstrutura struct {
+	remover   []netip.Addr
+	adicionar []Entrada
+}
+
+func paresDoLote(l Lote) []parDeEstrutura {
+	return []parDeEstrutura{
+		{l.RemoverBloq, l.AdicionarBloq},
+		{l.RemoverBloq6, l.AdicionarBloq6},
+		{l.RemoverWan, l.AdicionarWan},
+	}
+}
+
+func conjunto(as []netip.Addr) map[netip.Addr]bool {
+	if len(as) == 0 {
+		return nil
+	}
+	m := make(map[netip.Addr]bool, len(as))
+	for _, a := range as {
+		m[a] = true
+	}
+	return m
+}
+
+// montarLote rende o script. Com comRemocoes=false ele omite os delete E os
+// add que dependiam deles — ver AplicarLote.
 func montarLote(l Lote, comRemocoes bool) string {
 	var b strings.Builder
 	if comRemocoes {
 		escreverRemocoes(&b, "set", DomBlockedSet, l.RemoverBloq)
 		escreverRemocoes(&b, "set", DomBlockedSet6, l.RemoverBloq6)
 		escreverRemocoes(&b, "map", DomWanMap, l.RemoverWan)
+		escreverAdicoes(&b, DomBlockedSet, l.AdicionarBloq, false, nil)
+		escreverAdicoes(&b, DomBlockedSet6, l.AdicionarBloq6, false, nil)
+		escreverAdicoes(&b, DomWanMap, l.AdicionarWan, true, nil)
+		return b.String()
 	}
-	escreverAdicoes(&b, DomBlockedSet, l.AdicionarBloq, false)
-	escreverAdicoes(&b, DomBlockedSet6, l.AdicionarBloq6, false)
-	escreverAdicoes(&b, DomWanMap, l.AdicionarWan, true)
+	escreverAdicoes(&b, DomBlockedSet, l.AdicionarBloq, false, conjunto(l.RemoverBloq))
+	escreverAdicoes(&b, DomBlockedSet6, l.AdicionarBloq6, false, conjunto(l.RemoverBloq6))
+	escreverAdicoes(&b, DomWanMap, l.AdicionarWan, true, conjunto(l.RemoverWan))
 	return b.String()
 }
 
 func escreverRemocoes(b *strings.Builder, tipo, nome string, addrs []netip.Addr) {
-	_ = tipo // o nft aceita `delete element` sem dizer se é set ou map
+	_ = tipo // o nft aceita delete element sem dizer se é set ou map
 	for _, a := range addrs {
 		if !a.IsValid() {
 			continue
@@ -247,9 +352,11 @@ func escreverRemocoes(b *strings.Builder, tipo, nome string, addrs []netip.Addr)
 	}
 }
 
-func escreverAdicoes(b *strings.Builder, nome string, es []Entrada, comMarca bool) {
+// escreverAdicoes rende os add. pular, quando não é nil, tira do script os
+// endereços que só entrariam acompanhados de um delete — ver AplicarLote.
+func escreverAdicoes(b *strings.Builder, nome string, es []Entrada, comMarca bool, pular map[netip.Addr]bool) {
 	for _, e := range es {
-		if !e.Addr.IsValid() {
+		if !e.Addr.IsValid() || pular[e.Addr] {
 			continue
 		}
 		prazo := grampearPrazo(e.Prazo)
@@ -285,11 +392,13 @@ func (s *Service) rodarScriptNft(ctx context.Context, script string) (string, er
 		return "", fmt.Errorf("criar o script do lote: %w", err)
 	}
 	defer os.Remove(f.Name())
-	if _, err := f.WriteString(script); err != nil {
+	_, err = f.WriteString(script)
+	if err != nil {
 		f.Close() //nolint:errcheck // já estamos devolvendo erro
 		return "", fmt.Errorf("escrever o script do lote: %w", err)
 	}
-	if err := f.Close(); err != nil {
+	err = f.Close()
+	if err != nil {
 		return "", fmt.Errorf("fechar o script do lote: %w", err)
 	}
 	return s.exec.Execute(ctx, "nft", "-f", f.Name())
@@ -308,7 +417,27 @@ type DomKernel struct {
 	Bloq  []netip.Addr
 	Bloq6 []netip.Addr
 	Wan   []netip.Addr
+
+	// LidoBloq, LidoBloq6 e LidoWan dizem, POR ESTRUTURA, se a pergunta foi
+	// respondida. Um booleano só para as três transformaria "li o set v4 e
+	// não consegui ler o map" em tudo-verdade ou tudo-erro, e as duas
+	// leituras são falsas.
+	LidoBloq  bool
+	LidoBloq6 bool
+	LidoWan   bool
+
+	// Ilegiveis são itens que o parser não reconheceu.
+	//
+	// Sem este número, len(k.Bloq) é apresentado como a verdade do kernel com um
+	// buraco invisível dentro: o parser descarta o que não entende, e a tela
+	// mostraria um total redondo e menor do que o real.
+	Ilegiveis int
 }
+
+// Tudo diz se as TRÊS estruturas foram lidas. É o que separa "o kernel está
+// vazio" de "não consegui perguntar", e a distinção é a diferença entre
+// uma tela certa e a mentira mais cara que ela pode contar.
+func (k DomKernel) Tudo() bool { return k.LidoBloq && k.LidoBloq6 && k.LidoWan }
 
 // DomElementos lê as três estruturas.
 //
@@ -316,48 +445,85 @@ type DomKernel struct {
 // dry-run o produto não escreve, mas continua tendo de dizer a verdade sobre o
 // que existe — e o que existe ali é o que sobrou de antes.
 //
-// Estrutura ausente NÃO é erro: é "vazia". A criação delas é do boot, e um erro
-// aqui viraria faixa vermelha na tela por causa de uma caixa que ainda não
+// ESTRUTURA AUSENTE NÃO É ERRO: é "vazia". A criação delas é do boot, e um
+// erro aqui viraria faixa vermelha na tela por causa de uma caixa que ainda não
 // passou pelo EnsureDomainStructures — que é exatamente o estado de todo
 // upgrade entre o boot e a primeira reconciliação.
+//
+// QUALQUER OUTRA FALHA É ERRO, e essa é a correção de um defeito que morava
+// aqui: engolir todo err fazia o nft fora do PATH, a falta de CAP_NET_ADMIN, o
+// prazo estourado e o ctx cancelado lerem como "as três estruturas estão
+// vazias". Quem chama monta com isso uma tela dizendo que nada está
+// bloqueado, que é precisamente o que o doc-comment de DomKernel promete
+// impedir.
 func (s *Service) DomElementos(ctx context.Context) (DomKernel, error) {
 	var k DomKernel
+	var falhas []string
 	for _, e := range []struct {
 		tipo, nome string
 		destino    *[]netip.Addr
+		lido       *bool
 	}{
-		{"set", DomBlockedSet, &k.Bloq},
-		{"set", DomBlockedSet6, &k.Bloq6},
-		{"map", DomWanMap, &k.Wan},
+		{"set", DomBlockedSet, &k.Bloq, &k.LidoBloq},
+		{"set", DomBlockedSet6, &k.Bloq6, &k.LidoBloq6},
+		{"map", DomWanMap, &k.Wan, &k.LidoWan},
 	} {
 		out, err := s.exec.ExecuteRead(ctx, "nft", "list", e.tipo, Family, Table, e.nome)
 		if err != nil {
+			if estruturaAusente(out, err) {
+				*e.lido = true
+				continue
+			}
+			falhas = append(falhas, fmt.Sprintf("%s %s: %v", e.tipo, e.nome, err))
 			continue
 		}
-		*e.destino = enderecosNft(out)
+		*e.lido = true
+		addrs, ilegiveis := enderecosNft(out)
+		*e.destino = addrs
+		k.Ilegiveis += ilegiveis
+	}
+	if len(falhas) > 0 {
+		return k, fmt.Errorf("ler as estruturas de domínio: %s", strings.Join(falhas, "; "))
 	}
 	return k, nil
 }
 
-// enderecosNft extrai os endereços de um `nft list set/map`.
+// estruturaAusente reconhece o erro do nft que significa "ainda não
+// existe", que é o estado legítimo de toda caixa entre o upgrade e o boot.
+//
+// A mensagem vem do stderr do nft, que o executor embute no erro. É casamento
+// por texto porque o nft não devolve código distinto — e o texto errado aqui
+// custa uma faixa vermelha a mais, enquanto engolir tudo custa uma tela que
+// afirma que nada está bloqueado.
+func estruturaAusente(out string, err error) bool {
+	t := strings.ToLower(out + " " + err.Error())
+	return strings.Contains(t, "no such file or directory") ||
+		strings.Contains(t, "does not exist")
+}
+
+// enderecosNft extrai os endereços de um nft list set/map, e diz quantos itens
+// ele NÃO conseguiu ler.
 //
 // O formato é `elements = { 1.2.3.4 timeout 1h expires 59m28s, ... }`, e no map
 // cada item ainda termina em ` : 0x12c`. Em todos os casos o endereço é o
 // PRIMEIRO campo do item, que é o que este parser lê e o único que ele promete.
 //
-// Endereço que não parseia é DESCARTADO em silêncio de propósito: a alternativa
-// seria devolver erro e transformar uma linha estranha na saída do nft numa
-// tela quebrada. O que importa aqui é o que dá para reconhecer.
-func enderecosNft(out string) []netip.Addr {
+// Item que não parseia continua sendo descartado — devolver erro transformaria
+// uma linha estranha na saída do nft numa tela quebrada. O que mudou é que ele
+// é CONTADO: um total que esconde o que não coube dentro dele é um número que
+// parece exato e não é.
+func enderecosNft(out string) ([]netip.Addr, int) {
 	i := strings.Index(out, "elements = {")
 	if i < 0 {
-		return nil
+		return nil, 0
 	}
 	corpo := out[i+len("elements = {"):]
-	if j := strings.Index(corpo, "}"); j >= 0 {
+	j := strings.Index(corpo, "}")
+	if j >= 0 {
 		corpo = corpo[:j]
 	}
 	var res []netip.Addr
+	ilegiveis := 0
 	for _, item := range strings.Split(corpo, ",") {
 		campos := strings.Fields(item)
 		if len(campos) == 0 {
@@ -365,9 +531,18 @@ func enderecosNft(out string) []netip.Addr {
 		}
 		a, err := netip.ParseAddr(campos[0])
 		if err != nil {
+			ilegiveis++
 			continue
 		}
 		res = append(res, a)
 	}
-	return res
+	return res, ilegiveis
 }
+
+// IsDryRun diz se este serviço só finge escrever.
+//
+// Existe exportado por causa da TELA. Em dry-run o alimentador de domínios
+// conta o lote e não escreve nada, enquanto a leitura das estruturas é de
+// verdade — a tela mostraria "412 lotes aplicados, 0 erros, 0 endereços no
+// kernel", com cada número certo isoladamente e a leitura conjunta falsa.
+func (s *Service) IsDryRun() bool { return s.exec.IsDryRun() }

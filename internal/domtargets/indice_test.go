@@ -40,6 +40,27 @@ func indiceCom(t *testing.T, rel *relogio, alvos ...Alvo) *Indice {
 	return i
 }
 
+// aprender é Aprender seguido da CONFIRMAÇÃO de que o kernel recebeu.
+//
+// Os dois passos são separados no código de verdade porque o índice não pode
+// dar por escrito o que ainda pode falhar no nft (ver Indice.Confirmar). Quase
+// todo teste daqui quer o caminho feliz — decidiu, escreveu, entrou —, e é este
+// atalho. Quem testa o caminho da falha chama Aprender e NaoConfirmado na mão.
+func aprender(t *testing.T, i *Indice, nome string, addrs []netip.Addr, ttl time.Duration) Ajuste {
+	t.Helper()
+	aj := i.Aprender(nome, addrs, ttl)
+	i.Confirmar(enderecosDe(aj.Escritas))
+	return aj
+}
+
+func enderecosDe(es []Escrita) []netip.Addr {
+	out := make([]netip.Addr, 0, len(es))
+	for _, e := range es {
+		out = append(out, e.Addr)
+	}
+	return out
+}
+
 // TestSufixoNaoCasaNomeQueApenasTerminaIgual prende o defeito de casar com
 // strings.HasSuffix cru.
 //
@@ -126,6 +147,24 @@ func TestEnderecoQueNaoPodeVirarRegraNuncaEhAceito(t *testing.T) {
 		"2001:0:1:2:3:4:5:6", // Teredo
 		"64:ff9b::c0a8:1",    // NAT64 carregando 192.168.0.1
 		"2001:db8::1",        // documentação
+		// Os buracos que a revisão MEDIU na lista anterior. Todos devolviam
+		// true, e cada um é uma forma de contrabandear um endereço local por
+		// baixo de um filtro que só olha o que ele conhece.
+		"64:ff9b:1::c0a8:101", // NAT64 de uso LOCAL (RFC 8215) — o primo do
+		//                        64:ff9b::/96, que já estava barrado
+		"::192.168.1.1",        // IPv4-compatible (::/96)
+		"::127.0.0.1",          // idem, carregando loopback
+		"::ffff:0:192.168.1.1", // IPv4-translated (RFC 6052) — Is4In6 não pega
+		"2001:2::1",            // benchmarking v6, gêmeo do 198.18.0.0/15
+		"3fff::1",              // documentação (RFC 9637)
+		"0100::1",              // descarte
+		"5f00::1",              // SRv6
+		"2001:10::1",           // ORCHID
+		"2001:20::1",           // ORCHIDv2
+		"3ffe::1",              // 6bone
+		"192.88.99.1",          // anycast de relay 6to4 (RFC 7526)
+		"192.31.196.1",         // AS112
+		"192.175.48.1",         // AS112
 	}
 	for _, s := range proibidos {
 		if Utilizavel(end(t, s)) {
@@ -147,7 +186,7 @@ func TestEnderecoQueNaoPodeVirarRegraNuncaEhAceito(t *testing.T) {
 // silenciosa vira "por que este domínio não bloqueia?" sem resposta.
 func TestEnderecoRecusadoNaoViraEscritaEApareceNoContador(t *testing.T) {
 	i := indiceCom(t, nil, Alvo{Dominio: "hostil.com", Estagio: Ativo})
-	aj := i.Aprender("hostil.com", []netip.Addr{
+	aj := aprender(t, i, "hostil.com", []netip.Addr{
 		end(t, "192.168.3.1"), end(t, "8.8.8.8"), end(t, "224.0.0.1"),
 	}, time.Minute)
 	es := aj.Escritas
@@ -167,7 +206,7 @@ func TestEnderecoRecusadoNaoViraEscritaEApareceNoContador(t *testing.T) {
 // de CDN pelo telefone tocando, que é exatamente o que ele existe para evitar.
 func TestDominioEmEnsaioNaoEscreveNoKernel(t *testing.T) {
 	i := indiceCom(t, nil, Alvo{Dominio: "cdn-de-tudo.net", Capacidade: Barrar, Estagio: Ensaio})
-	aj := i.Aprender("www.cdn-de-tudo.net", []netip.Addr{end(t, "8.8.8.8")}, time.Hour)
+	aj := aprender(t, i, "www.cdn-de-tudo.net", []netip.Addr{end(t, "8.8.8.8")}, time.Hour)
 	if !aj.Vazio() {
 		t.Fatalf("um domínio em ensaio produziu escrita: %+v", aj)
 	}
@@ -184,7 +223,7 @@ func TestDominioSemEstagioNasceEmEnsaio(t *testing.T) {
 	if a.Estagio != Ensaio {
 		t.Fatalf("nasceu fora do ensaio: %q", a.Estagio)
 	}
-	if aj := i.Aprender("exemplo.com", []netip.Addr{end(t, "8.8.8.8")}, time.Hour); !aj.Vazio() {
+	if aj := aprender(t, i, "exemplo.com", []netip.Addr{end(t, "8.8.8.8")}, time.Hour); !aj.Vazio() {
 		t.Fatalf("escreveu sem estágio definido: %+v", aj)
 	}
 }
@@ -200,14 +239,14 @@ func TestReensinarEnderecoFrescoNaoGeraComando(t *testing.T) {
 	i := indiceCom(t, rel, Alvo{Dominio: "popular.com", Estagio: Ativo})
 	a := []netip.Addr{end(t, "8.8.8.8")}
 
-	if aj := i.Aprender("popular.com", a, 30*time.Second); len(aj.Escritas) != 1 {
+	if aj := aprender(t, i, "popular.com", a, 30*time.Second); len(aj.Escritas) != 1 {
 		t.Fatalf("a primeira vez tinha de escrever: %+v", aj)
 	}
 	// O prazo concedido é o piso, 10 minutos. Vinte reensinos nos primeiros
 	// seis minutos não podem produzir um comando sequer.
 	for n := 0; n < 20; n++ {
 		rel.andar(18 * time.Second)
-		if aj := i.Aprender("popular.com", a, 30*time.Second); !aj.Vazio() {
+		if aj := aprender(t, i, "popular.com", a, 30*time.Second); !aj.Vazio() {
 			t.Fatalf("reensino %d gerou comando com %v de prazo restante", n, nftables.DomTTLPiso)
 		}
 	}
@@ -226,14 +265,14 @@ func TestRenovaSoQuandoRestaMenosDeUmTerco(t *testing.T) {
 	rel := novoRelogio()
 	i := indiceCom(t, rel, Alvo{Dominio: "exemplo.com", Estagio: Ativo})
 	a := []netip.Addr{end(t, "8.8.8.8")}
-	i.Aprender("exemplo.com", a, time.Hour) // prazo concedido: 1h (o teto)
+	aprender(t, i, "exemplo.com", a, time.Hour) // prazo concedido: 1h (o teto)
 
 	rel.andar(39 * time.Minute) // restam 21 min, mais de 1/3 de 60
-	if aj := i.Aprender("exemplo.com", a, time.Hour); !aj.Vazio() {
+	if aj := aprender(t, i, "exemplo.com", a, time.Hour); !aj.Vazio() {
 		t.Fatalf("renovou cedo demais: %+v", aj)
 	}
 	rel.andar(2 * time.Minute) // restam 19 min, menos de 1/3
-	es := i.Aprender("exemplo.com", a, time.Hour).Escritas
+	es := aprender(t, i, "exemplo.com", a, time.Hour).Escritas
 	if len(es) != 1 {
 		t.Fatalf("não renovou quando devia: %+v", es)
 	}
@@ -246,11 +285,11 @@ func TestRenovaSoQuandoRestaMenosDeUmTerco(t *testing.T) {
 // TERCEIRO não chega cru no kernel.
 func TestPrazoEhGrampeadoEntrePisoETeto(t *testing.T) {
 	i := indiceCom(t, nil, Alvo{Dominio: "exemplo.com", Estagio: Ativo})
-	es := i.Aprender("exemplo.com", []netip.Addr{end(t, "8.8.8.8")}, 30*time.Second).Escritas
+	es := aprender(t, i, "exemplo.com", []netip.Addr{end(t, "8.8.8.8")}, 30*time.Second).Escritas
 	if es[0].Prazo != nftables.DomTTLPiso {
 		t.Errorf("TTL curto não subiu ao piso: %v", es[0].Prazo)
 	}
-	es = i.Aprender("exemplo.com", []netip.Addr{end(t, "1.1.1.1")}, 30*24*time.Hour).Escritas
+	es = aprender(t, i, "exemplo.com", []netip.Addr{end(t, "1.1.1.1")}, 30*24*time.Hour).Escritas
 	if es[0].Prazo != nftables.DomTTLTeto {
 		t.Errorf("TTL absurdo não desceu ao teto: %v", es[0].Prazo)
 	}
@@ -267,8 +306,8 @@ func TestRefcountMantemEnderecoEnquantoOutroDominioReivindica(t *testing.T) {
 		Alvo{Dominio: "dois.com", Capacidade: Barrar, Estagio: Ativo},
 	)
 	compartilhado := []netip.Addr{end(t, "8.8.8.8")}
-	i.Aprender("um.com", compartilhado, time.Hour)
-	if aj := i.Aprender("dois.com", compartilhado, time.Hour); !aj.Vazio() {
+	aprender(t, i, "um.com", compartilhado, time.Hour)
+	if aj := aprender(t, i, "dois.com", compartilhado, time.Hour); !aj.Vazio() {
 		t.Fatalf("o segundo dono gerou comando à toa: %+v", aj)
 	}
 
@@ -291,7 +330,7 @@ func TestRefcountMantemEnderecoEnquantoOutroDominioReivindica(t *testing.T) {
 // pior tipo de defeito de firewall.
 func TestBaixarParaEnsaioTiraOsEnderecosDoKernelNaHora(t *testing.T) {
 	i := indiceCom(t, nil, Alvo{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ativo})
-	i.Aprender("exemplo.com", []netip.Addr{end(t, "8.8.8.8")}, time.Hour)
+	aprender(t, i, "exemplo.com", []netip.Addr{end(t, "8.8.8.8")}, time.Hour)
 
 	aj := i.DefinirAlvos([]Alvo{{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ensaio}})
 	if len(aj.Remocoes) != 1 || aj.Remocoes[0].Capacidade != Barrar {
@@ -310,10 +349,10 @@ func TestBarrarGanhaDeDirecionarNoMesmoEndereco(t *testing.T) {
 		Alvo{Dominio: "barrado.com", Capacidade: Barrar, Estagio: Ativo},
 	)
 	a := []netip.Addr{end(t, "8.8.8.8")}
-	if aj := i.Aprender("rota.com", a, time.Hour); aj.Escritas[0].Capacidade != Direcionar {
+	if aj := aprender(t, i, "rota.com", a, time.Hour); aj.Escritas[0].Capacidade != Direcionar {
 		t.Fatalf("o primeiro dono não direcionou: %+v", aj)
 	}
-	aj := i.Aprender("barrado.com", a, time.Hour)
+	aj := aprender(t, i, "barrado.com", a, time.Hour)
 	if len(aj.Escritas) != 1 || aj.Escritas[0].Capacidade != Barrar {
 		t.Fatalf("barrar não ganhou de direcionar: %+v", aj)
 	}
@@ -336,7 +375,7 @@ func TestTetoPorDominioApareceNoContador(t *testing.T) {
 	i := indiceCom(t, nil, Alvo{Dominio: "cdn.com", Estagio: Ativo})
 	for n := 0; n < MaxPorDominio+5; n++ {
 		a := netip.AddrFrom4([4]byte{8, 0, byte(n >> 8), byte(n%250 + 1)})
-		i.Aprender("cdn.com", []netip.Addr{a}, time.Hour)
+		aprender(t, i, "cdn.com", []netip.Addr{a}, time.Hour)
 	}
 	c := i.Contadores()
 	if c.Novos != MaxPorDominio {
@@ -362,7 +401,7 @@ func TestTetoGlobalApareceNoContador(t *testing.T) {
 	for d := 0; d < nDominios; d++ {
 		for k := 0; k < MaxPorDominio; k++ {
 			a := netip.AddrFrom4([4]byte{8, byte(n >> 16), byte(n >> 8), byte(n)})
-			i.Aprender(fmt.Sprintf("d%d.com", d), []netip.Addr{a}, time.Hour)
+			aprender(t, i, fmt.Sprintf("d%d.com", d), []netip.Addr{a}, time.Hour)
 			n++
 		}
 	}
@@ -385,10 +424,10 @@ func TestRotatividadeContaDistintosInclusiveEmEnsaio(t *testing.T) {
 	i := indiceCom(t, nil, Alvo{Dominio: "cdn.com", Estagio: Ensaio})
 	for n := 0; n < 10; n++ {
 		a := netip.AddrFrom4([4]byte{8, 1, 0, byte(n + 1)})
-		i.Aprender("cdn.com", []netip.Addr{a}, time.Minute)
+		aprender(t, i, "cdn.com", []netip.Addr{a}, time.Minute)
 	}
 	// Repetir o mesmo endereço não conta duas vezes.
-	i.Aprender("cdn.com", []netip.Addr{netip.AddrFrom4([4]byte{8, 1, 0, 1})}, time.Minute)
+	aprender(t, i, "cdn.com", []netip.Addr{netip.AddrFrom4([4]byte{8, 1, 0, 1})}, time.Minute)
 	n, truncada := i.Rotatividade("cdn.com")
 	if n != 10 || truncada {
 		t.Fatalf("rotatividade errada: %d truncada=%v", n, truncada)
@@ -404,7 +443,7 @@ func TestRotatividadeTruncadaAvisaEmVezDeMentirUmNumeroParado(t *testing.T) {
 	i := indiceCom(t, nil, Alvo{Dominio: "cdn.com", Estagio: Ensaio})
 	for n := 0; n < MaxRotatividadeLembrada+10; n++ {
 		a := netip.AddrFrom4([4]byte{8, byte(n >> 8), byte(n), 1})
-		i.Aprender("cdn.com", []netip.Addr{a}, time.Minute)
+		aprender(t, i, "cdn.com", []netip.Addr{a}, time.Minute)
 	}
 	n, truncada := i.Rotatividade("cdn.com")
 	if n != MaxRotatividadeLembrada || !truncada {
@@ -423,13 +462,13 @@ func TestPodarNaoEsqueceAntesDaFolga(t *testing.T) {
 	rel := novoRelogio()
 	i := indiceCom(t, rel, Alvo{Dominio: "exemplo.com", Estagio: Ativo})
 	a := []netip.Addr{end(t, "8.8.8.8")}
-	i.Aprender("exemplo.com", a, nftables.DomTTLPiso)
+	aprender(t, i, "exemplo.com", a, nftables.DomTTLPiso)
 
 	rel.andar(nftables.DomTTLPiso + FolgaDePoda/2)
 	if n := i.Podar(); n != 0 {
 		t.Fatalf("podou dentro da folga: %d", n)
 	}
-	es := i.Aprender("exemplo.com", a, nftables.DomTTLPiso).Escritas
+	es := aprender(t, i, "exemplo.com", a, nftables.DomTTLPiso).Escritas
 	if len(es) != 1 || !es[0].Substituir {
 		t.Fatalf("o reensino dentro da folga não saiu como renovação: %+v", es)
 	}
@@ -445,22 +484,215 @@ func TestPodarNaoEsqueceAntesDaFolga(t *testing.T) {
 	}
 }
 
-// TestReivindicantesCreditaOKernelEContaOrfaos.
+// TestCreditarCreditaOKernelEContaOrfaos.
 //
-// É o que deixa a tela dizer "netflix.com: 12 barrados agora" com o 12 vindo do
-// kernel. E o que o kernel tem e ninguém reivindica precisa APARECER: é um
-// bloqueio valendo sem dono, sobra de um flush perdido ou de um reinício.
-func TestReivindicantesCreditaOKernelEContaOrfaos(t *testing.T) {
+// É o que deixa a tela dizer "netflix.com: 12 barrados agora" com o 12
+// vindo do kernel. E o que o kernel tem e ninguém reivindica precisa APARECER:
+// é um bloqueio valendo sem dono, sobra de um flush perdido ou de um reinício.
+func TestCreditarCreditaOKernelEContaOrfaos(t *testing.T) {
 	i := indiceCom(t, nil, Alvo{Dominio: "exemplo.com", Estagio: Ativo})
-	i.Aprender("exemplo.com", []netip.Addr{end(t, "8.8.8.8"), end(t, "1.1.1.1")}, time.Hour)
+	aprender(t, i, "exemplo.com", []netip.Addr{end(t, "8.8.8.8"), end(t, "1.1.1.1")}, time.Hour)
 
-	porDominio, orfaos := i.Reivindicantes([]netip.Addr{
-		end(t, "8.8.8.8"), end(t, "1.1.1.1"), end(t, "9.9.9.9"),
+	c := i.Creditar(nftables.DomKernel{
+		Bloq:      []netip.Addr{end(t, "8.8.8.8"), end(t, "1.1.1.1"), end(t, "9.9.9.9")},
+		LidoBloq:  true,
+		LidoBloq6: true,
+		LidoWan:   true,
 	})
-	if porDominio["exemplo.com"] != 2 {
-		t.Fatalf("crédito errado: %v", porDominio)
+	if c.PorDominio["exemplo.com"] != 2 {
+		t.Fatalf("crédito errado: %v", c.PorDominio)
 	}
-	if orfaos != 1 {
-		t.Fatalf("o órfão não apareceu: %d", orfaos)
+	if c.Orfaos != 1 {
+		t.Fatalf("o órfão não apareceu: %d", c.Orfaos)
+	}
+	if c.ForaDeLugar != 0 {
+		t.Fatalf("inventou endereço fora de lugar: %d", c.ForaDeLugar)
+	}
+}
+
+// TestCreditarVeOEnderecoNaEstruturaErrada.
+//
+// O modo de falha que isto denuncia: numa troca de capacidade cujo delete se
+// perdeu, o MESMO v4 fica em dom_blocked e em dom_wan ao mesmo tempo. Ele não é
+// órfão (o índice o conhece), as duas contagens da tela o somam, e o resto na
+// estrutura errada não é renovado por ninguém — some sozinho em até uma hora,
+// que é o defeito que aparece de vez em quando e nunca no momento em que foi
+// criado.
+//
+// Achatar as três estruturas numa lista de endereços, como a versão anterior
+// fazia, jogava fora exatamente a informação que revela isto.
+func TestCreditarVeOEnderecoNaEstruturaErrada(t *testing.T) {
+	i := indiceCom(t, nil, Alvo{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ativo})
+	a := end(t, "8.8.8.8")
+	aprender(t, i, "exemplo.com", []netip.Addr{a}, time.Hour)
+
+	// O kernel tem o mesmo endereço nas duas estruturas. O índice escolheu
+	// barrar.
+	c := i.Creditar(nftables.DomKernel{
+		Bloq:      []netip.Addr{a},
+		Wan:       []netip.Addr{a},
+		LidoBloq:  true,
+		LidoBloq6: true,
+		LidoWan:   true,
+	})
+	if c.ForaDeLugar != 1 {
+		t.Fatalf("o endereço na estrutura errada não apareceu: %+v", c)
+	}
+	if c.PorDominio["exemplo.com"] != 1 {
+		t.Fatalf("um endereço em duas estruturas foi creditado duas vezes: %v", c.PorDominio)
+	}
+	if c.Orfaos != 0 {
+		t.Fatalf("o índice conhece o endereço e ele foi contado como órfão: %d", c.Orfaos)
+	}
+}
+
+// TestEnderecoDaPropriaCaixaNuncaViraRegra é o buraco que Utilizavel não tinha
+// como tapar.
+//
+// Utilizavel filtra por CATEGORIA, e todo endereço de que a caixa depende é de
+// categoria PÚBLICA por construção: o da WAN é público (o pacote ddns existe
+// para publicá-lo), o gateway de um uplink /30 é público, e com prefixo
+// delegado os hosts da LAN têm endereço global v6 — a família em que
+// ddns.IsPrivate não tem nada a dizer.
+//
+// Sem a lista de protegidos, um domínio hostil responde com o IP da WAN1 e ele
+// entra em dom_wan com a marca da WAN2, ou em dom_blocked com prazo de uma
+// hora. Com o gateway lá dentro e o set ligado na forward, é a LAN inteira sem
+// uplink por causa de uma resposta de DNS de terceiro.
+func TestEnderecoDaPropriaCaixaNuncaViraRegra(t *testing.T) {
+	i := indiceCom(t, nil, Alvo{Dominio: "hostil.com", Estagio: Ativo})
+	i.DefinirProtegidos([]netip.Prefix{
+		netip.MustParsePrefix("200.150.10.0/29"), // a WAN e o gateway dela
+		netip.MustParsePrefix("2804:14d:1::/48"), // o prefixo delegado da LAN
+	})
+
+	proprios := []netip.Addr{
+		end(t, "200.150.10.2"),  // o endereço da WAN
+		end(t, "200.150.10.1"),  // o gateway do provedor
+		end(t, "2804:14d:1::1"), // um host da LAN com GUA
+	}
+	for _, a := range proprios {
+		if !Utilizavel(a) {
+			t.Fatalf("%s devia passar pelo filtro de categoria — o teste só prova algo se ele passar", a)
+		}
+	}
+
+	aj := i.Aprender("hostil.com", append(proprios, end(t, "8.8.8.8")), time.Hour)
+	if len(aj.Escritas) != 1 || aj.Escritas[0].Addr != end(t, "8.8.8.8") {
+		t.Fatalf("o firewall foi virado contra a própria caixa: %+v", aj.Escritas)
+	}
+	c := i.Contadores()
+	if c.RecusadosProprios != 3 {
+		t.Fatalf("a recusa do que é nosso não apareceu: %+v", c)
+	}
+	if c.Recusados != 0 {
+		t.Fatalf("endereço próprio foi contado como recusa de categoria: %+v", c)
+	}
+}
+
+// TestV6DeDominioDirecionadoNaoEntraNoIndice.
+//
+// Não existe par v6 do map de direcionamento, e é de propósito. O montador do
+// lote já descartava esse endereço — mas o ÍNDICE o guardava: criava registro,
+// consumia vaga do teto por domínio e do teto global, e emitia uma Escrita que
+// morria em silêncio. O cabeçalho do índice promete que só entra ali endereço
+// que foi (ou está indo) para uma das três estruturas, e este não vai para
+// nenhuma.
+//
+// Pela lente do ataque: um domínio que não quer ser direcionado responde só
+// AAAA e a política não se aplica — sem uma linha em lugar nenhum dizendo isso.
+func TestV6DeDominioDirecionadoNaoEntraNoIndice(t *testing.T) {
+	i := indiceCom(t, nil, Alvo{Dominio: "rota.com", Capacidade: Direcionar, Marca: 0x12c, Estagio: Ativo})
+	aj := aprender(t, i, "rota.com", []netip.Addr{
+		end(t, "2606:4700::1111"), end(t, "8.8.8.8"),
+	}, time.Hour)
+
+	if len(aj.Escritas) != 1 || !aj.Escritas[0].Addr.Is4() {
+		t.Fatalf("o v6 de domínio direcionado virou escrita: %+v", aj.Escritas)
+	}
+	c := i.Contadores()
+	if c.Vivos != 1 {
+		t.Fatalf("o índice guardou endereço que não vai para estrutura nenhuma: vivos=%d", c.Vivos)
+	}
+	if c.DirecionadoV6Descartado != 1 {
+		t.Fatalf("o descarte não foi contado: %+v", c)
+	}
+	linhas := i.Linhas()
+	if len(linhas) != 1 || linhas[0].DirecionadoV6 != 1 {
+		t.Fatalf("a tela não consegue dizer POR QUE o direcionado não direciona: %+v", linhas)
+	}
+}
+
+// TestOEstouroEARecusaSaoAtribuiveisAoDominio.
+//
+// Contador global não responde a pergunta que o admin faz. Numa caixa com
+// trinta domínios listados, "houve 40.000 estouros" é ruído com aparência de
+// medição: ele não diz QUAL domínio está meio-bloqueado, e meio-bloqueado é o
+// mesmo que não bloqueado para quem usa a rede.
+//
+// E NoTeto é estado AGORA, não histórico: um domínio parado no teto para de
+// gerar resposta nova (os clientes já têm tudo em cache) e o cumulativo
+// congela. O admin lê "estabilizou" onde o certo é "continua com 64 de 300".
+func TestOEstouroEARecusaSaoAtribuiveisAoDominio(t *testing.T) {
+	i := indiceCom(t, nil,
+		Alvo{Dominio: "cdn.com", Estagio: Ativo},
+		Alvo{Dominio: "quieto.com", Estagio: Ativo},
+	)
+	for n := 0; n < MaxPorDominio+5; n++ {
+		a := netip.AddrFrom4([4]byte{8, 0, byte(n >> 8), byte(n%250 + 1)})
+		aprender(t, i, "cdn.com", []netip.Addr{a}, time.Hour)
+	}
+	aprender(t, i, "quieto.com", []netip.Addr{end(t, "192.168.3.1")}, time.Hour)
+
+	porNome := map[string]LinhaDominio{}
+	for _, l := range i.Linhas() {
+		porNome[l.Alvo.Dominio] = l
+	}
+	cdn, quieto := porNome["cdn.com"], porNome["quieto.com"]
+	if cdn.Estouros != 5 {
+		t.Fatalf("o estouro não foi atribuído ao domínio que estourou: %+v", cdn)
+	}
+	if quieto.Estouros != 0 {
+		t.Fatalf("o estouro de um domínio apareceu no outro: %+v", quieto)
+	}
+	if !cdn.NoTeto || cdn.Teto != MaxPorDominio {
+		t.Fatalf("a tela não consegue dizer que o domínio está NO TETO agora: %+v", cdn)
+	}
+	if quieto.NoTeto {
+		t.Fatalf("o domínio parado apareceu no teto: %+v", quieto)
+	}
+	if quieto.Recusados != 1 || cdn.Recusados != 0 {
+		t.Fatalf("a recusa não é atribuível: cdn=%+v quieto=%+v", cdn, quieto)
+	}
+	if quieto.UltimoAprendizado.IsZero() {
+		t.Fatal("um domínio que já foi consultado ficou indistinguível de um que nunca foi")
+	}
+}
+
+// TestSairDaListaApagaAObservacaoDoDominio.
+//
+// Rotatividade e estatística medem UMA configuração. Um domínio removido da
+// lista e recolocado meses depois mostrava a conta acumulada da configuração
+// anterior — um número atravessando épocas diferentes, apresentado como se
+// fosse da atual. É o mesmo erro que RotatividadeTruncada existe para evitar.
+//
+// Baixar para ENSAIO não apaga nada, e isso é o certo: o ensaio existe
+// justamente para acumular esse número antes de o admin promover.
+func TestSairDaListaApagaAObservacaoDoDominio(t *testing.T) {
+	i := indiceCom(t, nil, Alvo{Dominio: "cdn.com", Estagio: Ativo})
+	aprender(t, i, "cdn.com", []netip.Addr{end(t, "8.8.8.8"), end(t, "1.1.1.1")}, time.Hour)
+
+	// Baixar para ensaio mantém a conta.
+	i.DefinirAlvos([]Alvo{{Dominio: "cdn.com", Estagio: Ensaio}})
+	if n, _ := i.Rotatividade("cdn.com"); n != 2 {
+		t.Fatalf("baixar para ensaio apagou a rotatividade que o ensaio existe para mostrar: %d", n)
+	}
+
+	// Sair da lista apaga.
+	i.DefinirAlvos(nil)
+	i.DefinirAlvos([]Alvo{{Dominio: "cdn.com", Estagio: Ensaio}})
+	n, _ := i.Rotatividade("cdn.com")
+	if n != 0 {
+		t.Fatalf("a conta da configuração anterior atravessou: %d", n)
 	}
 }

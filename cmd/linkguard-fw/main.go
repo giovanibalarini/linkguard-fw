@@ -684,6 +684,24 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// antes de qualquer Run, porque o observador é lido sem lock pelas
 	// goroutines de conexão — ver SetObservador.
 	domSvc := domtargets.NovoServico(nftSvc)
+	// As faixas e os endereços da PRÓPRIA caixa, que o filtro de categoria do
+	// índice não tem como recusar: o endereço da WAN é público (o ddns existe
+	// para publicá-lo), o gateway de um uplink /30 é público, e com prefixo
+	// delegado os hosts da LAN têm endereço global v6. Sem esta lista, um
+	// domínio hostil que responde com qualquer um deles põe o firewall contra a
+	// própria caixa. Recarregada a cada poda porque o endereço da WAN muda
+	// sozinho num link discado.
+	domSvc.DefinirFonteDeEnderecosProprios(func() []string {
+		links, err := db.GetLinks()
+		if err != nil {
+			return nil
+		}
+		proprios := make([]string, 0, len(links)*4)
+		for _, l := range links {
+			proprios = append(proprios, l.IPAddress, l.Gateway, l.DNSTest, l.MonitorHosts)
+		}
+		return proprios
+	})
 	dnstapSvc.SetObservador(domSvc.Observar)
 	// Séries por aparelho para o coletor do cliente (#118). Fora do registro
 	// aberto do Prometheus de propósito — ver internal/metrics/exposicao.go.
@@ -1317,7 +1335,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			slog.Warn("alvo por domínio: não consegui carregar a lista", "err", err)
 			return
 		}
-		s.domSvc.DefinirAlvos(ctx, alvosDeDominio(alvos))
+		s.domSvc.DefinirAlvos(alvosDeDominio(alvos))
 	}()
 
 	go balancerSvc.Run(ctx)
