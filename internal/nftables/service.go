@@ -347,9 +347,42 @@ func (s *Service) ntpInputState() ([]string, bool, error) {
 	return s.ntpInputSource()
 }
 
-// Ruleset returns the full live nftables ruleset (`nft list ruleset`).
+// Ruleset devolve a tabela que o LinkGuard possui — `nft list table inet
+// linkguard` —, e NÃO o ruleset inteiro do kernel.
+//
+// ERA `nft list ruleset`, e o escopo é um conserto de privacidade, não uma
+// arrumação. Desde a #115 o kernel carrega uma segunda tabela nossa,
+// `inet linkguard_flows`, cujos elementos são a tupla `origem . destino .
+// porta` de cada conversa da rede — numa PME, o histórico de navegação de cada
+// funcionário. Um dump irrestrito publicava essa tabela inteira por três rotas
+// que ninguém pensou em olhar quando a permissão nova foi desenhada:
+//
+//   - GET /api/nftables/ruleset, atrás de firewall.read — que está no papel de
+//     Operador E dentro de readOnlyPermissions(), ou seja no papel de
+//     VISUALIZADOR. O papel mais baixo de fábrica lia, na aba "ruleset" da
+//     página de Firewall, exatamente o conjunto de dados que PermTrafficFlows
+//     foi criada para trancar fora de todo papel que não fosse o de
+//     administrador. E sem auditoria nenhuma, ao lado de uma consulta que se
+//     descreve como "a primeira leitura auditada do produto";
+//   - POST /api/nftables/backup (via Save), que congelava a janela inteira numa
+//     linha de `iptables_backups` sem retenção, servida de volta com o campo
+//     `rules` cru por GET /api/nftables/backups. Isso derruba as três
+//     propriedades que a #115 argumenta: a retenção de 5–1440 min vira
+//     permanente, o "nada é escrito em disco" vira linha de banco, e a
+//     permissão escolhida a dedo é contornada por firewall.read;
+//   - saveNftSnapshot / hosts.Service, que gravavam o mesmo dump em settings.
+//
+// O escopo não custa função nenhuma: todo consumidor deste texto já é escopado
+// do outro lado — Restore e Rollback passam por LinkguardTableBlock, que extrai
+// só o bloco `table inet linkguard`, e o snapshot de boot é restaurado pelo
+// mesmo caminho. O que o dump irrestrito acrescentava era peso morto que
+// vazava.
+//
+// É a mesma decisão que Persist já toma, pela razão vizinha (lá é tabela de
+// terceiro entrando no arquivo de boot; aqui é tabela nossa saindo por uma rota
+// de leitura), e o mesmo alerta que parseTableRuleset documenta em overview.go.
 func (s *Service) Ruleset(ctx context.Context) (string, error) {
-	return s.exec.ExecuteRead(ctx, "nft", "list", "ruleset")
+	return s.exec.ExecuteRead(ctx, "nft", "list", "table", Family, Table)
 }
 
 // Save returns the current ruleset for storage as a backup (same as Ruleset).

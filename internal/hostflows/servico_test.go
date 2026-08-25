@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 )
 
@@ -67,6 +68,27 @@ func (n nomesFalsos) Nome(a netip.Addr) (string, bool) {
 	nome, ok := n[a.String()]
 	return nome, ok
 }
+
+func (n nomesFalsos) Estado() dnstap.Estado {
+	return dnstap.Estado{Entradas: len(n), Teto: dnstap.MaxEntradas}
+}
+
+// nomesCheios é o mapa que JÁ despejou entrada por teto — o estado que faz um
+// destino sem nome significar "foi consultado e saiu", não "nunca foi visto".
+type nomesCheios map[string]string
+
+func (n nomesCheios) Nome(a netip.Addr) (string, bool) {
+	nome, ok := n[a.String()]
+	return nome, ok
+}
+
+func (n nomesCheios) Estado() dnstap.Estado {
+	return dnstap.Estado{Entradas: len(n), Teto: dnstap.MaxEntradas, Cheio: true}
+}
+
+// coletorLigado / coletorDesligado são o segundo argumento de SetNomes.
+func coletorLigado() bool    { return true }
+func coletorDesligado() bool { return false }
 
 // bancoLigado devolve um banco com o registro ligado na janela e teto pedidos.
 func bancoLigado(janela, teto int) *bancoFalso {
@@ -368,7 +390,7 @@ func TestNomeDoDestinoSaiDoMapaENuncaEhInventado(t *testing.T) {
 	// site hoje e de outro daqui a dez minutos.
 	fw := &fwFalso{snap: instantaneoDeTeste()}
 	s := NovoServico(fw, bancoLigado(60, 8192))
-	s.SetNomes(nomesFalsos{"8.8.8.8": "dns.google"})
+	s.SetNomes(nomesFalsos{"8.8.8.8": "dns.google"}, coletorLigado)
 
 	r, err := s.Consultar(context.Background(), "192.168.3.50", 0)
 	if err != nil {

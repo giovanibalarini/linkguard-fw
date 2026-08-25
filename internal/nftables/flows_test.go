@@ -36,12 +36,24 @@ const setDeFluxosVazio = `table inet linkguard_flows {
 	}
 }`
 
+// parseOK roda o parse e falha o teste em erro. Existe porque parseFlowSet
+// passou a devolver erro quando não reconhece a saída — ver
+// TestParseFlowSetNaoDegradaEmJanelaZeroQuandoNaoReconheceASaida.
+func parseOK(t *testing.T, out string) FlowSnapshot {
+	t.Helper()
+	snap, err := parseFlowSet(out)
+	if err != nil {
+		t.Fatalf("parseFlowSet: %v", err)
+	}
+	return snap
+}
+
 func TestParseFlowSetLeATuplaInteiraIncluindoALinhaContinuada(t *testing.T) {
 	// O defeito que este teste prende: o nft quebra a linha entre elementos e
 	// indenta a continuação. Uma regex que exija tudo numa linha só lê a
 	// PRIMEIRA conversa e joga o resto fora — e a tela mostra um host que falou
 	// com um destino só, com cara de completa.
-	snap := parseFlowSet(setDeFluxosComElementos)
+	snap := parseOK(t, setDeFluxosComElementos)
 	if len(snap.Fluxos) != 3 {
 		t.Fatalf("queria 3 tuplas, veio %d: %+v", len(snap.Fluxos), snap.Fluxos)
 	}
@@ -62,7 +74,7 @@ func TestParseFlowSetVazioNaoViraErro(t *testing.T) {
 	// Set sem a linha de elementos é o estado normal logo depois do boot.
 	// Lista vazia é a resposta certa; o que não pode é isso virar tupla
 	// fantasma vinda da declaração do set.
-	snap := parseFlowSet(setDeFluxosVazio)
+	snap := parseOK(t, setDeFluxosVazio)
 	if len(snap.Fluxos) != 0 {
 		t.Errorf("set vazio devolveu %+v", snap.Fluxos)
 	}
@@ -78,7 +90,7 @@ func TestParseFlowSetNaoInventaTuplaAPartirDaDeclaracao(t *testing.T) {
 	// e uma conversa inventada num registro de quem-falou-com-quem é a pior
 	// mentira que esta tela pode contar.
 	entrada := setDeFluxosVazio + "\ncounter packets 9 bytes 9\n"
-	if snap := parseFlowSet(entrada); len(snap.Fluxos) != 0 {
+	if snap := parseOK(t, entrada); len(snap.Fluxos) != 0 {
 		t.Errorf("casou com algo que não é elemento: %+v", snap.Fluxos)
 	}
 }
@@ -88,10 +100,10 @@ func TestParseFlowSetLeJanelaETetoDoKernelNaoDoBanco(t *testing.T) {
 	// banco, enquanto o kernel está aplicando 15 minutos porque a tabela ainda
 	// não foi recriada. Janela e teto têm de sair da MESMA leitura de onde saem
 	// as tuplas.
-	if got := parseFlowSet(setDeFluxosComElementos); got.JanelaMinutos != 60 || got.Teto != 8192 {
+	if got := parseOK(t, setDeFluxosComElementos); got.JanelaMinutos != 60 || got.Teto != 8192 {
 		t.Errorf("janela/teto: %d min, teto %d", got.JanelaMinutos, got.Teto)
 	}
-	if got := parseFlowSet(setDeFluxosVazio); got.JanelaMinutos != 15 {
+	if got := parseOK(t, setDeFluxosVazio); got.JanelaMinutos != 15 {
 		t.Errorf("janela do set de 15 min veio %d", got.JanelaMinutos)
 	}
 }
@@ -102,10 +114,10 @@ func TestParseFlowSetMarcaCheioContraOTetoDoKernel(t *testing.T) {
 	// enquanto o set real já recusa tupla nova. Quem diagnostica conclui que o
 	// host não falou com ninguém.
 	pequeno := strings.Replace(setDeFluxosComElementos, "size 8192", "size 3", 1)
-	if snap := parseFlowSet(pequeno); !snap.Cheio {
+	if snap := parseOK(t, pequeno); !snap.Cheio {
 		t.Errorf("3 tuplas num set de teto 3 não foram marcadas como cheio: %+v", snap)
 	}
-	if snap := parseFlowSet(setDeFluxosComElementos); snap.Cheio {
+	if snap := parseOK(t, setDeFluxosComElementos); snap.Cheio {
 		t.Errorf("3 tuplas num set de teto 8192 foram marcadas como cheio")
 	}
 }
@@ -114,7 +126,7 @@ func TestParseFlowSetDescartaPortaForaDaFaixa(t *testing.T) {
 	// 99999 não cabe em 16 bits. Guardar isso truncado viraria uma porta que
 	// ninguém usou; guardar como zero viraria uma conversa que não existiu.
 	entrada := strings.Replace(setDeFluxosComElementos, ". 443 counter packets 12", ". 99999 counter packets 12", 1)
-	snap := parseFlowSet(entrada)
+	snap := parseOK(t, entrada)
 	for _, f := range snap.Fluxos {
 		if f.Porta == 0 {
 			t.Errorf("porta inválida virou porta 0: %+v", f)
@@ -136,7 +148,11 @@ func TestMinutosDeNftEntendeAsUnidadesQueOKernelImprime(t *testing.T) {
 		"1h30m": 90,
 		"1d":    1440,
 		"2d12h": 3600,
+		// Segundos arredondam para BAIXO agora — a tela não pode prometer mais
+		// janela do que o kernel guarda. O piso de 1 sobrevive só quando a
+		// conta inteira daria zero, que é este caso.
 		"30s":   1,
+		"2m30s": 2,
 		"600":   10,
 		"":      0,
 	}
@@ -153,8 +169,11 @@ func TestFlowsChainRulesEscopaPeloQueNaoEhWAN(t *testing.T) {
 	// set de 8192 elementos enche em minutos — a medição some e a memória do
 	// kernel vai junto.
 	regras := flowsChainRules([]string{"wan1", "wan2"})
-	if len(regras) != 1 {
-		t.Fatalf("queria 1 regra, veio %d", len(regras))
+	// DUAS regras desde a revisão: a de subida (aqui) e a de descida, que conta
+	// o pacote de volta — ver TestFlowsChainRulesContaOSentidoDeVoltaDaConversa
+	// em flows_revisao_test.go.
+	if len(regras) != 2 {
+		t.Fatalf("queria 2 regras, veio %d", len(regras))
 	}
 	regra := strings.Join(regras[0], " ")
 	querido := "iifname != { \"wan1\", \"wan2\" } meta l4proto { tcp, udp } " +
@@ -295,11 +314,33 @@ func TestEnsureFlowsSemWANNaoTocaEmNada(t *testing.T) {
 	// de entrada. Mesma decisão de EnsureAccounting: não agir.
 	ex := &execFalso{}
 	s := &Service{exec: ex}
-	if err := s.EnsureFlows(context.Background(), nil, FlowsConfig{Ligado: true}); err != nil {
-		t.Fatalf("erro inesperado: %v", err)
+	if err := s.EnsureFlows(context.Background(), nil, FlowsConfig{Ligado: true}); !errors.Is(err, ErrSemWAN) {
+		t.Fatalf("queria ErrSemWAN, veio %v", err)
 	}
 	if len(ex.comandos) != 0 {
 		t.Errorf("executou sem WAN configurada: %v", ex.comandos)
+	}
+}
+
+// TestEnsureFlowsSemWANNaoSeDisfarcaDeSucesso prende a metade que faltava do
+// teste acima: NÃO TOCAR EM NADA estava certo, DEVOLVER nil estava errado.
+//
+// O defeito que isto prende, ponta a ponta: com nil, SalvarConfig lia sucesso,
+// o handler respondia 200 com ligado=true e a tela dizia LIGADO — sobre um
+// kernel onde não existe tabela, set nem chain. A consulta seguinte batia numa
+// tabela inexistente e virava faixa vermelha, sem nenhuma pista de que a causa
+// era a lista de WANs vazia. "Configurado ≠ funcionando" tem que ser visível.
+func TestEnsureFlowsSemWANNaoSeDisfarcaDeSucesso(t *testing.T) {
+	s := &Service{exec: &execFalso{}}
+	err := s.EnsureFlows(context.Background(), nil, FlowsConfig{Ligado: true})
+	if err == nil {
+		t.Fatal("EnsureFlows sem WAN devolveu nil: a tela vai dizer LIGADO sobre um kernel vazio")
+	}
+	// Sentinela, e não erro genérico: o handler precisa DISTINGUIR para
+	// responder 409 com a causa, e a reconciliação do boot precisa distinguir
+	// para tolerar com WARN.
+	if !errors.Is(err, ErrSemWAN) {
+		t.Errorf("queria a sentinela ErrSemWAN, veio %v", err)
 	}
 }
 

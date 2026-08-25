@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -111,6 +112,19 @@ func (h *FluxosHandler) SetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.SalvarConfig(r.Context(), cfg, wans); err != nil {
+		if errors.Is(err, nftables.ErrSemWAN) {
+			// 409, E NÃO 200 NEM 500. A configuração FOI gravada (SalvarConfig
+			// grava antes de tocar no kernel), mas a medição não foi montada, e
+			// as duas respostas erradas mentiam em direções opostas: 200 fazia a
+			// tela dizer LIGADO sobre um kernel vazio, e a consulta seguinte
+			// virava faixa vermelha sem pista da causa; 500 diria "erro do
+			// servidor" para uma caixa que está bem e só não tem WAN ainda.
+			// Conflito de estado é o que isto é, e o recado nomeia a causa.
+			writeError(w, http.StatusConflict,
+				"não há link WAN habilitado: a medição precisa saber o que é a internet para saber o que é a LAN. "+
+					"A escolha foi salva e passa a valer quando um link WAN for habilitado.")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
