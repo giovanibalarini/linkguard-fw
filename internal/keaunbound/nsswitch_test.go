@@ -275,3 +275,42 @@ func TestAnalisarCaminhoNSSGuardaALinhaDeVerdade(t *testing.T) {
 		t.Error("Achou = false com linha hosts: presente")
 	}
 }
+
+// TestOMDNSCompletoCortaEOMinimalNao prende um falso verde que entrou pela
+// porta do conserto.
+//
+// A isenção do mdns existe por um motivo verdadeiro: "mdns4_minimal
+// [NOTFOUND=return]" é a linha de qualquer Debian com avahi, e ela não quebra
+// nada — aquele módulo só atende .local e devolve UNAVAIL para o resto.
+//
+// Mas a isenção estava escrita por PREFIXO, e o mdns4/mdns6 sem "_minimal"
+// tentam resolver qualquer nome e devolvem NOTFOUND quando não acham: com
+// [NOTFOUND=return] eles encerram a busca de verdade e o dns nunca é
+// consultado. Isentar pelo prefixo calava o produto numa caixa quebrada, que é
+// o mesmo defeito que esta checagem existe para acabar.
+func TestOMDNSCompletoCortaEOMinimalNao(t *testing.T) {
+	casos := []struct {
+		nome      string
+		linha     string
+		querCorte bool
+	}{
+		{"minimal do Debian com avahi, não corta",
+			"hosts: files mdns4_minimal [NOTFOUND=return] dns", false},
+		{"minimal sem o 4, também não corta",
+			"hosts: files mdns_minimal [NOTFOUND=return] dns", false},
+		{"mdns4 completo CORTA",
+			"hosts: files mdns4 [NOTFOUND=return] dns", true},
+		{"mdns6 completo CORTA",
+			"hosts: files mdns6 [NOTFOUND=return] dns", true},
+		{"mdns completo CORTA",
+			"hosts: files mdns [NOTFOUND=return] dns", true},
+	}
+	for _, c := range casos {
+		got := AnalisarCaminhoNSS(c.linha+"\n", func(string) bool { return false })
+		cortou := got.Estado == NSSCortadoAntesDoDNS || got.Estado == NSSSemModuloDNS
+		if cortou != c.querCorte {
+			t.Errorf("%s: estado %v (cortou=%v), esperado cortar=%v — linha %q",
+				c.nome, got.Estado, cortou, c.querCorte, c.linha)
+		}
+	}
+}

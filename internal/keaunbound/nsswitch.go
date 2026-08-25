@@ -244,14 +244,21 @@ func modulosNSS(valor string) ([]moduloNSS, bool) {
 // de validação é isso escrito pelo avesso: tudo que não for UNAVAIL retorna, e
 // NOTFOUND não é UNAVAIL.
 //
-// A família mdns fica de fora, e não é preguiça: "mdns4_minimal
+// O mdns _minimal_ fica de fora, e não é preguiça: "mdns4_minimal
 // [NOTFOUND=return]" é a linha de qualquer Debian com avahi instalado, e ela
 // NÃO quebra nada — aquele módulo só atende .local e devolve UNAVAIL para todo
 // o resto, então a cadeia segue para o dns. Sem esta exceção o produto abriria
 // alerta falso na maioria das instalações com avahi, e alerta que grita sem
 // motivo ensina o operador a ignorar alerta.
+//
+// A ISENÇÃO É SÓ DO "_minimal", E O SUFIXO É A DIFERENÇA INTEIRA. O mdns4 e o
+// mdns6 sem sufixo tentam resolver QUALQUER nome por multicast e devolvem
+// NOTFOUND quando não acham — aí o [NOTFOUND=return] encerra a busca de
+// verdade, e o dns nunca é consultado. Isentar pelo prefixo "mdns" calava o
+// produto justamente numa caixa quebrada: é o mesmo falso verde que esta
+// checagem existe para acabar, só que entrando pela porta do conserto.
 func moduloEncerraBusca(m moduloNSS) bool {
-	if m.Acoes == "" || strings.HasPrefix(m.Nome, "mdns") {
+	if m.Acoes == "" || ehMDNSMinimal(m.Nome) {
 		return false
 	}
 	for _, campo := range strings.Fields(m.Acoes) {
@@ -270,4 +277,13 @@ func moduloEncerraBusca(m moduloNSS) bool {
 		}
 	}
 	return false
+}
+
+// ehMDNSMinimal diz se o módulo é da variante que só atende .local.
+//
+// O nome vem em duas formas — "mdns4_minimal" e "mdns_minimal" — e as duas
+// contam. Qualquer outra coisa que comece com "mdns" é a variante completa, que
+// corta de verdade.
+func ehMDNSMinimal(nome string) bool {
+	return strings.HasPrefix(nome, "mdns") && strings.HasSuffix(nome, "_minimal")
 }
