@@ -666,17 +666,18 @@ func TestMainWiresTheBootPersistSource(t *testing.T) {
 	}
 }
 
-// TestMainWiresTheKeaAlerter guarda a ligação que faz o achado da issue #195
-// sair do journal e chegar ao operador.
+// TestMainReconciliaOResolvConf guarda a chamada que reescreve o resolv.conf
+// para o resolver local no boot.
 //
-// O keaunbound.Service verifica, ao reconciliar o resolv.conf, se a resolução
-// de nome da própria caixa CHEGA até ele — se o módulo dns do NSS é alcançado.
-// Sem SetAlerter essa verificação continua rodando e continua indo para o log,
-// e é exatamente aí que ela não serve: o defeito que ela mede é invisível (nada
-// falha, o painel mostra o resolver local no ar) e ninguém lê journal de uma
-// caixa que parece saudável. Nada quebra visivelmente se esta linha sumir —
-// que é o motivo de o guarda existir, sobre a árvore sintática do main.
-func TestMainWiresTheKeaAlerter(t *testing.T) {
+// O guarda antigo aqui vigiava keaSvc.SetAlerter: o veredito sobre o CAMINHO de
+// resolução (issue #195) nascia dentro do EnsureResolvConf, uma vez por
+// processo. Ele mudou de lugar — quem mede agora é o vigia por tique
+// monitoring.Collector.checkCaminhoNSS, e quem o guarda contra deriva é
+// TestCollectRodaOCheckCaminhoNSS, em internal/monitoring, que roda de verdade
+// (os testes deste pacote não compilam sem web/dist construído). O que sobra
+// aqui é a outra metade: sem esta chamada ninguém reconcilia o resolv.conf, e
+// o dhclient devolve o DNS do provedor na renovação do lease.
+func TestMainReconciliaOResolvConf(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("não foi possível localizar o arquivo de teste")
@@ -689,8 +690,7 @@ func TestMainWiresTheKeaAlerter(t *testing.T) {
 		t.Fatalf("parsear main.go: %v", err)
 	}
 
-	ligado := -1
-	verifica := -1
+	chamado := false
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, isCall := n.(*ast.CallExpr)
 		if !isCall {
@@ -704,26 +704,13 @@ func TestMainWiresTheKeaAlerter(t *testing.T) {
 		if !isIdent || recv.Name != "keaSvc" {
 			return true
 		}
-		switch sel.Sel.Name {
-		case "SetAlerter":
-			if ligado == -1 {
-				ligado = int(call.Pos())
-			}
-		case "EnsureResolvConf":
-			if verifica == -1 {
-				verifica = int(call.Pos())
-			}
+		if sel.Sel.Name == "EnsureResolvConf" {
+			chamado = true
 		}
 		return true
 	})
 
-	if ligado == -1 {
-		t.Fatal("o boot não liga mais keaSvc.SetAlerter(alertSvc): o resolver local fora do caminho de resolução (issue #195) volta a ser só uma linha de log numa caixa que parece saudável")
-	}
-	if verifica == -1 {
-		t.Fatal("o boot não chama mais keaSvc.EnsureResolvConf: sem ela ninguém reconcilia o resolv.conf nem mede o caminho de resolução")
-	}
-	if ligado > verifica {
-		t.Fatal("keaSvc.SetAlerter é chamado DEPOIS de EnsureResolvConf: a primeira verificação do boot roda sem alerter e o aviso se perde justamente na subida")
+	if !chamado {
+		t.Fatal("o boot não chama mais keaSvc.EnsureResolvConf: ninguém aponta o resolv.conf para o resolver local, e o dhclient devolve o DNS do provedor na renovação do lease")
 	}
 }

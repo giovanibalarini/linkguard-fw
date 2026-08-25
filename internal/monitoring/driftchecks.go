@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/keaunbound"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 )
 
@@ -408,6 +410,36 @@ func dnsRcodeName(rcode int) string {
 	}
 }
 
+// lerResolvConf lê o resolv.conf e separa o que ele aponta: o resolver local
+// (127.0.0.1/::1) e os externos. Extraída porque DUAS checagens precisam da
+// mesma leitura — checkDNSResolver, que pergunta o que está escrito ali, e
+// checkCaminhoNSS, que pergunta se alguém lê aquele arquivo. Duas cópias da
+// mesma varredura acabariam divergindo, e a divergência apareceria como dois
+// vereditos contraditórios sobre a mesma máquina.
+func (c *Collector) lerResolvConf() (local bool, external []string, err error) {
+	path := c.resolvConfPath
+	if path == "" {
+		path = defaultResolvConfPath
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, nil, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "nameserver ") {
+			continue
+		}
+		addr := strings.TrimSpace(strings.TrimPrefix(line, "nameserver "))
+		if addr == "127.0.0.1" || addr == "::1" {
+			local = true
+		} else if addr != "" {
+			external = append(external, addr)
+		}
+	}
+	return local, external, nil
+}
+
 // checkDNSResolver verifies the box actually resolves through its own
 // unbound rather than the ISP's servers. Two independent halves, both
 // required for a healthy verdict:
@@ -421,28 +453,9 @@ func dnsRcodeName(rcode int) string {
 //     box's own loopback DNS queries, so unbound correctly REFUSED them —
 //     the config-only check stayed green through the entire outage).
 func (c *Collector) checkDNSResolver() {
-	path := c.resolvConfPath
-	if path == "" {
-		path = defaultResolvConfPath
-	}
-	raw, err := os.ReadFile(path)
+	local, external, err := c.lerResolvConf()
 	if err != nil {
 		return // unreadable this tick; no verdict
-	}
-
-	local := false
-	var external []string
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "nameserver ") {
-			continue
-		}
-		addr := strings.TrimSpace(strings.TrimPrefix(line, "nameserver "))
-		if addr == "127.0.0.1" || addr == "::1" {
-			local = true
-		} else if addr != "" {
-			external = append(external, addr)
-		}
 	}
 	configOK := local && len(external) == 0
 
@@ -480,4 +493,130 @@ func (c *Collector) checkDNSResolver() {
 	case transUp:
 		_ = c.alertSvc.DNSResolverOK()
 	}
+}
+
+// checkCaminhoNSS responde a pergunta que o resolv.conf sozinho não responde: a
+// resolução de nome desta máquina CHEGA até o resolv.conf? (issue #195)
+//
+// Ela só chega se a busca do NSS alcançar o módulo `dns`. Numa instalação nova
+// de Debian 13 o systemd-resolved vem ativo e o nsswitch.conf vem com
+// `hosts: files myhostname resolve [!UNAVAIL=return] dns` — a linha encerra a
+// busca no `resolve` e o resolv.conf fica correto e irrelevante. Foi medido na
+// VM de validação: o getent não incrementava o contador do unbound, e é por
+// isso que a bateria T da suíte teve de passar a consultar 127.0.0.1:53 direto.
+//
+// POR QUE AQUI, E NÃO NO EnsureResolvConf DO BOOT (onde nasceu). Lá a checagem
+// roda uma vez por processo, e um veredito que só se atualiza no reboot é a
+// própria doença que a issue quer curar: o admin arruma a linha `hosts:` e o
+// painel fica vermelho até o serviço reiniciar. Aqui ela é uma CONDIÇÃO
+// contínua, medida a cada tique, com observe()/transDown/transUp como todo o
+// resto deste arquivo — sobe sozinha e desce sozinha. De quebra, o
+// ResolveStaleOnStartup passa a funcionar como projetado para este alerta: a
+// premissa dele é que "o que continuar errado é reerguido no primeiro tique ou
+// dois", e uma checagem de boot não cumpria isso.
+//
+// O que este código faz é MEDIR E DIZER. Ele não conserta: mexer no
+// nsswitch.conf ou desligar o systemd-resolved é escrever em arquivo de sistema
+// fora do escopo declarado do produto, e errar ali quebra a resolução de nome
+// da caixa inteira. O conserto, quando existir, é botão com
+// confirmar-ou-reverter — não efeito colateral de um vigia.
+func (c *Collector) checkCaminhoNSS() {
+	// Portão: só há o que afirmar sobre "o caminho até o resolver local" se o
+	// resolv.conf estiver mesmo apontando para ele. Sem isso quem responde é o
+	// checkDNSResolver logo acima (dns_resolver_drift), e abrir aqui também
+	// seria dois vermelhos para uma causa só — com a agravante de a mensagem
+	// deste afirmar que o resolv.conf aponta para o unbound, o que seria falso.
+	// Não saber é o terceiro estado de sempre: nem abre, nem fecha.
+	local, _, err := c.lerResolvConf()
+	if err != nil || !local {
+		return
+	}
+
+	path := c.nsswitchPath
+	if path == "" {
+		path = keaunbound.NsswitchPath
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return // unreadable this tick; no verdict
+	}
+
+	// O systemd-resolved é consultado por PREDICADO, e preguiçosamente: numa
+	// linha `hosts: files dns` (a produção de hoje) nenhum módulo com ação de
+	// corte aparece antes do dns, e nenhum systemctl é executado no tique.
+	resolvedAtivo, perguntou := false, false
+	caminho := keaunbound.AnalisarCaminhoNSS(string(raw), func(nome string) bool {
+		if nome != keaunbound.ModuloResolved {
+			return false
+		}
+		if !perguntou {
+			resolvedAtivo, perguntou = c.systemdResolvedAtivo(), true
+		}
+		return !resolvedAtivo
+	})
+
+	// NSSIndeterminado é o caso em que não dá para dizer, e ele não mexe em
+	// alerta nenhum — mesma regra do os.ReadFile acima e de todo early-return
+	// deste arquivo. Dois arranjos caem aqui:
+	//
+	//   - arquivo malformado (colchete sem fechar): o parser parou no meio, e
+	//     concluir "não tem dns" de um prefixo da linha é afirmar sobre a parte
+	//     que não foi lida;
+	//   - a busca só chega ao dns porque o `resolve` está com o daemon parado.
+	//
+	// O segundo é uma DECISÃO, não um descuido: `systemctl is-active` responde
+	// sobre o processo agora, e o processo pode subir sem ninguém tocar neste
+	// produto (basta o boot). Fechar o alerta por isso seria anunciar um
+	// conserto que ninguém fez, e o alerta voltaria no reboot seguinte — o
+	// vermelho piscante que ensina o operador a ignorar vermelho. A regra deste
+	// vigia é simétrica: abrir exige certeza, fechar exige certeza.
+	//
+	// A alternativa considerada era somar `is-enabled` ao `is-active` e tratar
+	// "habilitada mas parada" como corte. Ela fecha o alerta quando o admin faz
+	// `disable --now`, e foi recusada porque afirmaria defeito a partir da
+	// CONFIGURAÇÃO da unidade, não do comportamento dela — a mesma inferência
+	// que esta issue existe para desfazer. O preço da escolha, e ele é real: com
+	// o systemd-resolved apenas parado o painel não fica verde. O conserto que
+	// este vigia reconhece é o duradouro — a linha `hosts:` deixar de encerrar a
+	// busca antes do dns —, e não um daemon que volta no próximo boot.
+	if caminho.Estado == keaunbound.NSSIndeterminado {
+		slog.Debug("caminho de resolução: sem veredito neste tique",
+			"nsswitch", path, "hosts", caminho.Hosts, "motivo", caminho.Motivo)
+		return
+	}
+
+	tr := c.observe("dns:caminho", caminho.Estado == keaunbound.NSSAlcancaDNS, c.nowFn())
+	c.ensureMeta("dns:caminho", "dns-caminho", "resource")
+	switch tr {
+	case transDown:
+		detalhe := caminho.Motivo
+		if caminho.Achou {
+			detalhe += fmt.Sprintf(" (hosts: %s)", caminho.Hosts)
+		}
+		if perguntou && resolvedAtivo {
+			detalhe += "; o systemd-resolved está ativo"
+		}
+		slog.Warn("o resolv.conf aponta para o resolver local (unbound), mas a resolução de nome desta máquina NÃO passa por ele",
+			"nsswitch", path, "hosts", caminho.Hosts, "cortado_por", caminho.CortadoPor, "motivo", caminho.Motivo)
+		// Duas frases, e não uma com um detalhe a mais: sem módulo `dns` na
+		// linha a caixa não resolve nome externo NENHUM, e dizer ali que "a
+		// caixa continua resolvendo nomes" manda o operador caçar um problema
+		// silencioso enquanto o barulhento está na cara. Ver os tipos em
+		// internal/alerts.
+		if caminho.Estado == keaunbound.NSSSemModuloDNS {
+			_ = c.alertSvc.ResolucaoSemModuloDNS(detalhe)
+		} else {
+			_ = c.alertSvc.CaminhoDNSForaDoLocal(detalhe)
+		}
+	case transUp:
+		c.alertSvc.CaminhoDNSNoLocal()
+	}
+}
+
+// systemdResolvedAtivo diz se o daemon do módulo NSS `resolve` está de pé
+// AGORA. Um erro aqui (unidade inexistente, que é o normal numa caixa sem
+// systemd-resolved) é resposta — "não está de pé" —, não falha.
+func (c *Collector) systemdResolvedAtivo() bool {
+	out, err := c.exec.ExecuteRead(context.Background(), "systemctl", "is-active", "systemd-resolved")
+	return err == nil && strings.TrimSpace(out) == "active"
 }

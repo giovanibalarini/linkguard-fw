@@ -353,6 +353,9 @@ mon.health.label.wanInterface:
 mon.health.label.dnsResolver:
   pt: "Resolver DNS"
   en: "DNS resolver"
+mon.health.label.dnsCaminho:
+  pt: "Caminho de resolução"
+  en: "Resolution path"
 mon.health.label.systemUpdates:
   pt: "Atualizações do sistema"
   en: "System updates"

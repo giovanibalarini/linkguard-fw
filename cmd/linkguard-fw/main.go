@@ -531,10 +531,10 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// apt terminava a instalação com sucesso.
 	keaSvc.SetInstallExecutor(pkgExec)
 	// O resolv.conf sozinho não prova nada: se a busca do NSS não chegar ao
-	// módulo dns, ele fica correto e irrelevante (issue #195). Quem descobre
-	// isso é o EnsureResolvConf; quem leva a descoberta para fora do journal é
-	// este alerta.
-	keaSvc.SetAlerter(alertSvc)
+	// módulo dns, ele fica correto e irrelevante (issue #195). Quem mede isso é
+	// o vigia monitoring.Collector.checkCaminhoNSS, a cada tique — e não este
+	// serviço, que reconcilia o arquivo uma vez por processo. Alerta que só
+	// nasce e morre no boot deixa o painel vermelho até o próximo reboot.
 	var netSvc netsvc.Provider = keaSvc
 	trafficSvc := hosttraffic.NewService(exec)
 	hostSvc := hosts.NewService(exec, db, nftSvc, netSvc)

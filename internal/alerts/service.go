@@ -109,13 +109,29 @@ const (
 	// Consertar o primeiro não move o segundo, então fundir os dois faria o
 	// painel apagar um vermelho que continua verdadeiro.
 	//
-	// Warning, não Critical: a caixa RESOLVE nomes, só que por fora do unbound.
-	// Nada está fora do ar. O que se perde é silencioso — bloqueio por domínio,
-	// mapa endereço→nome (#116) e controle de fuga de DNS deixam de enxergar o
+	// Warning, não Critical: neste caso a caixa RESOLVE nomes, só que por fora
+	// do unbound — existe um módulo antes do dns que responde por eles. Nada
+	// está fora do ar. O que se perde é silencioso — bloqueio por domínio, mapa
+	// endereço→nome (#116) e controle de fuga de DNS deixam de enxergar o
 	// tráfego da própria caixa. Gritar Critical por algo que não derruba nada
 	// treina o operador a ignorar Critical.
 	TypeCaminhoDNSForaDoLocal = "caminho_dns_fora_do_local"
 	TypeCaminhoDNSNoLocal     = "caminho_dns_no_local"
+
+	// TypeResolucaoSemModuloDNS: a linha `hosts:` não lista módulo `dns`
+	// NENHUM. É parente do de cima e mesmo par de fechamento, mas não é o mesmo
+	// defeito, e por isso não é o mesmo tipo nem a mesma severidade.
+	//
+	// Lá alguém responde antes do dns e a caixa continua resolvendo nomes; aqui
+	// a busca percorre a linha inteira sem encontrar quem consulte servidor de
+	// nome nenhum — sobram os módulos locais (files, myhostname). A caixa não
+	// resolve nome externo: o updater não baixa release, o Telegram não sai, o
+	// chrony não acha o pool. Isso é queda, e Critical é o que descreve.
+	//
+	// Mandar a frase do Warning ("a caixa continua resolvendo nomes, porém o
+	// bloqueio por domínio...") neste caso seria pior que calar: manda o
+	// operador caçar um problema silencioso enquanto o barulhento está na cara.
+	TypeResolucaoSemModuloDNS = "resolucao_sem_modulo_dns"
 
 	SeverityInfo     = "info"
 	SeverityWarning  = "warning"
@@ -169,6 +185,7 @@ var stateAlertTypes = []string{
 	TypeWANInterfaceMissing,
 	TypeDNSResolverDrift,
 	TypeCaminhoDNSForaDoLocal,
+	TypeResolucaoSemModuloDNS,
 	TypeSecurityUpdatesPending,
 	TypeBalancerNoWAN,
 	TypeBaseDepsMissing,
@@ -850,15 +867,32 @@ func (s *Service) DNSResolverOK() error {
 func (s *Service) CaminhoDNSForaDoLocal(detail string) error {
 	return s.Create(TypeCaminhoDNSForaDoLocal, SeverityWarning, "Resolver local fora do caminho de resolução",
 		"O /etc/resolv.conf aponta para o resolver local (unbound), mas a resolução de nome da própria caixa não passa por ele: "+detail+
-			". A caixa continua resolvendo nomes, porém o bloqueio por domínio, o mapa endereço→nome e o controle de fuga de DNS não enxergam esse tráfego.", "")
+			". Quem responde por esses nomes é o módulo que vem antes, então a caixa continua resolvendo — o que se perde é o bloqueio por domínio, "+
+			"o mapa endereço→nome e o controle de fuga de DNS, que não enxergam esse tráfego.", "")
 }
 
-// CaminhoDNSNoLocal fecha CaminhoDNSForaDoLocal — e anuncia a volta, mas SÓ
+// ResolucaoSemModuloDNS abre o caso GRAVE do mesmo achado: a linha `hosts:` não
+// lista módulo `dns` nenhum (issue #195).
+//
+// Frase separada, e não um detalhe a mais na de cima, porque a de cima afirma
+// que a caixa continua resolvendo nomes — e aqui isso é falso. Percorrida a
+// linha inteira sem um módulo que consulte servidor de nome, o que sobra é
+// /etc/hosts e o próprio hostname: nome externo nenhum resolve. Critical pelo
+// mesmo critério escrito no tipo: aqui a caixa está fora do ar para tudo que
+// depende de DNS.
+func (s *Service) ResolucaoSemModuloDNS(detail string) error {
+	return s.Create(TypeResolucaoSemModuloDNS, SeverityCritical, "A caixa não resolve nomes",
+		"A linha hosts: do /etc/nsswitch.conf não lista o módulo dns, então nenhuma consulta da própria caixa chega a um servidor de nome — "+
+			"nem ao resolver local (unbound), nem a qualquer outro: "+detail+
+			". Atualização, notificações e sincronismo de hora dependem disso e param.", "")
+}
+
+// CaminhoDNSNoLocal fecha os dois avisos acima — e anuncia a volta, mas SÓ
 // quando havia mesmo algo aberto. Sem o fechamento o aviso ficaria vermelho
-// para sempre depois de o admin arrumar o nsswitch.conf (ou parar o
-// systemd-resolved), que é como se ensina o operador a ignorar vermelho; sem a
-// condicional, o EnsureResolvConf de cada boot arquivaria uma recuperação numa
-// caixa que nunca esteve errada e soterraria a lista de alertas com histórico.
+// para sempre depois de o admin arrumar o nsswitch.conf, que é como se ensina o
+// operador a ignorar vermelho; sem a condicional, o vigia que chama isto a cada
+// tique arquivaria uma recuperação a cada 30 segundos numa caixa que nunca
+// esteve errada e soterraria a lista de alertas com histórico.
 func (s *Service) CaminhoDNSNoLocal() {
 	open, err := s.db.GetAlerts(true, 0)
 	if err != nil {
@@ -866,7 +900,7 @@ func (s *Service) CaminhoDNSNoLocal() {
 	}
 	found := false
 	for _, a := range open {
-		if a.Type == TypeCaminhoDNSForaDoLocal && a.LinkID == "" {
+		if (a.Type == TypeCaminhoDNSForaDoLocal || a.Type == TypeResolucaoSemModuloDNS) && a.LinkID == "" {
 			found = true
 			break
 		}
@@ -874,7 +908,13 @@ func (s *Service) CaminhoDNSNoLocal() {
 	if !found {
 		return
 	}
+	// Fecha os DOIS: são duas frases para o mesmo caminho de resolução, e quem
+	// mede é um vigia só. Sair do caso grave direto para o bom (o admin põe
+	// `dns` de volta na linha) é uma transição normal, e deixar o Critical
+	// aceso porque quem fechou foi o Warning seria o vermelho eterno que este
+	// par existe para evitar.
 	s.AutoResolve(TypeCaminhoDNSForaDoLocal, "")
+	s.AutoResolve(TypeResolucaoSemModuloDNS, "")
 	_ = s.createRecovery(TypeCaminhoDNSNoLocal, "Resolver local no caminho de resolução",
 		"A resolução de nome da própria caixa volta a passar pelo resolver local (unbound).", "")
 }

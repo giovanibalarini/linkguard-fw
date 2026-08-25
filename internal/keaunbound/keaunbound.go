@@ -126,36 +126,6 @@ type Service struct {
 	unboundCheckBin string
 	resolvConf      string
 	dhclientConf    string
-	// nsswitchConf é o arquivo que diz se a resolução da caixa CHEGA ao
-	// resolv.conf. Campo, e não constante usada direto, pelo mesmo motivo dos
-	// de cima: teste aponta para um arquivo temporário.
-	nsswitchConf string
-	// alerter é opcional. Sem ele a verificação do caminho de resolução
-	// continua acontecendo e continua indo para o log — só não abre alerta.
-	alerter Alerter
-}
-
-// Alerter é o lado painel-facing da verificação do CAMINHO de resolução
-// (issue #195): o resolv.conf aponta para o unbound e a resolução da própria
-// caixa não passa por ele.
-//
-// Isso precisa alcançar o operador, e não só o journal, porque o sintoma é
-// invisível: nada falha, o painel mostra o resolver local no ar, e o bloqueio
-// por domínio, o mapa endereço→nome (#116) e o controle de fuga de DNS ficam
-// cegos para o tráfego da própria máquina.
-//
-// Interface local, mesma abordagem de firewallrules.Alerter e alerts.Notifier:
-// evita que este pacote importe internal/alerts e deixa o Service utilizável
-// sem alerta nenhum (nil) nos testes e no dry-run.
-type Alerter interface {
-	// CaminhoDNSForaDoLocal abre o aviso de que o módulo dns do NSS não é
-	// alcançado — o detalhe carrega a linha hosts: de verdade e quem corta.
-	CaminhoDNSForaDoLocal(detalhe string) error
-	// CaminhoDNSNoLocal fecha esse aviso. Sem ele o vermelho ficaria aceso
-	// para sempre depois de o admin arrumar a caixa. Sem retorno de erro, como
-	// os outros "OK" que só anunciam recuperação quando havia algo aberto: o
-	// chamador aqui roda uma vez por boot e não tem o que fazer com a falha.
-	CaminhoDNSNoLocal()
 }
 
 // NewService creates the provider.
@@ -170,7 +140,6 @@ func NewService(exec firewall.Executor) *Service {
 		unboundCheckBin: unboundCheckBinDefault,
 		resolvConf:      ResolvConfPath,
 		dhclientConf:    DhclientConfPath,
-		nsswitchConf:    NsswitchPath,
 	}
 }
 
@@ -181,11 +150,6 @@ func (s *Service) SetInstallExecutor(e firewall.Executor) {
 		s.installExec = e
 	}
 }
-
-// SetAlerter liga o serviço de alertas depois da construção (o alerts.Service
-// e este são criados no mesmo bloco do main, e nenhum precisa do outro para
-// existir). Opcional — ver Service.alerter.
-func (s *Service) SetAlerter(a Alerter) { s.alerter = a }
 
 // Backend implements netsvc.Provider.
 func (s *Service) Backend() netsvc.Backend { return netsvc.BackendKeaUnbound }
@@ -393,10 +357,16 @@ func (s *Service) EnsureResolvConf(ctx context.Context) {
 	if err := s.exec.WriteFile(s.resolvConf, []byte(body), 0o644); err != nil {
 		slog.Warn("não foi possível apontar o resolv.conf para o resolver local", "path", s.resolvConf, "err", err)
 	} else {
-		// Escrever o arquivo não é a mesma coisa que a caixa passar a usá-lo.
-		// Quem diz se este resolv.conf vale alguma coisa é o verificador
-		// abaixo — e é ele, não este bloco, que anuncia o sucesso.
-		s.verificarCaminhoNSS(ctx)
+		// Escrever o arquivo não é a mesma coisa que a caixa passar a usá-lo, e
+		// este log deliberadamente não afirma que passa. Quem responde isso é o
+		// vigia do caminho de resolução (monitoring.Collector.checkCaminhoNSS),
+		// que lê o /etc/nsswitch.conf a cada tique — e não aqui, que roda uma
+		// vez por processo. Ver a doc de checkCaminhoNSS para o porquê.
+		//
+		// Também não afirma que o arquivo mudou: em dry-run o WriteFile devolve
+		// nil sem tocar em disco, e "apontei o resolv.conf" seria falso ali.
+		slog.Info("resolv.conf reconciliado para o resolver local (unbound)",
+			"path", s.resolvConf, "dry_run", s.exec.IsDryRun())
 	}
 
 	const directive = "supersede domain-name-servers 127.0.0.1;"
@@ -412,91 +382,6 @@ func (s *Service) EnsureResolvConf(ctx context.Context) {
 	if err := s.exec.WriteFile(s.dhclientConf, []byte(updated), 0o644); err != nil {
 		slog.Warn("não foi possível fixar o DNS local na config do dhclient", "path", s.dhclientConf, "err", err)
 	}
-}
-
-// verificarCaminhoNSS responde a pergunta que o resolv.conf sozinho não
-// responde: a resolução de nome desta máquina CHEGA até o resolv.conf?
-//
-// Ela só chega se a busca do NSS alcançar o módulo `dns`. Numa instalação nova
-// de Debian 13 o systemd-resolved vem ativo e o nsswitch.conf vem com
-// `hosts: files myhostname resolve [!UNAVAIL=return] dns` — o `resolve`
-// responde antes e o `[!UNAVAIL=return]` encerra a busca ali. O resolv.conf
-// fica correto e irrelevante: foi exatamente o que se mediu na VM de validação
-// (getent não incrementava o contador do unbound), e é por isso que a bateria T
-// da suíte teve de passar a consultar 127.0.0.1:53 direto.
-//
-// O que este código faz é MEDIR E DIZER. Ele não conserta: mexer no
-// nsswitch.conf ou desligar o systemd-resolved sozinho, no boot, é escrever em
-// arquivo de sistema fora do escopo declarado do produto, e errar ali quebra a
-// resolução de nome da caixa inteira. O conserto, quando existir, é botão com
-// confirmar-ou-reverter — não efeito colateral de um Ensure de boot.
-//
-// A checagem do systemd-resolved não é enfeite: ela muda o veredito. O módulo
-// `resolve` devolve UNAVAIL quando o daemon está parado, e o `[!UNAVAIL=return]`
-// é o único caso que NÃO corta — a busca segue até o dns. É por isso que a
-// máquina de produção de hoje (resolved inativo) está certa, e é por isso que a
-// pergunta é `is-active` e não `is-enabled`: aqui o que importa é o processo
-// estar de pé agora, não o que a unidade diz sobre o próximo boot.
-func (s *Service) verificarCaminhoNSS(ctx context.Context) {
-	conteudo, err := os.ReadFile(s.nsswitchConf)
-	if err != nil {
-		// Não saber não é a mesma coisa que estar quebrado: sem o arquivo em
-		// mãos, alertar seria inventar um defeito, e fechar o alerta seria
-		// desmentir um defeito que talvez esteja lá. Registra a ignorância e
-		// deixa o estado do alerta como estava.
-		slog.Info("resolv.conf reescrito para o resolver local, mas não deu para conferir se a resolução da caixa passa por ele",
-			"path", s.resolvConf, "nsswitch", s.nsswitchConf, "err", err)
-		return
-	}
-
-	caminho := analisarHostsNSS(string(conteudo))
-	resolvedAtivo := s.systemdResolvedAtivo(ctx)
-
-	// O corte pelo `resolve` com o systemd-resolved parado não é corte: o
-	// módulo devolve UNAVAIL e a cadeia continua. Só que continua por sorte —
-	// um `systemctl start systemd-resolved` desfaz isso sem tocar em nada
-	// deste produto, e por isso o log guarda o aviso.
-	cortePorResolvedParado := !caminho.Alcancavel && caminho.CortadoPor == moduloResolved && !resolvedAtivo
-
-	if !caminho.Alcancavel && !cortePorResolvedParado {
-		detalhe := caminho.Motivo
-		if caminho.Achou {
-			detalhe += fmt.Sprintf(" (hosts: %s)", caminho.Hosts)
-		}
-		if resolvedAtivo {
-			detalhe += "; o systemd-resolved está ativo"
-		}
-		slog.Warn("o resolv.conf aponta para o resolver local (unbound), mas a resolução de nome desta máquina NÃO passa por ele",
-			"path", s.resolvConf, "nsswitch", s.nsswitchConf, "hosts", caminho.Hosts,
-			"cortado_por", caminho.CortadoPor, "systemd_resolved_ativo", resolvedAtivo, "motivo", caminho.Motivo)
-		if s.alerter != nil {
-			if err := s.alerter.CaminhoDNSForaDoLocal(detalhe); err != nil {
-				slog.Warn("não foi possível registrar o alerta de caminho de resolução", "err", err)
-			}
-		}
-		return
-	}
-
-	if cortePorResolvedParado {
-		slog.Info("resolv.conf apontando para o resolver local (unbound); a linha hosts: só chega ao dns porque o systemd-resolved está parado",
-			"path", s.resolvConf, "hosts", caminho.Hosts, "cortado_por", caminho.CortadoPor)
-	} else {
-		slog.Info("resolv.conf apontando para o resolver local (unbound)",
-			"path", s.resolvConf, "hosts", caminho.Hosts)
-	}
-	if s.alerter != nil {
-		s.alerter.CaminhoDNSNoLocal()
-	}
-}
-
-// systemdResolvedAtivo diz se o daemon do módulo NSS `resolve` está de pé
-// AGORA. `is-active` e não `is-enabled` de propósito: o módulo devolve UNAVAIL
-// enquanto o processo não estiver rodando, e é o processo — não a unidade —
-// que decide se a cadeia do NSS para nele. Um erro aqui (unidade inexistente,
-// que é o normal numa caixa sem systemd-resolved) é resposta, não falha.
-func (s *Service) systemdResolvedAtivo(ctx context.Context) bool {
-	out, err := s.exec.ExecuteRead(ctx, "systemctl", "is-active", "systemd-resolved")
-	return err == nil && strings.TrimSpace(out) == "active"
 }
 
 // ensureSupersedeDirective returns dhclient.conf content updated so exactly

@@ -18,6 +18,10 @@ const LABEL_KEY: Record<string, string> = {
   'firewall-boot-persist': 'mon.health.label.firewallBootPersist',
   'wan-interface': 'mon.health.label.wanInterface',
   'dns-resolver': 'mon.health.label.dnsResolver',
+  // "Caminho de resolução" é a pergunta que o item acima NÃO responde: o
+  // dns-resolver olha o que está escrito no resolv.conf, este olha se a
+  // resolução da caixa chega a ler aquele arquivo (issue #195).
+  'dns-caminho': 'mon.health.label.dnsCaminho',
   'system-updates': 'mon.health.label.systemUpdates',
 };
 

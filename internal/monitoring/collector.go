@@ -37,6 +37,7 @@ type Collector struct {
 	ifaceExists    func(string) bool // overridable in tests; nil means the real /sys/class/net check
 	resolvConfPath string            // overridable in tests; empty means defaultResolvConfPath
 	dnsProbe       func() error      // overridable in tests; nil means the real UDP probe to 127.0.0.1:53
+	nsswitchPath   string            // overridable in tests; empty means keaunbound.NsswitchPath
 
 	lastUpdates sysupdates.Report // last pending-updates report, for the UI
 
@@ -126,6 +127,7 @@ func (c *Collector) collect() {
 			c.checkWANInterfaces()
 			c.checkFirewallNAT()
 			c.checkDNSResolver()
+			c.checkCaminhoNSS()
 			c.checkBootPersist()
 		}
 
