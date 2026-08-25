@@ -207,6 +207,7 @@ var schemaMigrations = []migration{
 	{13, "firewall_groups: janela de horário", upAddFirewallGroupSchedule},
 	{14, "domain_targets", upDomainTargets},
 	{15, "cota por aparelho: host_quota e host_usage", upHostQuota},
+	{16, "hosts.quota nos papéis que já bloqueavam host", upGrantHostsQuota},
 }
 
 const createSchemaMigrationsTable = `
@@ -1261,33 +1262,52 @@ func (db *DB) runOneMigrationForTest(up func(*sql.Tx) error) error {
 // do inventário disputar com ele.
 const createHostQuotaTable = `
 CREATE TABLE IF NOT EXISTS host_quota (
-    mac        TEXT PRIMARY KEY,
-    limit_gb   REAL NOT NULL,
-    period     TEXT NOT NULL DEFAULT 'monthly',
-    cycle_day  INTEGER NOT NULL DEFAULT 1,
-    alert_pct  INTEGER NOT NULL DEFAULT 80,
-    enabled    INTEGER NOT NULL DEFAULT 1
+    mac           TEXT PRIMARY KEY,
+    limit_gb      REAL NOT NULL,
+    period        TEXT NOT NULL DEFAULT 'monthly',
+    cycle_day     INTEGER NOT NULL DEFAULT 1,
+    alert_pct     INTEGER NOT NULL DEFAULT 80,
+    alert_enabled INTEGER NOT NULL DEFAULT 1
 );`
 
-// A chave inclui cycle_start, como em link_usage: o histórico dos ciclos
-// anteriores fica, e o ciclo novo nasce zerado sem precisar apagar nada.
+// A chave inclui period E cycle_start, como em link_usage mais uma coluna: o
+// histórico dos ciclos anteriores fica, e o ciclo novo nasce zerado sem
+// precisar apagar nada.
+//
+// POR QUE period ENTRA NA CHAVE. O início de um ciclo DIÁRIO no dia 1 e o de um
+// ciclo MENSAL que fecha no dia 1 são o MESMO inteiro. Sem esta coluna, trocar
+// o período de um aparelho no dia 1 somaria o consumo do dia com o do mês na
+// mesma linha (o ON CONFLICT de AddHostUsage soma), e o histórico devolveria
+// linhas de dia ao lado de linhas de mês sem nada que as distinga.
 //
 // Com ciclo DIÁRIO isso nasce uma linha por aparelho por dia, e não por mês.
 // Continua barato — um aparelho com cota diária gera 365 linhas por ano, e só
-// gera linha em dia que teve tráfego —, mas é a diferença que justifica o
-// índice implícito da chave primária ser (mac, cycle_start) nessa ordem: toda
-// leitura da tela é por aparelho.
+// gera linha em dia que teve tráfego —, mas é a diferença que justifica a
+// chave primária começar por mac: toda leitura da tela é por aparelho.
 const createHostUsageTable = `
 CREATE TABLE IF NOT EXISTS host_usage (
     mac         TEXT NOT NULL,
+    period      TEXT NOT NULL DEFAULT 'monthly',
     cycle_start INTEGER NOT NULL,
     rx_bytes    INTEGER NOT NULL DEFAULT 0,
     tx_bytes    INTEGER NOT NULL DEFAULT 0,
     updated_at  INTEGER NOT NULL,
-    PRIMARY KEY (mac, cycle_start)
+    PRIMARY KEY (mac, period, cycle_start)
 );`
 
-// upHostQuota cria as duas tabelas da cota por aparelho.
+// E o índice pela OUTRA ponta. A chave primária tem mac na frente, então
+// GetHostUsageAll — que filtra por (period, cycle_start) e é a consulta que a
+// tela e o flush fazem — varreria a tabela inteira sem isto. Medido no SQLite:
+// sem o índice, SCAN host_usage; com ele, SEARCH host_usage USING INDEX.
+//
+// Ele nasce AQUI, dentro da mesma migração das tabelas, e não numa migração
+// seguinte: a 15 ainda não chegou a nenhuma máquina, e um índice que só existe
+// nas instalações novas é o tipo de divergência que ninguém consegue depurar
+// meses depois.
+const createHostUsageCycleIndex = `
+CREATE INDEX IF NOT EXISTS idx_host_usage_cycle ON host_usage(period, cycle_start);`
+
+// upHostQuota cria as duas tabelas da cota por aparelho e o índice do ciclo.
 //
 // Migração NUMERADA, e não mais uma linha na lista de CREATE TABLE IF NOT
 // EXISTS do migrate(): toda mudança de schema deste projeto roda em transação
@@ -1296,10 +1316,53 @@ CREATE TABLE IF NOT EXISTS host_usage (
 // nasceram na lista simples antes dessa regra existir; as novas não repetem
 // isso.
 func upHostQuota(tx *sql.Tx) error {
-	for _, ddl := range []string{createHostQuotaTable, createHostUsageTable} {
+	for _, ddl := range []string{createHostQuotaTable, createHostUsageTable, createHostUsageCycleIndex} {
 		if _, err := tx.Exec(ddl); err != nil {
 			return fmt.Errorf("criar as tabelas de cota por aparelho: %w", err)
 		}
+	}
+	return nil
+}
+
+// upGrantHostsQuota concede hosts.quota (issue #126) a quem já podia declarar
+// cota antes desta permissão existir.
+//
+// POR QUE ELA EXISTE. A cota por aparelho nasceu gateada por hosts.block — a
+// permissão de TRANCAR um aparelho. Isso amarrava duas capacidades diferentes:
+// quem administra inventário era obrigado a ganhar o poder de cortar para
+// conseguir declarar um teto. A permissão nova separa as duas.
+//
+// POR QUE CONCEDER, E SÓ A ESSES. Papéis embutidos são semeados uma vez e não
+// são re-semeados: sem esta migração, o Operador perderia no upgrade a tela que
+// tinha ontem. O critério é literal — quem tem hosts.block já podia mexer em
+// cota, logo continua podendo. Quem NÃO tem não ganha nada: uma permissão nova
+// não se distribui sozinha.
+//
+// A sonda é um marcador próprio em settings, e não a presença da permissão nos
+// papéis, pela razão escrita em upGrantMonitoringWrite: com a sonda pela
+// presença, um admin que revogasse hosts.quota veria a migração devolvê-la no
+// boot seguinte. Migração que desfaz decisão do operador é pior que migração
+// que falta.
+func upGrantHostsQuota(tx *sql.Tx) error {
+	const marker = "migration_hosts_quota_granted"
+	var already int
+	err := tx.QueryRow(`SELECT COUNT(*) FROM settings WHERE key = ?`, marker).Scan(&already)
+	if err != nil {
+		return fmt.Errorf("checar o marcador da migração hosts.quota: %w", err)
+	}
+	if already > 0 {
+		return nil
+	}
+	if _, err := tx.Exec(`
+		INSERT OR IGNORE INTO role_permissions (role_id, permission)
+		SELECT DISTINCT role_id, 'hosts.quota'
+		FROM role_permissions
+		WHERE permission = 'hosts.block'`); err != nil {
+		return fmt.Errorf("conceder hosts.quota aos papéis que já bloqueavam host: %w", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO settings (key, value) VALUES (?, '1')`, marker); err != nil {
+		return fmt.Errorf("gravar o marcador da migração hosts.quota: %w", err)
 	}
 	return nil
 }

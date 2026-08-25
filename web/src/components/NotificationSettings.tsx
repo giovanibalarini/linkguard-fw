@@ -11,6 +11,13 @@ interface WhatsAppCfg { enabled: boolean; token: string; phone: string }
 interface EmailCfg { enabled: boolean; host: string; port: number; username: string; password: string; from: string; to: string }
 interface NotifyConfig {
   min_severity: 'info' | 'warning' | 'critical';
+  /**
+   * Autoriza alertas que NOMEIAM um aparelho da LAN a sair da caixa.
+   * Padrão falso no backend: identidade de aparelho é inventário da rede do
+   * cliente, e o padrão de severidade mínima faria esses alertas saírem por
+   * Telegram, WhatsApp ou e-mail sem ninguém ter decidido isso.
+   */
+  notificar_aparelho: boolean;
   webhook: WebhookCfg;
   telegram: TelegramCfg;
   whatsapp: WhatsAppCfg;
@@ -19,6 +26,7 @@ interface NotifyConfig {
 
 const empty: NotifyConfig = {
   min_severity: 'warning',
+  notificar_aparelho: false,
   webhook: { enabled: false, url: '' },
   telegram: { enabled: false, token: '', chat_id: '' },
   whatsapp: { enabled: false, token: '', phone: '' },
@@ -79,6 +87,23 @@ export default function NotificationSettings() {
           <option value="warning">{t('cfg.notify.sev.warning')}</option>
           <option value="critical">{t('cfg.notify.sev.critical')}</option>
         </select>
+      </label>
+
+      {/* O PORTÃO DA IDENTIDADE DE APARELHO (issues #117 e #126).
+          O campo existia no backend com padrão FALSO e não tinha caminho nenhum
+          para ser ligado: um recurso opt-in sem caminho para o opt-in é um
+          recurso desligado com trabalho extra — a lição que a #118 já pagou.
+          Sem este controle, os alertas de aparelho novo, consumo fora do normal
+          e cota de dados nunca saem da caixa, e a tela de cota promete um aviso
+          que pára no painel. */}
+      <label className="flex items-start gap-2">
+        <input type="checkbox" checked={cfg.notificar_aparelho}
+          onChange={(e) => setCfg({ ...cfg, notificar_aparelho: e.target.checked })}
+          className="mt-0.5" />
+        <span>
+          <span className="text-gray-300 text-sm">{t('cfg.notify.hostIdentity')}</span>
+          <span className="block text-gray-500 text-xs mt-0.5">{t('cfg.notify.hostIdentity.hint')}</span>
+        </span>
       </label>
 
       {/* Webhook */}

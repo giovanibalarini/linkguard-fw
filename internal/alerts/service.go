@@ -292,7 +292,15 @@ func (s *Service) Create(alertType, severity, title, message, linkID string) err
 		slog.Error("create alert", "err", err)
 		return err
 	}
-	slog.Info("alert created", "type", alertType, "severity", severity, "title", title)
+	// O TÍTULO NÃO VAI PARA O LOG.
+	//
+	// Alerta de aparelho nomeia o aparelho: apelido, nome de host, endereço IP
+	// da LAN — e o endereço físico cru quando o inventário não responde. Esse é
+	// o dado que tiposQueNomeiamAparelho existe para não deixar atravessar a
+	// fronteira da caixa sem escolha explícita, e o journal é uma saída que
+	// podeNotificar não cobre. A chave do alerta (linkID/MAC) já basta para
+	// correlacionar no log; o nome legível é para a tela, que é autenticada.
+	slog.Info("alert created", "type", alertType, "severity", severity, "key", linkID)
 	if s.notifier != nil && s.podeNotificar(alertType) {
 		s.notifier.Notify(severity, title, message)
 	}

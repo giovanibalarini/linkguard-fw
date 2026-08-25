@@ -376,6 +376,16 @@ cfg.notify.sev.warning:
 cfg.notify.sev.critical:
   pt: "Só críticos"
   en: "Critical only"
+# ─── Alerta que NOMEIA um aparelho da LAN (issue #117/#126) ──────────────────
+# Sem estas chaves o campo notificar_aparelho existia no backend e não tinha
+# caminho nenhum para ser ligado: um recurso opt-in sem caminho para o opt-in é
+# um recurso desligado com trabalho extra.
+cfg.notify.hostIdentity:
+  pt: "Deixar os alertas que nomeiam um aparelho saírem da caixa"
+  en: "Let alerts that name a device leave the box"
+cfg.notify.hostIdentity.hint:
+  pt: "Aparelho novo na rede, consumo fora do normal e cota de dados citam o apelido, o nome de host ou o endereço do aparelho. Desligado, eles continuam aparecendo no painel — só não saem por Telegram, WhatsApp, e-mail ou webhook."
+  en: "New device on the network, unusual usage and data caps name the device by nickname, hostname or address. When off they still show on the dashboard — they just do not go out over Telegram, WhatsApp, e-mail or webhook."
 cfg.notify.channel.enabled:
   pt: "Ativo"
   en: "Enabled"

@@ -14,7 +14,9 @@ import (
 //
 // As rotas ficam sob /api/hosts/quotas, e não sob /api/quotas, porque o
 // assunto é aparelho: quem administra o inventário tem de conseguir declarar
-// cota sem ganhar permissão de mexer nos links. Ver o registro em server.go.
+// cota sem ganhar permissão de mexer nos links. E a MUTAÇÃO é gateada por
+// hosts.quota, e não por hosts.block: declarar um teto que não corta nada não
+// pode exigir o poder de trancar o aparelho. Ver o registro em server.go.
 type HostQuotaHandler struct {
 	svc *hostquota.Service
 	db  *storage.DB
@@ -40,6 +42,11 @@ func (h *HostQuotaHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // Save grava a cota de um aparelho.
+//
+// O corpo é decodificado cru, mas quem decide se o AVISO fica ligado é o
+// serviço, a partir do limite — nunca este JSON. Um PUT sem o campo gravaria
+// false por zero-value e produziria uma cota que a tela desenha, cuja barra
+// enche e cujo alerta nunca nasce. Ver storage.HostQuota.AlertEnabled.
 func (h *HostQuotaHandler) Save(w http.ResponseWriter, r *http.Request) {
 	var q storage.HostQuota
 	if err := decodeJSON(r, &q); err != nil {

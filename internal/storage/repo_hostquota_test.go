@@ -22,14 +22,14 @@ func TestAddHostUsageSomaNoSQLENaoEmGo(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := db.AddHostUsage(mac, ciclo, 1000, 500); err != nil {
+			if err := db.AddHostUsage(mac, storage.HostPeriodMonthly, ciclo, 1000, 500); err != nil {
 				t.Errorf("AddHostUsage: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
 
-	u, err := db.GetHostUsage(mac, ciclo)
+	u, err := db.GetHostUsage(mac, storage.HostPeriodMonthly, ciclo)
 	if err != nil {
 		t.Fatalf("GetHostUsage: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestGetHostUsageDeCicloSemTrafegoNaoEhErro(t *testing.T) {
 	// Ciclo novo, ainda sem tráfego medido: zero é a resposta certa, e não erro.
 	// Se fosse erro, o Flush pararia de avaliar a cota no primeiro minuto de
 	// cada ciclo.
-	u, err := db.GetHostUsage("aa:bb:cc:dd:ee:ff", 1)
+	u, err := db.GetHostUsage("aa:bb:cc:dd:ee:ff", storage.HostPeriodMonthly, 1)
 	if err != nil {
 		t.Fatalf("GetHostUsage: %v", err)
 	}
@@ -56,36 +56,36 @@ func TestGetHostUsageAllTrazSoOCicloPedido(t *testing.T) {
 	db := newTestDB(t)
 	const a = "aa:bb:cc:dd:ee:ff"
 	const b = "11:22:33:44:55:66"
-	if err := db.AddHostUsage(a, 100, 10, 0); err != nil {
+	if err := db.AddHostUsage(a, storage.HostPeriodMonthly, 100, 10, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddHostUsage(b, 100, 20, 0); err != nil {
+	if err := db.AddHostUsage(b, storage.HostPeriodMonthly, 100, 20, 0); err != nil {
 		t.Fatal(err)
 	}
 	// Mesmo aparelho, ciclo anterior: não pode entrar na leitura do ciclo atual,
 	// senão a tela somaria mês passado com este.
-	if err := db.AddHostUsage(a, 50, 999, 0); err != nil {
+	if err := db.AddHostUsage(a, storage.HostPeriodMonthly, 50, 999, 0); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := db.GetHostUsageAll(100)
+	got, err := db.GetHostUsageAll(storage.HostPeriodMonthly, 100)
 	if err != nil {
 		t.Fatalf("GetHostUsageAll: %v", err)
 	}
 	if len(got) != 2 || got[a].RxBytes != 10 || got[b].RxBytes != 20 {
-		t.Errorf("GetHostUsageAll(100) = %+v", got)
+		t.Errorf("GetHostUsageAll(monthly, 100) = %+v", got)
 	}
 }
 
 func TestSaveHostQuotaSubstituiSemDuplicar(t *testing.T) {
 	db := newTestDB(t)
 	const mac = "aa:bb:cc:dd:ee:ff"
-	q := storage.HostQuota{MAC: mac, LimitGB: 5, Period: storage.HostPeriodMonthly, CycleDay: 10, AlertPct: 80, Enabled: true}
+	q := storage.HostQuota{MAC: mac, LimitGB: 5, Period: storage.HostPeriodMonthly, CycleDay: 10, AlertPct: 80, AlertEnabled: true}
 	if err := db.SaveHostQuota(q); err != nil {
 		t.Fatal(err)
 	}
 	q.LimitGB = 0
-	q.Enabled = false
+	q.AlertEnabled = false
 	if err := db.SaveHostQuota(q); err != nil {
 		t.Fatal(err)
 	}

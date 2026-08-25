@@ -30,7 +30,21 @@ const (
 	PermRoutesWrite     Permission = "routes.write"
 	PermFirewallWrite   Permission = "firewall.write"
 	PermHostsBlock      Permission = "hosts.block"
-	PermHostsAssign     Permission = "hosts.assign"     // mover host/grupo para uma WAN
+	PermHostsAssign     Permission = "hosts.assign" // mover host/grupo para uma WAN
+	// PermHostsQuota é declarar/remover a COTA DE DADOS de um aparelho (#126).
+	//
+	// SEPARADA DE hosts.block DE PROPÓSITO. hosts.block é a permissão de
+	// TRANCAR um aparelho — é literalmente o portão de POST /api/hosts/block.
+	// Gatear a cota por ela tornaria impossível montar o papel que só deveria
+	// "declarar teto e acompanhar consumo": ou o operador ganha o poder de
+	// cortar, ou não consegue mexer em cota. E a auditoria inversa degrada
+	// junto — "quem pode cortar um aparelho" e "quem pode declarar cota"
+	// viravam o mesmo conjunto, permanentemente.
+	//
+	// A separação é a mesma lição de traffic.capture logo abaixo: capacidades
+	// diferentes sobre o mesmo assunto não se herdam por conveniência de quem
+	// escreveu a rota.
+	PermHostsQuota      Permission = "hosts.quota"
 	PermSystemWrite     Permission = "system.write"     // settings, retenção, aliases
 	PermDHCPWrite       Permission = "dhcp.write"       // ranges, reservas, aplicar
 	PermDNSWrite        Permission = "dns.write"        // upstreams, blocklist, aplicar
@@ -96,6 +110,7 @@ var Catalog = []CatalogEntry{
 	{PermHostsRead, "Hosts", "Ver hosts", "Inventário e consumo de hosts da LAN"},
 	{PermHostsBlock, "Hosts", "Bloquear host", "Bloquear/desbloquear um host"},
 	{PermHostsAssign, "Hosts", "Direcionar host", "Mover host/grupo para uma WAN específica"},
+	{PermHostsQuota, "Hosts", "Declarar cota de dados", "Definir e remover o teto de consumo de um aparelho (avisa; não bloqueia nem limita a banda)"},
 
 	{PermSystemRead, "Sistema", "Ver sistema", "Métricas de sistema e configurações"},
 	{PermSystemWrite, "Sistema", "Alterar configurações", "Retenção, aliases de interface e ajustes globais"},
@@ -176,7 +191,7 @@ var DefaultRoles = []DefaultRole{
 			PermLinksRead, PermLinksWrite,
 			PermRoutesRead, PermRoutesWrite,
 			PermFirewallRead, PermFirewallWrite,
-			PermHostsRead, PermHostsBlock, PermHostsAssign,
+			PermHostsRead, PermHostsBlock, PermHostsAssign, PermHostsQuota,
 			PermSystemRead,
 			PermDHCPRead, PermDHCPWrite, PermDNSRead, PermDNSWrite,
 			PermInterfacesRead, PermInterfacesWrite,

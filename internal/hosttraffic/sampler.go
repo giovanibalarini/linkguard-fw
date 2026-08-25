@@ -59,9 +59,26 @@ type MACSource interface {
 	MACByIP(ctx context.Context) (map[string]string, error)
 }
 
+// leitura é a última amostra de um endereço.
+//
+// mac guarda QUEM era o dono daquele endereço na amostra anterior, e existe por
+// dois motivos que só aparecem em rede de verdade:
+//
+//  1. MEMÓRIA. Quando "ip neigh" falha ou estoura o timeout, macs vem
+//     vazio e TODO delta desta amostra ficaria sem dono — dez segundos de cota
+//     de toda a rede evaporando num slog.Debug que ninguém lê. Com a memória, o
+//     último MAC conhecido do endereço continua valendo.
+//
+//  2. HANDOVER. Quando o DHCP entrega .50 para outro aparelho, o elemento do
+//     set acct continua vivo (timeout 1d) e a entrada de vizinhança pode levar
+//     dezenas de segundos para trocar. Nessa janela o delta é do aparelho novo
+//     e o MAC lido ainda é o do antigo: a cota de quem saiu da rede subiria
+//     sozinha. Quando o MAC muda entre duas amostras, o delta é DESCARTADO e o
+//     endereço é re-semeado. Perde-se uma amostra; não se inventa consumo.
 type leitura struct {
 	rx, tx uint64
 	ts     int64
+	mac    string
 }
 
 // Sampler transforma o acumulado dos contadores em taxa, e a taxa em série.
@@ -110,8 +127,15 @@ func (s *Sampler) SetPorHost(r RegistroPorHost) { s.porHost = r }
 // como média da hora inteira: multiplicar por 3600 superestima em cerca de
 // 360 vezes. Somado ao teto de maxHosts e ao rótulo "outros", a integração
 // seria um número errado com cara de número certo.
+//
+// POR QUE O INSTANTE VIAJA JUNTO. O ciclo a que um byte pertence é função do
+// momento em que ele foi MEDIDO, não do momento em que o consumidor resolve
+// gravá-lo. O acumulador da cota grava a cada minuto; sem o ts, tudo o que foi
+// medido no último minuto do ciclo seria cobrado do ciclo SEGUINTE — um minuto
+// por mês no ciclo mensal, um minuto por DIA no diário. Ver internal/hostquota,
+// seção O TEMPO.
 type UsageSink interface {
-	AddHostBytes(mac string, rx, tx uint64)
+	AddHostBytes(mac string, ts int64, rx, tx uint64)
 }
 
 // SetUsageSink liga o acumulador de consumo por aparelho (#126). Nil mantém o
@@ -162,17 +186,31 @@ func (s *Sampler) SampleOnce(ctx context.Context, now int64) {
 
 	for ip, c := range contadores {
 		ant, tinha := s.anterior[ip]
-		s.anterior[ip] = leitura{rx: c.RxBytes, tx: c.TxBytes, ts: now}
+
+		// Quem é o dono deste endereço agora. Vazio quer dizer que a tabela de
+		// vizinhança não respondeu, ou que a entrada está em FAILED/INCOMPLETE
+		// e não tem lladdr — não quer dizer que o aparelho sumiu. Nesse caso
+		// vale o último dono conhecido: ver o comentário de leitura.mac.
+		macLido := macs[ip]
+		mac := macLido
+		if mac == "" {
+			mac = ant.mac
+		}
+		s.anterior[ip] = leitura{rx: c.RxBytes, tx: c.TxBytes, ts: now, mac: mac}
+
 		if !tinha {
 			// Primeira leitura só semeia: o acumulado até aqui não pertence a
 			// esta janela de tempo, e gravá-lo como taxa daria um pico que
 			// nunca existiu.
 			continue
 		}
-		dt := float64(now - ant.ts)
-		if dt <= 0 {
+		if macLido != "" && ant.mac != "" && macLido != ant.mac {
+			// O endereço trocou de dono entre duas amostras. O delta é do
+			// aparelho novo e não há como reparti-lo; creditá-lo a qualquer um
+			// dos dois inventaria consumo. Re-semeia e segue.
 			continue
 		}
+
 		// Contador do kernel é uint64 e zera quando o set é recriado. Comparar
 		// ANTES de subtrair evita formar o número gigante do underflow — mesma
 		// proteção do amostrador de interfaces.
@@ -186,23 +224,35 @@ func (s *Sampler) SampleOnce(ctx context.Context, now int64) {
 		if brx == 0 && btx == 0 {
 			continue
 		}
-		drx, dtx := float64(brx), float64(btx)
-		mac := macs[ip]
+
 		// A COTA RECEBE OS BYTES AQUI, no mesmo ponto em que o delta existe, e
 		// NÃO depois do corte de maxHosts logo abaixo.
 		//
 		// O corte é do RANKING da amostra: os aparelhos além do quinquagésimo
-		// viram o rótulo "outros" para o histórico não multiplicar séries. Se a
-		// cota lesse dali, o aparelho com cota declarada ficaria mudo
+		// viram o rótulo "outros" para o histórico não multiplicar séries.
+		// Se a cota lesse dali, o aparelho com cota declarada ficaria mudo
 		// exatamente na hora em que outros cinquenta estão consumindo — que é
 		// a hora em que a cota importa.
+		//
+		// E ANTES DA GUARDA DE dt, logo abaixo. dt<=0 é preocupação de TAXA
+		// (dividir por zero, ou por um número negativo depois de um passo de
+		// NTP para trás — corriqueiro numa caixa sem RTC logo depois do boot).
+		// A contabilidade de BYTES não precisa de dt para nada, e descartar o
+		// intervalo inteiro por causa dele apagaria a cota de todos os
+		// endereços de uma vez.
 		//
 		// Sem MAC não vai nada: "outros" é um rótulo de gráfico, não um
 		// aparelho, e acumular cota nele criaria uma linha no banco que nenhum
 		// aparelho pode reivindicar nem remover.
 		if mac != "" && s.usage != nil {
-			s.usage.AddHostBytes(mac, brx, btx)
+			s.usage.AddHostBytes(mac, now, brx, btx)
 		}
+
+		dt := float64(now - ant.ts)
+		if dt <= 0 {
+			continue
+		}
+		drx, dtx := float64(brx), float64(btx)
 		if mac == "" {
 			// Sem MAC não é host da LAN no modelo do produto (ver
 			// hosts.Service.List). Vai para "outros" em vez de sumir.

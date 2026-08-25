@@ -972,7 +972,13 @@ export interface HostQuotaStatus {
   name: string;
   ip: string;
   configured: boolean;
-  enabled: boolean;
+  /**
+   * O AVISO está ligado. Chama-se alert_enabled, e não enabled, de propósito:
+   * "enabled" numa linha de cota por aparelho é a palavra que qualquer
+   * leitor entende como "aplicar a cota", e esta feature não aplica nada.
+   * Quem o define é o backend, a partir do limite — o PUT não o manda.
+   */
+  alert_enabled: boolean;
   limit_gb: number;
   period: HostQuotaPeriod;
   cycle_day: number;
@@ -983,6 +989,28 @@ export interface HostQuotaStatus {
   tx_bytes: number;
   used_bytes: number;
   used_pct: number;
-  /** false = cota órfã: o aparelho não está mais no inventário. */
+  /**
+   * O aparelho está no inventário.
+   *
+   * NÃO É "o aparelho ainda existe": host_metadata guarda a linha para
+   * sempre depois do primeiro avistamento, então o endereço que um celular
+   * rotacionou ontem continua presente hoje. Quem responde a essa pergunta são
+   * os dois campos abaixo.
+   */
   present: boolean;
+  /** Quando o inventário viu o aparelho pela última vez (unix, 0 = nunca). */
+  last_seen: number;
+  /** Quando a medição DESTE ciclo foi atualizada (unix, 0 = nada medido). */
+  measured_at: number;
+}
+
+/** Um ciclo fechado do histórico de consumo de um aparelho. */
+export interface HostUsageCycle {
+  mac: string;
+  /** Diário ou mensal: sem isto, um ciclo de um dia e um de um mês se parecem. */
+  period: HostQuotaPeriod;
+  cycle_start: number;
+  rx_bytes: number;
+  tx_bytes: number;
+  updated_at: number;
 }

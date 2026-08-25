@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Gauge, Loader2, AlertTriangle, Trash2, Check, Info } from 'lucide-react';
+import { Gauge, Loader2, AlertTriangle, Trash2, Check, Info, Bell } from 'lucide-react';
 import client from '../api/client';
 import { useI18n } from '../i18n';
 import HelpTip from './HelpTip';
@@ -79,12 +79,14 @@ export default function HostQuota({ canEdit }: Props) {
   const save = async (mac: string) => {
     setBusy(true); setErr('');
     try {
+      // O corpo NÃO manda alert_enabled. Quem decide se o aviso fica ligado é o
+      // backend, a partir do limite: um campo booleano que a tela manda e nunca
+      // lê de volta é a receita para uma cota desenhada e muda.
       await client.put(`/api/hosts/quotas/${encodeURIComponent(mac)}`, {
         limit_gb: Number(limitGB),
         period,
         cycle_day: Number(cycleDay),
         alert_pct: Number(alertPct),
-        enabled: true,
       });
       setEditing(null);
       await load();
@@ -113,13 +115,21 @@ export default function HostQuota({ canEdit }: Props) {
       className="mb-6"
     >
       <p className="text-gray-500 text-xs">{t('svc.hosts.quota.subtitle')}</p>
-      {/* A frase que impede a tela de vender o que o produto não faz. Fica
-          SEMPRE visível, e não dentro do HelpTip: o admin que declara uma cota
-          precisa saber, antes de declarar, que nada vai ser cortado. */}
-      <p className="mt-2 mb-4 flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-300">
-        <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
-        {t('svc.hosts.quota.warnNoEnforcement')}
-      </p>
+      {/* As frases que impedem a tela de vender o que o produto não faz. Ficam
+          SEMPRE visíveis, e não dentro do HelpTip: o admin que declara uma cota
+          precisa saber, ANTES de declarar, que nada vai ser cortado — e até
+          onde o aviso chega. Um aviso que o admin acha que vai para o telefone
+          dele e pára no painel é pior que aviso nenhum. */}
+      <div className="mt-2 mb-4 space-y-1.5">
+        <p className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-300">
+          <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
+          {t('svc.hosts.quota.warnNoEnforcement')}
+        </p>
+        <p className="flex items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-300/80">
+          <Bell className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
+          {t('svc.hosts.quota.warnWhereItStops')}
+        </p>
+      </div>
 
       {err && (
         <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
@@ -141,6 +151,14 @@ export default function HostQuota({ canEdit }: Props) {
                 <span className="text-white text-sm font-medium">
                   {r.name} <span className="text-gray-600 font-mono text-xs">{r.mac}</span>
                   {!r.present && <span className="ml-2 text-[11px] text-gray-500">({t('svc.hosts.quota.absent')})</span>}
+                  {/* Cota declarada e NADA medido neste ciclo. Sem este rótulo,
+                      um aparelho comportado com 0% da cota e um endereço físico
+                      que não existe mais desenham a mesma barra verde. */}
+                  {r.configured && r.measured_at === 0 && (
+                    <span className="ml-2 text-[11px] text-amber-500/90" title={t('svc.hosts.quota.noMeasureHint')}>
+                      ({t('svc.hosts.quota.noMeasure')})
+                    </span>
+                  )}
                 </span>
                 <span className="text-xs text-gray-400">
                   {r.configured
@@ -210,6 +228,16 @@ export default function HostQuota({ canEdit }: Props) {
                     </button>
                   </div>
                   <p className="sm:col-span-5 text-[11px] text-gray-600">{t('svc.hosts.quota.cycleDayHint')}</p>
+                  {/* Trocar período ou dia de fechamento MOVE a chave do ciclo.
+                      O backend leva o consumo junto e fecha os alertas abertos,
+                      mas o admin precisa saber disso ANTES de salvar: sem o
+                      aviso, ele vê o alerta sumir e acha que quebrou algo. */}
+                  {r.configured && (period !== r.period || Number(cycleDay) !== r.cycle_day) && (
+                    <p className="sm:col-span-5 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
+                      <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
+                      {t('svc.hosts.quota.periodChangeWarning')}
+                    </p>
+                  )}
                 </div>
               )}
             </li>

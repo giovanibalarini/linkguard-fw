@@ -590,21 +590,26 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/alias", hostsH.SetAlias)
 		r.With(require(auth.PermHostsBlock)).Post("/api/hosts/block", hostsH.SetBlocked)
 
-		// Cota de dados por aparelho (#126). MESMO PAR DE PERMISSÕES das rotas
-		// de aparelho acima — leitura com hosts.read, escrita com hosts.block —,
-		// pelo mesmo desenho de /api/quotas: uma permissão de leitura para ver o
-		// consumo e a de escrita da área para declarar o teto. Ler consumo por
-		// aparelho é inventário da rede do cliente e não pode cair em rota mais
-		// aberta que a lista de aparelhos; declarar cota é ato administrativo
-		// sobre o mesmo objeto que bloquear.
+		// Cota de dados por aparelho (#126). Leitura com hosts.read — ler
+		// consumo por aparelho é inventário da rede do cliente e não pode cair
+		// em rota mais aberta que a lista de aparelhos. Escrita com
+		// hosts.quota, e NÃO com hosts.block.
+		//
+		// A distinção não é cosmética: hosts.block é o portão de
+		// POST /api/hosts/block, que TRANCA o aparelho. Gatear a cota por ela
+		// tornaria impossível montar o papel que só declara teto e acompanha
+		// consumo — o operador teria de ganhar o poder de cortar para conseguir
+		// mexer numa cota que, por decisão de produto, não corta nada.
+		// A migração 16 concede hosts.quota a quem já tinha hosts.block, para
+		// ninguém perder no upgrade o que fazia ontem.
 		//
 		// O caminho fica sob /api/hosts/ e não colide com o {id} de nada: as
 		// rotas de aparelho acima são todas literais.
 		hostQuotaH := handlers.NewHostQuotaHandler(s.hostQuotaSvc, s.db)
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts/quotas", hostQuotaH.List)
 		r.With(require(auth.PermHostsRead)).Get("/api/hosts/quotas/{mac}/history", hostQuotaH.History)
-		r.With(require(auth.PermHostsBlock)).Put("/api/hosts/quotas/{mac}", hostQuotaH.Save)
-		r.With(require(auth.PermHostsBlock)).Delete("/api/hosts/quotas/{mac}", hostQuotaH.Delete)
+		r.With(require(auth.PermHostsQuota)).Put("/api/hosts/quotas/{mac}", hostQuotaH.Save)
+		r.With(require(auth.PermHostsQuota)).Delete("/api/hosts/quotas/{mac}", hostQuotaH.Delete)
 
 		// Captura de pacotes sob demanda (só cabeçalho, janela limitada).
 		// Permissão própria: ver gráfico de tráfego é uma coisa, observar a

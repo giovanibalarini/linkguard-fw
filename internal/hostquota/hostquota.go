@@ -2,15 +2,17 @@
 // vigente e avisa quando ele passa do que foi declarado para ele.
 //
 // É o gêmeo de internal/linkquota um andar abaixo: lá a pergunta é "quanto
-// deste link já foi embora"; aqui é "quem gastou". As duas metades estão na
-// issue #126, e a de link foi entregue primeiro porque não dependia de nada.
+// deste link já foi embora"; aqui é "quem gastou". As duas metades estão
+// na issue #126, e a de link foi entregue primeiro porque não dependia de nada.
 //
 // ─── O QUE ELE NÃO FAZ, E POR QUÊ ────────────────────────────────────────────
 //
 // ELE NÃO CORTA NADA. Não bloqueia o aparelho que estourou, não escreve regra
 // no ruleset vivo, não limita banda. Mede e avisa.
 //
-// Isso não é uma etapa que faltou: é a decisão de produto desta entrega.
+// Isso não é uma etapa que faltou: é a decisão de produto desta entrega. E não
+// é só prosa: boundary_test.go, neste mesmo pacote, RECUSA A COMPILAR se algum
+// import de corte aparecer aqui. Comentário convence; teste impede.
 //
 //  1. CORTAR POR COTA É A TRANCA. O aparelho que estourou pode ser o do
 //     próprio admin — e costuma ser, porque é o que mais usa a rede. Um corte
@@ -30,8 +32,8 @@
 //     descreve: a que quebra DIAS depois, sem relação visível com a mudança.
 //     Este produto já produziu três travamentos assim.
 //
-// Avisar é reversível; cortar não é. Se alguém "aproveitar" este pacote para
-// ligar o corte, o resultado não é uma feature a mais: é um defeito de
+// Avisar é reversível; cortar não é. Se alguém "aproveitar" este pacote
+// para ligar o corte, o resultado não é uma feature a mais: é um defeito de
 // segurança com uma tela bonita na frente.
 //
 // Limitar banda também fica de fora, e não por falta de tempo. O limit rate do
@@ -50,9 +52,21 @@
 // é integração de taxa: integrar host.rx_bps daria um número errado por ordens
 // de grandeza, e o porquê está no comentário daquela interface.
 //
-// O que ele mede é IPv4 apenas, porque os sets da contabilidade são ipv4_addr.
-// A tela diz isso com todas as letras: um número que subconta em silêncio é
-// pior que nenhum número.
+// O que ele mede é IPv4 apenas, porque os sets da contabilidade são ipv4_addr,
+// e conta TUDO o que o firewall encaminha — inclusive de uma sub-rede interna
+// para outra. A tela diz as duas coisas com todas as letras: um número que
+// subconta em silêncio é pior que nenhum número, e um que sobreconta em
+// silêncio também.
+//
+// ─── O TEMPO ─────────────────────────────────────────────────────────────────
+//
+// O INSTANTE DA MEDIÇÃO VIAJA COM O BYTE. O amostrador entrega deltas a cada
+// dez segundos e o flush roda a cada minuto; se o ciclo fosse decidido no
+// instante do FLUSH, tudo o que foi medido no último minuto do ciclo cairia no
+// ciclo seguinte. No mensal isso é um minuto por mês; no diário é um minuto por
+// dia, e um minuto a 300 Mbit/s são 2,25 GB — mais que a cota diária inteira de
+// um tablet. O ciclo novo nasceria estourado, com alerta crítico sobre tráfego
+// que o aparelho não fez naquele dia, e o dia real ficaria mudo.
 package hostquota
 
 import (
@@ -91,6 +105,24 @@ const (
 	// guarda metric_samples. Perder até um minuto de contagem num desligamento
 	// abrupto não muda nenhuma decisão que esta feature exista para apoiar.
 	flushInterval = time.Minute
+
+	// retencaoSemCota é por quanto tempo o consumo de um aparelho SEM cota
+	// declarada fica no banco.
+	//
+	// Existe porque host_usage não tem outra poda: uma linha cujo MAC não está
+	// no inventário nem em host_quota é invisível na tela e imortal no banco.
+	// Telefone moderno rotaciona o endereço físico a cada associação; com ciclo
+	// diário, cada um deixa uma linha por dia, para sempre.
+	//
+	// Quem TEM cota declarada não é podado: aquele histórico é o que responde
+	// "o teto está no lugar certo?".
+	retencaoSemCota = 90 * 24 * time.Hour
+
+	// intervaloDePoda é de quanto em quanto tempo a poda roda. Uma vez por dia,
+	// e não a cada flush: é um DELETE com subconsulta, e rodá-lo por minuto
+	// poria o acumulador para disputar o banco com metric_samples sem ganhar
+	// nada.
+	intervaloDePoda = 24 * time.Hour
 )
 
 // Alerter é o pedaço do alerts.Service que esta feature usa. Interface local
@@ -110,42 +142,78 @@ type Status struct {
 	MAC string `json:"mac"`
 	// Name é o apelido do aparelho, com queda para nome de host, endereço e
 	// MAC. É o que vai na tela e no texto do alerta: um alerta que diz
-	// "aa:bb:cc:dd:ee:ff estourou a cota" obriga o admin a ir procurar de quem
-	// é aquele aparelho, que é justamente o trabalho que o apelido existe para
-	// poupar.
-	Name       string  `json:"name"`
-	IP         string  `json:"ip"`
-	Configured bool    `json:"configured"`
-	Enabled    bool    `json:"enabled"`
-	LimitGB    float64 `json:"limit_gb"`
-	Period     string  `json:"period"`
-	CycleDay   int     `json:"cycle_day"`
-	AlertPct   int     `json:"alert_pct"`
-	CycleStart int64   `json:"cycle_start"`
-	CycleEnd   int64   `json:"cycle_end"`
-	RxBytes    uint64  `json:"rx_bytes"`
-	TxBytes    uint64  `json:"tx_bytes"`
-	UsedBytes  uint64  `json:"used_bytes"`
-	UsedPct    float64 `json:"used_pct"` // 0 quando não há cota declarada
-	// Present diz se o aparelho ainda está no inventário. Falso é a cota
-	// órfã — o aparelho trocou de MAC, saiu da rede ou nunca mais voltou. Ela
-	// aparece na tela de propósito, porque uma cota que ninguém consegue ver é
-	// uma cota que ninguém consegue remover.
+	// "aa:bb:cc:dd:ee:ff estourou a cota" obriga o admin a ir procurar de
+	// quem é aquele aparelho, que é justamente o trabalho que o apelido existe
+	// para poupar.
+	Name         string  `json:"name"`
+	IP           string  `json:"ip"`
+	Configured   bool    `json:"configured"`
+	AlertEnabled bool    `json:"alert_enabled"`
+	LimitGB      float64 `json:"limit_gb"`
+	Period       string  `json:"period"`
+	CycleDay     int     `json:"cycle_day"`
+	AlertPct     int     `json:"alert_pct"`
+	CycleStart   int64   `json:"cycle_start"`
+	CycleEnd     int64   `json:"cycle_end"`
+	RxBytes      uint64  `json:"rx_bytes"`
+	TxBytes      uint64  `json:"tx_bytes"`
+	UsedBytes    uint64  `json:"used_bytes"`
+	UsedPct      float64 `json:"used_pct"` // 0 quando não há cota declarada
+	// Present diz se o aparelho ainda está no inventário. Falso é a cota sem
+	// dono conhecido — um endereço digitado à mão que nunca apareceu na rede.
+	// Ela aparece na tela de propósito, porque uma cota que ninguém consegue
+	// ver é uma cota que ninguém consegue remover.
+	//
+	// PRESENT NÃO É "O APARELHO AINDA EXISTE", e é importante não ler
+	// assim: host_metadata guarda a linha para sempre depois do primeiro
+	// avistamento, então o MAC de privacidade que um celular rotacionou ontem
+	// continua "presente" hoje. Quem responde a essa pergunta são os dois
+	// campos abaixo.
 	Present bool `json:"present"`
+	// LastSeen é quando o inventário viu o aparelho pela última vez, e
+	// MeasuredAt é quando a MEDIÇÃO deste ciclo foi atualizada pela última vez
+	// (zero = nada medido neste ciclo).
+	//
+	// POR QUE OS DOIS ESTÃO AQUI. Sem eles, "aparelho comportado, 0% da
+	// cota" e "aparelho que sumiu e a medição morreu" desenham a MESMA
+	// barra verde. A tela não tinha como distinguir os dois, e uma cota morta
+	// que parece saudável é a cota-fantasma com outro nome.
+	LastSeen   int64 `json:"last_seen"`
+	MeasuredAt int64 `json:"measured_at"`
 }
 
 type delta struct{ rx, tx uint64 }
+
+// ciclo é a chave de um ciclo: período E instante de início.
+//
+// OS DOIS JUNTOS, e não só o instante: o início de um ciclo diário no dia 1 e o
+// de um ciclo mensal que fecha no dia 1 são o mesmo inteiro. Sem o período, a
+// virada de ciclo não seria detectada numa troca de período no dia 1, e o
+// histórico misturaria dia com mês.
+type ciclo struct {
+	period string
+	start  int64
+}
 
 // Service acumula bytes por aparelho e os converte em consumo por ciclo.
 type Service struct {
 	db       *storage.DB
 	alertSvc Alerter
 
-	mu      sync.Mutex
-	pending map[string]delta // por MAC, entre flushes
+	mu sync.Mutex
+	// pending guarda o delta por APARELHO e por INSTANTE DE AMOSTRA.
+	//
+	// O instante é a chave interna porque o ciclo a que um byte pertence é uma
+	// função do MOMENTO EM QUE ELE FOI MEDIDO, e não do momento em que o flush
+	// acontece. São no máximo seis baldes por aparelho por flush (amostra de
+	// dez segundos, flush de um minuto).
+	pending map[string]map[int64]delta
 	// lastCycle guarda o ciclo em que cada aparelho estava no flush anterior,
 	// para detectar a virada e reabrir a possibilidade de alertar.
-	lastCycle map[string]int64
+	lastCycle map[string]ciclo
+
+	// ultimaPoda é quando a retenção rodou pela última vez.
+	ultimaPoda time.Time
 
 	nowFn func() time.Time
 }
@@ -156,26 +224,62 @@ func NewService(db *storage.DB, alertSvc Alerter) *Service {
 	return &Service{
 		db:        db,
 		alertSvc:  alertSvc,
-		pending:   map[string]delta{},
-		lastCycle: map[string]int64{},
+		pending:   map[string]map[int64]delta{},
+		lastCycle: map[string]ciclo{},
 		nowFn:     time.Now,
 	}
 }
 
-// AddHostBytes recebe o delta de bytes de um aparelho. Implementa
-// hosttraffic.UsageSink: é chamado a cada dez segundos pelo amostrador, com os
-// MESMOS deltas que alimentam as séries — de propósito, porque dois caminhos de
-// medição divergiriam e aí o gráfico e a cota contariam coisas diferentes.
-func (s *Service) AddHostBytes(mac string, rx, tx uint64) {
+// AddHostBytes recebe o delta de bytes de um aparelho, com o INSTANTE em que
+// ele foi medido. Implementa hosttraffic.UsageSink: é chamado a cada dez
+// segundos pelo amostrador, com os MESMOS deltas que alimentam as séries — de
+// propósito, porque dois caminhos de medição divergiriam e aí o gráfico e a
+// cota contariam coisas diferentes.
+//
+// O ts não é decoração: ver o cabeçalho deste arquivo, seção O TEMPO.
+func (s *Service) AddHostBytes(mac string, ts int64, rx, tx uint64) {
 	if mac == "" || (rx == 0 && tx == 0) {
 		return
 	}
 	s.mu.Lock()
-	d := s.pending[mac]
+	porInstante := s.pending[mac]
+	if porInstante == nil {
+		porInstante = map[int64]delta{}
+		s.pending[mac] = porInstante
+	}
+	d := porInstante[ts]
 	d.rx += rx
 	d.tx += tx
-	s.pending[mac] = d
+	porInstante[ts] = d
 	s.mu.Unlock()
+}
+
+// devolver põe de volta na fila o que não conseguiu ser gravado.
+//
+// SOMANDO, e não substituindo: entre o dreno e a devolução o amostrador pode
+// ter entregue delta novo para o mesmo aparelho e o mesmo instante. Sem isto,
+// um "database is locked" — que não é hipótese remota, porque o mesmo
+// SQLite recebe as escritas de metric_samples — apagaria permanentemente o
+// minuto que já tinha saído da fila.
+func (s *Service) devolver(pendente map[string]map[int64]delta) {
+	if len(pendente) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for mac, porInstante := range pendente {
+		alvo := s.pending[mac]
+		if alvo == nil {
+			alvo = map[int64]delta{}
+			s.pending[mac] = alvo
+		}
+		for ts, d := range porInstante {
+			j := alvo[ts]
+			j.rx += d.rx
+			j.tx += d.tx
+			alvo[ts] = j
+		}
+	}
 }
 
 // Run grava o acumulado periodicamente e avalia as cotas.
@@ -200,13 +304,16 @@ func (s *Service) Run(ctx context.Context) {
 // fora do ticker (o desligamento faz isso).
 func (s *Service) Flush() {
 	s.mu.Lock()
-	pending := s.pending
-	s.pending = map[string]delta{}
+	pendente := s.pending
+	s.pending = map[string]map[int64]delta{}
 	s.mu.Unlock()
 
 	quotas, err := s.db.GetHostQuotas()
 	if err != nil {
-		slog.Warn("cota por aparelho: não consegui ler as cotas; o acumulado deste minuto foi perdido", "err", err)
+		// O acumulado JÁ SAIU da fila. Devolvê-lo transforma uma perda
+		// permanente numa retentativa em sessenta segundos.
+		slog.Warn("cota por aparelho: não consegui ler as cotas; o acumulado deste minuto volta para a fila", "err", err)
+		s.devolver(pendente)
 		return
 	}
 
@@ -217,9 +324,9 @@ func (s *Service) Flush() {
 	// está usando a rede, e não ao tamanho do inventário. E não é só quem tem
 	// cota, também de propósito: medir quem não declarou nada é o que permite
 	// ao admin descobrir ONDE declarar — a mesma escolha do link.
-	macs := make([]string, 0, len(pending)+len(quotas))
+	macs := make([]string, 0, len(pendente)+len(quotas))
 	visto := map[string]bool{}
-	for mac := range pending {
+	for mac := range pendente {
 		macs = append(macs, mac)
 		visto[mac] = true
 	}
@@ -231,19 +338,44 @@ func (s *Service) Flush() {
 	sort.Strings(macs) // ordem estável: o log e os testes agradecem
 
 	now := s.nowFn()
-	novoLastCycle := make(map[string]int64, len(macs))
+	loc := now.Location()
+	atual := make(map[string]ciclo, len(macs))
+	naoGravado := map[string]map[int64]delta{}
+
+	// ─── PASSO 1: gravar ─────────────────────────────────────────────────────
+	//
+	// TODA a escrita acontece antes de QUALQUER leitura. O passo 2 lê o consumo
+	// do ciclo em lote (uma consulta por ciclo, não uma por aparelho); se as
+	// duas coisas estivessem no mesmo laço, o lote seria carregado no primeiro
+	// aparelho que precisasse dele e sairia desatualizado para todos os que
+	// gravassem depois.
+	for _, mac := range macs {
+		q := quotas[mac]
+		period, dia := periodoDe(q), diaDe(q)
+		atual[mac] = ciclo{period, CycleStart(now, period, dia).Unix()}
+
+		for ts, d := range pendente[mac] {
+			// O CICLO SAI DO INSTANTE DA MEDIÇÃO, e não do instante do flush.
+			// Ver o cabeçalho deste arquivo, seção O TEMPO.
+			inicio := CycleStart(time.Unix(ts, 0).In(loc), period, dia).Unix()
+			if err := s.db.AddHostUsage(mac, period, inicio, d.rx, d.tx); err != nil {
+				slog.Warn("cota por aparelho: não consegui acumular o consumo; volta para a fila", "mac", mac, "err", err)
+				if naoGravado[mac] == nil {
+					naoGravado[mac] = map[int64]delta{}
+				}
+				naoGravado[mac][ts] = d
+			}
+		}
+	}
+	s.devolver(naoGravado)
+
+	// ─── PASSO 2: virada de ciclo e avaliação ────────────────────────────────
+	novoLastCycle := make(map[string]ciclo, len(macs))
+	usoPorCiclo := map[ciclo]map[string]storage.HostUsage{}
 	var nomes map[string]string
 
 	for _, mac := range macs {
-		q, hasQuota := quotas[mac]
-		cycle := CycleStart(now, q.Period, q.CycleDay).Unix()
-
-		if d, ok := pending[mac]; ok && (d.rx > 0 || d.tx > 0) {
-			if err := s.db.AddHostUsage(mac, cycle, d.rx, d.tx); err != nil {
-				slog.Warn("cota por aparelho: não consegui acumular o consumo", "mac", mac, "err", err)
-				continue
-			}
-		}
+		c := atual[mac]
 
 		// Virada de ciclo: o consumo volta a zero, então os avisos do ciclo
 		// anterior deixam de ser verdade. Resolvê-los é o que permite o ciclo
@@ -253,19 +385,31 @@ func (s *Service) Flush() {
 		// COM CICLO DIÁRIO ISSO É A DIFERENÇA ENTRE A FEATURE FUNCIONAR E NÃO
 		// FUNCIONAR. No mensal, um alerta preso mataria o aviso a partir do
 		// segundo MÊS; no diário, a partir do segundo DIA.
-		if prev, seen := s.lastCycle[mac]; seen && prev != cycle && s.alertSvc != nil {
+		prev, conhecido := s.lastCycle[mac]
+		if !conhecido {
+			prev, conhecido = s.cicloNoDisco(mac)
+		}
+		if conhecido && prev != c && s.alertSvc != nil {
 			s.alertSvc.AutoResolve(TypeQuotaWarning, mac)
 			s.alertSvc.AutoResolve(TypeQuotaExceeded, mac)
 		}
-		novoLastCycle[mac] = cycle
+		// SEMPRE, inclusive quando a gravação do passo 1 falhou para este
+		// aparelho: se ele saísse do mapa, o flush seguinte o veria como
+		// desconhecido e a virada de ciclo dele não resolveria alerta nenhum.
+		novoLastCycle[mac] = c
 
-		if !hasQuota || !q.Enabled || q.LimitGB <= 0 {
+		q, temCota := quotas[mac]
+		if !temCota || !q.AlertEnabled || q.LimitGB <= 0 {
 			continue
 		}
-		usage, err := s.db.GetHostUsage(mac, cycle)
-		if err != nil {
-			slog.Warn("cota por aparelho: não consegui ler o consumo do ciclo", "mac", mac, "err", err)
-			continue
+		uso, carregado := usoPorCiclo[c]
+		if !carregado {
+			uso, err = s.db.GetHostUsageAll(c.period, c.start)
+			if err != nil {
+				slog.Warn("cota por aparelho: não consegui ler o consumo do ciclo", "mac", mac, "err", err)
+				continue
+			}
+			usoPorCiclo[c] = uso
 		}
 		if nomes == nil {
 			nomes = s.nomes()
@@ -274,13 +418,70 @@ func (s *Service) Flush() {
 		if nome == "" {
 			nome = mac
 		}
-		s.evaluate(nome, mac, q, usage.RxBytes+usage.TxBytes)
+		u := uso[mac]
+		s.evaluate(nome, mac, q, u.RxBytes+u.TxBytes)
 	}
 
 	// lastCycle guarda só quem foi processado nesta rodada. Sem a poda, o mapa
 	// cresceria com todo MAC que já passou pela rede — inclusive os aleatórios
 	// que telefone moderno gera a cada associação.
 	s.lastCycle = novoLastCycle
+	s.podar(now)
+}
+
+// cicloNoDisco recupera do BANCO o último ciclo em que este aparelho teve
+// consumo medido.
+//
+// POR QUE ISTO EXISTE. lastCycle é memória, e nasce vazio a cada processo. Se o
+// daemon reinicia DEPOIS da virada — upgrade noturno, reboot, crash —, o
+// primeiro flush apenas semearia o mapa e nunca resolveria os alertas do ciclo
+// que acabou. E alerts.Create deduplica por (tipo, chave) enquanto o alerta
+// estiver aberto: o aviso do ciclo seguinte, e do seguinte, e do seguinte,
+// nunca seria criado. A feature morre em silêncio, com a suíte verde e um
+// alerta vermelho perpétuo sobre um ciclo que já acabou.
+//
+// No mensal, a chance de um reinício cair em cima da virada é pequena. No
+// DIÁRIO, é rotina.
+func (s *Service) cicloNoDisco(mac string) (ciclo, bool) {
+	hist, err := s.db.GetHostUsageHistory(mac, 1)
+	if err != nil || len(hist) == 0 {
+		return ciclo{}, false
+	}
+	return ciclo{hist[0].Period, hist[0].CycleStart}, true
+}
+
+// podar aplica a retenção de host_usage, no máximo uma vez por dia.
+func (s *Service) podar(now time.Time) {
+	if !s.ultimaPoda.IsZero() && now.Sub(s.ultimaPoda) < intervaloDePoda {
+		return
+	}
+	s.ultimaPoda = now
+	n, err := s.db.PurgeHostUsage(now.Add(-retencaoSemCota).Unix())
+	if err != nil {
+		slog.Warn("cota por aparelho: não consegui podar o consumo antigo", "err", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("cota por aparelho: consumo antigo podado", "linhas", n)
+	}
+}
+
+// periodoDe e diaDe normalizam a cota (ou a ausência dela) para os valores que
+// o calendário entende. Existem para o Flush e o Snapshot calcularem o MESMO
+// ciclo para o mesmo aparelho: se divergissem, a tela leria uma chave e o
+// acumulador escreveria noutra.
+func periodoDe(q storage.HostQuota) string {
+	if q.Period == "" {
+		return storage.HostPeriodMonthly
+	}
+	return q.Period
+}
+
+func diaDe(q storage.HostQuota) int {
+	if q.CycleDay < 1 {
+		return 1
+	}
+	return q.CycleDay
 }
 
 // nomes devolve o nome legível de cada aparelho conhecido, indexado por MAC.
@@ -324,8 +525,8 @@ func NomeDe(m storage.HostMetadata) string {
 //
 // Os textos usam linkquota.HumanBytes/HumanGB, e não "%.1f GB": uma cota de
 // 500 MB — que é exatamente o tamanho que se declara para uma câmera ou um
-// tablet — sairia como "0.0 GB de 0 GB", o defeito que a metade de link deste
-// mesmo recurso já pagou numa validação em máquina real.
+// tablet — sairia como "0.0 GB de 0 GB", o defeito que a metade de link
+// deste mesmo recurso já pagou numa validação em máquina real.
 func (s *Service) evaluate(nome, mac string, q storage.HostQuota, used uint64) {
 	if s.alertSvc == nil {
 		return
@@ -339,8 +540,8 @@ func (s *Service) evaluate(nome, mac string, q storage.HostQuota, used uint64) {
 
 	switch {
 	case pct >= 100:
-		// O aviso de "chegando lá" deixa de ser verdade quando a cota acaba:
-		// mantê-lo aberto ao lado do crítico põe dois alertas do mesmo
+		// O aviso de "chegando lá" deixa de ser verdade quando a cota
+		// acaba: mantê-lo aberto ao lado do crítico põe dois alertas do mesmo
 		// aparelho na tela dizendo coisas diferentes sobre o mesmo fato.
 		s.alertSvc.AutoResolve(TypeQuotaWarning, mac)
 		_ = s.alertSvc.Create(TypeQuotaExceeded, alerts.SeverityCritical,
@@ -359,8 +560,8 @@ func (s *Service) evaluate(nome, mac string, q storage.HostQuota, used uint64) {
 }
 
 // janelaDe é o pedaço de frase que diz de que ciclo o número fala. Sem ele,
-// "consumiu 900 MB de 1.0 GB" não distingue um teto diário de um mensal — e as
-// duas leituras pedem reações opostas.
+// "consumiu 900 MB de 1.0 GB" não distingue um teto diário de um mensal — e
+// as duas leituras pedem reações opostas.
 func janelaDe(period string) string {
 	if period == storage.HostPeriodDaily {
 		return "de hoje"
@@ -402,55 +603,54 @@ func (s *Service) Snapshot() ([]Status, error) {
 	// Uma consulta por CICLO, e não por aparelho. Quase todo mundo cai no ciclo
 	// mensal padrão, então na prática são uma ou duas leituras para a tela
 	// inteira, em vez de uma por linha.
-	usoPorCiclo := map[int64]map[string]storage.HostUsage{}
+	usoPorCiclo := map[ciclo]map[string]storage.HostUsage{}
 
 	out := make([]Status, 0, len(macs))
 	for _, mac := range macs {
 		q, hasQuota := quotas[mac]
-		start := CycleStart(now, q.Period, q.CycleDay)
-		cycle := start.Unix()
-		uso, ok := usoPorCiclo[cycle]
+		period, cycleDay := periodoDe(q), diaDe(q)
+		start := CycleStart(now, period, cycleDay)
+		c := ciclo{period, start.Unix()}
+		uso, ok := usoPorCiclo[c]
 		if !ok {
-			uso, err = s.db.GetHostUsageAll(cycle)
+			uso, err = s.db.GetHostUsageAll(c.period, c.start)
 			if err != nil {
 				return nil, err
 			}
-			usoPorCiclo[cycle] = uso
+			usoPorCiclo[c] = uso
 		}
 		u := uso[mac]
 		m, present := meta[mac]
 
-		period := q.Period
-		if period == "" {
-			period = storage.HostPeriodMonthly
-		}
-		cycleDay := q.CycleDay
-		if cycleDay < 1 {
-			cycleDay = 1
-		}
 		nome := mac
+		var lastSeen int64
 		if present {
 			nome = NomeDe(m)
+			if !m.LastSeen.IsZero() {
+				lastSeen = m.LastSeen.Unix()
+			}
 		}
-		// Configured é "tem cota DECLARADA", e não "tem linha no banco": a
-		// linha sobrevive à remoção da cota justamente para preservar o ciclo
-		// (ver Delete), com limite zero.
+		// Configured é "tem cota DECLARADA", e não "tem linha no
+		// banco": a linha sobrevive à remoção da cota justamente para
+		// preservar o ciclo (ver Delete), com limite zero.
 		st := Status{
-			MAC:        mac,
-			Name:       nome,
-			IP:         m.IP,
-			Configured: hasQuota && q.LimitGB > 0,
-			Enabled:    hasQuota && q.Enabled && q.LimitGB > 0,
-			LimitGB:    q.LimitGB,
-			Period:     period,
-			CycleDay:   cycleDay,
-			AlertPct:   q.AlertPct,
-			CycleStart: cycle,
-			CycleEnd:   CycleEnd(start, period).Unix(),
-			RxBytes:    u.RxBytes,
-			TxBytes:    u.TxBytes,
-			UsedBytes:  u.RxBytes + u.TxBytes,
-			Present:    present,
+			MAC:          mac,
+			Name:         nome,
+			IP:           m.IP,
+			Configured:   hasQuota && q.LimitGB > 0,
+			AlertEnabled: hasQuota && q.AlertEnabled && q.LimitGB > 0,
+			LimitGB:      q.LimitGB,
+			Period:       period,
+			CycleDay:     cycleDay,
+			AlertPct:     q.AlertPct,
+			CycleStart:   c.start,
+			CycleEnd:     CycleEnd(start, period).Unix(),
+			RxBytes:      u.RxBytes,
+			TxBytes:      u.TxBytes,
+			UsedBytes:    u.RxBytes + u.TxBytes,
+			Present:      present,
+			LastSeen:     lastSeen,
+			MeasuredAt:   u.UpdatedAt,
 		}
 		if st.Configured {
 			st.UsedPct = float64(st.UsedBytes) / (q.LimitGB * bytesPerGB) * 100
@@ -504,22 +704,64 @@ func (s *Service) Save(q storage.HostQuota) error {
 	if q.AlertPct < 1 || q.AlertPct > 100 {
 		return fmt.Errorf("o aviso deve estar entre 1%% e 100%%")
 	}
+	// O AVISO É DECIDIDO AQUI, e não herdado do corpo do PUT.
+	//
+	// Antes, AlertEnabled vinha do JSON decodificado cru: um PUT sem o campo
+	// gravava false por zero-value, e o resultado era uma cota que a tela
+	// desenha, cuja barra enche, que cruza 100% — e que o flush pula para
+	// sempre. Ativa aos olhos, morta na prática, sem nada na interface que
+	// permitisse perceber. Delete é o ÚNICO caminho que desliga o aviso.
+	q.AlertEnabled = q.LimitGB > 0
+
+	quotas, err := s.db.GetHostQuotas()
+	if err != nil {
+		return err
+	}
+	if antiga, existia := quotas[mac]; existia {
+		antigoPeriodo, antigoDia := periodoDe(antiga), diaDe(antiga)
+		if antigoPeriodo != q.Period || antigoDia != q.CycleDay {
+			// TROCAR O PERÍODO OU O DIA DE FECHAMENTO MOVE A CHAVE DO CICLO.
+			//
+			// É o mesmo defeito que Delete foi escrito para não cometer (ver o
+			// comentário lá), entrando por esta porta: o consumo já medido
+			// ficaria sob a chave antiga, a tela passaria a ler a nova, e a
+			// barra voltaria a 0% enquanto o alerta de "cota em 95%"
+			// continuasse aberto no painel. Tela e alerta discordando sobre o
+			// mesmo aparelho é o pior estado possível para quem está tentando
+			// decidir alguma coisa.
+			//
+			// Então: o consumo do ciclo vigente MUDA de chave junto, numa
+			// transação, e os alertas do aparelho são resolvidos — o ciclo foi
+			// redefinido, e o que eles diziam já não é sobre o mesmo recorte.
+			now := s.nowFn()
+			de := CycleStart(now, antigoPeriodo, antigoDia).Unix()
+			para := CycleStart(now, q.Period, q.CycleDay).Unix()
+			if err := s.db.MoveHostUsage(mac, antigoPeriodo, de, q.Period, para); err != nil {
+				return err
+			}
+			if s.alertSvc != nil {
+				s.alertSvc.AutoResolve(TypeQuotaWarning, mac)
+				s.alertSvc.AutoResolve(TypeQuotaExceeded, mac)
+			}
+		}
+	}
 	return s.db.SaveHostQuota(q)
 }
 
 // Delete remove a cota declarada — mas PRESERVA a linha, com limite zero.
 //
 // POR QUE ASSIM, e não um DELETE de verdade: o consumo é gravado com a chave
-// (aparelho, início do ciclo), e o início do ciclo sai do período e do dia de
-// fechamento. Apagar a linha faz os dois voltarem ao padrão, o que muda a chave
-// e faz a tela procurar um ciclo diferente daquele em que o consumo foi medido:
-// o dado continua no banco e some da tela.
+// (aparelho, período, início do ciclo), e os dois últimos saem do período e do
+// dia de fechamento. Apagar a linha faz os dois voltarem ao padrão, o que muda
+// a chave e faz a tela procurar um ciclo diferente daquele em que o consumo foi
+// medido: o dado continua no banco e some da tela.
 //
 // Isso não é teoria. Na metade de link deste mesmo recurso, numa validação em
 // máquina real (2026-08-20), remover uma franquia de fechamento 28 fez o
 // consumo exibido cair de 2,6 MB para 35 KB sozinho. Aqui o estrago seria
-// maior: com período diário, apagar a linha move o ciclo de "hoje" para "desde
-// o dia 1", e o número exibido daria um salto para cima, não para baixo.
+// maior: com período diário, apagar a linha move o ciclo de "hoje" para
+// "desde o dia 1", e o número exibido daria um salto para cima, não para
+// baixo.
 func (s *Service) Delete(mac string) error {
 	mac = validate.MACCanonico(mac)
 	if mac == "" {
@@ -538,7 +780,7 @@ func (s *Service) Delete(mac string) error {
 		return nil // nunca teve cota: nada a remover
 	}
 	q.LimitGB = 0
-	q.Enabled = false
+	q.AlertEnabled = false
 	return s.db.SaveHostQuota(q)
 }
 
@@ -561,9 +803,9 @@ func (s *Service) History(mac string, limit int) ([]storage.HostUsage, error) {
 // fevereiro.
 //
 // O caso diário é meia-noite LOCAL, e não UTC, pelo mesmo motivo pelo qual o
-// mensal é local: o "dia" que o admin quer limitar é o dele. Num fuso a oeste
-// de Greenwich, um ciclo diário em UTC viraria às 21h e o aparelho ganharia
-// cota nova no meio da noite de filme.
+// mensal é local: o "dia" que o admin quer limitar é o dele. Num fuso a
+// oeste de Greenwich, um ciclo diário em UTC viraria às 21h e o aparelho
+// ganharia cota nova no meio da noite de filme.
 func CycleStart(now time.Time, period string, day int) time.Time {
 	if period == storage.HostPeriodDaily {
 		y, m, d := now.Date()
