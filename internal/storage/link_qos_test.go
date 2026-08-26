@@ -1,7 +1,9 @@
 package storage_test
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -72,6 +74,30 @@ func TestLinkQoSFieldsRoundTripThroughRepository(t *testing.T) {
 		t.Fatalf("GetLinks returned %d links; want 1", len(links))
 	}
 	assertLinkQoS(t, &links[0], false, 75, 500, false)
+}
+
+func TestUpdateLinkQoSIfCurrentUsesLifecycleAndVersionGuards(t *testing.T) {
+	db := newTestDB(t)
+	link := &storage.Link{Name: "WAN guarded", Interface: "eth0", Enabled: true}
+	if err := db.CreateLink(link); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	current, err := db.GetLink(link.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if err := db.UpdateLinkQoSIfCurrent(current.ID, current.Interface, current.Enabled, current.UpdatedAt, true, 40, 300, true); err != nil {
+		t.Fatalf("UpdateLinkQoSIfCurrent: %v", err)
+	}
+
+	if err := db.UpdateLinkQoSIfCurrent(current.ID, current.Interface, current.Enabled, current.UpdatedAt, false, 1, 1, false); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale UpdateLinkQoSIfCurrent error = %v; want sql.ErrNoRows", err)
+	}
+	updated, err := db.GetLink(link.ID)
+	if err != nil {
+		t.Fatalf("GetLink after stale update: %v", err)
+	}
+	assertLinkQoS(t, updated, true, 40, 300, true)
 }
 
 func assertLinkQoS(t *testing.T, got *storage.Link, enabled bool, upload, download int, interactive bool) {

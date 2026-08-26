@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 
 	"github.com/go-chi/chi/v5"
 
@@ -16,8 +18,14 @@ import (
 type qosService interface {
 	Apply(context.Context, qos.Config) (qos.State, error)
 	ApplyAndPersist(context.Context, qos.Config, qos.Config, func() error) (qos.State, error)
+	ApplyCurrent(context.Context, string, func() (qos.Config, error)) (qos.State, error)
+	ApplyCurrentAndPersist(context.Context, string, func() (qos.ApplyPlan, error)) (qos.State, error)
 	Observe(context.Context, string) (qos.State, error)
 	MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error)
+}
+
+type qosInterfaceLocker interface {
+	WithInterfaceLock(context.Context, string, func(qos.InterfaceOperations) error) error
 }
 
 // QosHandler exposes per-link queue-control configuration and measurements.
@@ -90,15 +98,40 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	applyConfig := desired
-	applyConfig.Enabled = link.Enabled && desired.Enabled
-	rollback := qosConfigFromLink(link)
-	rollback.Enabled = link.Enabled && rollback.Enabled
-	state, err := h.svc.ApplyAndPersist(r.Context(), applyConfig, rollback, func() error {
-		return h.db.UpdateLinkQoS(link.ID, link.Interface, desired.Enabled, desired.UploadMbps, desired.DownloadMbps, desired.Interactive)
+	state, err := h.svc.ApplyCurrentAndPersist(r.Context(), link.Interface, func() (qos.ApplyPlan, error) {
+		current, err := h.db.GetLink(link.ID)
+		if err != nil {
+			return qos.ApplyPlan{}, err
+		}
+		if current == nil {
+			return qos.ApplyPlan{}, errQosLinkNotFound
+		}
+		if current.Interface != link.Interface {
+			return qos.ApplyPlan{}, fmt.Errorf("%w: %q became %q", qos.ErrStaleInterface, link.Interface, current.Interface)
+		}
+		desired.Interface = current.Interface
+		if err := desired.Validate(); err != nil {
+			return qos.ApplyPlan{}, err
+		}
+		applyConfig := desired
+		applyConfig.Enabled = current.Enabled && desired.Enabled
+		rollback := qosConfigFromLink(current)
+		rollback.Enabled = current.Enabled && rollback.Enabled
+		return qos.ApplyPlan{
+			Config:   applyConfig,
+			Rollback: rollback,
+			Persist: func() error {
+				return h.db.UpdateLinkQoSIfCurrent(link.ID, current.Interface, current.Enabled, current.UpdatedAt,
+					desired.Enabled, desired.UploadMbps, desired.DownloadMbps, desired.Interactive)
+			},
+		}, nil
 	})
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, errQosLinkNotFound) {
+			h.writeLinkError(w, err)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, qos.ErrStaleInterface) {
 			writeError(w, http.StatusConflict, "link changed during QoS update; retry")
 			return
 		}
@@ -162,9 +195,27 @@ func qosConfigFromLink(link *storage.Link) qos.Config {
 
 // SetQosService enables QoS reconciliation after link mutations.
 func (h *LinksHandler) SetQosService(svc qosService) {
+	h.qosSvc = nil
+	h.qosLocker = nil
+	if isNilQosService(svc) {
+		return
+	}
 	h.qosSvc = svc
 	if locker, ok := svc.(qosInterfaceLocker); ok {
 		h.qosLocker = locker
+	}
+}
+
+func isNilQosService(svc qosService) bool {
+	if svc == nil {
+		return true
+	}
+	v := reflect.ValueOf(svc)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
 	}
 }
 
@@ -177,24 +228,45 @@ func (h *LinksHandler) reconcileQos(ctx context.Context) {
 		slog.Warn("não foi possível carregar links para reconciliar QoS", "err", err)
 		return
 	}
-	for _, link := range links {
-		if link.Enabled && link.QoSEnabled {
-			if _, err := h.qosSvc.Apply(ctx, qosConfigFromLink(&link)); err != nil {
-				slog.Warn("não foi possível aplicar QoS após mudança de link", "link_id", link.ID, "interface", link.Interface, "err", err)
+	for pass := 0; pass < 2; pass++ {
+		moved := false
+		for _, snapshot := range links {
+			changedInterface := false
+			_, err := h.qosSvc.ApplyCurrent(ctx, snapshot.Interface, func() (qos.Config, error) {
+				current, err := h.db.GetLink(snapshot.ID)
+				if err != nil {
+					return qos.Config{}, err
+				}
+				if current == nil {
+					return qos.Config{Interface: snapshot.Interface}, nil
+				}
+				if current.Interface != snapshot.Interface {
+					changedInterface = true
+					return qos.Config{Interface: snapshot.Interface}, nil
+				}
+				return effectiveQosConfig(current), nil
+			})
+			if changedInterface {
+				moved = true
 			}
-			continue
+			if err != nil {
+				slog.Warn("não foi possível reconciliar QoS após mudança de link", "link_id", snapshot.ID, "interface", snapshot.Interface, "err", err)
+			}
 		}
-		if _, err := h.qosSvc.Apply(ctx, qos.Config{Interface: link.Interface}); err != nil {
-			slog.Warn("não foi possível remover QoS stale após mudança de link", "link_id", link.ID, "interface", link.Interface, "err", err)
+		if !moved {
+			return
+		}
+		links, err = h.db.GetLinks()
+		if err != nil {
+			slog.Warn("não foi possível recarregar links para reconciliar QoS", "err", err)
+			return
 		}
 	}
 }
 
-func (h *LinksHandler) disableQosInterface(ctx context.Context, iface string) {
-	if h.qosSvc == nil || iface == "" {
-		return
+func effectiveQosConfig(link *storage.Link) qos.Config {
+	if !link.Enabled || !link.QoSEnabled {
+		return qos.Config{Interface: link.Interface}
 	}
-	if _, err := h.qosSvc.Apply(ctx, qos.Config{Interface: iface}); err != nil {
-		slog.Warn("não foi possível remover QoS da interface anterior do link", "interface", iface, "err", err)
-	}
+	return qosConfigFromLink(link)
 }

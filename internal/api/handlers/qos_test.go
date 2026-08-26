@@ -255,6 +255,59 @@ func TestQosPutRestoresOldKernelConfigWhenPersistenceFails(t *testing.T) {
 	}
 }
 
+func TestQosPutRejectsNewerLinkLifecycleAndRestoresWithoutOverwritingIt(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true}
+	original := qosLink()
+	h, db := newQosHandlerFixture(t, original, exec)
+	exec.onExecute = func() {
+		current, err := db.GetLink(original.ID)
+		if err != nil {
+			t.Fatalf("GetLink during concurrent lifecycle change: %v", err)
+		}
+		current.Name = "link newer"
+		current.Enabled = false
+		if err := db.UpdateLink(current); err != nil {
+			t.Fatalf("persist concurrent lifecycle change: %v", err)
+		}
+	}
+
+	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1/qos", strings.NewReader(`{"enabled":true,"upload_mbps":75,"download_mbps":200}`)), "id", original.ID)
+	rec := httptest.NewRecorder()
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale QoS PUT status = %d, body = %s; want 409", rec.Code, rec.Body.String())
+	}
+	stored, err := db.GetLink(original.ID)
+	if err != nil {
+		t.Fatalf("GetLink after stale QoS PUT: %v", err)
+	}
+	if stored.Name != "link newer" || stored.Enabled {
+		t.Fatalf("newer link lifecycle was overwritten: %+v", stored)
+	}
+	if stored.QoSEnabled != original.QoSEnabled || stored.QoSUploadMbps != original.QoSUploadMbps ||
+		stored.QoSDownloadMbps != original.QoSDownloadMbps || stored.QoSInteractive != original.QoSInteractive {
+		t.Fatalf("stale QoS PUT changed newer QoS fields: got %+v, want %+v", stored, original)
+	}
+	if !containsEventAfter(exec.events, "write:tc qdisc replace dev wan0 root cake bandwidth 75mbit", "write:tc filter del dev wan0 ingress pref 49152") {
+		t.Fatalf("stale QoS PUT did not restore the prior kernel config: %v", exec.events)
+	}
+}
+
+func containsEventAfter(events []string, first, second string) bool {
+	firstIndex := -1
+	for i, event := range events {
+		if firstIndex == -1 && event == first {
+			firstIndex = i
+			continue
+		}
+		if firstIndex != -1 && event == second {
+			return true
+		}
+	}
+	return false
+}
+
 func TestQosPutRejectsMalformedAndInvalidPayloadsBeforeApplying(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -380,6 +433,86 @@ func TestLinksCreateIgnoresQoSFieldsFromGenericPayload(t *testing.T) {
 	}
 }
 
+func TestLinksSetQosServiceRejectsTypedNil(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	var nilService *qos.Service
+	h.SetQosService(nilService)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/links", strings.NewReader(`{"name":"WAN nova","interface":"wan0","weight":10,"enabled":true}`))
+	rec := httptest.NewRecorder()
+	h.Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("link POST with typed-nil QoS service status = %d, body = %s; want 201", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLinksUpdateReportsQosCleanupFailureBeforeMutatingRow(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true, executeErr: errors.New("cleanup failed")}
+	original := qosLink()
+	original.QoSEnabled = true
+	original.QoSUploadMbps = 50
+	original.QoSDownloadMbps = 200
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	h.SetQosService(qos.NewService(exec))
+	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1", strings.NewReader(`{"name":"Fibra principal","interface":"wan0","weight":70,"enabled":false}`)), "id", original.ID)
+	rec := httptest.NewRecorder()
+	h.Update(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("link PUT status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	stored, err := db.GetLink(original.ID)
+	if err != nil {
+		t.Fatalf("GetLink after failed cleanup: %v", err)
+	}
+	if !stored.Enabled || !stored.QoSEnabled {
+		t.Fatalf("link row changed despite failed QoS cleanup: %+v", stored)
+	}
+}
+
+func TestLinksDeleteKeepsRetryableRowWhenQosCleanupFails(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true, executeErr: errors.New("cleanup failed")}
+	original := qosLink()
+	original.QoSEnabled = true
+	original.QoSUploadMbps = 50
+	original.QoSDownloadMbps = 200
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	h.SetQosService(qos.NewService(exec))
+	req := withChiURLParam(httptest.NewRequest(http.MethodDelete, "/api/links/wan-1", nil), "id", original.ID)
+	rec := httptest.NewRecorder()
+	h.Delete(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("link DELETE status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	stored, err := db.GetLink(original.ID)
+	if err != nil {
+		t.Fatalf("GetLink after failed delete cleanup: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("link row was deleted despite failed QoS cleanup; retry would be impossible")
+	}
+}
+
 func TestQosPutDoesNotOverwriteConcurrentLinkFields(t *testing.T) {
 	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -405,8 +538,8 @@ func TestQosPutDoesNotOverwriteConcurrentLinkFields(t *testing.T) {
 	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1/qos", strings.NewReader(`{"enabled":true,"upload_mbps":50,"download_mbps":200}`)), "id", original.ID)
 	rec := httptest.NewRecorder()
 	h.Update(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("QoS PUT status = %d, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("QoS PUT status = %d, body = %s; want 409 after concurrent link change", rec.Code, rec.Body.String())
 	}
 	stored, err := db.GetLink(original.ID)
 	if err != nil {
@@ -431,6 +564,29 @@ func (s *qosUpdateServiceStub) ApplyAndPersist(ctx context.Context, cfg, _ qos.C
 		return qos.State{}, err
 	}
 	if err := persist(); err != nil {
+		return qos.State{}, err
+	}
+	return state, nil
+}
+
+func (s *qosUpdateServiceStub) ApplyCurrent(ctx context.Context, _ string, load func() (qos.Config, error)) (qos.State, error) {
+	cfg, err := load()
+	if err != nil {
+		return qos.State{}, err
+	}
+	return s.apply(ctx, cfg)
+}
+
+func (s *qosUpdateServiceStub) ApplyCurrentAndPersist(ctx context.Context, _ string, load func() (qos.ApplyPlan, error)) (qos.State, error) {
+	plan, err := load()
+	if err != nil {
+		return qos.State{}, err
+	}
+	state, err := s.apply(ctx, plan.Config)
+	if err != nil {
+		return qos.State{}, err
+	}
+	if err := plan.Persist(); err != nil {
 		return qos.State{}, err
 	}
 	return state, nil

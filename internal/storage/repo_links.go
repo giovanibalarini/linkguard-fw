@@ -114,6 +114,34 @@ func (db *DB) UpdateLinkQoS(id, expectedInterface string, enabled bool, uploadMb
 	return nil
 }
 
+// UpdateLinkQoSIfCurrent updates QoS only when the link lifecycle and version
+// observed before the kernel apply are still current. The interface and
+// enabled guards prevent applying a request to a moved or disabled link; the
+// updated_at guard makes every other link mutation a compare-and-swap.
+func (db *DB) UpdateLinkQoSIfCurrent(id, expectedInterface string, expectedEnabled bool, expectedUpdatedAt time.Time, enabled bool, uploadMbps, downloadMbps int, interactive bool) error {
+	result, err := db.conn.Exec(`
+		UPDATE links SET qos_enabled=?, qos_upload_mbps=?, qos_download_mbps=?,
+		    qos_interactive=?, updated_at=?
+		WHERE id=? AND interface=? AND enabled=? AND updated_at LIKE ?`,
+		boolToInt(enabled), uploadMbps, downloadMbps, boolToInt(interactive), time.Now(),
+		id, expectedInterface, boolToInt(expectedEnabled), updatedAtVersionPrefix(expectedUpdatedAt)+"%")
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func updatedAtVersionPrefix(value time.Time) string {
+	return value.Format("2006-01-02 15:04:05.999999999 -0700 MST")
+}
+
 // UpdateLinkNonQoS updates link fields owned by the generic link service while
 // leaving the QoS columns untouched. This prevents a stale link snapshot from
 // overwriting a concurrent QoS mutation.

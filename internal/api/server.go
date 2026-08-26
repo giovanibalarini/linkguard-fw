@@ -302,7 +302,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		if cfg.DomainRouting != nil {
 			linksH.SetDomainRouting(cfg.DomainRouting)
 		}
-		linksH.SetQosService(s.qosSvc)
+		if s.qosSvc != nil {
+			linksH.SetQosService(s.qosSvc)
+		}
 		// Mudar a interface de um link muda o escopo da medição de conversa
 		// (#115) — a regra casa por iifname. Sem esta ligação, o nome antigo
 		// ficaria na regra até o próximo boot, com a medição calada.
