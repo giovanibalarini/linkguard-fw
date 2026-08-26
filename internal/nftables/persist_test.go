@@ -195,7 +195,7 @@ func TestPersistOmitsDynamicAccountingElements(t *testing.T) {
 	set acct_up {
 		type ipv4_addr
 		size 65535
-		flags dynamic,timeout
+		flags dynamic;
 		counter
 		timeout 1d
 		elements = { 192.168.3.50 counter packets 10 bytes 1000 expires 59m59s996ms,
@@ -211,6 +211,7 @@ func TestPersistOmitsDynamicAccountingElements(t *testing.T) {
 	}
 	set static_hosts {
 		type ipv4_addr
+		comment "keep flags dynamic entries"
 		elements = { 192.168.3.1, 192.168.3.2 }
 	}
 	map static_marks {
@@ -248,9 +249,13 @@ func TestPersistOmitsDynamicAccountingElements(t *testing.T) {
 			t.Fatalf("persisted file contains an unterminated dynamic set %q; got:\n%s", setName, content[start:])
 		}
 		block := content[start : start+end]
+		wantFlags := "\t\tflags dynamic,timeout\n"
+		if setName == "acct_up" {
+			wantFlags = "\t\tflags dynamic;\n"
+		}
 		wantDeclaration := "\tset " + setName + " {\n" +
 			"\t\ttype ipv4_addr\n\t\tsize 65535\n" +
-			"\t\tflags dynamic,timeout\n\t\tcounter\n\t\ttimeout 1d"
+			wantFlags + "\t\tcounter\n\t\ttimeout 1d"
 		if !strings.HasPrefix(block, wantDeclaration) {
 			t.Errorf("dynamic set %q declaration changed; got:\n%s", setName, block)
 		}
@@ -260,37 +265,11 @@ func TestPersistOmitsDynamicAccountingElements(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"\tset static_hosts {\n\t\ttype ipv4_addr\n\t\telements = { 192.168.3.1, 192.168.3.2 }\n\t}",
+		"\tset static_hosts {\n\t\ttype ipv4_addr\n\t\tcomment \"keep flags dynamic entries\"\n\t\telements = { 192.168.3.1, 192.168.3.2 }\n\t}",
 		"\tmap static_marks {\n\t\ttype ipv4_addr : mark\n\t\telements = { 192.168.3.3 : 0x12c }\n\t}",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("persisted file lost static elements; missing:\n%s\nfull file:\n%s", want, content)
 		}
-	}
-}
-
-func TestSanitizeDynamicSetElementsAcceptsSemicolonFlag(t *testing.T) {
-	table := `table inet linkguard {
-	set dynamic_hosts {
-		type ipv4_addr
-		flags dynamic;
-		elements = { 192.168.3.50 counter packets 10 bytes 1000 expires 1h }
-	}
-	set static_hosts {
-		type ipv4_addr
-		elements = { 192.168.3.1 }
-	}
-}
-`
-
-	got := sanitizeDynamicSetElements(table)
-	if strings.Contains(got, "192.168.3.50 counter packets") {
-		t.Errorf("dynamic elements must be removed when the flags statement ends with a semicolon; got:\n%s", got)
-	}
-	if !strings.Contains(got, "\t\tflags dynamic;\n") {
-		t.Errorf("dynamic set declaration must be preserved; got:\n%s", got)
-	}
-	if !strings.Contains(got, "\t\telements = { 192.168.3.1 }\n") {
-		t.Errorf("static set elements must be preserved; got:\n%s", got)
 	}
 }

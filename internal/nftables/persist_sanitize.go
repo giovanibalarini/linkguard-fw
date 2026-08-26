@@ -84,22 +84,34 @@ func matchingBrace(text string, open int) int {
 }
 
 func hasDynamicFlag(setBlock string) bool {
-	for _, line := range strings.Split(setBlock, "\n") {
-		if comment := strings.IndexByte(line, '#'); comment >= 0 {
-			line = line[:comment]
-		}
-		fields := strings.Fields(line)
-		for i, field := range fields {
-			if field != "flags" {
+	const keyword = "flags"
+
+	for i := 0; i+len(keyword) <= len(setBlock); i++ {
+		switch setBlock[i] {
+		case '"':
+			i = skipQuoted(setBlock, i)
+		case '#':
+			i = skipComment(setBlock, i)
+		default:
+			if !tokenAt(setBlock, i, keyword) {
 				continue
 			}
-			for _, flagField := range fields[i+1:] {
-				for _, flag := range strings.Split(strings.Trim(flagField, ",;"), ",") {
-					if flag == "dynamic" {
-						return true
-					}
+
+			end := i + len(keyword)
+			for end < len(setBlock) && setBlock[end] != '\n' && setBlock[end] != ';' {
+				switch setBlock[end] {
+				case '"':
+					end = skipQuoted(setBlock, end) + 1
+				case '#':
+					end = skipComment(setBlock, end)
+				default:
+					end++
 				}
 			}
+			if containsToken(setBlock[i+len(keyword):end], "dynamic") {
+				return true
+			}
+			i = end
 		}
 	}
 	return false
@@ -165,6 +177,26 @@ func tokenBoundary(text string, index int) bool {
 	}
 	c := text[index]
 	return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')
+}
+
+func tokenAt(text string, from int, token string) bool {
+	return from >= 0 && from+len(token) <= len(text) && text[from:from+len(token)] == token && tokenBoundary(text, from-1) && tokenBoundary(text, from+len(token))
+}
+
+func containsToken(text string, token string) bool {
+	for i := 0; i+len(token) <= len(text); i++ {
+		switch text[i] {
+		case '"':
+			i = skipQuoted(text, i)
+		case '#':
+			i = skipComment(text, i)
+		default:
+			if tokenAt(text, i, token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func skipWhitespace(text string, from int) int {
