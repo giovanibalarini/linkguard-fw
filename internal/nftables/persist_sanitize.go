@@ -94,7 +94,7 @@ func hasDynamicFlag(setBlock string) bool {
 				continue
 			}
 			for _, flagField := range fields[i+1:] {
-				for _, flag := range strings.Split(strings.Trim(flagField, ","), ",") {
+				for _, flag := range strings.Split(strings.Trim(flagField, ",;"), ",") {
 					if flag == "dynamic" {
 						return true
 					}
