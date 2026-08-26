@@ -4,14 +4,14 @@
 // how an admin validates multi-WAN failover on demand instead of waiting for a
 // real outage.
 //
-// Safety: every test captures the prior state, arms an OS-level watchdog that
-// force-restores the link after the deadline (so a crashed app can't strand a
-// WAN down), refuses to stress the only healthy link, and restores on finish or
-// abort.
+// Safety: every test captures the prior route, arms a bounded watchdog that
+// uses the same per-interface owner as QoS, refuses to stress the only healthy
+// link, and restores on finish or abort.
 package stresstest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -22,6 +22,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/alerts"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
+	"github.com/giovanibalarini/linkguard-fw/internal/qos"
 )
 
 // reIface constrains interface names (embedded in the watchdog shell command).
@@ -78,22 +79,40 @@ type Service struct {
 	exec     firewall.Executor
 	linkSvc  *links.Service
 	alertSvc *alerts.Service
+	qosSvc   qosCoordinator
 
-	mu     sync.Mutex
-	active *Test
-	cancel context.CancelFunc
-	nowFn  func() string // injectable for tests
-	nextID func() string
+	mu             sync.Mutex
+	active         *Test
+	cancel         context.CancelFunc
+	watchdogCancel context.CancelFunc
+	watchdogAfter  func(time.Duration) <-chan time.Time
+	nowFn          func() string // injectable for tests
+	nextID         func() string
+}
+
+type qosCoordinator interface {
+	WithInterfaceLock(context.Context, string, func(qos.InterfaceOperations) error) error
 }
 
 // NewService creates a stress-test Service.
 func NewService(exec firewall.Executor, linkSvc *links.Service, alertSvc *alerts.Service) *Service {
 	return &Service{
-		exec:     exec,
-		linkSvc:  linkSvc,
-		alertSvc: alertSvc,
-		nowFn:    func() string { return time.Now().Format("15:04:05") },
-		nextID:   func() string { return time.Now().UTC().Format("20060102T150405") },
+		exec:          exec,
+		linkSvc:       linkSvc,
+		alertSvc:      alertSvc,
+		qosSvc:        qos.NewService(exec),
+		watchdogAfter: time.After,
+		nowFn:         func() string { return time.Now().Format("15:04:05") },
+		nextID:        func() string { return time.Now().UTC().Format("20060102T150405") },
+	}
+}
+
+// SetQosService wires the same per-interface owner used by the QoS API. The
+// default private owner is safe for standalone uses; production replaces it
+// with the shared instance before a stress test can start.
+func (s *Service) SetQosService(service qosCoordinator) {
+	if service != nil {
+		s.qosSvc = service
 	}
 }
 
@@ -235,10 +254,16 @@ type linkInfo struct {
 
 func (s *Service) run(ctx context.Context, t *Test) {
 	origRoute := s.currentDefault()
-	s.armWatchdog(t) // OS-level force-restore; survives an app crash
+	s.armWatchdog(t)
+	defer s.disarmWatchdog()
 
 	s.appendSample(t, "baseline")
-	s.applyFault(t)
+	if err := s.applyFault(t); err != nil {
+		slog.Error("não foi possível aplicar a falha do stress test", "link_id", t.LinkID, "interface", t.Interface, "err", err)
+		s.restore(t, origRoute)
+		s.finalizeError(t, err)
+		return
+	}
 
 	half := time.Duration(t.DurationSec/2) * time.Second
 	total := time.Duration(t.DurationSec) * time.Second
@@ -279,7 +304,7 @@ func bg() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 15*time.Second)
 }
 
-func (s *Service) applyFault(t *Test) {
+func (s *Service) applyFault(t *Test) error {
 	ctx, cancel := bg()
 	defer cancel()
 	if s.alertSvc != nil {
@@ -289,31 +314,31 @@ func (s *Service) applyFault(t *Test) {
 			_ = s.alertSvc.LinkDegraded(t.LinkName, t.LinkID, float64(t.DelayMs), float64(t.LossPct))
 		}
 	}
-	if t.Mode == ModeOutage {
-		_, _ = s.exec.Execute(ctx, "ip", "link", "set", t.Interface, "down")
-		return
-	}
-	_, _ = s.exec.Execute(ctx, "tc", "qdisc", "replace", "dev", t.Interface, "root",
-		"netem", "delay", fmt.Sprintf("%dms", t.DelayMs), "loss", fmt.Sprintf("%d%%", t.LossPct))
+	return s.withQosLock(ctx, t.Interface, func(ops qos.InterfaceOperations) error {
+		if t.Mode == ModeOutage {
+			_, err := s.exec.Execute(ctx, "ip", "link", "set", t.Interface, "down")
+			return err
+		}
+		return ops.ApplyNetem(ctx, t.DelayMs, t.LossPct)
+	})
 }
 
 func (s *Service) removeFault(t *Test) {
 	ctx, cancel := bg()
 	defer cancel()
-	if t.Mode == ModeOutage {
-		_, _ = s.exec.Execute(ctx, "ip", "link", "set", t.Interface, "up")
-		return
+	if err := s.restoreInterface(ctx, t); err != nil {
+		slog.Error("não foi possível remover a falha e reconciliar QoS", "link_id", t.LinkID, "interface", t.Interface, "err", err)
 	}
-	_, _ = s.exec.Execute(ctx, "tc", "qdisc", "del", "dev", t.Interface, "root")
 }
 
-// restore guarantees the link is up, netem cleared, and the prior default route
-// re-applied (the balancer keeps it thereafter).
+// restore guarantees the link is up, an owned netem is cleared, persisted QoS
+// is reapplied, and the prior default route is restored.
 func (s *Service) restore(t *Test, origFlat string) {
 	ctx, cancel := bg()
 	defer cancel()
-	_, _ = s.exec.Execute(ctx, "ip", "link", "set", t.Interface, "up")
-	_, _ = s.exec.Execute(ctx, "tc", "qdisc", "del", "dev", t.Interface, "root")
+	if err := s.restoreInterface(ctx, t); err != nil {
+		slog.Error("não foi possível restaurar interface/QoS após stress test", "link_id", t.LinkID, "interface", t.Interface, "err", err)
+	}
 	if origFlat != "" {
 		args := append([]string{"route", "replace"}, strings.Fields(origFlat)...)
 		_, _ = s.exec.Execute(ctx, "ip", args...)
@@ -323,25 +348,100 @@ func (s *Service) restore(t *Test, origFlat string) {
 	}
 }
 
-// armWatchdog spawns a detached process that force-restores the link/tc after
-// the deadline no matter what — even if this process dies mid-test.
+func (s *Service) restoreInterface(ctx context.Context, t *Test) error {
+	return s.withQosLock(ctx, t.Interface, func(ops qos.InterfaceOperations) error {
+		var linkErr error
+		if t.Mode == ModeOutage {
+			if _, err := s.exec.Execute(ctx, "ip", "link", "set", t.Interface, "up"); err != nil {
+				return err
+			}
+		}
+		cfg, err := s.loadEffectiveQoS(t.LinkID, t.Interface)
+		if err != nil {
+			linkErr = err
+			cfg = qos.Config{Interface: t.Interface}
+		}
+		if t.Mode == ModeDegrade {
+			_, err = ops.RestoreAfterNetem(ctx, cfg)
+		} else {
+			_, err = ops.Apply(ctx, cfg)
+		}
+		return errors.Join(linkErr, err)
+	})
+}
+
+func (s *Service) loadEffectiveQoS(linkID, iface string) (qos.Config, error) {
+	cfg := qos.Config{Interface: iface}
+	if s.linkSvc == nil || linkID == "" {
+		return cfg, nil
+	}
+	link, err := s.linkSvc.Get(linkID)
+	if err != nil {
+		return cfg, err
+	}
+	if link.Interface != iface || !link.Enabled || !link.QoSEnabled {
+		return cfg, nil
+	}
+	return qos.Config{
+		Interface:    iface,
+		Enabled:      true,
+		UploadMbps:   link.QoSUploadMbps,
+		DownloadMbps: link.QoSDownloadMbps,
+		Interactive:  link.QoSInteractive,
+	}, nil
+}
+
+func (s *Service) withQosLock(ctx context.Context, iface string, fn func(qos.InterfaceOperations) error) error {
+	coordinator := s.qosSvc
+	if coordinator == nil {
+		coordinator = qos.NewService(s.exec)
+	}
+	return coordinator.WithInterfaceLock(ctx, iface, fn)
+}
+
+// armWatchdog schedules the same ownership-aware restore path used on normal
+// completion. It never launches a shell or issues an unconditional qdisc
+// delete, so a late watchdog cannot remove a root installed by another owner.
 func (s *Service) armWatchdog(t *Test) {
-	// Defense in depth: t.Interface is already validated (against this same
-	// reIface) in Start() before a Test is ever constructed, but this is the
-	// codebase's only sh -c call — re-checking here means a future refactor or
-	// new caller that skips Start()'s validation can't silently reintroduce
-	// shell injection through this one spot.
 	if !reIface.MatchString(t.Interface) {
 		slog.Error("armWatchdog: interface inválida, watchdog não armado", "interface", t.Interface)
 		return
 	}
-	ctx, cancel := bg()
-	defer cancel()
-	margin := t.DurationSec + 60
-	restore := fmt.Sprintf("ip link set %s up; tc qdisc del dev %s root 2>/dev/null",
-		t.Interface, t.Interface)
-	cmd := fmt.Sprintf("setsid sh -c 'sleep %d; %s' </dev/null >/dev/null 2>&1 &", margin, restore)
-	_, _ = s.exec.Execute(ctx, "sh", "-c", cmd)
+	watchdogCtx, cancel := context.WithCancel(context.Background())
+	after := s.watchdogAfter
+	if after == nil {
+		after = time.After
+	}
+	s.mu.Lock()
+	if s.watchdogCancel != nil {
+		s.watchdogCancel()
+	}
+	s.watchdogCancel = cancel
+	s.mu.Unlock()
+	snapshot := *t
+	deadline := time.Duration(t.DurationSec+60) * time.Second
+	go func() {
+		select {
+		case <-watchdogCtx.Done():
+			return
+		case <-after(deadline):
+		}
+		ctx, cancel := bg()
+		defer cancel()
+		if err := s.restoreInterface(ctx, &snapshot); err != nil {
+			slog.Error("watchdog não conseguiu restaurar interface/QoS", "link_id", snapshot.LinkID, "interface", snapshot.Interface, "err", err)
+		}
+	}()
+}
+
+func (s *Service) disarmWatchdog() {
+	s.mu.Lock()
+	cancel := s.watchdogCancel
+	s.watchdogCancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (s *Service) currentDefault() string {
@@ -396,4 +496,13 @@ func (s *Service) finalize(t *Test, aborted bool) {
 		t.Message = fmt.Sprintf("Concluído. Continuidade: ping %.0f%%, DNS %.0f%%.",
 			100-t.PingLossPct, 100-t.DNSLossPct)
 	}
+}
+
+func (s *Service) finalizeError(t *Test, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.Restored = true
+	t.EndedAt = s.nowFn()
+	t.State = "error"
+	t.Message = "Falha ao aplicar o teste; o link foi reconciliado: " + err.Error()
 }

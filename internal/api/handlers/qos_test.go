@@ -333,13 +333,8 @@ func TestQosPutReturns500AndReconcilesWhenCASAndRollbackFail(t *testing.T) {
 	original.QoSDownloadMbps = 200
 	h, db := newQosHandlerFixture(t, original, exec)
 	exec.onExecute = func() {
-		current, err := db.GetLink(original.ID)
-		if err != nil {
-			t.Fatalf("GetLink during concurrent lifecycle change: %v", err)
-		}
-		current.Name = "link newer"
-		if err := db.UpdateLink(current); err != nil {
-			t.Fatalf("persist concurrent lifecycle change: %v", err)
+		if err := db.UpdateLinkQoS(original.ID, original.Interface, true, 60, 200, false); err != nil {
+			t.Fatalf("persist concurrent QoS change: %v", err)
 		}
 	}
 	rollbackFailure := true
@@ -358,8 +353,43 @@ func TestQosPutReturns500AndReconcilesWhenCASAndRollbackFail(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("CAS plus rollback failure status = %d, body = %s; want 500", rec.Code, rec.Body.String())
 	}
-	if countEventsContaining(exec.events, "bandwidth 50mbit") < 2 {
-		t.Fatalf("fresh reconciliation did not retry the old QoS after rollback failure: %v", exec.events)
+	if countEventsContaining(exec.events, "bandwidth 50mbit") < 1 || countEventsContaining(exec.events, "bandwidth 60mbit") < 1 {
+		t.Fatalf("fresh reconciliation did not load the concurrent persisted QoS after rollback failure: %v", exec.events)
+	}
+}
+
+func TestQosCompensationReconciliationDetachesFromCanceledRequest(t *testing.T) {
+	original := qosLink()
+	service := &qosUpdateServiceStub{
+		apply: func(_ context.Context, cfg qos.Config) (qos.State, error) {
+			return qos.State{Enabled: cfg.Enabled, Interface: cfg.Interface}, nil
+		},
+		applyCurrentAndPersistErr: qos.ErrCompensationFailed,
+	}
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	h := handlers.NewQosHandler(service, db)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1/qos", strings.NewReader(`{"enabled":true,"upload_mbps":75,"download_mbps":200}`)).WithContext(ctx), "id", original.ID)
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("compensation failure status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	if service.applyCurrentCtxErr != nil {
+		t.Fatalf("emergency reconciliation inherited request cancellation: %v", service.applyCurrentCtxErr)
+	}
+	if !service.applyCurrentHasDeadline {
+		t.Fatal("emergency reconciliation context has no bounded deadline")
 	}
 }
 
@@ -669,6 +699,14 @@ func (lifecycleQosOperations) Apply(context.Context, qos.Config) (qos.State, err
 	return qos.State{}, nil
 }
 
+func (lifecycleQosOperations) ApplyNetem(context.Context, int, int) error {
+	return nil
+}
+
+func (lifecycleQosOperations) RestoreAfterNetem(context.Context, qos.Config) (qos.State, error) {
+	return qos.State{}, nil
+}
+
 func TestLinksUpdatePreservesQoSFields(t *testing.T) {
 	exec := &qosHandlerExec{dryRun: true}
 	original := qosLink()
@@ -908,7 +946,7 @@ func countEventsContaining(events []string, want string) int {
 	return count
 }
 
-func TestQosPutDoesNotOverwriteConcurrentLinkFields(t *testing.T) {
+func TestQosPutPreservesConcurrentUnrelatedLinkFieldsWithoutSpuriousConflict(t *testing.T) {
 	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -933,8 +971,8 @@ func TestQosPutDoesNotOverwriteConcurrentLinkFields(t *testing.T) {
 	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1/qos", strings.NewReader(`{"enabled":true,"upload_mbps":50,"download_mbps":200}`)), "id", original.ID)
 	rec := httptest.NewRecorder()
 	h.Update(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("QoS PUT status = %d, body = %s; want 409 after concurrent link change", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("QoS PUT status = %d, body = %s; want 200 for unrelated concurrent link change", rec.Code, rec.Body.String())
 	}
 	stored, err := db.GetLink(original.ID)
 	if err != nil {
@@ -946,7 +984,10 @@ func TestQosPutDoesNotOverwriteConcurrentLinkFields(t *testing.T) {
 }
 
 type qosUpdateServiceStub struct {
-	apply func(context.Context, qos.Config) (qos.State, error)
+	apply                     func(context.Context, qos.Config) (qos.State, error)
+	applyCurrentAndPersistErr error
+	applyCurrentCtxErr        error
+	applyCurrentHasDeadline   bool
 }
 
 func (s *qosUpdateServiceStub) Apply(ctx context.Context, cfg qos.Config) (qos.State, error) {
@@ -965,6 +1006,8 @@ func (s *qosUpdateServiceStub) ApplyAndPersist(ctx context.Context, cfg, _ qos.C
 }
 
 func (s *qosUpdateServiceStub) ApplyCurrent(ctx context.Context, _ string, load func() (qos.Config, error)) (qos.State, error) {
+	s.applyCurrentCtxErr = ctx.Err()
+	_, s.applyCurrentHasDeadline = ctx.Deadline()
 	cfg, err := load()
 	if err != nil {
 		return qos.State{}, err
@@ -973,6 +1016,9 @@ func (s *qosUpdateServiceStub) ApplyCurrent(ctx context.Context, _ string, load 
 }
 
 func (s *qosUpdateServiceStub) ApplyCurrentAndPersist(ctx context.Context, _ string, load func() (qos.ApplyPlan, error)) (qos.State, error) {
+	if s.applyCurrentAndPersistErr != nil {
+		return qos.State{}, s.applyCurrentAndPersistErr
+	}
 	plan, err := load()
 	if err != nil {
 		return qos.State{}, err

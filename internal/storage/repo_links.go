@@ -114,17 +114,26 @@ func (db *DB) UpdateLinkQoS(id, expectedInterface string, enabled bool, uploadMb
 	return nil
 }
 
-// UpdateLinkQoSIfCurrent updates QoS only when the link lifecycle and version
-// observed before the kernel apply are still current. The interface and
-// enabled guards prevent applying a request to a moved or disabled link; the
-// updated_at guard makes every other link mutation a compare-and-swap.
-func (db *DB) UpdateLinkQoSIfCurrent(id, expectedInterface string, expectedEnabled bool, expectedUpdatedAt time.Time, enabled bool, uploadMbps, downloadMbps int, interactive bool) error {
+// UpdateLinkQoSIfCurrent updates QoS only when the lifecycle and QoS values
+// observed before the kernel apply are still current. Health-monitor samples
+// deliberately do not participate in this compare-and-swap: they advance
+// updated_at frequently but cannot invalidate a queue-control decision.
+func (db *DB) UpdateLinkQoSIfCurrent(
+	id, expectedInterface string,
+	expectedEnabled, expectedQoSEnabled bool,
+	expectedUploadMbps, expectedDownloadMbps int,
+	expectedInteractive bool,
+	enabled bool, uploadMbps, downloadMbps int, interactive bool,
+) error {
 	result, err := db.conn.Exec(`
 		UPDATE links SET qos_enabled=?, qos_upload_mbps=?, qos_download_mbps=?,
 		    qos_interactive=?, updated_at=?
-		WHERE id=? AND interface=? AND enabled=? AND updated_at LIKE ?`,
+		WHERE id=? AND interface=? AND enabled=?
+		  AND qos_enabled=? AND qos_upload_mbps=? AND qos_download_mbps=?
+		  AND qos_interactive=?`,
 		boolToInt(enabled), uploadMbps, downloadMbps, boolToInt(interactive), time.Now(),
-		id, expectedInterface, boolToInt(expectedEnabled), updatedAtVersionPrefix(expectedUpdatedAt)+"%")
+		id, expectedInterface, boolToInt(expectedEnabled), boolToInt(expectedQoSEnabled),
+		expectedUploadMbps, expectedDownloadMbps, boolToInt(expectedInteractive))
 	if err != nil {
 		return err
 	}
@@ -136,10 +145,6 @@ func (db *DB) UpdateLinkQoSIfCurrent(id, expectedInterface string, expectedEnabl
 		return sql.ErrNoRows
 	}
 	return nil
-}
-
-func updatedAtVersionPrefix(value time.Time) string {
-	return value.Format("2006-01-02 15:04:05.999999999 -0700 MST")
 }
 
 // UpdateLinkNonQoS updates link fields owned by the generic link service while

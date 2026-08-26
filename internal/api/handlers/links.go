@@ -269,7 +269,9 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if updateErr != nil {
 		if errors.Is(updateErr, qos.ErrCompensationFailed) {
 			slog.Error("link update failed and QoS rollback also failed; reconciling from fresh link state", "link_id", id, "interface", existing.Interface, "err", updateErr)
-			h.reconcileQos(r.Context())
+			repairCtx, cancel := emergencyQosReconcileContext(r.Context())
+			h.reconcileQos(repairCtx)
+			cancel()
 			writeInternalError(w, updateErr)
 			return
 		}
@@ -337,7 +339,9 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if removeErr != nil {
 		if errors.Is(removeErr, qos.ErrCompensationFailed) {
 			slog.Error("link delete failed and QoS rollback also failed; reconciling from fresh link state", "link_id", id, "interface", existing.Interface, "err", removeErr)
-			h.reconcileQos(r.Context())
+			repairCtx, cancel := emergencyQosReconcileContext(r.Context())
+			h.reconcileQos(repairCtx)
+			cancel()
 			writeInternalError(w, removeErr)
 			return
 		}

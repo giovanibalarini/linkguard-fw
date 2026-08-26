@@ -491,7 +491,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermRoutesWrite)).Post("/api/routing/balance/rollback", routingH.Rollback)
 
 		// Link stress-test (on-demand fault injection: outage / degradation)
-		stressH := handlers.NewStressTestHandler(stresstest.NewService(s.exec, s.linkSvc, s.alertSvc), s.db)
+		stressSvc := stresstest.NewService(s.exec, s.linkSvc, s.alertSvc)
+		if s.qosSvc != nil {
+			stressSvc.SetQosService(s.qosSvc)
+		}
+		stressH := handlers.NewStressTestHandler(stressSvc, s.db)
 		r.With(require(auth.PermRoutesRead)).Get("/api/stresstest/status", stressH.Status)
 		r.With(require(auth.PermRoutesWrite)).Post("/api/stresstest/start", stressH.Start)
 		r.With(require(auth.PermRoutesWrite)).Post("/api/stresstest/stop", stressH.Stop)
