@@ -904,6 +904,7 @@ func (s *Service) Persist(ctx context.Context) error {
 		s.recordPersist(err)
 		return err
 	}
+	tbl = sanitizeDynamicSetElements(tbl)
 	body := fmt.Sprintf(
 		"#!/usr/sbin/nft -f\n\ntable %s %s\ndelete table %s %s\n\n%s\n",
 		Family, Table, Family, Table, tbl,
