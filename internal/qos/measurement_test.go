@@ -74,6 +74,25 @@ round-trip min/avg/max = 10.000/20.500/40.750 ms
 	}
 }
 
+func TestParsePingSummaryBSD(t *testing.T) {
+	output := `PING 192.0.2.1 (192.0.2.1): 56 data bytes
+64 bytes from 192.0.2.1: icmp_seq=0 ttl=59 time=3.214 ms
+
+--- 192.0.2.1 ping statistics ---
+4 packets transmitted, 4 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 2.100/3.200/5.400/0.900 ms
+`
+
+	got, err := ParsePingSummary(output)
+	if err != nil {
+		t.Fatalf("ParsePingSummary() error = %v; want nil", err)
+	}
+	want := Measurement{MinMs: 2.1, AvgMs: 3.2, MaxMs: 5.4, LossPct: 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParsePingSummary() = %#v; want %#v", got, want)
+	}
+}
+
 func TestParsePingSummaryAcceptsTotalLossWithoutRTTLine(t *testing.T) {
 	output := `--- 1.1.1.1 ping statistics ---
 4 packets transmitted, 0 received, 100% packet loss, time 3068ms
@@ -119,13 +138,29 @@ rtt min/avg/max/mdev = 1.000/2.000/3.000/0.200 ms
 	}
 }
 
-func TestMeasureReportsPingExecutionFailureAsTotalLoss(t *testing.T) {
-	exec := newPingExecutor(execResult{err: errors.New("network unreachable")})
+func TestMeasurePropagatesPingExecutionFailureWithoutValidSummary(t *testing.T) {
+	exec := newPingExecutor(execResult{output: "ping: sendmsg: Operation not permitted\n", err: errors.New("exit status 2")})
+	service := NewService(exec)
+
+	if _, err := service.Measure(context.Background(), "wan0"); err == nil {
+		t.Fatal("Measure() error = nil; want ping execution error")
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("Measure() calls = %#v; want one ping", exec.calls)
+	}
+}
+
+func TestMeasureAcceptsParsedTotalLossDespitePingExitError(t *testing.T) {
+	exec := newPingExecutor(execResult{
+		output: `4 packets transmitted, 0 received, 100% packet loss, time 3068ms
+`,
+		err: errors.New("exit status 1"),
+	})
 	service := NewService(exec)
 
 	got, err := service.Measure(context.Background(), "wan0")
 	if err != nil {
-		t.Fatalf("Measure() error = %v; want loss measurement", err)
+		t.Fatalf("Measure() error = %v; want parsed loss measurement", err)
 	}
 	if got.LossPct != 100 {
 		t.Fatalf("Measure() loss = %v; want 100", got.LossPct)

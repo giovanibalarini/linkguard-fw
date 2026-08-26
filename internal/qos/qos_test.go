@@ -74,6 +74,8 @@ func TestConfigValidateAllowsDisabledZeroOrRetainedBandwidth(t *testing.T) {
 func TestConfigValidateRejectsUnsafeInterfaceNames(t *testing.T) {
 	invalid := []string{
 		"",
+		".",
+		"..",
 		strings.Repeat("a", 16),
 		"wan 0",
 		"wan/0",

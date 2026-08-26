@@ -76,7 +76,7 @@ func (s *Service) Measure(ctx context.Context, iface string) (Measurement, error
 		return measurement, nil
 	}
 	if execErr != nil {
-		return Measurement{LossPct: 100}, nil
+		return Measurement{}, fmt.Errorf("ping: %w", execErr)
 	}
 	return Measurement{}, parseErr
 }
