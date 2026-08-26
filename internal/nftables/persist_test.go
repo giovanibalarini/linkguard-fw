@@ -268,3 +268,29 @@ func TestPersistOmitsDynamicAccountingElements(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeDynamicSetElementsAcceptsSemicolonFlag(t *testing.T) {
+	table := `table inet linkguard {
+	set dynamic_hosts {
+		type ipv4_addr
+		flags dynamic;
+		elements = { 192.168.3.50 counter packets 10 bytes 1000 expires 1h }
+	}
+	set static_hosts {
+		type ipv4_addr
+		elements = { 192.168.3.1 }
+	}
+}
+`
+
+	got := sanitizeDynamicSetElements(table)
+	if strings.Contains(got, "192.168.3.50 counter packets") {
+		t.Errorf("dynamic elements must be removed when the flags statement ends with a semicolon; got:\n%s", got)
+	}
+	if !strings.Contains(got, "\t\tflags dynamic;\n") {
+		t.Errorf("dynamic set declaration must be preserved; got:\n%s", got)
+	}
+	if !strings.Contains(got, "\t\telements = { 192.168.3.1 }\n") {
+		t.Errorf("static set elements must be preserved; got:\n%s", got)
+	}
+}
