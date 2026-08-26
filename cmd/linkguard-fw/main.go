@@ -51,6 +51,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
+	"github.com/giovanibalarini/linkguard-fw/internal/qos"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -384,6 +385,7 @@ type services struct {
 	rrdSvc       *tsdb.Service
 	hostSampler  *hosttraffic.Sampler
 	quotaSvc     *linkquota.Service
+	qosSvc       *qos.Service
 	hostQuotaSvc *hostquota.Service
 	ddnsSvc      *ddns.Service
 	wgSvc        *wireguard.Service
@@ -500,6 +502,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	linkSvc := links.NewService(db)
 	iptSvc := iptables.NewService(exec)
 	routeSvc := routes.NewService(exec)
+	qosSvc := qos.NewService(exec)
 	failoverSvc := failover.NewService(failover.Config{
 		Enabled:          cfg.FailoverEnabled,
 		DryRun:           cfg.DryRun,
@@ -808,6 +811,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		HostQuota:     hostQuotaSvc,
 		DomainRouting: domainRouting,
 		WireGuard:     wgSvc,
+		QoS:           qosSvc,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
@@ -843,6 +847,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		rrdSvc:           rrdSvc,
 		hostSampler:      hostSampler,
 		quotaSvc:         quotaSvc,
+		qosSvc:           qosSvc,
 		hostQuotaSvc:     hostQuotaSvc,
 		ddnsSvc:          ddnsSvc,
 		wgSvc:            wgSvc,
@@ -959,6 +964,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	trafficSvc, keaSvc, alertSvc := s.trafficSvc, s.keaSvc, s.alertSvc
 	monitor, metricsCollector, rrdSvc := s.monitor, s.metricsCollector, s.rrdSvc
 	quotaSvc := s.quotaSvc
+	qosSvc := s.qosSvc
 	hostQuotaSvc := s.hostQuotaSvc
 	ddnsSvc := s.ddnsSvc
 	wgSvc, server := s.wgSvc, s.server
@@ -1083,6 +1089,8 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			domainBootReady = false
 			slog.Warn("could not load links for nftables bootstrap", "err", err)
 		} else {
+			reconcileQoSOnBoot(ctx, qosSvc, configuredLinks)
+
 			wanInterfaces := make([]string, 0, len(configuredLinks))
 			for _, l := range configuredLinks {
 				wanInterfaces = append(wanInterfaces, l.Interface)
