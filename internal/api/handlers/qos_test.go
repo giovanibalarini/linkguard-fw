@@ -62,6 +62,11 @@ func (e *qosHandlerExec) IsDryRun() bool { return e.dryRun }
 func (e *qosHandlerExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func newQosHandlerFixture(t *testing.T, link storage.Link, exec *qosHandlerExec) (*handlers.QosHandler, *storage.DB) {
+	h, db, _ := newQosHandlerServiceFixture(t, link, exec)
+	return h, db
+}
+
+func newQosHandlerServiceFixture(t *testing.T, link storage.Link, exec *qosHandlerExec) (*handlers.QosHandler, *storage.DB, *qos.Service) {
 	t.Helper()
 	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -71,7 +76,8 @@ func newQosHandlerFixture(t *testing.T, link storage.Link, exec *qosHandlerExec)
 	if err := db.CreateLink(&link); err != nil {
 		t.Fatalf("CreateLink: %v", err)
 	}
-	return handlers.NewQosHandler(qos.NewService(exec), db), db
+	service := qos.NewService(exec)
+	return handlers.NewQosHandler(service, db), db, service
 }
 
 func decodeQosJSON(t *testing.T, rec *httptest.ResponseRecorder, target interface{}) {
@@ -378,6 +384,228 @@ func TestQosPostReturnsBeforeAndAfterMeasurements(t *testing.T) {
 	}
 }
 
+func TestQosPostRejectsMovedLinkBeforeFirstPing(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true}
+	link := qosLink()
+	link.QoSEnabled = true
+	link.QoSUploadMbps = 50
+	link.QoSDownloadMbps = 200
+	h, db, service := newQosHandlerServiceFixture(t, link, exec)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- service.WithInterfaceLock(context.Background(), link.Interface, func(qos.InterfaceOperations) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := withChiURLParam(httptest.NewRequest(http.MethodPost, "/api/links/wan-1/qos/test", nil), "id", link.ID)
+		rec := httptest.NewRecorder()
+		h.Test(rec, req)
+		response <- rec
+	}()
+	current, err := db.GetLink(link.ID)
+	if err != nil {
+		t.Fatalf("GetLink before move: %v", err)
+	}
+	current.Interface = "wan1"
+	if err := db.UpdateLink(current); err != nil {
+		t.Fatalf("move link: %v", err)
+	}
+	close(release)
+	if err := <-lockDone; err != nil {
+		t.Fatalf("release interface lock: %v", err)
+	}
+	rec := <-response
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("moved link POST status = %d, body = %s; want 409", rec.Code, rec.Body.String())
+	}
+	for _, event := range exec.events {
+		if strings.HasPrefix(event, "read:ping") {
+			t.Fatalf("moved link was pinged before lifecycle validation: %v", exec.events)
+		}
+	}
+}
+
+func TestQosPostRejectsDeletedLinkBeforeFirstPing(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true}
+	link := qosLink()
+	link.QoSEnabled = true
+	link.QoSUploadMbps = 50
+	link.QoSDownloadMbps = 200
+	h, db, service := newQosHandlerServiceFixture(t, link, exec)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- service.WithInterfaceLock(context.Background(), link.Interface, func(qos.InterfaceOperations) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := withChiURLParam(httptest.NewRequest(http.MethodPost, "/api/links/wan-1/qos/test", nil), "id", link.ID)
+		rec := httptest.NewRecorder()
+		h.Test(rec, req)
+		response <- rec
+	}()
+	if err := db.DeleteLink(link.ID); err != nil {
+		t.Fatalf("delete link: %v", err)
+	}
+	close(release)
+	if err := <-lockDone; err != nil {
+		t.Fatalf("release interface lock: %v", err)
+	}
+	rec := <-response
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("deleted link POST status = %d, body = %s; want 404", rec.Code, rec.Body.String())
+	}
+	for _, event := range exec.events {
+		if strings.HasPrefix(event, "read:ping") {
+			t.Fatalf("deleted link was pinged before lifecycle validation: %v", exec.events)
+		}
+	}
+}
+
+func TestLinksUpdateReturnsConflictWhenLinkMovesBeforeSharedLockCallback(t *testing.T) {
+	original := qosLink()
+	original.QoSEnabled = true
+	original.QoSUploadMbps = 50
+	original.QoSDownloadMbps = 200
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	service := &linkLifecycleQosStub{entered: make(chan struct{}), release: make(chan struct{})}
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	h.SetQosService(service)
+
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1", strings.NewReader(`{"name":"stale","interface":"wan0","weight":70,"enabled":true}`)), "id", original.ID)
+		rec := httptest.NewRecorder()
+		h.Update(rec, req)
+		response <- rec
+	}()
+	<-service.entered
+	current, err := db.GetLink(original.ID)
+	if err != nil {
+		t.Fatalf("GetLink before move: %v", err)
+	}
+	current.Interface = "wan1"
+	if err := db.UpdateLink(current); err != nil {
+		t.Fatalf("move link: %v", err)
+	}
+	close(service.release)
+	rec := <-response
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("moved link PUT status = %d, body = %s; want 409", rec.Code, rec.Body.String())
+	}
+	stored, err := db.GetLink(original.ID)
+	if err != nil {
+		t.Fatalf("GetLink after moved PUT: %v", err)
+	}
+	if stored.Interface != "wan1" || stored.Name == "stale" {
+		t.Fatalf("moved link was overwritten by stale PUT: %+v", stored)
+	}
+}
+
+func TestLinksDeleteReturnsConflictWhenLinkIsDeletedBeforeSharedLockCallback(t *testing.T) {
+	original := qosLink()
+	original.QoSEnabled = true
+	original.QoSUploadMbps = 50
+	original.QoSDownloadMbps = 200
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	service := &linkLifecycleQosStub{entered: make(chan struct{}), release: make(chan struct{})}
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	h.SetQosService(service)
+
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := withChiURLParam(httptest.NewRequest(http.MethodDelete, "/api/links/wan-1", nil), "id", original.ID)
+		rec := httptest.NewRecorder()
+		h.Delete(rec, req)
+		response <- rec
+	}()
+	<-service.entered
+	if err := db.DeleteLink(original.ID); err != nil {
+		t.Fatalf("delete link: %v", err)
+	}
+	close(service.release)
+	rec := <-response
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("deleted link DELETE status = %d, body = %s; want 409", rec.Code, rec.Body.String())
+	}
+}
+
+type linkLifecycleQosStub struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *linkLifecycleQosStub) Apply(context.Context, qos.Config) (qos.State, error) {
+	return qos.State{}, nil
+}
+
+func (s *linkLifecycleQosStub) ApplyAndPersist(context.Context, qos.Config, qos.Config, func() error) (qos.State, error) {
+	return qos.State{}, nil
+}
+
+func (s *linkLifecycleQosStub) ApplyCurrent(context.Context, string, func() (qos.Config, error)) (qos.State, error) {
+	return qos.State{}, nil
+}
+
+func (s *linkLifecycleQosStub) ApplyCurrentAndPersist(context.Context, string, func() (qos.ApplyPlan, error)) (qos.State, error) {
+	return qos.State{}, nil
+}
+
+func (s *linkLifecycleQosStub) Observe(context.Context, string) (qos.State, error) {
+	return qos.State{}, nil
+}
+
+func (s *linkLifecycleQosStub) MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error) {
+	return qos.Comparison{}, nil
+}
+
+func (s *linkLifecycleQosStub) MeasureCurrentBeforeAfter(context.Context, string, func() (qos.Config, error)) (qos.Comparison, error) {
+	return qos.Comparison{}, nil
+}
+
+func (s *linkLifecycleQosStub) WithInterfaceLock(_ context.Context, _ string, fn func(qos.InterfaceOperations) error) error {
+	close(s.entered)
+	<-s.release
+	return fn(lifecycleQosOperations{})
+}
+
+type lifecycleQosOperations struct{}
+
+func (lifecycleQosOperations) Apply(context.Context, qos.Config) (qos.State, error) {
+	return qos.State{}, nil
+}
+
 func TestLinksUpdatePreservesQoSFields(t *testing.T) {
 	exec := &qosHandlerExec{dryRun: true}
 	original := qosLink()
@@ -598,6 +826,14 @@ func (*qosUpdateServiceStub) Observe(context.Context, string) (qos.State, error)
 
 func (*qosUpdateServiceStub) MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error) {
 	return qos.Comparison{}, nil
+}
+
+func (s *qosUpdateServiceStub) MeasureCurrentBeforeAfter(ctx context.Context, _ string, load func() (qos.Config, error)) (qos.Comparison, error) {
+	cfg, err := load()
+	if err != nil {
+		return qos.Comparison{}, err
+	}
+	return s.MeasureBeforeAfter(ctx, cfg)
 }
 
 func TestLinksUpdateReconcilesQoSWhenLinkIsDisabled(t *testing.T) {

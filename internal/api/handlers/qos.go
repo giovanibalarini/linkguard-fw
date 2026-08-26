@@ -22,6 +22,7 @@ type qosService interface {
 	ApplyCurrentAndPersist(context.Context, string, func() (qos.ApplyPlan, error)) (qos.State, error)
 	Observe(context.Context, string) (qos.State, error)
 	MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error)
+	MeasureCurrentBeforeAfter(context.Context, string, func() (qos.Config, error)) (qos.Comparison, error)
 }
 
 type qosInterfaceLocker interface {
@@ -40,6 +41,7 @@ func NewQosHandler(svc qosService, db *storage.DB) *QosHandler {
 }
 
 var errQosLinkNotFound = errors.New("link not found")
+var errQosInvalidConfig = errors.New("invalid persisted QoS configuration")
 
 type qosUpdateRequest struct {
 	Enabled      bool `json:"enabled"`
@@ -149,14 +151,37 @@ func (h *QosHandler) Test(w http.ResponseWriter, r *http.Request) {
 		h.writeLinkError(w, err)
 		return
 	}
-	desired := qosConfigFromLink(link)
-	if err := desired.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	desired.Enabled = link.Enabled && desired.Enabled
-	comparison, err := h.svc.MeasureBeforeAfter(r.Context(), desired)
+	comparison, err := h.svc.MeasureCurrentBeforeAfter(r.Context(), link.Interface, func() (qos.Config, error) {
+		current, err := h.db.GetLink(link.ID)
+		if err != nil {
+			return qos.Config{}, err
+		}
+		if current == nil {
+			return qos.Config{}, errQosLinkNotFound
+		}
+		if current.Interface != link.Interface {
+			return qos.Config{}, fmt.Errorf("%w: %q became %q", qos.ErrStaleInterface, link.Interface, current.Interface)
+		}
+		desired := qosConfigFromLink(current)
+		if err := desired.Validate(); err != nil {
+			return qos.Config{}, fmt.Errorf("%w: %v", errQosInvalidConfig, err)
+		}
+		desired.Enabled = current.Enabled && desired.Enabled
+		return desired, nil
+	})
 	if err != nil {
+		if errors.Is(err, errQosLinkNotFound) {
+			h.writeLinkError(w, err)
+			return
+		}
+		if errors.Is(err, qos.ErrStaleInterface) {
+			writeError(w, http.StatusConflict, "link changed during QoS test; retry")
+			return
+		}
+		if errors.Is(err, errQosInvalidConfig) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
