@@ -184,3 +184,87 @@ func TestNewServiceDefaultsToTheSystemConfPath(t *testing.T) {
 		t.Errorf("o caminho de produção do ruleset de boot mudou para %q -- o nftables.service carrega /etc/nftables.conf", defaultConfPath)
 	}
 }
+
+// TestPersistOmitsDynamicAccountingElements protects the boot snapshot from
+// reviving live accounting state. Dynamic set elements contain traffic
+// counters and expiry data; static set and map elements are configuration and
+// must remain in the persisted table.
+func TestPersistOmitsDynamicAccountingElements(t *testing.T) {
+	dir := t.TempDir()
+	exec := &recordExec{tableOut: `table inet linkguard {
+	set acct_up {
+		type ipv4_addr
+		size 65535
+		flags dynamic,timeout
+		counter
+		timeout 1d
+		elements = { 192.168.3.50 counter packets 10 bytes 1000 expires 59m59s996ms,
+			     192.168.3.51 counter packets 1204 bytes 1548221 expires 23h58m }
+	}
+	set acct_down {
+		type ipv4_addr
+		size 65535
+		flags dynamic,timeout
+		counter
+		timeout 1d
+		elements = { 192.168.3.50 counter packets 20 bytes 5000 expires 1d }
+	}
+	set static_hosts {
+		type ipv4_addr
+		elements = { 192.168.3.1, 192.168.3.2 }
+	}
+	map static_marks {
+		type ipv4_addr : mark
+		elements = { 192.168.3.3 : 0x12c }
+	}
+}
+`}
+	s := NewService(exec)
+	confPath := filepath.Join(dir, "nftables.conf")
+	s.SetConfPath(confPath)
+
+	if err := s.Persist(context.Background()); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	body, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("read persisted file: %v", err)
+	}
+	content := string(body)
+
+	wantPreamble := "#!/usr/sbin/nft -f\n\ntable inet linkguard\ndelete table inet linkguard\n\n"
+	if !strings.HasPrefix(content, wantPreamble) {
+		t.Errorf("persisted file lost the create-then-delete preamble; got:\n%s", content)
+	}
+
+	for _, setName := range []string{"acct_up", "acct_down"} {
+		start := strings.Index(content, "\tset "+setName+" {\n")
+		if start < 0 {
+			t.Fatalf("persisted file lost dynamic set %q; got:\n%s", setName, content)
+		}
+		end := strings.Index(content[start:], "\n\t}")
+		if end < 0 {
+			t.Fatalf("persisted file contains an unterminated dynamic set %q; got:\n%s", setName, content[start:])
+		}
+		block := content[start : start+end]
+		wantDeclaration := "\tset " + setName + " {\n" +
+			"\t\ttype ipv4_addr\n\t\tsize 65535\n" +
+			"\t\tflags dynamic,timeout\n\t\tcounter\n\t\ttimeout 1d"
+		if !strings.HasPrefix(block, wantDeclaration) {
+			t.Errorf("dynamic set %q declaration changed; got:\n%s", setName, block)
+		}
+		if strings.Contains(block, "elements =") || strings.Contains(block, "counter packets") || strings.Contains(block, "expires ") {
+			t.Errorf("dynamic set %q must retain its declaration but omit live elements, counters, and expiry records; got:\n%s", setName, block)
+		}
+	}
+
+	for _, want := range []string{
+		"\tset static_hosts {\n\t\ttype ipv4_addr\n\t\telements = { 192.168.3.1, 192.168.3.2 }\n\t}",
+		"\tmap static_marks {\n\t\ttype ipv4_addr : mark\n\t\telements = { 192.168.3.3 : 0x12c }\n\t}",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("persisted file lost static elements; missing:\n%s\nfull file:\n%s", want, content)
+		}
+	}
+}
