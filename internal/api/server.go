@@ -43,6 +43,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
 	"github.com/giovanibalarini/linkguard-fw/internal/pktcapture"
+	"github.com/giovanibalarini/linkguard-fw/internal/qos"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -98,6 +99,7 @@ type Server struct {
 	fluxosSvc *hostflows.Servico
 	wgSvc     *wireguard.Service
 	netH      *handlers.NetsvcHandler
+	qosSvc    *qos.Service
 }
 
 // Config holds server configuration.
@@ -144,6 +146,8 @@ type Config struct {
 	// always supplies it; keeping it in Config avoids widening New's already
 	// large positional dependency list.
 	WireGuard *wireguard.Service
+	// QoS é o serviço compartilhado pelo handler e pela reconciliação de boot.
+	QoS *qos.Service
 }
 
 // New creates and wires up the HTTP server.
@@ -183,6 +187,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		aiClient:    aiClient,
 		backupSched: backupSched,
 		webFS:       cfg.WebFS,
+		qosSvc:      cfg.QoS,
 	}
 
 	s.dnstapSvc = cfg.DNSTap
@@ -297,6 +302,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		if cfg.DomainRouting != nil {
 			linksH.SetDomainRouting(cfg.DomainRouting)
 		}
+		linksH.SetQosService(s.qosSvc)
 		// Mudar a interface de um link muda o escopo da medição de conversa
 		// (#115) — a regra casa por iifname. Sem esta ligação, o nome antigo
 		// ficaria na regra até o próximo boot, com a medição calada.
@@ -309,6 +315,10 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermLinksRead)).Get("/api/links/{id}", linksH.Get)
 		r.With(require(auth.PermLinksWrite)).Put("/api/links/{id}", linksH.Update)
 		r.With(require(auth.PermLinksWrite)).Delete("/api/links/{id}", linksH.Delete)
+		if s.qosSvc != nil {
+			qosH := handlers.NewQosHandler(s.qosSvc, s.db)
+			registerQosRoutes(r, require, qosH)
+		}
 
 		// Regras por domínio podem bloquear ou escolher uma WAN, mas seu dono no
 		// RBAC é Links: leitura acompanha links.read e toda mutação links.write.

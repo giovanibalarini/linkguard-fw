@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -206,5 +207,19 @@ func TestBuildServicesKeepsTheNTPSourceItGaveToTheService(t *testing.T) {
 	}
 	if !serving || len(networks) != 1 || networks[0] != "192.168.3.0/24" {
 		t.Errorf("a fonte do NTP não está lendo o banco em runtime: %v/%v", networks, serving)
+	}
+}
+
+func TestBuildServicesUsesTheSameQosServiceForAPIAndBoot(t *testing.T) {
+	s := buildTestServices(t)
+	if s.qosSvc == nil {
+		t.Fatal("buildServices did not create a QoS service for boot reconciliation")
+	}
+	serverField := reflect.ValueOf(s.server).Elem().FieldByName("qosSvc")
+	if !serverField.IsValid() || serverField.IsNil() {
+		t.Fatal("api.Server does not hold the QoS service created by buildServices")
+	}
+	if serverField.Pointer() != reflect.ValueOf(s.qosSvc).Pointer() {
+		t.Fatalf("API and boot received different QoS service instances: api=%p boot=%p", serverField.Pointer(), s.qosSvc)
 	}
 }

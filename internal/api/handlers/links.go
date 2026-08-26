@@ -33,6 +33,7 @@ type LinksHandler struct {
 	// configuração da WAN, inclusive quando o runtime nft não foi injetado em
 	// um teste ou numa instalação degradada.
 	domainRouting domainRoutingReconciler
+	qosSvc        qosService
 }
 
 // reconciliadorDeFluxos é o que o handler de links precisa do registro de
@@ -78,6 +79,7 @@ func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
 			}
 		}()
 	}
+	h.reconcileQos(ctx)
 	if h.nftSvc == nil {
 		return
 	}
@@ -202,10 +204,17 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	updated.ID = existing.ID
 	updated.CreatedAt = existing.CreatedAt
+	updated.QoSEnabled = existing.QoSEnabled
+	updated.QoSUploadMbps = existing.QoSUploadMbps
+	updated.QoSDownloadMbps = existing.QoSDownloadMbps
+	updated.QoSInteractive = existing.QoSInteractive
 
 	if err := h.svc.Update(&updated); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if existing.Interface != updated.Interface {
+		h.disableQosInterface(r.Context(), existing.Interface)
 	}
 	h.reconcileWANDerived(r.Context())
 	writeJSON(w, http.StatusOK, updated)
@@ -214,7 +223,8 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 // Delete removes a link.
 func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if _, err := h.svc.Get(id); err != nil {
+	existing, err := h.svc.Get(id)
+	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -222,6 +232,7 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	h.disableQosInterface(r.Context(), existing.Interface)
 	h.reconcileWANDerived(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
