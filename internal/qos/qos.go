@@ -28,7 +28,7 @@ type Config struct {
 
 // Validate rejects values that cannot safely become ip/tc arguments.
 func (c Config) Validate() error {
-	if !interfaceNamePattern.MatchString(c.Interface) {
+	if !validInterfaceName(c.Interface) {
 		return fmt.Errorf("invalid interface name %q", c.Interface)
 	}
 	if err := validateBandwidth("upload", c.UploadMbps, c.Enabled); err != nil {
@@ -38,6 +38,10 @@ func (c Config) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func validInterfaceName(iface string) bool {
+	return iface != "." && iface != ".." && interfaceNamePattern.MatchString(iface)
 }
 
 func validateBandwidth(direction string, mbps int, required bool) error {

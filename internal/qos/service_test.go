@@ -19,6 +19,7 @@ type fakeExecutor struct {
 	calls    []execCall
 	ifbs     map[string]bool
 	dryRun   bool
+	readErr  error
 	failWhen func(execCall) error
 }
 
@@ -51,6 +52,9 @@ func (e *fakeExecutor) ExecuteRead(_ context.Context, command string, args ...st
 		if err := e.failWhen(call); err != nil {
 			return "", err
 		}
+	}
+	if e.readErr != nil {
+		return "", e.readErr
 	}
 
 	if command == "ip" && len(args) == 4 && args[0] == "link" && args[1] == "show" && args[2] == "dev" {
@@ -331,6 +335,66 @@ func TestDisableDryRunRecordsCleanupWithoutReadingKernel(t *testing.T) {
 	}
 	if countCommand(exec.calls, "ip", "link", "del") != 1 {
 		t.Fatalf("dry-run Disable() did not record IFB deletion: %#v", exec.calls)
+	}
+}
+
+func TestApplyPropagatesOperationalIFBExistenceError(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readErr = errors.New("ip link show: operation not permitted")
+	service := NewService(exec)
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	if _, err := service.Apply(context.Background(), cfg); err == nil {
+		t.Fatal("Apply() error = nil; want IFB existence error")
+	}
+	if countCommand(exec.calls, "ip", "link", "add") != 0 {
+		t.Fatalf("Apply() created IFB after operational existence error: %#v", exec.calls)
+	}
+}
+
+func TestDisableIsIdempotentForMissingObjects(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && len(call.Args) > 1 && (call.Args[1] == "del") {
+			return errors.New("not found")
+		}
+		return nil
+	}
+	service := NewService(exec)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := service.Disable(context.Background(), "wan0"); err != nil {
+			t.Fatalf("Disable() attempt %d error = %v; want nil for clean state", attempt, err)
+		}
+	}
+}
+
+func TestDisablePropagatesOperationalDeleteError(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && call.Command == "tc" && len(call.Args) > 1 && call.Args[0] == "filter" && call.Args[1] == "del" {
+			return errors.New("operation not permitted")
+		}
+		return nil
+	}
+	service := NewService(exec)
+
+	if _, err := service.Disable(context.Background(), "wan0"); err == nil {
+		t.Fatal("Disable() error = nil; want operational delete error")
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("Disable() continued after operational delete error: %#v", exec.calls)
+	}
+}
+
+func TestDisablePropagatesOperationalIFBExistenceError(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readErr = errors.New("ip link show: operation not permitted")
+	service := NewService(exec)
+
+	if _, err := service.Disable(context.Background(), "wan0"); err == nil {
+		t.Fatal("Disable() error = nil; want IFB existence error")
 	}
 }
 
