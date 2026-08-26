@@ -114,6 +114,50 @@ func (db *DB) UpdateLinkQoS(id, expectedInterface string, enabled bool, uploadMb
 	return nil
 }
 
+// UpdateLinkNonQoS updates link fields owned by the generic link service while
+// leaving the QoS columns untouched. This prevents a stale link snapshot from
+// overwriting a concurrent QoS mutation.
+func (db *DB) UpdateLinkNonQoS(l *Link) error {
+	l.UpdatedAt = time.Now()
+	_, err := db.conn.Exec(`
+		UPDATE links SET name=?, interface=?, ip_address=?, gateway=?, weight=?,
+		    dns_test=?, monitor_hosts=?, status=?, latency_ms=?, packet_loss=?,
+		    last_check=?, enabled=?, table_id=?, updated_at=?
+		WHERE id=?`,
+		l.Name, l.Interface, l.IPAddress, l.Gateway, l.Weight,
+		l.DNSTest, l.MonitorHosts, l.Status, l.LatencyMs, l.PacketLoss,
+		nullableTime(l.LastCheck), boolToInt(l.Enabled), l.TableID, l.UpdatedAt, l.ID)
+	return err
+}
+
+// UpdateLinkStatus updates only health-monitor fields so a stale monitored
+// link cannot overwrite QoS or other configuration fields.
+func (db *DB) UpdateLinkStatus(id, status string, latencyMs, packetLoss float64, lastCheck *time.Time) error {
+	_, err := db.conn.Exec(`
+		UPDATE links SET status=?, latency_ms=?, packet_loss=?, last_check=?, updated_at=?
+		WHERE id=?`, status, latencyMs, packetLoss, nullableTime(lastCheck), time.Now(), id)
+	return err
+}
+
+// UpdateLinkDiscovery updates only fields learned from the system route table
+// and succeeds only if the link still belongs to expectedInterface.
+func (db *DB) UpdateLinkDiscovery(id, expectedInterface, name, ipAddress, gateway string) error {
+	result, err := db.conn.Exec(`
+		UPDATE links SET name=?, ip_address=?, gateway=?, updated_at=?
+		WHERE id=? AND interface=?`, name, ipAddress, gateway, time.Now(), id, expectedInterface)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // DeleteLink removes a link by ID.
 func (db *DB) DeleteLink(id string) error {
 	_, err := db.conn.Exec(`DELETE FROM links WHERE id = ?`, id)

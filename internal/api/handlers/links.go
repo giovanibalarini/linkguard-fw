@@ -34,6 +34,11 @@ type LinksHandler struct {
 	// um teste ou numa instalação degradada.
 	domainRouting domainRoutingReconciler
 	qosSvc        qosService
+	qosLocker     qosInterfaceLocker
+}
+
+type qosInterfaceLocker interface {
+	WithInterfaceLock(context.Context, string, func() error) error
 }
 
 // reconciliadorDeFluxos é o que o handler de links precisa do registro de
@@ -216,8 +221,15 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 	updated.QoSDownloadMbps = existing.QoSDownloadMbps
 	updated.QoSInteractive = existing.QoSInteractive
 
-	if err := h.svc.Update(&updated); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	update := func() error { return h.svc.Update(&updated) }
+	var updateErr error
+	if h.qosLocker != nil {
+		updateErr = h.qosLocker.WithInterfaceLock(r.Context(), existing.Interface, update)
+	} else {
+		updateErr = update()
+	}
+	if updateErr != nil {
+		writeError(w, http.StatusBadRequest, updateErr.Error())
 		return
 	}
 	if existing.Interface != updated.Interface {
@@ -235,8 +247,15 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if err := h.svc.Delete(id); err != nil {
-		writeInternalError(w, err)
+	remove := func() error { return h.svc.Delete(id) }
+	var removeErr error
+	if h.qosLocker != nil {
+		removeErr = h.qosLocker.WithInterfaceLock(r.Context(), existing.Interface, remove)
+	} else {
+		removeErr = remove()
+	}
+	if removeErr != nil {
+		writeInternalError(w, removeErr)
 		return
 	}
 	h.disableQosInterface(r.Context(), existing.Interface)

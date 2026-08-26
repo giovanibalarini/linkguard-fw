@@ -9,27 +9,68 @@ import (
 )
 
 // reconcileQoSOnBoot reapplies enabled QoS and removes stale objects for every
-// persisted link. Each link is independent: a failed command is logged and
-// does not prevent the remaining links from being reconciled.
-func reconcileQoSOnBoot(ctx context.Context, svc *qos.Service, configuredLinks []storage.Link) {
+// persisted link. The loader is called while each interface is locked by
+// ApplyCurrent, so an API mutation cannot be followed by a stale boot apply.
+// Each link is independent: a failed command is logged and does not prevent
+// the remaining links from being reconciled.
+func reconcileQoSOnBoot(ctx context.Context, svc *qos.Service, load func() ([]storage.Link, error)) {
 	if svc == nil {
 		return
 	}
-	for _, link := range configuredLinks {
-		var err error
-		if link.Enabled && link.QoSEnabled {
-			_, err = svc.Apply(ctx, qos.Config{
-				Interface:    link.Interface,
-				Enabled:      true,
-				UploadMbps:   link.QoSUploadMbps,
-				DownloadMbps: link.QoSDownloadMbps,
-				Interactive:  link.QoSInteractive,
+	configuredLinks, err := load()
+	if err != nil {
+		slog.Warn("não foi possível carregar links para reconciliar QoS no boot", "err", err)
+		return
+	}
+
+	for pass := 0; pass < 2; pass++ {
+		staleInterface := false
+		for _, snapshot := range configuredLinks {
+			changedInterface := false
+			_, err := svc.ApplyCurrent(ctx, snapshot.Interface, func() (qos.Config, error) {
+				freshLinks, err := load()
+				if err != nil {
+					return qos.Config{}, err
+				}
+				for _, link := range freshLinks {
+					if link.ID != snapshot.ID {
+						continue
+					}
+					if link.Interface != snapshot.Interface {
+						changedInterface = true
+						return qos.Config{Interface: snapshot.Interface}, nil
+					}
+					return bootQoSConfig(link), nil
+				}
+				return qos.Config{Interface: snapshot.Interface}, nil
 			})
-		} else {
-			_, err = svc.Apply(ctx, qos.Config{Interface: link.Interface})
+			if changedInterface {
+				staleInterface = true
+			}
+			if err != nil {
+				slog.Warn("não foi possível reconciliar QoS no boot", "link_id", snapshot.ID, "interface", snapshot.Interface, "err", err)
+			}
 		}
+		if !staleInterface {
+			return
+		}
+		configuredLinks, err = load()
 		if err != nil {
-			slog.Warn("não foi possível reconciliar QoS no boot", "link_id", link.ID, "interface", link.Interface, "err", err)
+			slog.Warn("não foi possível recarregar links para reconciliar QoS no boot", "err", err)
+			return
 		}
+	}
+}
+
+func bootQoSConfig(link storage.Link) qos.Config {
+	if !link.Enabled || !link.QoSEnabled {
+		return qos.Config{Interface: link.Interface}
+	}
+	return qos.Config{
+		Interface:    link.Interface,
+		Enabled:      true,
+		UploadMbps:   link.QoSUploadMbps,
+		DownloadMbps: link.QoSDownloadMbps,
+		Interactive:  link.QoSInteractive,
 	}
 }

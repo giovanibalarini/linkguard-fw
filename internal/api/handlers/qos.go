@@ -15,6 +15,7 @@ import (
 
 type qosService interface {
 	Apply(context.Context, qos.Config) (qos.State, error)
+	ApplyAndPersist(context.Context, qos.Config, qos.Config, func() error) (qos.State, error)
 	Observe(context.Context, string) (qos.State, error)
 	MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error)
 }
@@ -91,24 +92,13 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	applyConfig := desired
 	applyConfig.Enabled = link.Enabled && desired.Enabled
-	state, err := h.svc.Apply(r.Context(), applyConfig)
+	rollback := qosConfigFromLink(link)
+	rollback.Enabled = link.Enabled && rollback.Enabled
+	state, err := h.svc.ApplyAndPersist(r.Context(), applyConfig, rollback, func() error {
+		return h.db.UpdateLinkQoS(link.ID, link.Interface, desired.Enabled, desired.UploadMbps, desired.DownloadMbps, desired.Interactive)
+	})
 	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-
-	link.QoSEnabled = desired.Enabled
-	link.QoSUploadMbps = desired.UploadMbps
-	link.QoSDownloadMbps = desired.DownloadMbps
-	link.QoSInteractive = desired.Interactive
-	if err := h.db.UpdateLinkQoS(link.ID, link.Interface, link.QoSEnabled, link.QoSUploadMbps, link.QoSDownloadMbps, link.QoSInteractive); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// The interface changed while the kernel apply was in progress. Do
-			// not leave QoS attached to the old interface or report a success
-			// for a configuration that no longer describes this link.
-			if _, disableErr := h.svc.Apply(r.Context(), qos.Config{Interface: link.Interface}); disableErr != nil {
-				slog.Warn("could not remove QoS after concurrent link change", "interface", link.Interface, "err", disableErr)
-			}
 			writeError(w, http.StatusConflict, "link changed during QoS update; retry")
 			return
 		}
@@ -171,7 +161,12 @@ func qosConfigFromLink(link *storage.Link) qos.Config {
 }
 
 // SetQosService enables QoS reconciliation after link mutations.
-func (h *LinksHandler) SetQosService(svc qosService) { h.qosSvc = svc }
+func (h *LinksHandler) SetQosService(svc qosService) {
+	h.qosSvc = svc
+	if locker, ok := svc.(qosInterfaceLocker); ok {
+		h.qosLocker = locker
+	}
+}
 
 func (h *LinksHandler) reconcileQos(ctx context.Context) {
 	if h.qosSvc == nil {

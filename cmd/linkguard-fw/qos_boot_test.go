@@ -42,7 +42,7 @@ func TestReconcileQoSOnBootAppliesOnlyEnabledQoSAndDisablesStale(t *testing.T) {
 		{ID: "link-off", Interface: "wan2", Enabled: false, QoSEnabled: true, QoSUploadMbps: 50, QoSDownloadMbps: 200},
 	}
 
-	reconcileQoSOnBoot(context.Background(), service, links)
+	reconcileQoSOnBoot(context.Background(), service, func() ([]storage.Link, error) { return links, nil })
 
 	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan0 root cake bandwidth 50mbit") {
 		t.Errorf("enabled QoS link was not applied: %v", exec.events)
@@ -65,10 +65,31 @@ func TestReconcileQoSOnBootLogsAndContinuesAfterApplyFailure(t *testing.T) {
 		{ID: "ok", Interface: "wan-ok", Enabled: true, QoSEnabled: true, QoSUploadMbps: 30, QoSDownloadMbps: 40},
 	}
 
-	reconcileQoSOnBoot(context.Background(), service, links)
+	reconcileQoSOnBoot(context.Background(), service, func() ([]storage.Link, error) { return links, nil })
 
 	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan-ok root cake bandwidth 30mbit") {
 		t.Errorf("boot reconciliation stopped after one failure: %v", exec.events)
+	}
+}
+
+func TestReconcileQoSOnBootUsesFreshPersistedSnapshotBeforeApply(t *testing.T) {
+	exec := &bootQosExec{}
+	service := qos.NewService(exec)
+	initial := []storage.Link{{ID: "wan-1", Interface: "wan0", Enabled: true, QoSEnabled: true, QoSUploadMbps: 10, QoSDownloadMbps: 20}}
+	fresh := []storage.Link{{ID: "wan-1", Interface: "wan0", Enabled: true, QoSEnabled: true, QoSUploadMbps: 30, QoSDownloadMbps: 40}}
+	loads := 0
+	load := func() ([]storage.Link, error) {
+		loads++
+		if loads == 1 {
+			return initial, nil
+		}
+		return fresh, nil
+	}
+
+	reconcileQoSOnBoot(context.Background(), service, load)
+
+	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan0 root cake bandwidth 30mbit") {
+		t.Fatalf("boot applied stale snapshot instead of fresh persisted QoS: %v", exec.events)
 	}
 }
 

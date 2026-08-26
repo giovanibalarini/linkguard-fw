@@ -2,6 +2,7 @@ package qos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,6 +12,10 @@ import (
 )
 
 const redirectFilterPriority = "49152"
+
+// ErrStaleInterface indicates that a configuration loader observed a link
+// moving to another interface while the previous interface was locked.
+var ErrStaleInterface = errors.New("qos interface changed while loading configuration")
 
 // State describes the queue-control objects accepted by the service.
 type State struct {
@@ -42,6 +47,68 @@ func (s *Service) Apply(ctx context.Context, cfg Config) (State, error) {
 	unlock := s.lockInterface(cfg.Interface)
 	defer unlock()
 	return s.apply(ctx, cfg)
+}
+
+// ApplyAndPersist applies cfg and invokes persist while the interface lock is
+// held. If persistence fails, rollback is applied before returning the error.
+// Keeping the kernel change and its durable configuration in one critical
+// section prevents boot/API operations from interleaving on one interface.
+func (s *Service) ApplyAndPersist(ctx context.Context, cfg, rollback Config, persist func() error) (State, error) {
+	if err := cfg.Validate(); err != nil {
+		return State{}, err
+	}
+	unlock := s.lockInterface(cfg.Interface)
+	defer unlock()
+
+	state, err := s.apply(ctx, cfg)
+	if err != nil {
+		return State{}, err
+	}
+	if err := persist(); err != nil {
+		if rollback.Interface != cfg.Interface || rollback.Validate() != nil {
+			rollback = Config{Interface: cfg.Interface}
+		}
+		if _, restoreErr := s.apply(ctx, rollback); restoreErr != nil {
+			return State{}, fmt.Errorf("persist QoS: %w; restore QoS: %v", err, restoreErr)
+		}
+		return State{}, fmt.Errorf("persist QoS: %w", err)
+	}
+	return state, nil
+}
+
+// ApplyCurrent loads a configuration while iface is locked, then applies the
+// loaded value. Boot reconciliation uses this to prevent a stale snapshot
+// from being applied after a newer API mutation on the same interface.
+func (s *Service) ApplyCurrent(ctx context.Context, iface string, load func() (Config, error)) (State, error) {
+	if err := (Config{Interface: iface}).Validate(); err != nil {
+		return State{}, err
+	}
+	unlock := s.lockInterface(iface)
+	defer unlock()
+
+	cfg, err := load()
+	if err != nil {
+		return State{}, err
+	}
+	if cfg.Interface != iface {
+		return State{}, fmt.Errorf("%w: %q became %q", ErrStaleInterface, iface, cfg.Interface)
+	}
+	if err := cfg.Validate(); err != nil {
+		return State{}, err
+	}
+	return s.apply(ctx, cfg)
+}
+
+// WithInterfaceLock serializes non-QoS link mutations with QoS operations
+// that use this shared service. The callback must not call a public method on
+// this service, because it already runs under the interface lock.
+func (s *Service) WithInterfaceLock(_ context.Context, iface string, fn func() error) error {
+	if err := (Config{Interface: iface}).Validate(); err != nil {
+		return err
+	}
+	unlock := s.lockInterface(iface)
+	defer unlock()
+	return fn()
 }
 
 func (s *Service) apply(ctx context.Context, cfg Config) (State, error) {
