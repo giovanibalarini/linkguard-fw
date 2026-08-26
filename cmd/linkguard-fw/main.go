@@ -1089,7 +1089,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			domainBootReady = false
 			slog.Warn("could not load links for nftables bootstrap", "err", err)
 		} else {
-			reconcileQoSOnBoot(ctx, qosSvc, configuredLinks)
+			reconcileQoSOnBoot(ctx, qosSvc, db.GetLinks)
 
 			wanInterfaces := make([]string, 0, len(configuredLinks))
 			for _, l := range configuredLinks {

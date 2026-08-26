@@ -65,13 +65,31 @@ func hasRootCake(output string) bool {
 }
 
 func hasManagedRedirect(output, ifb string) bool {
-	for _, line := range strings.Split(output, "\n") {
-		if strings.Contains(line, "pref "+redirectFilterPriority) &&
-			strings.Contains(line, "matchall") && strings.Contains(line, ifb) {
-			return true
+	// `tc filter show` emits one filter as a block: the preference, matchall,
+	// action, and destination device commonly occur on separate lines. Keep
+	// block boundaries at the next filter record and match within the block.
+	var block strings.Builder
+	flush := func() bool {
+		if block.Len() == 0 {
+			return false
 		}
+		text := block.String()
+		return strings.Contains(text, "pref "+redirectFilterPriority) &&
+			strings.Contains(text, "matchall") && strings.Contains(text, ifb)
 	}
-	return false
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "filter ") && block.Len() > 0 {
+			if flush() {
+				return true
+			}
+			block.Reset()
+		}
+		if block.Len() > 0 {
+			block.WriteByte('\n')
+		}
+		block.WriteString(line)
+	}
+	return flush()
 }
 
 func observedMode(outputs ...string) string {

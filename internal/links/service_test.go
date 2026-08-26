@@ -141,6 +141,40 @@ func TestUpdateLink(t *testing.T) {
 	}
 }
 
+func TestUpdateLinkDoesNotOverwriteQoSFieldsFromStaleSnapshot(t *testing.T) {
+	svc := newTestService(t)
+
+	l := &storage.Link{
+		Name:            "WAN1",
+		Interface:       "eth0",
+		Gateway:         "10.0.0.1",
+		Enabled:         true,
+		QoSEnabled:      true,
+		QoSUploadMbps:   50,
+		QoSDownloadMbps: 200,
+	}
+	if err := svc.Create(l); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stale := *l
+	stale.Name = "WAN1-updated"
+	stale.QoSEnabled = false
+	stale.QoSUploadMbps = 0
+	stale.QoSDownloadMbps = 0
+	if err := svc.Update(&stale); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err := svc.Get(l.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.QoSEnabled || got.QoSUploadMbps != 50 || got.QoSDownloadMbps != 200 {
+		t.Fatalf("stale non-QoS update overwrote QoS: %+v", got)
+	}
+}
+
 func TestDeleteLink(t *testing.T) {
 	svc := newTestService(t)
 

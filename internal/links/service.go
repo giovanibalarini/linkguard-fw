@@ -99,7 +99,7 @@ func (s *Service) Update(l *storage.Link) error {
 	if err := validateLink(l); err != nil {
 		return err
 	}
-	return s.db.UpdateLink(l)
+	return s.db.UpdateLinkNonQoS(l)
 }
 
 // Delete removes a link by ID.
@@ -121,7 +121,7 @@ func (s *Service) UpdateStatus(id, status string, latencyMs, packetLoss float64)
 	l.PacketLoss = packetLoss
 	now := time.Now()
 	l.LastCheck = &now
-	return s.db.UpdateLink(l)
+	return s.db.UpdateLinkStatus(l.ID, status, latencyMs, packetLoss, l.LastCheck)
 }
 
 // DiscoverAndSyncWANLinks auto-detects WAN interfaces and creates/updates link records.
@@ -158,7 +158,7 @@ func (s *Service) DiscoverAndSyncWANLinks() (*DiscoverResult, error) {
 				changed = true
 			}
 			if changed {
-				if err := s.db.UpdateLink(&cur); err != nil {
+				if err := s.db.UpdateLinkDiscovery(cur.ID, cur.Interface, cur.Name, cur.IPAddress, cur.Gateway); err != nil {
 					return nil, err
 				}
 				res.Updated = append(res.Updated, cur)

@@ -23,11 +23,17 @@ type qosHandlerExec struct {
 	pingOutputs []string
 	readOutputs map[string]string
 	events      []string
+	onExecute   func()
 }
 
 func (e *qosHandlerExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
 	event := "write:" + cmd + " " + strings.Join(args, " ")
 	e.events = append(e.events, event)
+	if e.onExecute != nil {
+		onExecute := e.onExecute
+		e.onExecute = nil
+		onExecute()
+	}
 	if e.executeErr != nil {
 		return "", e.executeErr
 	}
@@ -218,6 +224,37 @@ func TestQosPutDoesNotPersistWhenApplyFails(t *testing.T) {
 	}
 }
 
+func TestQosPutRestoresOldKernelConfigWhenPersistenceFails(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true}
+	original := qosLink()
+	original.QoSEnabled = true
+	original.QoSUploadMbps = 50
+	original.QoSDownloadMbps = 200
+	h, db := newQosHandlerFixture(t, original, exec)
+	exec.onExecute = func() { _ = db.Close() }
+
+	body := strings.NewReader(`{"enabled":true,"upload_mbps":75,"download_mbps":200,"interactive":true}`)
+	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1/qos", body), "id", original.ID)
+	rec := httptest.NewRecorder()
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("PUT status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	newApply, oldRestore := -1, -1
+	for i, event := range exec.events {
+		if strings.Contains(event, "bandwidth 75mbit") && newApply == -1 {
+			newApply = i
+		}
+		if strings.Contains(event, "bandwidth 50mbit") && oldRestore == -1 {
+			oldRestore = i
+		}
+	}
+	if newApply == -1 || oldRestore <= newApply {
+		t.Fatalf("persistence failure did not restore the old kernel configuration: %v", exec.events)
+	}
+}
+
 func TestQosPutRejectsMalformedAndInvalidPayloadsBeforeApplying(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -386,6 +423,17 @@ type qosUpdateServiceStub struct {
 
 func (s *qosUpdateServiceStub) Apply(ctx context.Context, cfg qos.Config) (qos.State, error) {
 	return s.apply(ctx, cfg)
+}
+
+func (s *qosUpdateServiceStub) ApplyAndPersist(ctx context.Context, cfg, _ qos.Config, persist func() error) (qos.State, error) {
+	state, err := s.apply(ctx, cfg)
+	if err != nil {
+		return qos.State{}, err
+	}
+	if err := persist(); err != nil {
+		return qos.State{}, err
+	}
+	return state, nil
 }
 
 func (*qosUpdateServiceStub) Observe(context.Context, string) (qos.State, error) {

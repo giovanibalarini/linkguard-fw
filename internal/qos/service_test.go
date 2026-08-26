@@ -412,7 +412,7 @@ func TestObserveReturnsManagedKernelStateWithReadOnlySeparatedArguments(t *testi
 	exec.readOut = map[string]string{
 		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                              "qdisc cake 8001: root refcnt 2 bandwidth 50Mbit diffserv4 dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
 		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                 "qdisc cake 8002: root refcnt 2 bandwidth 200Mbit diffserv4 dual-dsthost\n",
-		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", "49152"): "filter protocol all pref 49152 matchall action mirred egress redirect to device " + ifb + "\n",
+		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", "49152"): "filter protocol all pref 49152\n\tmatchall action mirred egress redirect to device " + ifb + "\n",
 	}
 	service := NewService(exec)
 
