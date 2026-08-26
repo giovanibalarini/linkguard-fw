@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -9,6 +11,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/qos"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -37,9 +40,7 @@ type LinksHandler struct {
 	qosLocker     qosInterfaceLocker
 }
 
-type qosInterfaceLocker interface {
-	WithInterfaceLock(context.Context, string, func() error) error
-}
+var errQosCleanup = errors.New("qos cleanup failed")
 
 // reconciliadorDeFluxos é o que o handler de links precisa do registro de
 // conversa: quando a lista de WANs muda, a regra que escopa a medição por
@@ -221,19 +222,46 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 	updated.QoSDownloadMbps = existing.QoSDownloadMbps
 	updated.QoSInteractive = existing.QoSInteractive
 
-	update := func() error { return h.svc.Update(&updated) }
+	cleanupRequired := h.qosSvc != nil && existing.QoSEnabled &&
+		(existing.Interface != updated.Interface || !updated.Enabled)
+	oldQoS := qosConfigFromLink(existing)
+	oldQoS.Enabled = existing.Enabled && existing.QoSEnabled
+	update := func(ops qos.InterfaceOperations) error {
+		if cleanupRequired {
+			if _, err := ops.Apply(r.Context(), qos.Config{Interface: existing.Interface}); err != nil {
+				return fmt.Errorf("%w: disable QoS before link update: %v", errQosCleanup, err)
+			}
+		}
+		if err := h.svc.Update(&updated); err != nil {
+			if cleanupRequired {
+				if _, restoreErr := ops.Apply(r.Context(), oldQoS); restoreErr != nil {
+					return fmt.Errorf("update link: %w; restore QoS: %v", err, restoreErr)
+				}
+			}
+			return err
+		}
+		return nil
+	}
 	var updateErr error
 	if h.qosLocker != nil {
 		updateErr = h.qosLocker.WithInterfaceLock(r.Context(), existing.Interface, update)
 	} else {
-		updateErr = update()
+		if cleanupRequired {
+			if _, err := h.qosSvc.Apply(r.Context(), qos.Config{Interface: existing.Interface}); err != nil {
+				updateErr = fmt.Errorf("%w: disable QoS before link update: %v", errQosCleanup, err)
+			}
+		}
+		if updateErr == nil {
+			updateErr = h.svc.Update(&updated)
+		}
 	}
 	if updateErr != nil {
+		if errors.Is(updateErr, errQosCleanup) {
+			writeInternalError(w, updateErr)
+			return
+		}
 		writeError(w, http.StatusBadRequest, updateErr.Error())
 		return
-	}
-	if existing.Interface != updated.Interface {
-		h.disableQosInterface(r.Context(), existing.Interface)
 	}
 	h.reconcileWANDerived(r.Context())
 	writeJSON(w, http.StatusOK, updated)
@@ -247,18 +275,42 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	remove := func() error { return h.svc.Delete(id) }
+	cleanupRequired := h.qosSvc != nil && existing.QoSEnabled
+	oldQoS := qosConfigFromLink(existing)
+	oldQoS.Enabled = existing.Enabled && existing.QoSEnabled
+	remove := func(ops qos.InterfaceOperations) error {
+		if cleanupRequired {
+			if _, err := ops.Apply(r.Context(), qos.Config{Interface: existing.Interface}); err != nil {
+				return fmt.Errorf("%w: disable QoS before link delete: %v", errQosCleanup, err)
+			}
+		}
+		if err := h.svc.Delete(id); err != nil {
+			if cleanupRequired {
+				if _, restoreErr := ops.Apply(r.Context(), oldQoS); restoreErr != nil {
+					return fmt.Errorf("delete link: %w; restore QoS: %v", err, restoreErr)
+				}
+			}
+			return err
+		}
+		return nil
+	}
 	var removeErr error
 	if h.qosLocker != nil {
 		removeErr = h.qosLocker.WithInterfaceLock(r.Context(), existing.Interface, remove)
 	} else {
-		removeErr = remove()
+		if cleanupRequired {
+			if _, err := h.qosSvc.Apply(r.Context(), qos.Config{Interface: existing.Interface}); err != nil {
+				removeErr = fmt.Errorf("%w: disable QoS before link delete: %v", errQosCleanup, err)
+			}
+		}
+		if removeErr == nil {
+			removeErr = h.svc.Delete(id)
+		}
 	}
 	if removeErr != nil {
 		writeInternalError(w, removeErr)
 		return
 	}
-	h.disableQosInterface(r.Context(), existing.Interface)
 	h.reconcileWANDerived(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -443,6 +443,56 @@ func TestObserveReturnsManagedKernelStateWithReadOnlySeparatedArguments(t *testi
 	}
 }
 
+func TestHasManagedRedirectRecognizesNormalMultilineTopLevelFilterBlock(t *testing.T) {
+	ifb := IFBName("wan0")
+	output := "filter parent ffff: protocol ip pref 100 flower\n" +
+		"\taction order 1: pass\n" +
+		"filter parent ffff: protocol all pref 49152\n" +
+		"\tmatchall\n" +
+		"\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n" +
+		"\tindex 1 ref 1 bind 1\n"
+
+	if !hasManagedRedirect(output, ifb) {
+		t.Fatalf("hasManagedRedirect() = false for normal multiline tc filter block:\n%s", output)
+	}
+}
+
+func TestApplyCurrentAndPersistRestoresKernelConfigAfterPersistenceError(t *testing.T) {
+	exec := newFakeExecutor()
+	service := NewService(exec)
+	apply := validConfig()
+	apply.Interface = "wan0"
+	apply.UploadMbps = 75
+	rollback := apply
+	rollback.UploadMbps = 50
+
+	_, err := service.ApplyCurrentAndPersist(context.Background(), "wan0", func() (ApplyPlan, error) {
+		return ApplyPlan{
+			Config:   apply,
+			Rollback: rollback,
+			Persist:  func() error { return errors.New("database unavailable") },
+		}, nil
+	})
+	if err == nil {
+		t.Fatal("ApplyCurrentAndPersist() error = nil; want persistence failure")
+	}
+	newApply, oldRestore := -1, -1
+	for i, call := range exec.calls {
+		if call.Command != "tc" || len(call.Args) < 9 || call.Args[0] != "qdisc" || call.Args[1] != "replace" {
+			continue
+		}
+		if containsToken(call.Args, "75mbit") && newApply == -1 {
+			newApply = i
+		}
+		if containsToken(call.Args, "50mbit") && oldRestore == -1 {
+			oldRestore = i
+		}
+	}
+	if newApply == -1 || oldRestore <= newApply {
+		t.Fatalf("persistence failure did not restore old kernel config: %#v", exec.calls)
+	}
+}
+
 func TestPerInterfaceQoSOperationsSerialize(t *testing.T) {
 	exec := newBlockingQosExecutor()
 	service := NewService(exec)

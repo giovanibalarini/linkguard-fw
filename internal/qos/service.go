@@ -26,6 +26,15 @@ type State struct {
 	DryRun    bool   `json:"dry_run"`
 }
 
+// ApplyPlan contains the effective kernel configuration, its prior state for
+// compensation, and the durable write that must follow a successful apply.
+// The service runs all three steps under one interface lock.
+type ApplyPlan struct {
+	Config   Config
+	Rollback Config
+	Persist  func() error
+}
+
 // Service applies QoS changes through the firewall command executor.
 type Service struct {
 	exec firewall.Executor
@@ -59,6 +68,37 @@ func (s *Service) ApplyAndPersist(ctx context.Context, cfg, rollback Config, per
 	}
 	unlock := s.lockInterface(cfg.Interface)
 	defer unlock()
+	return s.applyAndPersistLocked(ctx, cfg, rollback, persist)
+}
+
+// ApplyCurrentAndPersist loads the current apply plan while iface is locked,
+// then applies and persists it without allowing another operation for that
+// interface to interleave. A stale loader must return a plan whose Config uses
+// iface; otherwise no kernel or database mutation is attempted.
+func (s *Service) ApplyCurrentAndPersist(ctx context.Context, iface string, load func() (ApplyPlan, error)) (State, error) {
+	if err := (Config{Interface: iface}).Validate(); err != nil {
+		return State{}, err
+	}
+	unlock := s.lockInterface(iface)
+	defer unlock()
+
+	plan, err := load()
+	if err != nil {
+		return State{}, err
+	}
+	if plan.Config.Interface != iface {
+		return State{}, fmt.Errorf("%w: %q became %q", ErrStaleInterface, iface, plan.Config.Interface)
+	}
+	return s.applyAndPersistLocked(ctx, plan.Config, plan.Rollback, plan.Persist)
+}
+
+func (s *Service) applyAndPersistLocked(ctx context.Context, cfg, rollback Config, persist func() error) (State, error) {
+	if err := cfg.Validate(); err != nil {
+		return State{}, err
+	}
+	if persist == nil {
+		return State{}, errors.New("qos persistence callback is nil")
+	}
 
 	state, err := s.apply(ctx, cfg)
 	if err != nil {
@@ -99,16 +139,40 @@ func (s *Service) ApplyCurrent(ctx context.Context, iface string, load func() (C
 	return s.apply(ctx, cfg)
 }
 
+// InterfaceOperations are the QoS operations permitted while an interface
+// lock is already held by WithInterfaceLock.
+type InterfaceOperations interface {
+	Apply(context.Context, Config) (State, error)
+}
+
+type lockedInterfaceOperations struct {
+	service *Service
+	iface   string
+}
+
+func (o lockedInterfaceOperations) Apply(ctx context.Context, cfg Config) (State, error) {
+	if cfg.Interface != o.iface {
+		return State{}, fmt.Errorf("qos operation targets %q while %q is locked", cfg.Interface, o.iface)
+	}
+	if err := cfg.Validate(); err != nil {
+		return State{}, err
+	}
+	return o.service.apply(ctx, cfg)
+}
+
 // WithInterfaceLock serializes non-QoS link mutations with QoS operations
-// that use this shared service. The callback must not call a public method on
-// this service, because it already runs under the interface lock.
-func (s *Service) WithInterfaceLock(_ context.Context, iface string, fn func() error) error {
+// that use this shared service. The callback receives operations that reuse
+// the held lock and must not call a public method on this service.
+func (s *Service) WithInterfaceLock(_ context.Context, iface string, fn func(InterfaceOperations) error) error {
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return err
 	}
 	unlock := s.lockInterface(iface)
 	defer unlock()
-	return fn()
+	if fn == nil {
+		return errors.New("qos interface lock callback is nil")
+	}
+	return fn(lockedInterfaceOperations{service: s, iface: iface})
 }
 
 func (s *Service) apply(ctx context.Context, cfg Config) (State, error) {
