@@ -90,6 +90,30 @@ func (db *DB) UpdateLink(l *Link) error {
 	return err
 }
 
+// UpdateLinkQoS updates only the QoS fields and succeeds only if the link's
+// interface is still the one used for the kernel apply. The interface check
+// prevents a concurrent link edit from receiving QoS that was applied to a
+// stale interface, while the targeted update avoids overwriting unrelated
+// link fields loaded before the apply completed.
+func (db *DB) UpdateLinkQoS(id, expectedInterface string, enabled bool, uploadMbps, downloadMbps int, interactive bool) error {
+	result, err := db.conn.Exec(`
+		UPDATE links SET qos_enabled=?, qos_upload_mbps=?, qos_download_mbps=?,
+		    qos_interactive=?, updated_at=?
+		WHERE id=? AND interface=?`,
+		boolToInt(enabled), uploadMbps, downloadMbps, boolToInt(interactive), time.Now(), id, expectedInterface)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // DeleteLink removes a link by ID.
 func (db *DB) DeleteLink(id string) error {
 	_, err := db.conn.Exec(`DELETE FROM links WHERE id = ?`, id)
