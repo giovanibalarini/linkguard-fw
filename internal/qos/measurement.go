@@ -68,7 +68,12 @@ func (s *Service) Measure(ctx context.Context, iface string) (Measurement, error
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return Measurement{}, err
 	}
+	unlock := s.lockInterface(iface)
+	defer unlock()
+	return s.measure(ctx, iface)
+}
 
+func (s *Service) measure(ctx context.Context, iface string) (Measurement, error) {
 	output, execErr := s.exec.ExecuteRead(ctx, "ping",
 		"-n", "-I", iface, "-c", "5", "-W", "2", pingTarget)
 	measurement, parseErr := ParsePingSummary(output)
@@ -84,14 +89,20 @@ func (s *Service) Measure(ctx context.Context, iface string) (Measurement, error
 // MeasureBeforeAfter measures, applies the requested configuration, and then
 // measures again. An apply failure aborts before the second ping.
 func (s *Service) MeasureBeforeAfter(ctx context.Context, cfg Config) (Comparison, error) {
-	before, err := s.Measure(ctx, cfg.Interface)
+	if err := cfg.Validate(); err != nil {
+		return Comparison{}, err
+	}
+	unlock := s.lockInterface(cfg.Interface)
+	defer unlock()
+
+	before, err := s.measure(ctx, cfg.Interface)
 	if err != nil {
 		return Comparison{}, fmt.Errorf("measure before QoS: %w", err)
 	}
-	if _, err := s.Apply(ctx, cfg); err != nil {
+	if _, err := s.apply(ctx, cfg); err != nil {
 		return Comparison{}, fmt.Errorf("apply QoS between measurements: %w", err)
 	}
-	after, err := s.Measure(ctx, cfg.Interface)
+	after, err := s.measure(ctx, cfg.Interface)
 	if err != nil {
 		return Comparison{}, fmt.Errorf("measure after QoS: %w", err)
 	}

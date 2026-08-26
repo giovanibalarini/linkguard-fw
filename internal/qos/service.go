@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 )
@@ -23,11 +24,14 @@ type State struct {
 // Service applies QoS changes through the firewall command executor.
 type Service struct {
 	exec firewall.Executor
+
+	locksMu       sync.Mutex
+	interfaceLock map[string]*sync.Mutex
 }
 
 // NewService creates a QoS service.
 func NewService(exec firewall.Executor) *Service {
-	return &Service{exec: exec}
+	return &Service{exec: exec, interfaceLock: make(map[string]*sync.Mutex)}
 }
 
 // Apply validates and applies one WAN's desired QoS configuration.
@@ -35,8 +39,14 @@ func (s *Service) Apply(ctx context.Context, cfg Config) (State, error) {
 	if err := cfg.Validate(); err != nil {
 		return State{}, err
 	}
+	unlock := s.lockInterface(cfg.Interface)
+	defer unlock()
+	return s.apply(ctx, cfg)
+}
+
+func (s *Service) apply(ctx context.Context, cfg Config) (State, error) {
 	if !cfg.Enabled {
-		return s.Disable(ctx, cfg.Interface)
+		return s.disable(ctx, cfg.Interface)
 	}
 
 	mode := "besteffort"
@@ -100,6 +110,12 @@ func (s *Service) Disable(ctx context.Context, iface string) (State, error) {
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return State{}, err
 	}
+	unlock := s.lockInterface(iface)
+	defer unlock()
+	return s.disable(ctx, iface)
+}
+
+func (s *Service) disable(ctx context.Context, iface string) (State, error) {
 	ifb := IFBName(iface)
 
 	if err := s.delete(ctx, "remove ingress redirect", "tc",
@@ -137,6 +153,22 @@ func (s *Service) Disable(ctx context.Context, iface string) (State, error) {
 		IFB:       ifb,
 		DryRun:    s.exec.IsDryRun(),
 	}, nil
+}
+
+func (s *Service) lockInterface(iface string) func() {
+	s.locksMu.Lock()
+	if s.interfaceLock == nil {
+		s.interfaceLock = make(map[string]*sync.Mutex)
+	}
+	lock := s.interfaceLock[iface]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.interfaceLock[iface] = lock
+	}
+	s.locksMu.Unlock()
+
+	lock.Lock()
+	return lock.Unlock
 }
 
 func (s *Service) ifbExists(ctx context.Context, ifb string) (bool, error) {

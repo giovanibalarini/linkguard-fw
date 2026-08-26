@@ -21,6 +21,7 @@ type qosHandlerExec struct {
 	dryRun      bool
 	executeErr  error
 	pingOutputs []string
+	readOutputs map[string]string
 	events      []string
 }
 
@@ -42,6 +43,9 @@ func (e *qosHandlerExec) ExecuteRead(_ context.Context, cmd string, args ...stri
 		}
 		out := e.pingOutputs[0]
 		e.pingOutputs = e.pingOutputs[1:]
+		return out, nil
+	}
+	if out, ok := e.readOutputs[strings.Join(append([]string{cmd}, args...), "\x00")]; ok {
 		return out, nil
 	}
 	return "", nil
@@ -92,7 +96,16 @@ func qosLink() storage.Link {
 }
 
 func TestQosGetReturnsStoredConfigurationWithoutApplying(t *testing.T) {
-	exec := &qosHandlerExec{dryRun: true}
+	ifb := qos.IFBName("wan0")
+	exec := &qosHandlerExec{
+		dryRun: true,
+		readOutputs: map[string]string{
+			"ip\x00link\x00show\x00dev\x00" + ifb:                             "7: " + ifb + ": <BROADCAST,UP> mtu 1500",
+			"tc\x00qdisc\x00show\x00dev\x00wan0":                              "qdisc cake 8001: root bandwidth 50Mbit diffserv4 dual-srchost\n",
+			"tc\x00qdisc\x00show\x00dev\x00" + ifb:                            "qdisc cake 8002: root bandwidth 200Mbit diffserv4 dual-dsthost\n",
+			"tc\x00filter\x00show\x00dev\x00wan0\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall action mirred egress redirect to device " + ifb,
+		},
+	}
 	h, _ := newQosHandlerFixture(t, qosLink(), exec)
 
 	req := withChiURLParam(httptest.NewRequest(http.MethodGet, "/api/links/wan-1/qos", nil), "id", "wan-1")
@@ -102,14 +115,20 @@ func TestQosGetReturnsStoredConfigurationWithoutApplying(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	var got qos.Config
-	decodeQosJSON(t, rec, &got)
-	want := qos.Config{Interface: "wan0", Enabled: false, UploadMbps: 12, DownloadMbps: 80, Interactive: true}
-	if got != want {
-		t.Errorf("GET config = %#v, want %#v", got, want)
+	var got struct {
+		Desired  qos.Config `json:"desired"`
+		Observed qos.State  `json:"observed"`
 	}
-	if len(exec.events) != 0 {
-		t.Errorf("GET applied kernel commands: %v", exec.events)
+	decodeQosJSON(t, rec, &got)
+	wantDesired := qos.Config{Interface: "wan0", Enabled: false, UploadMbps: 12, DownloadMbps: 80, Interactive: true}
+	wantObserved := qos.State{Enabled: true, Interface: "wan0", IFB: ifb, Mode: "diffserv4", DryRun: true}
+	if got.Desired != wantDesired || got.Observed != wantObserved {
+		t.Errorf("GET response = %#v, want desired=%#v observed=%#v", got, wantDesired, wantObserved)
+	}
+	for _, event := range exec.events {
+		if strings.HasPrefix(event, "write:") {
+			t.Errorf("GET issued a kernel write: %v", exec.events)
+		}
 	}
 }
 
@@ -297,6 +316,84 @@ func TestLinksUpdatePreservesQoSFields(t *testing.T) {
 		t.Errorf("regular link PUT lost QoS fields: got %#v, want %v/%d/%d/%v", stored, original.QoSEnabled, original.QoSUploadMbps, original.QoSDownloadMbps, original.QoSInteractive)
 	}
 	_ = exec
+}
+
+func TestLinksCreateIgnoresQoSFieldsFromGenericPayload(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	body := strings.NewReader(`{"name":"WAN nova","interface":"wan0","weight":10,"enabled":true,"qos_enabled":true,"qos_upload_mbps":50,"qos_download_mbps":200,"qos_interactive":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/links", body)
+	rec := httptest.NewRecorder()
+	h.Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("link POST status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got storage.Link
+	decodeQosJSON(t, rec, &got)
+	stored, err := db.GetLink(got.ID)
+	if err != nil {
+		t.Fatalf("GetLink created link: %v", err)
+	}
+	if stored.QoSEnabled || stored.QoSUploadMbps != 0 || stored.QoSDownloadMbps != 0 || stored.QoSInteractive {
+		t.Fatalf("generic link create persisted QoS fields: %#v", stored)
+	}
+}
+
+func TestQosPutDoesNotOverwriteConcurrentLinkFields(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	original := qosLink()
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	service := &qosUpdateServiceStub{apply: func(_ context.Context, _ qos.Config) (qos.State, error) {
+		current, err := db.GetLink(original.ID)
+		if err != nil {
+			return qos.State{}, err
+		}
+		current.Name = "alterado concorrentemente"
+		if err := db.UpdateLink(current); err != nil {
+			return qos.State{}, err
+		}
+		return qos.State{Enabled: true, Interface: original.Interface, IFB: qos.IFBName(original.Interface), Mode: "besteffort"}, nil
+	}}
+	h := handlers.NewQosHandler(service, db)
+	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1/qos", strings.NewReader(`{"enabled":true,"upload_mbps":50,"download_mbps":200}`)), "id", original.ID)
+	rec := httptest.NewRecorder()
+	h.Update(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("QoS PUT status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	stored, err := db.GetLink(original.ID)
+	if err != nil {
+		t.Fatalf("GetLink after concurrent update: %v", err)
+	}
+	if stored.Name != "alterado concorrentemente" {
+		t.Fatalf("QoS PUT overwrote a concurrent link field: got name %q", stored.Name)
+	}
+}
+
+type qosUpdateServiceStub struct {
+	apply func(context.Context, qos.Config) (qos.State, error)
+}
+
+func (s *qosUpdateServiceStub) Apply(ctx context.Context, cfg qos.Config) (qos.State, error) {
+	return s.apply(ctx, cfg)
+}
+
+func (*qosUpdateServiceStub) Observe(context.Context, string) (qos.State, error) {
+	return qos.State{}, nil
+}
+
+func (*qosUpdateServiceStub) MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error) {
+	return qos.Comparison{}, nil
 }
 
 func TestLinksUpdateReconcilesQoSWhenLinkIsDisabled(t *testing.T) {

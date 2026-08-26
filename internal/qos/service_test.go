@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type execCall struct {
@@ -20,6 +23,7 @@ type fakeExecutor struct {
 	ifbs     map[string]bool
 	dryRun   bool
 	readErr  error
+	readOut  map[string]string
 	failWhen func(execCall) error
 }
 
@@ -62,6 +66,9 @@ func (e *fakeExecutor) ExecuteRead(_ context.Context, command string, args ...st
 			return fmt.Sprintf("7: %s: <BROADCAST,UP> mtu 1500", args[3]), nil
 		}
 		return "", errors.New("device not found")
+	}
+	if output, ok := e.readOut[executorCallKey(command, args...)]; ok {
+		return output, nil
 	}
 	return "", nil
 }
@@ -396,6 +403,149 @@ func TestDisablePropagatesOperationalIFBExistenceError(t *testing.T) {
 	if _, err := service.Disable(context.Background(), "wan0"); err == nil {
 		t.Fatal("Disable() error = nil; want IFB existence error")
 	}
+}
+
+func TestObserveReturnsManagedKernelStateWithReadOnlySeparatedArguments(t *testing.T) {
+	ifb := IFBName("wan0")
+	exec := newFakeExecutor()
+	exec.ifbs[ifb] = true
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                              "qdisc cake 8001: root refcnt 2 bandwidth 50Mbit diffserv4 dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                 "qdisc cake 8002: root refcnt 2 bandwidth 200Mbit diffserv4 dual-dsthost\n",
+		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", "49152"): "filter protocol all pref 49152 matchall action mirred egress redirect to device " + ifb + "\n",
+	}
+	service := NewService(exec)
+
+	got, err := service.Observe(context.Background(), "wan0")
+	if err != nil {
+		t.Fatalf("Observe() error = %v; want nil", err)
+	}
+	want := State{Enabled: true, Interface: "wan0", IFB: ifb, Mode: "diffserv4"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Observe() state = %#v; want %#v", got, want)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("Observe() issued a write command: %#v", call)
+		}
+		if call.Command == "sh" {
+			t.Fatalf("Observe() invoked a shell: %#v", call)
+		}
+	}
+	wantCalls := []execCall{
+		{Read: true, Command: "ip", Args: []string{"link", "show", "dev", ifb}},
+		{Read: true, Command: "tc", Args: []string{"qdisc", "show", "dev", "wan0"}},
+		{Read: true, Command: "tc", Args: []string{"qdisc", "show", "dev", ifb}},
+		{Read: true, Command: "tc", Args: []string{"filter", "show", "dev", "wan0", "ingress", "pref", "49152"}},
+	}
+	if !reflect.DeepEqual(exec.calls, wantCalls) {
+		t.Fatalf("Observe() calls = %#v; want %#v", exec.calls, wantCalls)
+	}
+}
+
+func TestPerInterfaceQoSOperationsSerialize(t *testing.T) {
+	exec := newBlockingQosExecutor()
+	service := NewService(exec)
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := service.MeasureBeforeAfter(context.Background(), cfg)
+		firstDone <- err
+	}()
+	<-exec.firstCall
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := service.Apply(context.Background(), cfg)
+		secondDone <- err
+	}()
+	select {
+	case <-exec.secondCall:
+		t.Fatal("Apply entered the executor while MeasureBeforeAfter was still using the interface")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(exec.release)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("MeasureBeforeAfter() error = %v; want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("MeasureBeforeAfter() did not finish after releasing the executor")
+	}
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("Apply() error = %v; want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Apply() did not finish after MeasureBeforeAfter() released the interface")
+	}
+	if exec.overlap {
+		t.Fatal("QoS operations used the same interface concurrently")
+	}
+}
+
+type blockingQosExecutor struct {
+	mu         sync.Mutex
+	active     int
+	calls      int
+	overlap    bool
+	firstCall  chan struct{}
+	secondCall chan struct{}
+	release    chan struct{}
+}
+
+func newBlockingQosExecutor() *blockingQosExecutor {
+	return &blockingQosExecutor{
+		firstCall:  make(chan struct{}),
+		secondCall: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+}
+
+func (e *blockingQosExecutor) Execute(context.Context, string, ...string) (string, error) {
+	e.enter()
+	return "", nil
+}
+
+func (e *blockingQosExecutor) ExecuteRead(context.Context, string, ...string) (string, error) {
+	e.enter()
+	return "5 packets transmitted, 5 received, 0% packet loss\nrtt min/avg/max/mdev = 10/20/30/1 ms\n", nil
+}
+
+func (e *blockingQosExecutor) enter() {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.active++
+	if e.active > 1 {
+		e.overlap = true
+	}
+	e.mu.Unlock()
+
+	switch call {
+	case 1:
+		close(e.firstCall)
+		<-e.release
+	case 2:
+		close(e.secondCall)
+	}
+
+	e.mu.Lock()
+	e.active--
+	e.mu.Unlock()
+}
+
+func (*blockingQosExecutor) IsDryRun() bool { return true }
+
+func (*blockingQosExecutor) WriteFile(string, []byte, os.FileMode) error { return nil }
+
+func executorCallKey(command string, args ...string) string {
+	return strings.Join(append([]string{command}, args...), "\x00")
 }
 
 func containsToken(tokens []string, want string) bool {

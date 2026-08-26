@@ -180,6 +180,13 @@ func (h *LinksHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// QoS has its own apply-before-persist endpoint. Generic link creation
+	// must not silently persist a configuration that was never validated or
+	// applied to the kernel.
+	l.QoSEnabled = false
+	l.QoSUploadMbps = 0
+	l.QoSDownloadMbps = 0
+	l.QoSInteractive = false
 	if err := h.svc.Create(&l); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

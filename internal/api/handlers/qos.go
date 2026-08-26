@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 type qosService interface {
 	Apply(context.Context, qos.Config) (qos.State, error)
+	Observe(context.Context, string) (qos.State, error)
 	MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error)
 }
 
@@ -37,6 +39,11 @@ type qosUpdateRequest struct {
 	Interactive  bool `json:"interactive"`
 }
 
+type qosGetResponse struct {
+	Desired  qos.Config `json:"desired"`
+	Observed qos.State  `json:"observed"`
+}
+
 // Get returns the desired QoS configuration persisted for one link.
 func (h *QosHandler) Get(w http.ResponseWriter, r *http.Request) {
 	link, err := h.loadLink(chi.URLParam(r, "id"))
@@ -49,7 +56,12 @@ func (h *QosHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, cfg)
+	observed, err := h.svc.Observe(r.Context(), link.Interface)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, qosGetResponse{Desired: cfg, Observed: observed})
 }
 
 // Update applies QoS before persisting the requested configuration.
@@ -89,7 +101,17 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 	link.QoSUploadMbps = desired.UploadMbps
 	link.QoSDownloadMbps = desired.DownloadMbps
 	link.QoSInteractive = desired.Interactive
-	if err := h.db.UpdateLink(link); err != nil {
+	if err := h.db.UpdateLinkQoS(link.ID, link.Interface, link.QoSEnabled, link.QoSUploadMbps, link.QoSDownloadMbps, link.QoSInteractive); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// The interface changed while the kernel apply was in progress. Do
+			// not leave QoS attached to the old interface or report a success
+			// for a configuration that no longer describes this link.
+			if _, disableErr := h.svc.Apply(r.Context(), qos.Config{Interface: link.Interface}); disableErr != nil {
+				slog.Warn("could not remove QoS after concurrent link change", "interface", link.Interface, "err", disableErr)
+			}
+			writeError(w, http.StatusConflict, "link changed during QoS update; retry")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
