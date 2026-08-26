@@ -9,22 +9,26 @@ import (
 
 // Link represents a WAN link configuration.
 type Link struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Interface    string     `json:"interface"`
-	IPAddress    string     `json:"ip_address"`
-	Gateway      string     `json:"gateway"`
-	Weight       int        `json:"weight"`
-	DNSTest      string     `json:"dns_test"`
-	MonitorHosts string     `json:"monitor_hosts"`
-	Status       string     `json:"status"` // online, offline, degraded, unknown
-	LatencyMs    float64    `json:"latency_ms"`
-	PacketLoss   float64    `json:"packet_loss"`
-	LastCheck    *time.Time `json:"last_check"`
-	Enabled      bool       `json:"enabled"`
-	TableID      int        `json:"table_id"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Interface       string     `json:"interface"`
+	IPAddress       string     `json:"ip_address"`
+	Gateway         string     `json:"gateway"`
+	Weight          int        `json:"weight"`
+	DNSTest         string     `json:"dns_test"`
+	MonitorHosts    string     `json:"monitor_hosts"`
+	Status          string     `json:"status"` // online, offline, degraded, unknown
+	LatencyMs       float64    `json:"latency_ms"`
+	PacketLoss      float64    `json:"packet_loss"`
+	LastCheck       *time.Time `json:"last_check"`
+	Enabled         bool       `json:"enabled"`
+	TableID         int        `json:"table_id"`
+	QoSEnabled      bool       `json:"qos_enabled"`
+	QoSUploadMbps   int        `json:"qos_upload_mbps"`
+	QoSDownloadMbps int        `json:"qos_download_mbps"`
+	QoSInteractive  bool       `json:"qos_interactive"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // ─── Alert ───────────────────────────────────────────────────────────────────

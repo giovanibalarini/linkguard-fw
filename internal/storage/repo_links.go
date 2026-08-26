@@ -14,7 +14,8 @@ func (db *DB) GetLinks() ([]Link, error) {
 	rows, err := db.conn.Query(`
 		SELECT id, name, interface, ip_address, gateway, weight, dns_test,
 		       monitor_hosts, status, latency_ms, packet_loss, last_check,
-		       enabled, table_id, created_at, updated_at
+		       enabled, table_id, qos_enabled, qos_upload_mbps,
+		       qos_download_mbps, qos_interactive, created_at, updated_at
 		FROM links ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -37,7 +38,8 @@ func (db *DB) GetLink(id string) (*Link, error) {
 	row := db.conn.QueryRow(`
 		SELECT id, name, interface, ip_address, gateway, weight, dns_test,
 		       monitor_hosts, status, latency_ms, packet_loss, last_check,
-		       enabled, table_id, created_at, updated_at
+		       enabled, table_id, qos_enabled, qos_upload_mbps,
+		       qos_download_mbps, qos_interactive, created_at, updated_at
 		FROM links WHERE id = ?`, id)
 
 	l, err := scanLink(row)
@@ -61,11 +63,13 @@ func (db *DB) CreateLink(l *Link) error {
 	_, err := db.conn.Exec(`
 		INSERT INTO links (id, name, interface, ip_address, gateway, weight, dns_test,
 		                   monitor_hosts, status, latency_ms, packet_loss, last_check,
-		                   enabled, table_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                   enabled, table_id, qos_enabled, qos_upload_mbps,
+		                   qos_download_mbps, qos_interactive, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		l.ID, l.Name, l.Interface, l.IPAddress, l.Gateway, l.Weight, l.DNSTest,
 		l.MonitorHosts, l.Status, l.LatencyMs, l.PacketLoss, nullableTime(l.LastCheck),
-		boolToInt(l.Enabled), l.TableID, l.CreatedAt, l.UpdatedAt)
+		boolToInt(l.Enabled), l.TableID, boolToInt(l.QoSEnabled), l.QoSUploadMbps,
+		l.QoSDownloadMbps, boolToInt(l.QoSInteractive), l.CreatedAt, l.UpdatedAt)
 	return err
 }
 
@@ -75,12 +79,14 @@ func (db *DB) UpdateLink(l *Link) error {
 	_, err := db.conn.Exec(`
 		UPDATE links SET name=?, interface=?, ip_address=?, gateway=?, weight=?,
 		    dns_test=?, monitor_hosts=?, status=?, latency_ms=?, packet_loss=?,
-		    last_check=?, enabled=?, table_id=?, updated_at=?
+		    last_check=?, enabled=?, table_id=?, qos_enabled=?, qos_upload_mbps=?,
+		    qos_download_mbps=?, qos_interactive=?, updated_at=?
 		WHERE id=?`,
 		l.Name, l.Interface, l.IPAddress, l.Gateway, l.Weight,
 		l.DNSTest, l.MonitorHosts, l.Status, l.LatencyMs, l.PacketLoss,
-		nullableTime(l.LastCheck), boolToInt(l.Enabled), l.TableID, l.UpdatedAt,
-		l.ID)
+		nullableTime(l.LastCheck), boolToInt(l.Enabled), l.TableID,
+		boolToInt(l.QoSEnabled), l.QoSUploadMbps, l.QoSDownloadMbps,
+		boolToInt(l.QoSInteractive), l.UpdatedAt, l.ID)
 	return err
 }
 
@@ -95,13 +101,16 @@ func scanLink(s interface {
 }) (Link, error) {
 	var l Link
 	var lastCheck sql.NullTime
-	var enabled int
+	var enabled, qosEnabled, qosInteractive int
 	err := s.Scan(
 		&l.ID, &l.Name, &l.Interface, &l.IPAddress, &l.Gateway, &l.Weight,
 		&l.DNSTest, &l.MonitorHosts, &l.Status, &l.LatencyMs, &l.PacketLoss,
-		&lastCheck, &enabled, &l.TableID, &l.CreatedAt, &l.UpdatedAt)
+		&lastCheck, &enabled, &l.TableID, &qosEnabled, &l.QoSUploadMbps,
+		&l.QoSDownloadMbps, &qosInteractive, &l.CreatedAt, &l.UpdatedAt)
 	l.LastCheck = fromNullTime(lastCheck)
 	l.Enabled = enabled != 0
+	l.QoSEnabled = qosEnabled != 0
+	l.QoSInteractive = qosInteractive != 0
 	return l, err
 }
 
