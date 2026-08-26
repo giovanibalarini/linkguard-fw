@@ -13,9 +13,23 @@ import (
 
 const redirectFilterPriority = "49152"
 
+const (
+	managedEgressHandle  = "1:"
+	managedIngressHandle = "1:"
+)
+
 // ErrStaleInterface indicates that a configuration loader observed a link
 // moving to another interface while the previous interface was locked.
 var ErrStaleInterface = errors.New("qos interface changed while loading configuration")
+
+// ErrCompensationFailed indicates that a durable QoS mutation failed and its
+// kernel rollback also failed. Callers must treat this as an internal failure
+// rather than as the original persistence conflict.
+var ErrCompensationFailed = errors.New("qos compensation failed")
+
+// ErrOwnershipNotEstablished indicates that a kernel object is present but
+// does not have the deterministic ownership markers used by this service.
+var ErrOwnershipNotEstablished = errors.New("qos ownership not established")
 
 // State describes the queue-control objects accepted by the service.
 type State struct {
@@ -109,7 +123,7 @@ func (s *Service) applyAndPersistLocked(ctx context.Context, cfg, rollback Confi
 			rollback = Config{Interface: cfg.Interface}
 		}
 		if _, restoreErr := s.apply(ctx, rollback); restoreErr != nil {
-			return State{}, fmt.Errorf("persist QoS: %w; restore QoS: %v", err, restoreErr)
+			return State{}, fmt.Errorf("%w: persist QoS: %v; restore QoS: %v", ErrCompensationFailed, err, restoreErr)
 		}
 		return State{}, fmt.Errorf("persist QoS: %w", err)
 	}
@@ -179,6 +193,19 @@ func (s *Service) apply(ctx context.Context, cfg Config) (State, error) {
 	if !cfg.Enabled {
 		return s.disable(ctx, cfg.Interface)
 	}
+	ownership, err := s.inspectOwnership(ctx, cfg.Interface)
+	if err != nil {
+		return State{}, err
+	}
+	if ownership.egressRoot && !ownership.egressOwned {
+		return State{}, fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, cfg.Interface)
+	}
+	if ownership.ingressRoot && !ownership.ingressOwned {
+		return State{}, fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, IFBName(cfg.Interface))
+	}
+	if ownership.filterPresent && !ownership.redirectOwned {
+		return State{}, fmt.Errorf("%w: foreign ingress filter on %q", ErrOwnershipNotEstablished, cfg.Interface)
+	}
 
 	mode := "besteffort"
 	if cfg.Interactive {
@@ -187,36 +214,28 @@ func (s *Service) apply(ctx context.Context, cfg Config) (State, error) {
 	ifb := IFBName(cfg.Interface)
 
 	if err := s.execute(ctx, "apply egress CAKE", "tc",
-		"qdisc", "replace", "dev", cfg.Interface, "root", "cake",
+		"qdisc", "replace", "dev", cfg.Interface, "root", "handle", managedEgressHandle, "cake",
 		"bandwidth", bandwidthArg(cfg.UploadMbps), mode, "dual-srchost"); err != nil {
 		return State{}, err
 	}
 
-	if s.exec.IsDryRun() {
+	if !ownership.ifbExists {
 		if err := s.execute(ctx, "create IFB", "ip", "link", "add", ifb, "type", "ifb"); err != nil {
 			return State{}, err
-		}
-	} else {
-		exists, err := s.ifbExists(ctx, ifb)
-		if err != nil {
-			return State{}, err
-		}
-		if !exists {
-			if err := s.execute(ctx, "create IFB", "ip", "link", "add", ifb, "type", "ifb"); err != nil {
-				return State{}, err
-			}
 		}
 	}
 	if err := s.execute(ctx, "bring IFB up", "ip", "link", "set", "dev", ifb, "up"); err != nil {
 		return State{}, err
 	}
 	if err := s.execute(ctx, "apply ingress CAKE", "tc",
-		"qdisc", "replace", "dev", ifb, "root", "cake",
+		"qdisc", "replace", "dev", ifb, "root", "handle", managedIngressHandle, "cake",
 		"bandwidth", bandwidthArg(cfg.DownloadMbps), mode, "dual-dsthost"); err != nil {
 		return State{}, err
 	}
-	if err := s.execute(ctx, "ensure clsact", "tc", "qdisc", "replace", "dev", cfg.Interface, "clsact"); err != nil {
-		return State{}, err
+	if !ownership.clsact {
+		if err := s.execute(ctx, "ensure clsact", "tc", "qdisc", "add", "dev", cfg.Interface, "clsact"); err != nil {
+			return State{}, err
+		}
 	}
 	if err := s.execute(ctx, "redirect ingress", "tc",
 		"filter", "replace", "dev", cfg.Interface, "ingress",
@@ -248,31 +267,28 @@ func (s *Service) Disable(ctx context.Context, iface string) (State, error) {
 
 func (s *Service) disable(ctx context.Context, iface string) (State, error) {
 	ifb := IFBName(iface)
-
-	if err := s.delete(ctx, "remove ingress redirect", "tc",
-		"filter", "del", "dev", iface, "ingress", "pref", redirectFilterPriority); err != nil {
-		return State{}, err
-	}
-	if err := s.delete(ctx, "remove egress CAKE", "tc", "qdisc", "del", "dev", iface, "root"); err != nil {
+	ownership, err := s.inspectOwnership(ctx, iface)
+	if err != nil {
 		return State{}, err
 	}
 
-	if s.exec.IsDryRun() {
+	if ownership.redirectOwned {
+		if err := s.delete(ctx, "remove ingress redirect", "tc",
+			"filter", "del", "dev", iface, "ingress", "pref", redirectFilterPriority); err != nil {
+			return State{}, err
+		}
+	}
+	if ownership.egressOwned {
+		if err := s.delete(ctx, "remove egress CAKE", "tc", "qdisc", "del", "dev", iface, "root"); err != nil {
+			return State{}, err
+		}
+	}
+
+	if ownership.ingressOwned {
 		if err := s.delete(ctx, "remove ingress CAKE", "tc", "qdisc", "del", "dev", ifb, "root"); err != nil {
 			return State{}, err
 		}
-		if err := s.delete(ctx, "remove IFB", "ip", "link", "del", "dev", ifb); err != nil {
-			return State{}, err
-		}
-	} else {
-		exists, err := s.ifbExists(ctx, ifb)
-		if err != nil {
-			return State{}, err
-		}
-		if exists {
-			if err := s.delete(ctx, "remove ingress CAKE", "tc", "qdisc", "del", "dev", ifb, "root"); err != nil {
-				return State{}, err
-			}
+		if ownership.redirectOwned || !ownership.filterPresent {
 			if err := s.delete(ctx, "remove IFB", "ip", "link", "del", "dev", ifb); err != nil {
 				return State{}, err
 			}
@@ -284,6 +300,51 @@ func (s *Service) disable(ctx context.Context, iface string) (State, error) {
 		IFB:       ifb,
 		DryRun:    s.exec.IsDryRun(),
 	}, nil
+}
+
+type ownershipState struct {
+	egressRoot    bool
+	egressOwned   bool
+	ifbExists     bool
+	ingressRoot   bool
+	ingressOwned  bool
+	clsact        bool
+	filterPresent bool
+	redirectOwned bool
+}
+
+func (s *Service) inspectOwnership(ctx context.Context, iface string) (ownershipState, error) {
+	ifb := IFBName(iface)
+	egress, err := s.read(ctx, "tc", "qdisc", "show", "dev", iface)
+	if err != nil {
+		return ownershipState{}, err
+	}
+	redirect, err := s.read(ctx, "tc", "filter", "show", "dev", iface, "ingress", "pref", redirectFilterPriority)
+	if err != nil {
+		return ownershipState{}, err
+	}
+	exists, err := s.ifbExists(ctx, ifb)
+	if err != nil {
+		return ownershipState{}, err
+	}
+	ownership := ownershipState{
+		egressRoot:    hasRootQdisc(egress),
+		egressOwned:   hasManagedRootCake(egress, managedEgressHandle),
+		ifbExists:     exists,
+		clsact:        hasClsact(egress),
+		filterPresent: hasFilterRecord(redirect),
+		redirectOwned: hasManagedRedirect(redirect, ifb),
+	}
+	if !exists {
+		return ownership, nil
+	}
+	ingress, err := s.read(ctx, "tc", "qdisc", "show", "dev", ifb)
+	if err != nil {
+		return ownershipState{}, err
+	}
+	ownership.ingressRoot = hasRootQdisc(ingress)
+	ownership.ingressOwned = hasManagedRootCake(ingress, managedIngressHandle)
+	return ownership, nil
 }
 
 func (s *Service) lockInterface(iface string) func() {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Observe reads the queue-control objects managed for one interface without
@@ -41,7 +42,8 @@ func (s *Service) observe(ctx context.Context, iface string) (State, error) {
 		return State{}, err
 	}
 
-	state.Enabled = hasRootCake(egress) && hasRootCake(ingress) && hasManagedRedirect(redirect, ifb)
+	state.Enabled = hasManagedRootCake(egress, managedEgressHandle) &&
+		hasManagedRootCake(ingress, managedIngressHandle) && hasManagedRedirect(redirect, ifb)
 	state.Mode = observedMode(egress, ingress)
 	return state, nil
 }
@@ -55,9 +57,34 @@ func (s *Service) read(ctx context.Context, command string, args ...string) (str
 }
 
 func hasRootCake(output string) bool {
+	return hasManagedRootCake(output, managedEgressHandle)
+}
+
+func hasManagedRootCake(output, handle string) bool {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[0] == "qdisc" && fields[1] == "cake" && containsField(fields[2:], "root") {
+		if len(fields) >= 4 && fields[0] == "qdisc" && fields[1] == "cake" &&
+			fields[2] == handle && fields[3] == "root" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRootQdisc(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && fields[0] == "qdisc" && fields[3] == "root" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasClsact(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "qdisc" && fields[1] == "clsact" {
 			return true
 		}
 	}
@@ -73,9 +100,15 @@ func hasManagedRedirect(output, ifb string) bool {
 		if block.Len() == 0 {
 			return false
 		}
-		text := block.String()
-		return strings.Contains(text, "pref "+redirectFilterPriority) &&
-			strings.Contains(text, "matchall") && strings.Contains(text, ifb)
+		words := tcWords(block.String())
+		for _, required := range []string{
+			"pref", redirectFilterPriority, "matchall", "action", "mirred", "egress", "redirect", strings.ToLower(ifb),
+		} {
+			if !containsField(words, required) {
+				return false
+			}
+		}
+		return true
 	}
 	for _, line := range strings.Split(output, "\n") {
 		if strings.HasPrefix(line, "filter ") && block.Len() > 0 {
@@ -90,6 +123,21 @@ func hasManagedRedirect(output, ifb string) bool {
 		block.WriteString(line)
 	}
 	return flush()
+}
+
+func hasFilterRecord(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "filter ") {
+			return true
+		}
+	}
+	return strings.TrimSpace(output) != ""
+}
+
+func tcWords(text string) []string {
+	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == ':')
+	})
 }
 
 func observedMode(outputs ...string) string {

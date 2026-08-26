@@ -2,6 +2,7 @@ package qos
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -29,6 +30,16 @@ type fakeExecutor struct {
 
 func newFakeExecutor() *fakeExecutor {
 	return &fakeExecutor{ifbs: make(map[string]bool)}
+}
+
+func configureManagedKernelObjects(exec *fakeExecutor, iface string) {
+	ifb := IFBName(iface)
+	exec.ifbs[ifb] = true
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", iface):                                             "qdisc cake " + managedEgressHandle + " root refcnt 2 bandwidth 50Mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                               "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 500Mbit besteffort dual-dsthost\n",
+		executorCallKey("tc", "filter", "show", "dev", iface, "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
+	}
 }
 
 func (e *fakeExecutor) Execute(_ context.Context, command string, args ...string) (string, error) {
@@ -104,12 +115,14 @@ func TestApplyBuildsEgressIngressAndMatchallCommands(t *testing.T) {
 	}
 
 	wantCalls := []execCall{
-		{Command: "tc", Args: []string{"qdisc", "replace", "dev", "wan0", "root", "cake", "bandwidth", "50mbit", "besteffort", "dual-srchost"}},
+		{Read: true, Command: "tc", Args: []string{"qdisc", "show", "dev", "wan0"}},
+		{Read: true, Command: "tc", Args: []string{"filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority}},
 		{Read: true, Command: "ip", Args: []string{"link", "show", "dev", ifb}},
+		{Command: "tc", Args: []string{"qdisc", "replace", "dev", "wan0", "root", "handle", managedEgressHandle, "cake", "bandwidth", "50mbit", "besteffort", "dual-srchost"}},
 		{Command: "ip", Args: []string{"link", "add", ifb, "type", "ifb"}},
 		{Command: "ip", Args: []string{"link", "set", "dev", ifb, "up"}},
-		{Command: "tc", Args: []string{"qdisc", "replace", "dev", ifb, "root", "cake", "bandwidth", "500mbit", "besteffort", "dual-dsthost"}},
-		{Command: "tc", Args: []string{"qdisc", "replace", "dev", "wan0", "clsact"}},
+		{Command: "tc", Args: []string{"qdisc", "replace", "dev", ifb, "root", "handle", managedIngressHandle, "cake", "bandwidth", "500mbit", "besteffort", "dual-dsthost"}},
+		{Command: "tc", Args: []string{"qdisc", "add", "dev", "wan0", "clsact"}},
 		{Command: "tc", Args: []string{"filter", "replace", "dev", "wan0", "ingress", "pref", "49152", "protocol", "all", "matchall", "action", "mirred", "egress", "redirect", "dev", ifb}},
 	}
 	if !reflect.DeepEqual(exec.calls, wantCalls) {
@@ -133,7 +146,7 @@ func TestApplyUsesDiffserv4WhenInteractive(t *testing.T) {
 
 	cakeCalls := 0
 	for _, call := range exec.calls {
-		if call.Command != "tc" || len(call.Args) < 6 || call.Args[0] != "qdisc" || call.Args[5] != "cake" {
+		if call.Read || call.Command != "tc" || len(call.Args) < 2 || call.Args[0] != "qdisc" || !containsToken(call.Args, "cake") {
 			continue
 		}
 		cakeCalls++
@@ -186,7 +199,7 @@ func TestRepeatedApplyCreatesIFBOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestApplyDryRunDoesNotReadKernel(t *testing.T) {
+func TestApplyDryRunPerformsReadOnlyOwnershipChecks(t *testing.T) {
 	exec := newFakeExecutor()
 	exec.dryRun = true
 	service := NewService(exec)
@@ -201,9 +214,6 @@ func TestApplyDryRunDoesNotReadKernel(t *testing.T) {
 		t.Fatalf("Apply() state DryRun = false; want true")
 	}
 	for _, call := range exec.calls {
-		if call.Read {
-			t.Fatalf("dry-run performed a kernel read: %#v", call)
-		}
 		if call.Command == "sh" {
 			t.Fatalf("dry-run invoked a shell: %#v", call)
 		}
@@ -254,7 +264,7 @@ func TestApplyRejectsInvalidConfigBeforeExecutingCommands(t *testing.T) {
 func TestDisableRemovesOnlyManagedFilterQdiscsAndIFB(t *testing.T) {
 	exec := newFakeExecutor()
 	ifb := IFBName("wan0")
-	exec.ifbs[ifb] = true
+	configureManagedKernelObjects(exec, "wan0")
 	service := NewService(exec)
 
 	state, err := service.Disable(context.Background(), "wan0")
@@ -267,9 +277,12 @@ func TestDisableRemovesOnlyManagedFilterQdiscsAndIFB(t *testing.T) {
 	}
 
 	wantCalls := []execCall{
+		{Read: true, Command: "tc", Args: []string{"qdisc", "show", "dev", "wan0"}},
+		{Read: true, Command: "tc", Args: []string{"filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority}},
+		{Read: true, Command: "ip", Args: []string{"link", "show", "dev", ifb}},
+		{Read: true, Command: "tc", Args: []string{"qdisc", "show", "dev", ifb}},
 		{Command: "tc", Args: []string{"filter", "del", "dev", "wan0", "ingress", "pref", "49152"}},
 		{Command: "tc", Args: []string{"qdisc", "del", "dev", "wan0", "root"}},
-		{Read: true, Command: "ip", Args: []string{"link", "show", "dev", ifb}},
 		{Command: "tc", Args: []string{"qdisc", "del", "dev", ifb, "root"}},
 		{Command: "ip", Args: []string{"link", "del", "dev", ifb}},
 	}
@@ -285,8 +298,7 @@ func TestDisableRemovesOnlyManagedFilterQdiscsAndIFB(t *testing.T) {
 
 func TestApplyDisabledConfigUsesDisablePath(t *testing.T) {
 	exec := newFakeExecutor()
-	ifb := IFBName("wan0")
-	exec.ifbs[ifb] = true
+	configureManagedKernelObjects(exec, "wan0")
 	service := NewService(exec)
 	cfg := Config{Interface: "wan0", Enabled: false}
 
@@ -320,7 +332,7 @@ func TestDisableSkipsIFBCleanupWhenDeviceIsAlreadyAbsent(t *testing.T) {
 	}
 }
 
-func TestDisableDryRunRecordsCleanupWithoutReadingKernel(t *testing.T) {
+func TestDisableDryRunSkipsUnverifiedCleanup(t *testing.T) {
 	exec := newFakeExecutor()
 	exec.dryRun = true
 	service := NewService(exec)
@@ -332,16 +344,11 @@ func TestDisableDryRunRecordsCleanupWithoutReadingKernel(t *testing.T) {
 	if !state.DryRun {
 		t.Fatalf("Disable() state DryRun = false; want true")
 	}
-	for _, call := range exec.calls {
-		if call.Read {
-			t.Fatalf("dry-run Disable() performed a kernel read: %#v", call)
-		}
+	if countCommand(exec.calls, "tc", "qdisc", "del", "dev", IFBName("wan0")) != 0 {
+		t.Fatalf("dry-run Disable() removed an unverified IFB qdisc: %#v", exec.calls)
 	}
-	if countCommand(exec.calls, "tc", "qdisc", "del", "dev", IFBName("wan0")) != 1 {
-		t.Fatalf("dry-run Disable() did not record IFB qdisc cleanup: %#v", exec.calls)
-	}
-	if countCommand(exec.calls, "ip", "link", "del") != 1 {
-		t.Fatalf("dry-run Disable() did not record IFB deletion: %#v", exec.calls)
+	if countCommand(exec.calls, "ip", "link", "del") != 0 {
+		t.Fatalf("dry-run Disable() removed an unverified IFB: %#v", exec.calls)
 	}
 }
 
@@ -379,6 +386,7 @@ func TestDisableIsIdempotentForMissingObjects(t *testing.T) {
 
 func TestDisablePropagatesOperationalDeleteError(t *testing.T) {
 	exec := newFakeExecutor()
+	configureManagedKernelObjects(exec, "wan0")
 	exec.failWhen = func(call execCall) error {
 		if !call.Read && call.Command == "tc" && len(call.Args) > 1 && call.Args[0] == "filter" && call.Args[1] == "del" {
 			return errors.New("operation not permitted")
@@ -390,7 +398,7 @@ func TestDisablePropagatesOperationalDeleteError(t *testing.T) {
 	if _, err := service.Disable(context.Background(), "wan0"); err == nil {
 		t.Fatal("Disable() error = nil; want operational delete error")
 	}
-	if len(exec.calls) != 1 {
+	if len(exec.calls) != 5 || exec.calls[len(exec.calls)-1].Command != "tc" || exec.calls[len(exec.calls)-1].Args[1] != "del" {
 		t.Fatalf("Disable() continued after operational delete error: %#v", exec.calls)
 	}
 }
@@ -405,13 +413,95 @@ func TestDisablePropagatesOperationalIFBExistenceError(t *testing.T) {
 	}
 }
 
+func TestDisableSkipsForeignRootQdiscsAndIFBCleanup(t *testing.T) {
+	ifb := IFBName("wan0")
+	exec := newFakeExecutor()
+	exec.ifbs[ifb] = true
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                                             "qdisc fq_codel 1: root refcnt 2 limit 1000\nqdisc clsact ffff: parent ffff:fff1\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc pfifo_fast 1: root refcnt 2 bands 3\n",
+		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
+	}
+	service := NewService(exec)
+
+	if _, err := service.Disable(context.Background(), "wan0"); err != nil {
+		t.Fatalf("Disable() error = %v; want nil while preserving foreign qdiscs", err)
+	}
+	for _, call := range exec.calls {
+		if call.Command == "ip" && len(call.Args) > 1 && call.Args[1] == "link" && containsToken(call.Args, "del") {
+			t.Fatalf("Disable() deleted IFB with foreign root qdiscs: %#v", exec.calls)
+		}
+		if call.Command == "tc" && len(call.Args) > 1 && call.Args[0] == "qdisc" && call.Args[1] == "del" {
+			t.Fatalf("Disable() deleted foreign qdisc: %#v", exec.calls)
+		}
+	}
+}
+
+func TestDisableSkipsForeignMirredFilter(t *testing.T) {
+	ifb := IFBName("wan0")
+	exec := newFakeExecutor()
+	exec.ifbs[ifb] = true
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                                             "qdisc cake " + managedEgressHandle + " root refcnt 2 bandwidth 50Mbit besteffort dual-srchost\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 200Mbit besteffort dual-dsthost\n",
+		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Mirror to device " + ifb + ")\n",
+	}
+	service := NewService(exec)
+
+	if _, err := service.Disable(context.Background(), "wan0"); err != nil {
+		t.Fatalf("Disable() error = %v; want nil while preserving foreign filter", err)
+	}
+	if countCommand(exec.calls, "tc", "filter", "del") != 0 {
+		t.Fatalf("Disable() deleted foreign mirred filter: %#v", exec.calls)
+	}
+}
+
+func TestApplyRefusesForeignRootQdiscWithoutWriting(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc fq_codel 1: root limit 1000\n",
+	}
+	service := NewService(exec)
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	if _, err := service.Apply(context.Background(), cfg); !errors.Is(err, ErrOwnershipNotEstablished) {
+		t.Fatalf("Apply() error = %v; want ErrOwnershipNotEstablished", err)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("Apply() wrote while foreign root qdisc was present: %#v", exec.calls)
+		}
+	}
+}
+
+func TestApplyRefusesForeignMirredFilterWithoutWriting(t *testing.T) {
+	ifb := IFBName("wan0")
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall action order 1: mirred (Egress Mirror to device " + ifb + ")\n",
+	}
+	service := NewService(exec)
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	if _, err := service.Apply(context.Background(), cfg); !errors.Is(err, ErrOwnershipNotEstablished) {
+		t.Fatalf("Apply() error = %v; want ErrOwnershipNotEstablished", err)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("Apply() wrote while foreign mirred filter was present: %#v", exec.calls)
+		}
+	}
+}
+
 func TestObserveReturnsManagedKernelStateWithReadOnlySeparatedArguments(t *testing.T) {
 	ifb := IFBName("wan0")
 	exec := newFakeExecutor()
 	exec.ifbs[ifb] = true
 	exec.readOut = map[string]string{
-		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                              "qdisc cake 8001: root refcnt 2 bandwidth 50Mbit diffserv4 dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
-		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                 "qdisc cake 8002: root refcnt 2 bandwidth 200Mbit diffserv4 dual-dsthost\n",
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                              "qdisc cake " + managedEgressHandle + " root refcnt 2 bandwidth 50Mbit diffserv4 dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                 "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 200Mbit diffserv4 dual-dsthost\n",
 		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", "49152"): "filter protocol all pref 49152\n\tmatchall action mirred egress redirect to device " + ifb + "\n",
 	}
 	service := NewService(exec)
@@ -440,6 +530,25 @@ func TestObserveReturnsManagedKernelStateWithReadOnlySeparatedArguments(t *testi
 	}
 	if !reflect.DeepEqual(exec.calls, wantCalls) {
 		t.Fatalf("Observe() calls = %#v; want %#v", exec.calls, wantCalls)
+	}
+}
+
+func TestObserveDoesNotClaimForeignCakeRootIsManaged(t *testing.T) {
+	ifb := IFBName("wan0")
+	exec := newFakeExecutor()
+	exec.ifbs[ifb] = true
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                                             "qdisc cake 8001: root refcnt 2 bandwidth 50Mbit diffserv4 dual-srchost\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 200Mbit diffserv4 dual-dsthost\n",
+		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
+	}
+
+	state, err := NewService(exec).Observe(context.Background(), "wan0")
+	if err != nil {
+		t.Fatalf("Observe() error = %v; want nil", err)
+	}
+	if state.Enabled {
+		t.Fatalf("Observe() claimed foreign egress cake was managed: %#v", state)
 	}
 }
 
@@ -490,6 +599,36 @@ func TestApplyCurrentAndPersistRestoresKernelConfigAfterPersistenceError(t *test
 	}
 	if newApply == -1 || oldRestore <= newApply {
 		t.Fatalf("persistence failure did not restore old kernel config: %#v", exec.calls)
+	}
+}
+
+func TestApplyCurrentAndPersistReturnsDistinctCompensationFailure(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && containsToken(call.Args, "50mbit") {
+			return errors.New("rollback unavailable")
+		}
+		return nil
+	}
+	service := NewService(exec)
+	apply := validConfig()
+	apply.Interface = "wan0"
+	apply.UploadMbps = 75
+	rollback := apply
+	rollback.UploadMbps = 50
+
+	_, err := service.ApplyCurrentAndPersist(context.Background(), "wan0", func() (ApplyPlan, error) {
+		return ApplyPlan{
+			Config:   apply,
+			Rollback: rollback,
+			Persist:  func() error { return sql.ErrNoRows },
+		}, nil
+	})
+	if !errors.Is(err, ErrCompensationFailed) {
+		t.Fatalf("ApplyCurrentAndPersist() error = %v; want ErrCompensationFailed", err)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("compensation failure retained sql.ErrNoRows mapping: %v", err)
 	}
 }
 
@@ -561,10 +700,12 @@ func (e *blockingQosExecutor) Execute(context.Context, string, ...string) (strin
 	e.enter()
 	return "", nil
 }
-
-func (e *blockingQosExecutor) ExecuteRead(context.Context, string, ...string) (string, error) {
-	e.enter()
-	return "5 packets transmitted, 5 received, 0% packet loss\nrtt min/avg/max/mdev = 10/20/30/1 ms\n", nil
+func (e *blockingQosExecutor) ExecuteRead(_ context.Context, command string, args ...string) (string, error) {
+	if command == "ping" {
+		e.enter()
+		return "5 packets transmitted, 5 received, 0% packet loss\nrtt min/avg/max/mdev = 10/20/30/1 ms\n", nil
+	}
+	return "", nil
 }
 
 func (e *blockingQosExecutor) enter() {

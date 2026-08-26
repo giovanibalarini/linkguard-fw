@@ -129,6 +129,12 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}, nil
 	})
 	if err != nil {
+		if errors.Is(err, qos.ErrCompensationFailed) {
+			slog.Error("QoS apply succeeded but persistence rollback failed; reconciling from fresh link state", "link_id", link.ID, "interface", link.Interface, "err", err)
+			h.reconcileAfterQosCompensationFailure(r.Context(), link.ID, link.Interface)
+			writeInternalError(w, err)
+			return
+		}
 		if errors.Is(err, errQosLinkNotFound) {
 			h.writeLinkError(w, err)
 			return
@@ -294,4 +300,32 @@ func effectiveQosConfig(link *storage.Link) qos.Config {
 		return qos.Config{Interface: link.Interface}
 	}
 	return qosConfigFromLink(link)
+}
+
+func (h *QosHandler) reconcileAfterQosCompensationFailure(ctx context.Context, linkID, originalInterface string) {
+	h.reconcileQosInterface(ctx, linkID, originalInterface)
+	current, err := h.db.GetLink(linkID)
+	if err != nil {
+		slog.Error("could not reload link after QoS compensation failure", "link_id", linkID, "err", err)
+		return
+	}
+	if current != nil && current.Interface != originalInterface {
+		h.reconcileQosInterface(ctx, linkID, current.Interface)
+	}
+}
+
+func (h *QosHandler) reconcileQosInterface(ctx context.Context, linkID, iface string) {
+	_, err := h.svc.ApplyCurrent(ctx, iface, func() (qos.Config, error) {
+		current, err := h.db.GetLink(linkID)
+		if err != nil {
+			return qos.Config{}, err
+		}
+		if current == nil || current.Interface != iface {
+			return qos.Config{Interface: iface}, nil
+		}
+		return effectiveQosConfig(current), nil
+	})
+	if err != nil {
+		slog.Error("could not reconcile QoS after compensation failure", "link_id", linkID, "interface", iface, "err", err)
+	}
 }

@@ -253,7 +253,7 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if err := h.svc.Update(&updated); err != nil {
 			if cleanupRequired {
 				if _, restoreErr := apply(oldQoS); restoreErr != nil {
-					return fmt.Errorf("update link: %w; restore QoS: %v", err, restoreErr)
+					return fmt.Errorf("%w: update link: %v; restore QoS: %v", qos.ErrCompensationFailed, err, restoreErr)
 				}
 			}
 			return err
@@ -267,6 +267,12 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 		updateErr = update(nil)
 	}
 	if updateErr != nil {
+		if errors.Is(updateErr, qos.ErrCompensationFailed) {
+			slog.Error("link update failed and QoS rollback also failed; reconciling from fresh link state", "link_id", id, "interface", existing.Interface, "err", updateErr)
+			h.reconcileQos(r.Context())
+			writeInternalError(w, updateErr)
+			return
+		}
 		if errors.Is(updateErr, errQosLinkChanged) {
 			writeError(w, http.StatusConflict, "link changed during update; retry")
 			return
@@ -315,7 +321,7 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		if err := h.svc.Delete(id); err != nil {
 			if cleanupRequired {
 				if _, restoreErr := apply(oldQoS); restoreErr != nil {
-					return fmt.Errorf("delete link: %w; restore QoS: %v", err, restoreErr)
+					return fmt.Errorf("%w: delete link: %v; restore QoS: %v", qos.ErrCompensationFailed, err, restoreErr)
 				}
 			}
 			return err
@@ -329,6 +335,12 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		removeErr = remove(nil)
 	}
 	if removeErr != nil {
+		if errors.Is(removeErr, qos.ErrCompensationFailed) {
+			slog.Error("link delete failed and QoS rollback also failed; reconciling from fresh link state", "link_id", id, "interface", existing.Interface, "err", removeErr)
+			h.reconcileQos(r.Context())
+			writeInternalError(w, removeErr)
+			return
+		}
 		if errors.Is(removeErr, errQosLinkChanged) {
 			writeError(w, http.StatusConflict, "link changed during delete; retry")
 			return
