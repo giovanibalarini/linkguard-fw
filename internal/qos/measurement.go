@@ -94,6 +94,35 @@ func (s *Service) MeasureBeforeAfter(ctx context.Context, cfg Config) (Compariso
 	}
 	unlock := s.lockInterface(cfg.Interface)
 	defer unlock()
+	return s.measureBeforeAfter(ctx, cfg)
+}
+
+// MeasureCurrentBeforeAfter loads the configuration while iface is locked,
+// then keeps the before measurement, apply, and after measurement in that
+// same critical section. The loader is responsible for resolving the current
+// link lifecycle; returning a configuration for another interface aborts
+// before the first ping.
+func (s *Service) MeasureCurrentBeforeAfter(ctx context.Context, iface string, load func() (Config, error)) (Comparison, error) {
+	if err := (Config{Interface: iface}).Validate(); err != nil {
+		return Comparison{}, err
+	}
+	unlock := s.lockInterface(iface)
+	defer unlock()
+
+	cfg, err := load()
+	if err != nil {
+		return Comparison{}, err
+	}
+	if cfg.Interface != iface {
+		return Comparison{}, fmt.Errorf("%w: %q became %q", ErrStaleInterface, iface, cfg.Interface)
+	}
+	if err := cfg.Validate(); err != nil {
+		return Comparison{}, err
+	}
+	return s.measureBeforeAfter(ctx, cfg)
+}
+
+func (s *Service) measureBeforeAfter(ctx context.Context, cfg Config) (Comparison, error) {
 
 	before, err := s.measure(ctx, cfg.Interface)
 	if err != nil {

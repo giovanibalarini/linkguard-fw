@@ -40,7 +40,10 @@ type LinksHandler struct {
 	qosLocker     qosInterfaceLocker
 }
 
-var errQosCleanup = errors.New("qos cleanup failed")
+var (
+	errQosCleanup     = errors.New("qos cleanup failed")
+	errQosLinkChanged = errors.New("link changed during request")
+)
 
 // reconciliadorDeFluxos é o que o handler de links precisa do registro de
 // conversa: quando a lista de WANs muda, a regra que escopa a medição por
@@ -216,25 +219,40 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated.ID = existing.ID
-	updated.CreatedAt = existing.CreatedAt
-	updated.QoSEnabled = existing.QoSEnabled
-	updated.QoSUploadMbps = existing.QoSUploadMbps
-	updated.QoSDownloadMbps = existing.QoSDownloadMbps
-	updated.QoSInteractive = existing.QoSInteractive
 
-	cleanupRequired := h.qosSvc != nil && existing.QoSEnabled &&
-		(existing.Interface != updated.Interface || !updated.Enabled)
-	oldQoS := qosConfigFromLink(existing)
-	oldQoS.Enabled = existing.Enabled && existing.QoSEnabled
 	update := func(ops qos.InterfaceOperations) error {
+		current, err := h.db.GetLink(id)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Interface != existing.Interface {
+			return errQosLinkChanged
+		}
+		updated.ID = current.ID
+		updated.CreatedAt = current.CreatedAt
+		updated.QoSEnabled = current.QoSEnabled
+		updated.QoSUploadMbps = current.QoSUploadMbps
+		updated.QoSDownloadMbps = current.QoSDownloadMbps
+		updated.QoSInteractive = current.QoSInteractive
+
+		cleanupRequired := h.qosSvc != nil && current.QoSEnabled &&
+			(current.Interface != updated.Interface || !updated.Enabled)
+		oldQoS := qosConfigFromLink(current)
+		oldQoS.Enabled = current.Enabled && current.QoSEnabled
+		apply := func(cfg qos.Config) (qos.State, error) {
+			if ops != nil {
+				return ops.Apply(r.Context(), cfg)
+			}
+			return h.qosSvc.Apply(r.Context(), cfg)
+		}
 		if cleanupRequired {
-			if _, err := ops.Apply(r.Context(), qos.Config{Interface: existing.Interface}); err != nil {
+			if _, err := apply(qos.Config{Interface: current.Interface}); err != nil {
 				return fmt.Errorf("%w: disable QoS before link update: %v", errQosCleanup, err)
 			}
 		}
 		if err := h.svc.Update(&updated); err != nil {
 			if cleanupRequired {
-				if _, restoreErr := ops.Apply(r.Context(), oldQoS); restoreErr != nil {
+				if _, restoreErr := apply(oldQoS); restoreErr != nil {
 					return fmt.Errorf("update link: %w; restore QoS: %v", err, restoreErr)
 				}
 			}
@@ -246,16 +264,13 @@ func (h *LinksHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if h.qosLocker != nil {
 		updateErr = h.qosLocker.WithInterfaceLock(r.Context(), existing.Interface, update)
 	} else {
-		if cleanupRequired {
-			if _, err := h.qosSvc.Apply(r.Context(), qos.Config{Interface: existing.Interface}); err != nil {
-				updateErr = fmt.Errorf("%w: disable QoS before link update: %v", errQosCleanup, err)
-			}
-		}
-		if updateErr == nil {
-			updateErr = h.svc.Update(&updated)
-		}
+		updateErr = update(nil)
 	}
 	if updateErr != nil {
+		if errors.Is(updateErr, errQosLinkChanged) {
+			writeError(w, http.StatusConflict, "link changed during update; retry")
+			return
+		}
 		if errors.Is(updateErr, errQosCleanup) {
 			writeInternalError(w, updateErr)
 			return
@@ -275,18 +290,31 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	cleanupRequired := h.qosSvc != nil && existing.QoSEnabled
-	oldQoS := qosConfigFromLink(existing)
-	oldQoS.Enabled = existing.Enabled && existing.QoSEnabled
 	remove := func(ops qos.InterfaceOperations) error {
+		current, err := h.db.GetLink(id)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Interface != existing.Interface {
+			return errQosLinkChanged
+		}
+		cleanupRequired := h.qosSvc != nil && current.QoSEnabled
+		oldQoS := qosConfigFromLink(current)
+		oldQoS.Enabled = current.Enabled && current.QoSEnabled
+		apply := func(cfg qos.Config) (qos.State, error) {
+			if ops != nil {
+				return ops.Apply(r.Context(), cfg)
+			}
+			return h.qosSvc.Apply(r.Context(), cfg)
+		}
 		if cleanupRequired {
-			if _, err := ops.Apply(r.Context(), qos.Config{Interface: existing.Interface}); err != nil {
+			if _, err := apply(qos.Config{Interface: current.Interface}); err != nil {
 				return fmt.Errorf("%w: disable QoS before link delete: %v", errQosCleanup, err)
 			}
 		}
 		if err := h.svc.Delete(id); err != nil {
 			if cleanupRequired {
-				if _, restoreErr := ops.Apply(r.Context(), oldQoS); restoreErr != nil {
+				if _, restoreErr := apply(oldQoS); restoreErr != nil {
 					return fmt.Errorf("delete link: %w; restore QoS: %v", err, restoreErr)
 				}
 			}
@@ -298,16 +326,13 @@ func (h *LinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if h.qosLocker != nil {
 		removeErr = h.qosLocker.WithInterfaceLock(r.Context(), existing.Interface, remove)
 	} else {
-		if cleanupRequired {
-			if _, err := h.qosSvc.Apply(r.Context(), qos.Config{Interface: existing.Interface}); err != nil {
-				removeErr = fmt.Errorf("%w: disable QoS before link delete: %v", errQosCleanup, err)
-			}
-		}
-		if removeErr == nil {
-			removeErr = h.svc.Delete(id)
-		}
+		removeErr = remove(nil)
 	}
 	if removeErr != nil {
+		if errors.Is(removeErr, errQosLinkChanged) {
+			writeError(w, http.StatusConflict, "link changed during delete; retry")
+			return
+		}
 		writeInternalError(w, removeErr)
 		return
 	}

@@ -84,3 +84,7 @@ func (*freshReconcileStub) Observe(context.Context, string) (qos.State, error) {
 func (*freshReconcileStub) MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error) {
 	return qos.Comparison{}, nil
 }
+
+func (*freshReconcileStub) MeasureCurrentBeforeAfter(context.Context, string, func() (qos.Config, error)) (qos.Comparison, error) {
+	return qos.Comparison{}, nil
+}

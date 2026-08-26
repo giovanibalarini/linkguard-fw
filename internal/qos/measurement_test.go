@@ -237,3 +237,66 @@ rtt min/avg/max/mdev = 5.000/8.000/12.000/1.000 ms
 		t.Fatalf("ping count after apply failure = %d; want 1", got)
 	}
 }
+
+func TestMeasureCurrentBeforeAfterLoadsConfigurationBeforeFirstPing(t *testing.T) {
+	exec := newPingExecutor(
+		execResult{output: `5 packets transmitted, 5 received, 0% packet loss
+rtt min/avg/max/mdev = 10.000/20.000/30.000/1.000 ms
+`},
+		execResult{output: `5 packets transmitted, 5 received, 0% packet loss
+rtt min/avg/max/mdev = 5.000/8.000/12.000/1.000 ms
+`},
+	)
+	service := NewService(exec)
+	loaded := false
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	got, err := service.MeasureCurrentBeforeAfter(context.Background(), "wan0", func() (Config, error) {
+		loaded = true
+		return cfg, nil
+	})
+	if err != nil {
+		t.Fatalf("MeasureCurrentBeforeAfter() error = %v; want nil", err)
+	}
+	if !loaded {
+		t.Fatal("MeasureCurrentBeforeAfter() did not call loader")
+	}
+	if got.Before.MinMs != 10 || got.After.MinMs != 5 {
+		t.Fatalf("MeasureCurrentBeforeAfter() = %#v; want before/after samples", got)
+	}
+}
+
+func TestMeasureCurrentBeforeAfterRejectsMovedOrDeletedConfigurationBeforePing(t *testing.T) {
+	tests := []struct {
+		name string
+		load func() (Config, error)
+	}{
+		{
+			name: "moved",
+			load: func() (Config, error) {
+				cfg := validConfig()
+				cfg.Interface = "wan1"
+				return cfg, nil
+			},
+		},
+		{
+			name: "deleted",
+			load: func() (Config, error) {
+				return Config{}, errors.New("link deleted")
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exec := newPingExecutor()
+			service := NewService(exec)
+			if _, err := service.MeasureCurrentBeforeAfter(context.Background(), "wan0", test.load); err == nil {
+				t.Fatal("MeasureCurrentBeforeAfter() error = nil; want loader/lifecycle error")
+			}
+			if got := countCommand(exec.calls, "ping"); got != 0 {
+				t.Fatalf("MeasureCurrentBeforeAfter() ping count = %d; want 0", got)
+			}
+		})
+	}
+}
