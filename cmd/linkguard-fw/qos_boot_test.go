@@ -12,8 +12,9 @@ import (
 )
 
 type bootQosExec struct {
-	failOn string
-	events []string
+	failOn      string
+	events      []string
+	readOutputs map[string]string
 }
 
 func (e *bootQosExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -25,7 +26,11 @@ func (e *bootQosExec) Execute(_ context.Context, cmd string, args ...string) (st
 	return "", nil
 }
 
-func (e *bootQosExec) ExecuteRead(context.Context, string, ...string) (string, error) {
+func (e *bootQosExec) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	key := cmd + " " + strings.Join(args, " ")
+	if output, ok := e.readOutputs[key]; ok {
+		return output, nil
+	}
 	return "", nil
 }
 
@@ -35,6 +40,7 @@ func (*bootQosExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func TestReconcileQoSOnBootAppliesOnlyEnabledQoSAndDisablesStale(t *testing.T) {
 	exec := &bootQosExec{}
+	configureBootManagedObjects(exec, "wan1", "wan2")
 	service := qos.NewService(exec)
 	links := []storage.Link{
 		{ID: "enabled", Interface: "wan0", Enabled: true, QoSEnabled: true, QoSUploadMbps: 50, QoSDownloadMbps: 200},
@@ -44,14 +50,14 @@ func TestReconcileQoSOnBootAppliesOnlyEnabledQoSAndDisablesStale(t *testing.T) {
 
 	reconcileQoSOnBoot(context.Background(), service, func() ([]storage.Link, error) { return links, nil })
 
-	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan0 root cake bandwidth 50mbit") {
+	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan0 root handle 1: cake bandwidth 50mbit") {
 		t.Errorf("enabled QoS link was not applied: %v", exec.events)
 	}
 	for _, iface := range []string{"wan1", "wan2"} {
 		if !containsBootQosEvent(exec.events, "tc filter del dev "+iface+" ingress pref 49152") {
 			t.Errorf("stale QoS for %s was not disabled: %v", iface, exec.events)
 		}
-		if containsBootQosEvent(exec.events, "tc qdisc replace dev "+iface+" root cake") {
+		if containsBootQosEvent(exec.events, "tc qdisc replace dev "+iface+" root handle 1: cake") {
 			t.Errorf("disabled QoS for %s was applied: %v", iface, exec.events)
 		}
 	}
@@ -67,7 +73,7 @@ func TestReconcileQoSOnBootLogsAndContinuesAfterApplyFailure(t *testing.T) {
 
 	reconcileQoSOnBoot(context.Background(), service, func() ([]storage.Link, error) { return links, nil })
 
-	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan-ok root cake bandwidth 30mbit") {
+	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan-ok root handle 1: cake bandwidth 30mbit") {
 		t.Errorf("boot reconciliation stopped after one failure: %v", exec.events)
 	}
 }
@@ -88,8 +94,21 @@ func TestReconcileQoSOnBootUsesFreshPersistedSnapshotBeforeApply(t *testing.T) {
 
 	reconcileQoSOnBoot(context.Background(), service, load)
 
-	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan0 root cake bandwidth 30mbit") {
+	if !containsBootQosEvent(exec.events, "tc qdisc replace dev wan0 root handle 1: cake bandwidth 30mbit") {
 		t.Fatalf("boot applied stale snapshot instead of fresh persisted QoS: %v", exec.events)
+	}
+}
+
+func configureBootManagedObjects(exec *bootQosExec, interfaces ...string) {
+	if exec.readOutputs == nil {
+		exec.readOutputs = make(map[string]string)
+	}
+	for _, iface := range interfaces {
+		ifb := qos.IFBName(iface)
+		exec.readOutputs["ip link show dev "+ifb] = "6: " + ifb + ": <BROADCAST>"
+		exec.readOutputs["tc qdisc show dev "+iface] = "qdisc cake 1: root bandwidth 50mbit"
+		exec.readOutputs["tc qdisc show dev "+ifb] = "qdisc cake 1: root bandwidth 200mbit"
+		exec.readOutputs["tc filter show dev "+iface+" ingress pref 49152"] = "filter protocol all pref 49152 matchall\n action order 1: mirred egress redirect dev " + ifb
 	}
 }
 

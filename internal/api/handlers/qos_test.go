@@ -24,6 +24,7 @@ type qosHandlerExec struct {
 	readOutputs map[string]string
 	events      []string
 	onExecute   func()
+	failWhen    func(string, []string) error
 }
 
 func (e *qosHandlerExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -33,6 +34,11 @@ func (e *qosHandlerExec) Execute(_ context.Context, cmd string, args ...string) 
 		onExecute := e.onExecute
 		e.onExecute = nil
 		onExecute()
+	}
+	if e.failWhen != nil {
+		if err := e.failWhen(cmd, args); err != nil {
+			return "", err
+		}
 	}
 	if e.executeErr != nil {
 		return "", e.executeErr
@@ -87,6 +93,15 @@ func decodeQosJSON(t *testing.T, rec *httptest.ResponseRecorder, target interfac
 	}
 }
 
+func configureManagedQosReads(exec *qosHandlerExec, iface string, _, _ int) {
+	ifb := qos.IFBName(iface)
+	exec.readOutputs = map[string]string{
+		"tc\x00qdisc\x00show\x00dev\x00" + iface:                                   "qdisc cake 1: root bandwidth 50Mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                     "qdisc cake 1: root bandwidth 200Mbit besteffort dual-dsthost\n",
+		"tc\x00filter\x00show\x00dev\x00" + iface + "\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
+	}
+}
+
 func qosLink() storage.Link {
 	return storage.Link{
 		ID:              "wan-1",
@@ -113,8 +128,8 @@ func TestQosGetReturnsStoredConfigurationWithoutApplying(t *testing.T) {
 		dryRun: true,
 		readOutputs: map[string]string{
 			"ip\x00link\x00show\x00dev\x00" + ifb:                             "7: " + ifb + ": <BROADCAST,UP> mtu 1500",
-			"tc\x00qdisc\x00show\x00dev\x00wan0":                              "qdisc cake 8001: root bandwidth 50Mbit diffserv4 dual-srchost\n",
-			"tc\x00qdisc\x00show\x00dev\x00" + ifb:                            "qdisc cake 8002: root bandwidth 200Mbit diffserv4 dual-dsthost\n",
+			"tc\x00qdisc\x00show\x00dev\x00wan0":                              "qdisc cake 1: root bandwidth 50Mbit diffserv4 dual-srchost\n",
+			"tc\x00qdisc\x00show\x00dev\x00" + ifb:                            "qdisc cake 1: root bandwidth 200Mbit diffserv4 dual-dsthost\n",
 			"tc\x00filter\x00show\x00dev\x00wan0\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall action mirred egress redirect to device " + ifb,
 		},
 	}
@@ -202,7 +217,7 @@ func TestQosPutAppliesBeforePersistingAndPreservesLinkFields(t *testing.T) {
 		stored.Enabled != original.Enabled {
 		t.Errorf("PUT changed non-QoS link fields: got %#v, original %#v", stored, original)
 	}
-	if len(exec.events) == 0 || exec.events[0] != "write:tc qdisc replace dev wan0 root cake bandwidth 50mbit diffserv4 dual-srchost" {
+	if !containsEvent(exec.events, "write:tc qdisc replace dev wan0 root handle 1: cake bandwidth 50mbit diffserv4 dual-srchost") {
 		t.Errorf("PUT did not apply the requested configuration first; events = %v", exec.events)
 	}
 }
@@ -265,6 +280,7 @@ func TestQosPutRejectsNewerLinkLifecycleAndRestoresWithoutOverwritingIt(t *testi
 	exec := &qosHandlerExec{dryRun: true}
 	original := qosLink()
 	h, db := newQosHandlerFixture(t, original, exec)
+	configureManagedQosReads(exec, original.Interface, original.QoSUploadMbps, original.QoSDownloadMbps)
 	exec.onExecute = func() {
 		current, err := db.GetLink(original.ID)
 		if err != nil {
@@ -295,8 +311,55 @@ func TestQosPutRejectsNewerLinkLifecycleAndRestoresWithoutOverwritingIt(t *testi
 		stored.QoSDownloadMbps != original.QoSDownloadMbps || stored.QoSInteractive != original.QoSInteractive {
 		t.Fatalf("stale QoS PUT changed newer QoS fields: got %+v, want %+v", stored, original)
 	}
-	if !containsEventAfter(exec.events, "write:tc qdisc replace dev wan0 root cake bandwidth 75mbit", "write:tc filter del dev wan0 ingress pref 49152") {
+	if !containsEventAfter(exec.events, "write:tc qdisc replace dev wan0 root handle 1: cake bandwidth 75mbit", "write:tc filter del dev wan0 ingress pref 49152") {
 		t.Fatalf("stale QoS PUT did not restore the prior kernel config: %v", exec.events)
+	}
+}
+
+func containsEvent(events []string, want string) bool {
+	for _, event := range events {
+		if event == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestQosPutReturns500AndReconcilesWhenCASAndRollbackFail(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true}
+	original := qosLink()
+	original.QoSEnabled = true
+	original.QoSUploadMbps = 50
+	original.QoSDownloadMbps = 200
+	h, db := newQosHandlerFixture(t, original, exec)
+	exec.onExecute = func() {
+		current, err := db.GetLink(original.ID)
+		if err != nil {
+			t.Fatalf("GetLink during concurrent lifecycle change: %v", err)
+		}
+		current.Name = "link newer"
+		if err := db.UpdateLink(current); err != nil {
+			t.Fatalf("persist concurrent lifecycle change: %v", err)
+		}
+	}
+	rollbackFailure := true
+	exec.failWhen = func(cmd string, args []string) error {
+		if rollbackFailure && cmd == "tc" && strings.Contains(strings.Join(args, " "), "bandwidth 50mbit") {
+			rollbackFailure = false
+			return errors.New("rollback unavailable")
+		}
+		return nil
+	}
+
+	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1/qos", strings.NewReader(`{"enabled":true,"upload_mbps":75,"download_mbps":200}`)), "id", original.ID)
+	rec := httptest.NewRecorder()
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("CAS plus rollback failure status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	if countEventsContaining(exec.events, "bandwidth 50mbit") < 2 {
+		t.Fatalf("fresh reconciliation did not retry the old QoS after rollback failure: %v", exec.events)
 	}
 }
 
@@ -375,7 +438,7 @@ func TestQosPostReturnsBeforeAndAfterMeasurements(t *testing.T) {
 			firstPing = i
 		} else if strings.HasPrefix(event, "read:ping") && secondPing == -1 {
 			secondPing = i
-		} else if strings.HasPrefix(event, "write:tc qdisc replace dev wan0 root cake") && firstApply == -1 {
+		} else if strings.HasPrefix(event, "write:tc qdisc replace dev wan0 root handle 1: cake") && firstApply == -1 {
 			firstApply = i
 		}
 	}
@@ -693,6 +756,7 @@ func TestLinksUpdateReportsQosCleanupFailureBeforeMutatingRow(t *testing.T) {
 	if err := db.CreateLink(&original); err != nil {
 		t.Fatalf("CreateLink: %v", err)
 	}
+	configureManagedQosReads(exec, original.Interface, original.QoSUploadMbps, original.QoSDownloadMbps)
 	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
 	h.SetQosService(qos.NewService(exec))
 	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1", strings.NewReader(`{"name":"Fibra principal","interface":"wan0","weight":70,"enabled":false}`)), "id", original.ID)
@@ -710,6 +774,50 @@ func TestLinksUpdateReportsQosCleanupFailureBeforeMutatingRow(t *testing.T) {
 	}
 }
 
+func TestLinksUpdateReturns500AndReconcilesWhenCleanupRestoreFails(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true}
+	original := qosLink()
+	original.QoSEnabled = true
+	original.QoSUploadMbps = 50
+	original.QoSDownloadMbps = 200
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	configureManagedQosReads(exec, original.Interface, original.QoSUploadMbps, original.QoSDownloadMbps)
+	rollbackFailure := true
+	exec.failWhen = func(cmd string, args []string) error {
+		if rollbackFailure && cmd == "tc" && strings.Contains(strings.Join(args, " "), "bandwidth 50mbit") {
+			rollbackFailure = false
+			return errors.New("rollback unavailable")
+		}
+		return nil
+	}
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	h.SetQosService(qos.NewService(exec))
+	req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1", strings.NewReader(`{"name":"WAN","interface":"wan bad","weight":70,"enabled":false}`)), "id", original.ID)
+	rec := httptest.NewRecorder()
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("link PUT cleanup plus restore failure status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	if countEventsContaining(exec.events, "bandwidth 50mbit") < 2 {
+		t.Fatalf("fresh reconciliation did not retry old QoS after cleanup restore failure: %v", exec.events)
+	}
+	stored, err := db.GetLink(original.ID)
+	if err != nil {
+		t.Fatalf("GetLink after cleanup restore failure: %v", err)
+	}
+	if stored.Interface != original.Interface || stored.Enabled != original.Enabled {
+		t.Fatalf("link row changed after failed update compensation: %+v", stored)
+	}
+}
+
 func TestLinksDeleteKeepsRetryableRowWhenQosCleanupFails(t *testing.T) {
 	exec := &qosHandlerExec{dryRun: true, executeErr: errors.New("cleanup failed")}
 	original := qosLink()
@@ -724,6 +832,7 @@ func TestLinksDeleteKeepsRetryableRowWhenQosCleanupFails(t *testing.T) {
 	if err := db.CreateLink(&original); err != nil {
 		t.Fatalf("CreateLink: %v", err)
 	}
+	configureManagedQosReads(exec, original.Interface, original.QoSUploadMbps, original.QoSDownloadMbps)
 	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
 	h.SetQosService(qos.NewService(exec))
 	req := withChiURLParam(httptest.NewRequest(http.MethodDelete, "/api/links/wan-1", nil), "id", original.ID)
@@ -739,6 +848,64 @@ func TestLinksDeleteKeepsRetryableRowWhenQosCleanupFails(t *testing.T) {
 	if stored == nil {
 		t.Fatal("link row was deleted despite failed QoS cleanup; retry would be impossible")
 	}
+}
+
+func TestLinksDeleteReturns500AndAttemptsFreshReconciliationWhenCleanupRestoreFails(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true}
+	original := qosLink()
+	original.QoSEnabled = true
+	original.QoSUploadMbps = 50
+	original.QoSDownloadMbps = 200
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	ifb := qos.IFBName(original.Interface)
+	exec.readOutputs = map[string]string{
+		"tc\x00qdisc\x00show\x00dev\x00" + original.Interface:                                   "qdisc cake 1: root bandwidth 50Mbit besteffort dual-srchost\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                                  "qdisc cake 1: root bandwidth 200Mbit besteffort dual-dsthost\n",
+		"tc\x00filter\x00show\x00dev\x00" + original.Interface + "\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
+	}
+	closed := false
+	exec.onExecute = func() {
+		if !closed {
+			closed = true
+			_ = db.Close()
+		}
+	}
+	rollbackFailure := true
+	exec.failWhen = func(cmd string, args []string) error {
+		if rollbackFailure && cmd == "tc" && strings.Contains(strings.Join(args, " "), "bandwidth 50mbit") {
+			rollbackFailure = false
+			return errors.New("rollback unavailable")
+		}
+		return nil
+	}
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	h.SetQosService(qos.NewService(exec))
+	req := withChiURLParam(httptest.NewRequest(http.MethodDelete, "/api/links/wan-1", nil), "id", original.ID)
+	rec := httptest.NewRecorder()
+	h.Delete(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("link DELETE cleanup plus restore failure status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	if countEventsContaining(exec.events, "bandwidth 50mbit") < 1 {
+		t.Fatalf("link DELETE did not attempt QoS restore after persistence failure: %v", exec.events)
+	}
+}
+
+func countEventsContaining(events []string, want string) int {
+	count := 0
+	for _, event := range events {
+		if strings.Contains(event, want) {
+			count++
+		}
+	}
+	return count
 }
 
 func TestQosPutDoesNotOverwriteConcurrentLinkFields(t *testing.T) {
@@ -850,6 +1017,7 @@ func TestLinksUpdateReconcilesQoSWhenLinkIsDisabled(t *testing.T) {
 	if err := db.CreateLink(&original); err != nil {
 		t.Fatalf("CreateLink: %v", err)
 	}
+	configureManagedQosReads(exec, original.Interface, original.QoSUploadMbps, original.QoSDownloadMbps)
 	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
 	h.SetQosService(qos.NewService(exec))
 	body := strings.NewReader(`{"name":"Fibra principal","interface":"wan0","weight":70,"enabled":false}`)

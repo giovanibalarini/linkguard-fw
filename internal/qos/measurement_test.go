@@ -206,7 +206,7 @@ rtt min/avg/max/mdev = 5.000/8.000/12.000/1.000 ms
 	if len(exec.calls) < 3 || exec.calls[0].Command != "ping" || exec.calls[len(exec.calls)-1].Command != "ping" {
 		t.Fatalf("MeasureBeforeAfter() call order = %#v; want ping, apply commands, ping", exec.calls)
 	}
-	if countCommand(exec.calls[1:len(exec.calls)-1], "tc", "qdisc", "replace") != 3 {
+	if countCommand(exec.calls[1:len(exec.calls)-1], "tc", "qdisc", "replace") != 2 {
 		t.Fatalf("MeasureBeforeAfter() did not apply QoS between samples: %#v", exec.calls)
 	}
 }
