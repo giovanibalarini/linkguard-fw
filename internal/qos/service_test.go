@@ -14,18 +14,20 @@ import (
 )
 
 type execCall struct {
-	Read    bool
-	Command string
-	Args    []string
+	Read       bool
+	Command    string
+	Args       []string
+	ContextErr error
 }
 
 type fakeExecutor struct {
-	calls    []execCall
-	ifbs     map[string]bool
-	dryRun   bool
-	readErr  error
-	readOut  map[string]string
-	failWhen func(execCall) error
+	calls     []execCall
+	ifbs      map[string]bool
+	dryRun    bool
+	readErr   error
+	readOut   map[string]string
+	failWhen  func(execCall) error
+	onExecute func(execCall)
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -42,8 +44,8 @@ func configureManagedKernelObjects(exec *fakeExecutor, iface string) {
 	}
 }
 
-func (e *fakeExecutor) Execute(_ context.Context, command string, args ...string) (string, error) {
-	call := execCall{Command: command, Args: append([]string(nil), args...)}
+func (e *fakeExecutor) Execute(ctx context.Context, command string, args ...string) (string, error) {
+	call := execCall{Command: command, Args: append([]string(nil), args...), ContextErr: ctx.Err()}
 	e.calls = append(e.calls, call)
 	if e.failWhen != nil {
 		if err := e.failWhen(call); err != nil {
@@ -57,11 +59,93 @@ func (e *fakeExecutor) Execute(_ context.Context, command string, args ...string
 	if !e.dryRun && command == "ip" && len(args) == 4 && args[0] == "link" && args[1] == "del" && args[2] == "dev" {
 		delete(e.ifbs, args[3])
 	}
+	if !e.dryRun {
+		e.applyKernelState(call)
+	}
+	if e.onExecute != nil {
+		e.onExecute(call)
+	}
 	return "", nil
 }
 
-func (e *fakeExecutor) ExecuteRead(_ context.Context, command string, args ...string) (string, error) {
-	call := execCall{Read: true, Command: command, Args: append([]string(nil), args...)}
+func (e *fakeExecutor) applyKernelState(call execCall) {
+	if call.Command != "tc" || len(call.Args) < 2 {
+		return
+	}
+	if e.readOut == nil {
+		e.readOut = make(map[string]string)
+	}
+	if hasPrefix(call.Args, "qdisc", "replace", "dev") && len(call.Args) >= 6 && call.Args[4] == "root" {
+		iface := call.Args[3]
+		handle := "0:"
+		kindIndex := 5
+		if len(call.Args) >= 8 && call.Args[5] == "handle" {
+			handle = call.Args[6]
+			kindIndex = 7
+		}
+		if kindIndex < len(call.Args) {
+			e.setRootOutput(iface, "qdisc "+call.Args[kindIndex]+" "+handle+" root "+strings.Join(call.Args[kindIndex+1:], " ")+"\n")
+		}
+		return
+	}
+	if hasPrefix(call.Args, "qdisc", "del", "dev") && len(call.Args) >= 5 && call.Args[4] == "root" {
+		e.setRootOutput(call.Args[3], "")
+		return
+	}
+	if hasPrefix(call.Args, "qdisc", "add", "dev") && len(call.Args) >= 5 && call.Args[4] == "clsact" {
+		key := executorCallKey("tc", "qdisc", "show", "dev", call.Args[3])
+		e.readOut[key] += "qdisc clsact ffff: parent ffff:fff1\n"
+		return
+	}
+	if hasPrefix(call.Args, "qdisc", "del", "dev") && len(call.Args) >= 5 && call.Args[4] == "clsact" {
+		key := executorCallKey("tc", "qdisc", "show", "dev", call.Args[3])
+		lines := strings.Split(e.readOut[key], "\n")
+		kept := lines[:0]
+		for _, line := range lines {
+			if !strings.HasPrefix(line, "qdisc clsact ") {
+				kept = append(kept, line)
+			}
+		}
+		e.readOut[key] = strings.Join(kept, "\n")
+		return
+	}
+	if hasPrefix(call.Args, "filter", "replace", "dev") {
+		iface := call.Args[3]
+		ifb := call.Args[len(call.Args)-1]
+		key := executorCallKey("tc", "filter", "show", "dev", iface, "ingress", "pref", redirectFilterPriority)
+		e.readOut[key] = "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n"
+		return
+	}
+	if hasPrefix(call.Args, "filter", "del", "dev") {
+		iface := call.Args[3]
+		key := executorCallKey("tc", "filter", "show", "dev", iface, "ingress", "pref", redirectFilterPriority)
+		e.readOut[key] = ""
+	}
+}
+
+func (e *fakeExecutor) setRootOutput(iface, root string) {
+	if e.readOut == nil {
+		e.readOut = make(map[string]string)
+	}
+	key := executorCallKey("tc", "qdisc", "show", "dev", iface)
+	var nonRoot []string
+	for _, line := range strings.Split(e.readOut[key], "\n") {
+		if line != "" && !strings.Contains(line, " root") {
+			nonRoot = append(nonRoot, line)
+		}
+	}
+	if root != "" {
+		nonRoot = append([]string{strings.TrimSuffix(root, "\n")}, nonRoot...)
+	}
+	if len(nonRoot) == 0 {
+		e.readOut[key] = ""
+		return
+	}
+	e.readOut[key] = strings.Join(nonRoot, "\n") + "\n"
+}
+
+func (e *fakeExecutor) ExecuteRead(ctx context.Context, command string, args ...string) (string, error) {
+	call := execCall{Read: true, Command: command, Args: append([]string(nil), args...), ContextErr: ctx.Err()}
 	e.calls = append(e.calls, call)
 	if e.failWhen != nil {
 		if err := e.failWhen(call); err != nil {
@@ -128,6 +212,265 @@ func TestApplyBuildsEgressIngressAndMatchallCommands(t *testing.T) {
 	if !reflect.DeepEqual(exec.calls, wantCalls) {
 		t.Fatalf("Apply() calls =\n%#v\nwant\n%#v", exec.calls, wantCalls)
 	}
+}
+
+func TestApplyAllowsNormalKernelRootQdiscsWithZeroHandle(t *testing.T) {
+	fixtures := map[string]string{
+		"multiqueue device": "qdisc mq 0: root\nqdisc fq_codel 8001: parent :1 limit 10240p flows 1024 quantum 1514 target 5ms interval 100ms\n",
+		"noqueue device":    "qdisc noqueue 0: root refcnt 2\n",
+		"default fq_codel":  "qdisc fq_codel 0: root refcnt 2 limit 10240p flows 1024 quantum 1514 target 5ms interval 100ms memory_limit 32Mb ecn drop_batch 64\n",
+	}
+
+	for name, output := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			exec := newFakeExecutor()
+			exec.readOut = map[string]string{
+				executorCallKey("tc", "qdisc", "show", "dev", "wan0"): output,
+			}
+			cfg := validConfig()
+			cfg.Interface = "wan0"
+
+			if _, err := NewService(exec).Apply(context.Background(), cfg); err != nil {
+				t.Fatalf("Apply() error = %v; want kernel default root to be replaceable", err)
+			}
+		})
+	}
+}
+
+func TestApplyFailureCompensatesSuccessfulKernelMutations(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc mq 0: root\n",
+	}
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && call.Command == "tc" && len(call.Args) > 1 && call.Args[0] == "filter" && call.Args[1] == "replace" {
+			return errors.New("redirect failed")
+		}
+		return nil
+	}
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	_, err := NewService(exec).Apply(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Apply() error = nil; want redirect failure")
+	}
+	if countCommand(exec.calls, "ip", "link", "del") != 1 {
+		t.Fatalf("Apply() did not compensate the created IFB: %#v", exec.calls)
+	}
+	if countCommand(exec.calls, "tc", "qdisc", "del", "dev", IFBName("wan0"), "root") != 1 {
+		t.Fatalf("Apply() did not compensate the ingress qdisc: %#v", exec.calls)
+	}
+	if !hasQdiscRootRestore(exec.calls, "wan0", "mq") {
+		t.Fatalf("Apply() did not restore the kernel default root qdisc: %#v", exec.calls)
+	}
+}
+
+func TestApplyCompensatesEveryCompletedStageBeforeACommandFailure(t *testing.T) {
+	tests := []struct {
+		name            string
+		fail            func(execCall) bool
+		wantIFBDelete   bool
+		wantRootRestore bool
+	}{
+		{
+			name: "IFB creation",
+			fail: func(call execCall) bool {
+				return call.Command == "ip" && hasPrefix(call.Args, "link", "add")
+			},
+			wantRootRestore: true,
+		},
+		{
+			name: "ingress CAKE",
+			fail: func(call execCall) bool {
+				return call.Command == "tc" && hasPrefix(call.Args, "qdisc", "replace", "dev", IFBName("wan0"))
+			},
+			wantIFBDelete:   true,
+			wantRootRestore: true,
+		},
+		{
+			name: "clsact",
+			fail: func(call execCall) bool {
+				return call.Command == "tc" && hasPrefix(call.Args, "qdisc", "add", "dev", "wan0", "clsact")
+			},
+			wantIFBDelete:   true,
+			wantRootRestore: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := newFakeExecutor()
+			exec.readOut = map[string]string{
+				executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc noqueue 0: root refcnt 2\n",
+			}
+			exec.failWhen = func(call execCall) error {
+				if !call.Read && tt.fail(call) {
+					return errors.New("injected stage failure")
+				}
+				return nil
+			}
+			cfg := validConfig()
+			cfg.Interface = "wan0"
+
+			if _, err := NewService(exec).Apply(context.Background(), cfg); err == nil {
+				t.Fatal("Apply() error = nil; want injected stage failure")
+			}
+			if got := countCommand(exec.calls, "ip", "link", "del", "dev", IFBName("wan0")); (got == 1) != tt.wantIFBDelete {
+				t.Fatalf("IFB cleanup count = %d, want cleanup=%v; calls=%#v", got, tt.wantIFBDelete, exec.calls)
+			}
+			got := hasQdiscRootRestore(exec.calls, "wan0", "noqueue")
+			if got != tt.wantRootRestore {
+				t.Fatalf("egress root restore = %v, want restore=%v; calls=%#v", got, tt.wantRootRestore, exec.calls)
+			}
+		})
+	}
+}
+
+func TestApplyFailureReturnsCompensationFailureWhenRepairFails(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc mq 0: root\n",
+	}
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && call.Command == "tc" && len(call.Args) > 1 && call.Args[0] == "filter" && call.Args[1] == "replace" {
+			return errors.New("redirect failed")
+		}
+		if !call.Read && call.Command == "tc" && hasPrefix(call.Args, "qdisc", "replace", "dev", "wan0", "root", "mq") {
+			return errors.New("root restore failed")
+		}
+		return nil
+	}
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	_, err := NewService(exec).Apply(context.Background(), cfg)
+	if !errors.Is(err, ErrCompensationFailed) {
+		t.Fatalf("Apply() error = %v; want ErrCompensationFailed", err)
+	}
+}
+
+func TestDisableFailureCompensatesSuccessfulKernelMutations(t *testing.T) {
+	exec := newFakeExecutor()
+	configureManagedKernelObjects(exec, "wan0")
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && call.Command == "tc" && len(call.Args) >= 4 && call.Args[0] == "qdisc" && call.Args[1] == "del" && call.Args[3] == IFBName("wan0") {
+			return errors.New("ingress delete failed")
+		}
+		return nil
+	}
+
+	_, err := NewService(exec).Disable(context.Background(), "wan0")
+	if err == nil {
+		t.Fatal("Disable() error = nil; want ingress delete failure")
+	}
+	if !hasManagedFilterRestore(exec.calls, "wan0") || !hasQdiscRootRestore(exec.calls, "wan0", "cake") {
+		t.Fatalf("Disable() did not compensate prior deletions: %#v", exec.calls)
+	}
+}
+
+func TestDisableFailureReturnsCompensationFailureWhenRepairFails(t *testing.T) {
+	exec := newFakeExecutor()
+	configureManagedKernelObjects(exec, "wan0")
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && call.Command == "tc" && len(call.Args) >= 4 && call.Args[0] == "qdisc" && call.Args[1] == "del" && call.Args[3] == IFBName("wan0") {
+			return errors.New("ingress delete failed")
+		}
+		if !call.Read && call.Command == "tc" && len(call.Args) > 1 && call.Args[0] == "filter" && call.Args[1] == "replace" {
+			return errors.New("filter restore failed")
+		}
+		return nil
+	}
+
+	_, err := NewService(exec).Disable(context.Background(), "wan0")
+	if !errors.Is(err, ErrCompensationFailed) {
+		t.Fatalf("Disable() error = %v; want ErrCompensationFailed", err)
+	}
+}
+
+func TestDisableFailureAtIFBDeleteRestoresAllRemovedManagedObjects(t *testing.T) {
+	exec := newFakeExecutor()
+	configureManagedKernelObjects(exec, "wan0")
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && call.Command == "ip" && hasPrefix(call.Args, "link", "del", "dev", IFBName("wan0")) {
+			return errors.New("IFB delete failed")
+		}
+		return nil
+	}
+
+	_, err := NewService(exec).Disable(context.Background(), "wan0")
+	if err == nil {
+		t.Fatal("Disable() error = nil; want IFB delete failure")
+	}
+	if !hasManagedFilterRestore(exec.calls, "wan0") ||
+		!hasQdiscRootRestore(exec.calls, "wan0", "cake") ||
+		!hasQdiscRootRestore(exec.calls, IFBName("wan0"), "cake") {
+		t.Fatalf("Disable() did not restore every managed object after the final delete failed: %#v", exec.calls)
+	}
+}
+
+func TestApplyCompensationUsesDetachedBoundedContext(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc noqueue 0: root refcnt 2\n",
+	}
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && call.Command == "tc" && hasPrefix(call.Args, "filter", "replace") {
+			return errors.New("redirect failed")
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	if _, err := NewService(exec).Apply(ctx, cfg); err == nil {
+		t.Fatal("Apply() error = nil; want redirect failure")
+	}
+	failureIndex := -1
+	for i, call := range exec.calls {
+		if !call.Read && call.Command == "tc" && hasPrefix(call.Args, "filter", "replace") {
+			failureIndex = i
+			break
+		}
+	}
+	if failureIndex == -1 || failureIndex+1 >= len(exec.calls) {
+		t.Fatalf("no compensation commands followed the failed mutation: %#v", exec.calls)
+	}
+	for _, call := range exec.calls[failureIndex+1:] {
+		if call.ContextErr != nil {
+			t.Fatalf("compensation inherited canceled request context: call=%#v", call)
+		}
+	}
+}
+
+func hasQdiscRootRestore(calls []execCall, iface, kind string) bool {
+	for _, call := range calls {
+		if call.Read || call.Command != "tc" || len(call.Args) < 5 {
+			continue
+		}
+		if call.Args[0] == "qdisc" && call.Args[1] == "replace" && call.Args[3] == iface && call.Args[4] == "root" && containsToken(call.Args, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasManagedFilterRestore(calls []execCall, iface string) bool {
+	for _, call := range calls {
+		if call.Read || call.Command != "tc" || len(call.Args) < 2 {
+			continue
+		}
+		if call.Args[0] == "filter" && call.Args[1] == "replace" && containsToken(call.Args, iface) && containsToken(call.Args, "mirred") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPrefix(got []string, want ...string) bool {
+	return len(got) >= len(want) && reflect.DeepEqual(got[:len(want)], want)
 }
 
 func TestApplyUsesDiffserv4WhenInteractive(t *testing.T) {
@@ -276,18 +619,14 @@ func TestDisableRemovesOnlyManagedFilterQdiscsAndIFB(t *testing.T) {
 		t.Fatalf("Disable() state = %#v; want %#v", state, wantState)
 	}
 
-	wantCalls := []execCall{
-		{Read: true, Command: "tc", Args: []string{"qdisc", "show", "dev", "wan0"}},
-		{Read: true, Command: "tc", Args: []string{"filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority}},
-		{Read: true, Command: "ip", Args: []string{"link", "show", "dev", ifb}},
-		{Read: true, Command: "tc", Args: []string{"qdisc", "show", "dev", ifb}},
+	wantWrites := []execCall{
 		{Command: "tc", Args: []string{"filter", "del", "dev", "wan0", "ingress", "pref", "49152"}},
 		{Command: "tc", Args: []string{"qdisc", "del", "dev", "wan0", "root"}},
 		{Command: "tc", Args: []string{"qdisc", "del", "dev", ifb, "root"}},
 		{Command: "ip", Args: []string{"link", "del", "dev", ifb}},
 	}
-	if !reflect.DeepEqual(exec.calls, wantCalls) {
-		t.Fatalf("Disable() calls =\n%#v\nwant\n%#v", exec.calls, wantCalls)
+	if got := writeCalls(exec.calls); !reflect.DeepEqual(got, wantWrites) {
+		t.Fatalf("Disable() writes =\n%#v\nwant\n%#v", got, wantWrites)
 	}
 	for _, call := range exec.calls {
 		if containsToken(call.Args, "clsact") {
@@ -398,7 +737,8 @@ func TestDisablePropagatesOperationalDeleteError(t *testing.T) {
 	if _, err := service.Disable(context.Background(), "wan0"); err == nil {
 		t.Fatal("Disable() error = nil; want operational delete error")
 	}
-	if len(exec.calls) != 5 || exec.calls[len(exec.calls)-1].Command != "tc" || exec.calls[len(exec.calls)-1].Args[1] != "del" {
+	writes := writeCalls(exec.calls)
+	if len(writes) != 1 || writes[0].Command != "tc" || !hasPrefix(writes[0].Args, "filter", "del") {
 		t.Fatalf("Disable() continued after operational delete error: %#v", exec.calls)
 	}
 }
@@ -493,6 +833,89 @@ func TestApplyRefusesForeignMirredFilterWithoutWriting(t *testing.T) {
 			t.Fatalf("Apply() wrote while foreign mirred filter was present: %#v", exec.calls)
 		}
 	}
+}
+
+func TestApplyNetemRefusesExplicitForeignRootWithoutWriting(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc htb 5: root refcnt 2 r2q 10 default 20 direct_packets_stat 0\n",
+	}
+	service := NewService(exec)
+
+	err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
+		return ops.ApplyNetem(context.Background(), 500, 20)
+	})
+	if !errors.Is(err, ErrOwnershipNotEstablished) {
+		t.Fatalf("ApplyNetem() error = %v; want ErrOwnershipNotEstablished", err)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("ApplyNetem() wrote while a foreign root qdisc was present: %#v", exec.calls)
+		}
+	}
+}
+
+func TestRestoreAfterNetemDeletesOnlyOwnedFaultAndReappliesPersistedQoS(t *testing.T) {
+	ifb := IFBName("wan0")
+	exec := newFakeExecutor()
+	exec.ifbs[ifb] = true
+	rootKey := executorCallKey("tc", "qdisc", "show", "dev", "wan0")
+	exec.readOut = map[string]string{
+		rootKey: "qdisc netem " + managedNetemHandle + " root refcnt 2 limit 1000 delay 500ms loss 20%\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 300Mbit diffserv4 dual-dsthost\n",
+		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
+	}
+	exec.onExecute = func(call execCall) {
+		if call.Command == "tc" && hasPrefix(call.Args, "qdisc", "del", "dev", "wan0", "root") {
+			exec.readOut[rootKey] = "qdisc mq 0: root\nqdisc fq_codel 8001: parent :1 limit 10240p\n"
+		}
+	}
+	cfg := Config{Interface: "wan0", Enabled: true, UploadMbps: 40, DownloadMbps: 300, Interactive: true}
+	service := NewService(exec)
+
+	err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
+		_, err := ops.RestoreAfterNetem(context.Background(), cfg)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("RestoreAfterNetem() error = %v; want nil", err)
+	}
+	if countCommand(exec.calls, "tc", "qdisc", "del", "dev", "wan0", "root") != 1 {
+		t.Fatalf("RestoreAfterNetem() did not remove exactly one owned netem root: %#v", exec.calls)
+	}
+	if !hasQdiscRootRestore(exec.calls, "wan0", "cake") || !containsWriteToken(exec.calls, "40mbit") {
+		t.Fatalf("RestoreAfterNetem() did not reapply fresh persisted CAKE: %#v", exec.calls)
+	}
+}
+
+func TestRestoreAfterNetemPreservesRootThatBecameForeign(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc htb 5: root refcnt 2 r2q 10 default 20 direct_packets_stat 0\n",
+	}
+	service := NewService(exec)
+
+	err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
+		_, err := ops.RestoreAfterNetem(context.Background(), Config{Interface: "wan0"})
+		return err
+	})
+	if !errors.Is(err, ErrOwnershipNotEstablished) {
+		t.Fatalf("RestoreAfterNetem() error = %v; want ErrOwnershipNotEstablished", err)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("RestoreAfterNetem() mutated a foreign root qdisc: %#v", exec.calls)
+		}
+	}
+}
+
+func containsWriteToken(calls []execCall, want string) bool {
+	for _, call := range calls {
+		if !call.Read && containsToken(call.Args, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestObserveReturnsManagedKernelStateWithReadOnlySeparatedArguments(t *testing.T) {
@@ -759,4 +1182,14 @@ func countCommand(calls []execCall, command string, prefix ...string) int {
 		}
 	}
 	return count
+}
+
+func writeCalls(calls []execCall) []execCall {
+	var writes []execCall
+	for _, call := range calls {
+		if !call.Read {
+			writes = append(writes, call)
+		}
+	}
+	return writes
 }

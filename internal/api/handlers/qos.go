@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -42,6 +43,8 @@ func NewQosHandler(svc qosService, db *storage.DB) *QosHandler {
 
 var errQosLinkNotFound = errors.New("link not found")
 var errQosInvalidConfig = errors.New("invalid persisted QoS configuration")
+
+const emergencyQosReconcileTimeout = 15 * time.Second
 
 type qosUpdateRequest struct {
 	Enabled      bool `json:"enabled"`
@@ -123,7 +126,8 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 			Config:   applyConfig,
 			Rollback: rollback,
 			Persist: func() error {
-				return h.db.UpdateLinkQoSIfCurrent(link.ID, current.Interface, current.Enabled, current.UpdatedAt,
+				return h.db.UpdateLinkQoSIfCurrent(link.ID, current.Interface, current.Enabled,
+					current.QoSEnabled, current.QoSUploadMbps, current.QoSDownloadMbps, current.QoSInteractive,
 					desired.Enabled, desired.UploadMbps, desired.DownloadMbps, desired.Interactive)
 			},
 		}, nil
@@ -131,7 +135,9 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, qos.ErrCompensationFailed) {
 			slog.Error("QoS apply succeeded but persistence rollback failed; reconciling from fresh link state", "link_id", link.ID, "interface", link.Interface, "err", err)
-			h.reconcileAfterQosCompensationFailure(r.Context(), link.ID, link.Interface)
+			repairCtx, cancel := emergencyQosReconcileContext(r.Context())
+			h.reconcileAfterQosCompensationFailure(repairCtx, link.ID, link.Interface)
+			cancel()
 			writeInternalError(w, err)
 			return
 		}
@@ -148,6 +154,10 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	auditAction(h.db, r, "qos.update", "link", link.ID)
 	writeJSON(w, http.StatusOK, state)
+}
+
+func emergencyQosReconcileContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), emergencyQosReconcileTimeout)
 }
 
 // Test measures a link before and after reapplying its persisted QoS config.

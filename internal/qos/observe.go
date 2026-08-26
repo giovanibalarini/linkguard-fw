@@ -72,13 +72,60 @@ func hasManagedRootCake(output, handle string) bool {
 }
 
 func hasRootQdisc(output string) bool {
+	_, ok := rootQdisc(output)
+	return ok
+}
+
+type rootQdiscInfo struct {
+	kind   string
+	handle string
+}
+
+// Linux commonly installs one of these root qdiscs before LinkGuard enables
+// QoS. They use handle 0: and are safe to replace; a configured qdisc with a
+// different handle is explicit ownership by another component and remains
+// protected.
+var replaceableInitialRootQdiscs = map[string]struct{}{
+	"fq_codel": {},
+	"mq":       {},
+	"noqueue":  {},
+}
+
+func rootQdisc(output string) (rootQdiscInfo, bool) {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 4 && fields[0] == "qdisc" && fields[3] == "root" {
-			return true
+			return rootQdiscInfo{kind: fields[1], handle: fields[2]}, true
 		}
 	}
-	return false
+	return rootQdiscInfo{}, false
+}
+
+func hasForeignRootQdisc(output, managedHandle string) bool {
+	root, ok := rootQdisc(output)
+	if !ok {
+		return false
+	}
+	if root.kind == "cake" && root.handle == managedHandle {
+		return false
+	}
+	if isReplaceableInitialRoot(root) {
+		return false
+	}
+	return true
+}
+
+func isReplaceableInitialRoot(root rootQdiscInfo) bool {
+	if root.handle != "0:" {
+		return false
+	}
+	_, allowed := replaceableInitialRootQdiscs[root.kind]
+	return allowed
+}
+
+func hasManagedRootKind(output, kind, handle string) bool {
+	root, ok := rootQdisc(output)
+	return ok && root.kind == kind && root.handle == handle
 }
 
 func hasClsact(output string) bool {

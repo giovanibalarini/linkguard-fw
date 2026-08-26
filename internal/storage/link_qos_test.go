@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -86,11 +87,15 @@ func TestUpdateLinkQoSIfCurrentUsesLifecycleAndVersionGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetLink: %v", err)
 	}
-	if err := db.UpdateLinkQoSIfCurrent(current.ID, current.Interface, current.Enabled, current.UpdatedAt, true, 40, 300, true); err != nil {
+	if err := db.UpdateLinkQoSIfCurrent(current.ID, current.Interface, current.Enabled,
+		current.QoSEnabled, current.QoSUploadMbps, current.QoSDownloadMbps, current.QoSInteractive,
+		true, 40, 300, true); err != nil {
 		t.Fatalf("UpdateLinkQoSIfCurrent: %v", err)
 	}
 
-	if err := db.UpdateLinkQoSIfCurrent(current.ID, current.Interface, current.Enabled, current.UpdatedAt, false, 1, 1, false); !errors.Is(err, sql.ErrNoRows) {
+	if err := db.UpdateLinkQoSIfCurrent(current.ID, current.Interface, current.Enabled,
+		current.QoSEnabled, current.QoSUploadMbps, current.QoSDownloadMbps, current.QoSInteractive,
+		false, 1, 1, false); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("stale UpdateLinkQoSIfCurrent error = %v; want sql.ErrNoRows", err)
 	}
 	updated, err := db.GetLink(link.ID)
@@ -98,6 +103,48 @@ func TestUpdateLinkQoSIfCurrentUsesLifecycleAndVersionGuards(t *testing.T) {
 		t.Fatalf("GetLink after stale update: %v", err)
 	}
 	assertLinkQoS(t, updated, true, 40, 300, true)
+}
+
+func TestUpdateLinkQoSIfCurrentRejectsLifecycleChanges(t *testing.T) {
+	db := newTestDB(t)
+	link := &storage.Link{Name: "WAN lifecycle", Interface: "eth0", Enabled: true}
+	if err := db.CreateLink(link); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	current, err := db.GetLink(link.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	current.Interface = "eth1"
+	if err := db.UpdateLinkNonQoS(current); err != nil {
+		t.Fatalf("UpdateLinkNonQoS: %v", err)
+	}
+
+	err = db.UpdateLinkQoSIfCurrent(link.ID, "eth0", true, false, 0, 0, false, true, 40, 300, true)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpdateLinkQoSIfCurrent after interface move error = %v; want sql.ErrNoRows", err)
+	}
+}
+
+func TestUpdateLinkQoSIfCurrentIgnoresMonitorUpdatedAtChanges(t *testing.T) {
+	db := newTestDB(t)
+	link := &storage.Link{Name: "WAN monitor", Interface: "eth0", Enabled: true}
+	if err := db.CreateLink(link); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	current, err := db.GetLink(link.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	statusAt := time.Now()
+	if err := db.UpdateLinkStatus(link.ID, "online", 12, 0, &statusAt); err != nil {
+		t.Fatalf("UpdateLinkStatus: %v", err)
+	}
+	if err := db.UpdateLinkQoSIfCurrent(current.ID, current.Interface, current.Enabled,
+		current.QoSEnabled, current.QoSUploadMbps, current.QoSDownloadMbps, current.QoSInteractive,
+		true, 40, 300, true); err != nil {
+		t.Fatalf("UpdateLinkQoSIfCurrent after monitor update: %v; monitor metadata must not conflict", err)
+	}
 }
 
 func assertLinkQoS(t *testing.T, got *storage.Link, enabled bool, upload, download int, interactive bool) {
