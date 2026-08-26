@@ -245,6 +245,13 @@ func upWireGuard(tx *sql.Tx) error {
 		return err
 	}
 	return nil
+	// A 17 já foi consumida pelo alvo por domínio e JÁ RODOU em produção; a 18
+	// está reservada ao WireGuard (#203), que corre em paralelo com este ramo.
+	// A lacuna é segura de propósito: runMigrations marca cada versão
+	// individualmente em schema_migrations, não por marca d'água, então a 18
+	// aplica quando chegar. Número REPETIDO é que seria fatal — a migração
+	// seria dada como aplicada numa base que nunca a viu.
+	{19, "links: configuração QoS por WAN", upAddLinkQoS},
 }
 
 const createSchemaMigrationsTable = `
@@ -489,6 +496,36 @@ func upAddPasswordVersion(tx *sql.Tx) error {
 	}
 	_, err = tx.Exec(`ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 1`)
 	return err
+}
+
+// upAddLinkQoS adds the per-WAN QoS settings to databases created before
+// issue #121. False and zero preserve the behavior of every existing link.
+func upAddLinkQoS(tx *sql.Tx) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"qos_enabled", "INTEGER NOT NULL DEFAULT 0"},
+		{"qos_upload_mbps", "INTEGER NOT NULL DEFAULT 0"},
+		{"qos_download_mbps", "INTEGER NOT NULL DEFAULT 0"},
+		{"qos_interactive", "INTEGER NOT NULL DEFAULT 0"},
+	}
+	for _, column := range columns {
+		var count int
+		err := tx.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('links') WHERE name = ?`, column.name,
+		).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("check links.%s column: %w", column.name, err)
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE links ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+			return fmt.Errorf("add links.%s column: %w", column.name, err)
+		}
+	}
+	return nil
 }
 
 // migrateAddFirewallRuleGroupID adiciona firewall_rules.group_id em bancos
@@ -996,6 +1033,10 @@ CREATE TABLE IF NOT EXISTS links (
     last_check       DATETIME,
     enabled          INTEGER NOT NULL DEFAULT 1,
     table_id         INTEGER NOT NULL DEFAULT 0,
+    qos_enabled       INTEGER NOT NULL DEFAULT 0,
+    qos_upload_mbps   INTEGER NOT NULL DEFAULT 0,
+    qos_download_mbps INTEGER NOT NULL DEFAULT 0,
+    qos_interactive   INTEGER NOT NULL DEFAULT 0,
     created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
