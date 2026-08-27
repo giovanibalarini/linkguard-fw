@@ -122,21 +122,37 @@ func TestApplyFaultRaisesOutageAlert(t *testing.T) {
 }
 
 type spyExecutor struct {
-	calls     []string
-	onExecute func(string, []string)
+	calls            []string
+	onExecute        func(string, []string)
+	dryRun           bool
+	ignoreLinkWrites bool
+	interfaceUp      map[string]bool
 }
 
 func (f *spyExecutor) Execute(ctx context.Context, name string, args ...string) (string, error) {
 	f.calls = append(f.calls, strings.Join(append([]string{name}, args...), " "))
+	if !f.dryRun && !f.ignoreLinkWrites && name == "ip" && len(args) == 4 &&
+		args[0] == "link" && args[1] == "set" {
+		if f.interfaceUp == nil {
+			f.interfaceUp = make(map[string]bool)
+		}
+		f.interfaceUp[args[2]] = args[3] == "up"
+	}
 	if f.onExecute != nil {
 		f.onExecute(name, append([]string(nil), args...))
 	}
 	return "", nil
 }
 func (f *spyExecutor) ExecuteRead(ctx context.Context, name string, args ...string) (string, error) {
+	if name == "ip" && len(args) == 4 && args[0] == "link" && args[1] == "show" && args[2] == "dev" {
+		if f.interfaceUp[args[3]] {
+			return "2: " + args[3] + ": <BROADCAST,UP> mtu 1500 state UP", nil
+		}
+		return "2: " + args[3] + ": <BROADCAST> mtu 1500 state DOWN", nil
+	}
 	return "", nil
 }
-func (f *spyExecutor) IsDryRun() bool                              { return true }
+func (f *spyExecutor) IsDryRun() bool                              { return f.dryRun }
 func (_ *spyExecutor) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func TestArmWatchdogSkipsMalformedInterface(t *testing.T) {

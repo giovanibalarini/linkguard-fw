@@ -1,6 +1,7 @@
 package links_test
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -113,8 +114,8 @@ func TestGetLinkNotFound(t *testing.T) {
 	svc := newTestService(t)
 
 	_, err := svc.Get("nonexistent-id")
-	if err == nil {
-		t.Error("expected error for nonexistent ID")
+	if !errors.Is(err, links.ErrNotFound) {
+		t.Fatalf("Get() error = %v; want links.ErrNotFound", err)
 	}
 }
 
