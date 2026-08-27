@@ -273,3 +273,40 @@ func TestPersistOmitsDynamicAccountingElements(t *testing.T) {
 		}
 	}
 }
+
+// TestSetComPrazoENaoDinamicoTambemSaiDoArquivoDeBoot prende o caso que o
+// critério anterior deixava passar.
+//
+// O nft NÃO IMPRIME linha `flags` para um set que só tem prazo. A saída abaixo
+// é literal de uma caixa: `dom_blocked` guarda endereços aprendidos de DNS —
+// cache por construção — e um critério que procurava só a palavra `dynamic`
+// mandava esses endereços para o arquivo que o kernel carrega no boot.
+//
+// O efeito seria o da #198 num set adiante: o arquivo cresce com o que a rede
+// resolveu, e no boot o kernel restaura endereços de semanas atrás, barrando um
+// domínio que o admin já apagou — antes de o produto subir para desmentir.
+func TestSetComPrazoENaoDinamicoTambemSaiDoArquivoDeBoot(t *testing.T) {
+	const tabela = `table inet linkguard {
+	set dom_blocked {
+		type ipv4_addr
+		size 8192
+		timeout 1h
+		elements = { 142.250.219.14 timeout 1h expires 58m }
+	}
+	set blocklist {
+		type ipv4_addr
+		flags interval
+		elements = { 203.0.113.0/24 }
+	}
+}`
+	got := sanitizeDynamicSetElements(tabela)
+
+	if strings.Contains(got, "142.250.219.14") {
+		t.Error("o endereço aprendido de DNS sobreviveu para o arquivo de boot")
+	}
+	// A outra metade, e ela é a que impede o conserto de virar estrago: o set
+	// que o admin monta à mão não tem prazo, é configuração, e tem de ficar.
+	if !strings.Contains(got, "203.0.113.0/24") {
+		t.Error("a blocklist do admin foi apagada do arquivo de boot: configuração não expira e não pode sumir")
+	}
+}
