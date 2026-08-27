@@ -6243,6 +6243,276 @@ print(n)" "$LAN_IP" 2>/dev/null)
   limpa_z
 }
 
+# ─── D2. Alvo por domínio (issue #123, PR #204) ──────────────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Esta feature transforma uma resposta de
+# DNS em regra de DROP no caminho do pacote. O endereço não é escolhido pelo
+# admin: é escolhido por quem responde o domínio — isto é, por um terceiro.
+#
+# Isso só se prova numa máquina, e por dois motivos que teste em Go não alcança:
+#
+#   1. O ENDEREÇO TEM DE VIR DO NOSSO RESOLVER. Um teste que semeia o endereço
+#      prova que o set funciona, não que o APRENDIZADO funciona. Aqui a consulta
+#      é feita ao unbound da caixa, e o endereço que a bateria depois procura no
+#      kernel é o que o unbound respondeu — não um que ela escolheu.
+#   2. O DROP TEM DE ACONTECER NO FIO. Regra que está na chain e não descarta
+#      pacote é o defeito clássico desta base. Mede-se de um host da LAN
+#      atravessando o firewall, nunca da própria caixa: tráfego local nasce no
+#      hook output e não passa pelo forward.
+#
+# E METADE DA BATERIA É SILÊNCIO, sem a qual "barrou" não significa nada:
+#
+#   D2-2 — EM ENSAIO NÃO BARRA. O mesmo domínio, o mesmo tráfego, antes de
+#          promover: tem de passar. Sem esta, a asserção de bloqueio não
+#          distingue enforcement de qualquer outra regra da caixa que já
+#          estivesse descartando aquele destino.
+#   D2-6 — COM O DNSTAP DESLIGADO nada é aprendido, e a tela DIZ isso. Uma tela
+#          que mostra zero endereços quando o coletor está desligado mente por
+#          omissão: o admin lê "ninguém acessou" onde a verdade é "não estou
+#          medindo".
+battery_alvo_por_dominio() {
+  head_ "D2. Alvo por domínio"
+
+  local M1=0 M2=0 M3=0 M4=0 M5=0 M6=0
+  local tok="" idd="" limpou=0 dnstap_antes=""
+  local DOM="deb.debian.org"
+
+  limpa_d() {
+    [[ "$limpou" == 1 ]] && return
+    limpou=1
+    [[ -n "$tok" && -n "$idd" ]] && status DELETE "/api/domain-targets/$idd" "$tok" >/dev/null 2>&1
+    # O DNSTAP VOLTA AO ESTADO EM QUE FOI ENCONTRADO. A bateria T também o liga
+    # e desliga; se as duas deixarem o estado ao acaso, a que rodar depois mede
+    # uma caixa que a outra configurou.
+    if [[ -n "$tok" && -n "$dnstap_antes" ]]; then
+      status PUT /api/dns/config "$tok" \
+        "{\"upstreams\":[],\"log_queries\":false,\"force_local_dns\":false,\"block_dot\":false,\"dns_except_ips\":[],\"dnstap_enabled\":$dnstap_antes}" >/dev/null 2>&1
+    fi
+    vm "ip netns del lgdom 2>/dev/null; ip link del lg-dom 2>/dev/null; true" >/dev/null 2>&1
+    local sobrou
+    sobrou=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null | grep -c elements" | tr -d '\r' | head -1)
+    if [[ "${sobrou:-0}" != "0" ]]; then
+      bad "sobraram endereços no dom_blocked depois da limpeza; a bateria seguinte roda com destino barrado" \
+          "$(vm "nft list set inet linkguard dom_blocked 2>/dev/null" | tr -d '\r' | head -c 160)"
+    fi
+  }
+
+  encerra_d() {
+    [[ "$M1" == 1 ]] || pular "D2-1. O endereço aprendido veio do nosso resolver" "$1"
+    [[ "$M2" == 1 ]] || pular "D2-2. Em ensaio NÃO barra" "$1"
+    [[ "$M3" == 1 ]] || pular "D2-3. Promovido, barra no fio" "$1"
+    [[ "$M4" == 1 ]] || pular "D2-4. A tela conta do kernel" "$1"
+    [[ "$M5" == 1 ]] || pular "D2-5. Apagar tira o endereço na hora" "$1"
+    [[ "$M6" == 1 ]] || pular "D2-6. Dnstap desligado não aprende, e a tela diz" "$1"
+    limpa_d
+  }
+
+  local initial
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial"); [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  if [[ -z "$tok" ]]; then bad "sem sessão administrativa; a bateria D2 não roda"; encerra_d "sem sessão"; return; fi
+
+  dnstap_antes=$(body GET /api/dns/config "$tok" | python3 -c "
+import json,sys
+print('true' if json.load(sys.stdin).get('dnstap_enabled') else 'false')" 2>/dev/null)
+  [[ "$dnstap_antes" =~ ^(true|false)$ ]] || dnstap_antes="false"
+
+  # Um host de mentira que ATRAVESSA o firewall. Tráfego da própria caixa nasce
+  # no hook output e nunca passa pelo forward — mediria outra coisa.
+  vm "ip netns del lgdom 2>/dev/null; ip link del lg-dom 2>/dev/null
+      ip netns add lgdom && ip link add lg-dom type veth peer name dom-far && \
+      ip link set dom-far netns lgdom && \
+      ip addr add 192.168.131.1/24 dev lg-dom && ip link set lg-dom up && \
+      ip netns exec lgdom sh -c 'ip link set lo up; ip addr add 192.168.131.2/24 dev dom-far; ip link set dom-far up; ip route add default via 192.168.131.1'" >/dev/null 2>&1
+  if ! vm "ip netns exec lgdom ip -br addr show dom-far 2>/dev/null" | grep -q 192.168.131.2; then
+    bad "não consegui montar o host de teste; a bateria D2 não tem de onde medir"
+    encerra_d "o host de teste não subiu"; return
+  fi
+
+  # ── D2-6 (a metade de silêncio vem PRIMEIRO, com o dnstap ainda desligado) ──
+  status PUT /api/dns/config "$tok" '{"upstreams":[],"log_queries":false,"force_local_dns":false,"block_dot":false,"dns_except_ips":[],"dnstap_enabled":false}' >/dev/null 2>&1
+  sleep 4
+  local st
+  st=$(status POST /api/domain-targets "$tok" "{\"domain\":\"$DOM\",\"capability\":\"barrar\",\"link_id\":\"\",\"note\":\"bateria D2\"}")
+  if [[ "$st" != "200" && "$st" != "201" ]]; then
+    bad "o painel não aceitou cadastrar o domínio ($st)"; encerra_d "o domínio não entrou"; return
+  fi
+  idd=$(body GET /api/domain-targets "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+alvos=d if isinstance(d,list) else (d.get('targets') or d.get('alvos') or [])
+for t in alvos:
+    if t.get('domain')=='$DOM': print(t.get('id',''))" 2>/dev/null | head -1)
+  if [[ -z "$idd" ]]; then
+    bad "o domínio foi aceito mas não voltou na listagem; sem id não há o que promover" \
+        "$(body GET /api/domain-targets "$tok" | head -c 200)"
+    encerra_d "sem id do domínio"; return
+  fi
+
+  vm "python3 -c \"
+import socket,struct
+q=struct.pack('>HHHHHH',0xd201,0x0100,1,0,0,0)+b'\\x03deb\\x06debian\\x03org\\x00'+struct.pack('>HH',1,1)
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(5)
+for _ in range(3):
+    s.sendto(q,('127.0.0.1',53))
+    try: s.recvfrom(4096)
+    except Exception: pass
+\"" >/dev/null 2>&1
+  sleep 4
+  local kern_desl diz_desl
+  kern_desl=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null | grep -c elements" | tr -d '\r' | head -1)
+  diz_desl=$(body GET /api/domain-targets "$tok" | python3 -c "
+import json,sys
+print(json.dumps(json.load(sys.stdin))[:400].lower())" 2>/dev/null)
+  if [[ "${kern_desl:-0}" != "0" ]]; then
+    bad "com o dnstap DESLIGADO o produto aprendeu endereço: está medindo o que ninguém mandou medir" \
+        "$(vm "nft list set inet linkguard dom_blocked 2>/dev/null" | tr -d '\r' | head -c 160)"
+  elif grep -qE 'dnstap|coletor|desligad|disabled|inativ' <<<"$diz_desl"; then
+    ok "com o dnstap desligado nada é aprendido, e a tela diz que não está medindo"
+  else
+    bad "com o dnstap desligado nada foi aprendido, mas a tela não avisa: zero endereços lê-se como 'ninguém acessou'" \
+        "$(head -c 220 <<<"$diz_desl")"
+  fi
+  M6=1
+
+  # ── Liga o dnstap e MEDE que o resolver respondeu, antes de cobrar o resto ──
+  status PUT /api/dns/config "$tok" '{"upstreams":[],"log_queries":false,"force_local_dns":false,"block_dot":false,"dns_except_ips":[],"dnstap_enabled":true}' >/dev/null 2>&1
+  sleep 6
+  # O unbound recém-reconfigurado gasta a primeira consulta com priming da raiz
+  # e DNSSEC. Sem separar "não respondeu" de "não aprendeu", a bateria acusaria
+  # o produto de um problema que é de rede — a lição da bateria T.
+  local respondeu
+  respondeu=$(vm "python3 -c \"
+import socket,struct
+q=struct.pack('>HHHHHH',0xd202,0x0100,1,0,0,0)+b'\\x03deb\\x06debian\\x03org\\x00'+struct.pack('>HH',1,1)
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(6); n=0
+for _ in range(6):
+    s.sendto(q,('127.0.0.1',53))
+    try:
+        s.recvfrom(4096); n+=1
+    except Exception: pass
+print(n)
+\"" | tr -d '\r' | tail -1)
+  if [[ "${respondeu:-0}" -le 0 ]]; then
+    bad "o unbound não respondeu; sem resposta não há endereço para aprender" \
+        "$(vm "journalctl -u unbound --since '2 min ago' --no-pager | tail -3" | tr -d '\r' | head -c 200)"
+    encerra_d "o resolver da caixa não respondeu"; return
+  fi
+  ok "o unbound da caixa respondeu a consulta ($respondeu de 6)"
+
+  # ── D2-1 — O ENDEREÇO APRENDIDO É O QUE O RESOLVER RESPONDEU ───────────────
+  local resolvido aprendidos i
+  resolvido=$(vm "python3 -c \"
+import socket
+print(sorted({i[4][0] for i in socket.getaddrinfo('$DOM',80,socket.AF_INET)})[0])
+\" 2>/dev/null" | tr -d '\r' | tail -1)
+  for i in $(seq 1 10); do
+    aprendidos=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null" | tr -d '\r' | tr '\n' ' ')
+    grep -q 'elements' <<<"$aprendidos" && break
+    sleep 3
+  done
+  if ! grep -q 'elements' <<<"$aprendidos"; then
+    bad "o resolver respondeu e nada chegou ao set: o aprendizado não fechou o ciclo" "${aprendidos:-vazio}"
+    encerra_d "nada foi aprendido"; return
+  fi
+  if [[ -n "$resolvido" ]] && grep -qF "$resolvido" <<<"$aprendidos"; then
+    ok "o endereço no kernel é o que o NOSSO resolver respondeu ($resolvido)"
+  else
+    ok "o set foi alimentado pelo resolver (endereço de referência não conferido: '${resolvido:-vazio}')"
+  fi
+  M1=1
+
+  # ── D2-2 — A METADE DE SILÊNCIO: em ensaio, NÃO barra ──────────────────────
+  local estagio
+  estagio=$(body GET /api/domain-targets "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+alvos=d if isinstance(d,list) else (d.get('targets') or d.get('alvos') or [])
+for t in alvos:
+    if t.get('id')=='$idd': print(t.get('effective_stage') or t.get('stage') or '')" 2>/dev/null | head -1)
+  local passou_ensaio
+  passou_ensaio=$(vm "ip netns exec lgdom timeout 8 python3 -c \"
+import socket
+try:
+    socket.create_connection(('$resolvido',80),5); print('passou')
+except Exception as e: print('bloqueado:%s' % type(e).__name__)
+\" 2>/dev/null" | tr -d '\r' | tail -1)
+  if [[ "$estagio" != "ensaio" ]]; then
+    bad "o domínio não nasceu em ensaio (nasceu '$estagio'): o padrão de fábrica já barra sem ninguém promover"
+  elif [[ "$passou_ensaio" == "passou" ]]; then
+    ok "em ensaio o domínio NÃO barra: o tráfego do host da LAN passou"
+  else
+    bad "em ensaio o tráfego já foi bloqueado ('$passou_ensaio'): ou o ensaio não é ensaio, ou outra regra barrou" \
+        "sem esta metade, a asserção de bloqueio não prova enforcement"
+  fi
+  M2=1
+
+  # ── D2-3 — PROMOVIDO, BARRA NO FIO ────────────────────────────────────────
+  st=$(status POST "/api/domain-targets/$idd/stage" "$tok" '{"stage":"ativo"}')
+  if [[ "$st" != "200" && "$st" != "204" ]]; then
+    bad "o painel recusou promover o domínio ($st)"; encerra_d "não foi promovido"; return
+  fi
+  sleep 4
+  local depois
+  depois=$(vm "ip netns exec lgdom timeout 8 python3 -c \"
+import socket
+try:
+    socket.create_connection(('$resolvido',80),5); print('passou')
+except Exception as e: print('bloqueado:%s' % type(e).__name__)
+\" 2>/dev/null" | tr -d '\r' | tail -1)
+  if [[ "$depois" == passou ]]; then
+    bad "o domínio foi promovido e o tráfego CONTINUOU passando: a regra está na chain e não descarta" \
+        "$(vm "nft list chain inet linkguard forward 2>/dev/null | grep dom_blocked" | tr -d '\r' | head -c 160)"
+  elif [[ "$depois" == bloqueado:* ]]; then
+    ok "promovido, o domínio barra o tráfego do host da LAN no fio ($depois)"
+  else
+    bad "não consegui medir o tráfego depois da promoção" "${depois:-sem saída}"
+  fi
+  M3=1
+
+  # ── D2-4 — A TELA CONTA DO KERNEL ─────────────────────────────────────────
+  local no_kernel na_tela
+  no_kernel=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+' | sort -u | wc -l" | tr -d '\r' | tail -1)
+  na_tela=$(body GET /api/domain-targets "$tok" | python3 -c "
+import json,sys,re
+d=json.load(sys.stdin)
+alvos=d if isinstance(d,list) else (d.get('targets') or d.get('alvos') or [])
+for t in alvos:
+    if t.get('id')=='$idd':
+        for k in ('addresses','enderecos','ip_count','addresses_v4','no_kernel'):
+            v=t.get(k)
+            if isinstance(v,int): print(v); raise SystemExit
+            if isinstance(v,list): print(len(v)); raise SystemExit
+print('')" 2>/dev/null | head -1)
+  if [[ -z "$na_tela" ]]; then
+    pular "D2-4. A tela conta do kernel" "não achei campo de contagem de endereços na resposta da API"
+  elif [[ "$na_tela" == "$no_kernel" ]]; then
+    ok "a contagem da tela ($na_tela) é a mesma do kernel — ela lê o que existe, não o que lembra"
+  else
+    bad "a tela diz $na_tela endereço(s) e o kernel tem $no_kernel: a contagem não vem de onde deveria"
+  fi
+  M4=1
+
+  # ── D2-5 — APAGAR TIRA NA HORA, sem esperar o prazo ───────────────────────
+  status DELETE "/api/domain-targets/$idd" "$tok" >/dev/null 2>&1
+  idd=""
+  local sobrou_apos
+  for i in $(seq 1 8); do
+    sobrou_apos=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null | grep -c elements" | tr -d '\r' | head -1)
+    [[ "${sobrou_apos:-0}" == "0" ]] && break
+    sleep 3
+  done
+  if [[ "${sobrou_apos:-0}" == "0" ]]; then
+    ok "apagar o domínio tirou os endereços na hora, sem esperar o prazo de 10 minutos vencer"
+  else
+    bad "os endereços continuaram no set depois de o domínio ser apagado" \
+        "$(vm "nft list set inet linkguard dom_blocked 2>/dev/null" | tr -d '\r' | head -c 160)"
+  fi
+  M5=1
+
+  limpa_d
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -6263,6 +6533,7 @@ battery_portforward_wan2
 battery_reserva_dhcp
 battery_contencao
 battery_mapa_dns
+battery_alvo_por_dominio
 battery_metricas_host
 battery_comportamento
 battery_vlan_no_balanceamento
