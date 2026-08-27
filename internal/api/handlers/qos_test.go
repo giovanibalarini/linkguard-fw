@@ -96,8 +96,8 @@ func decodeQosJSON(t *testing.T, rec *httptest.ResponseRecorder, target interfac
 func configureManagedQosReads(exec *qosHandlerExec, iface string, _, _ int) {
 	ifb := qos.IFBName(iface)
 	exec.readOutputs = map[string]string{
-		"tc\x00qdisc\x00show\x00dev\x00" + iface:                                   "qdisc cake 1: root bandwidth 50Mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
-		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                     "qdisc cake 1: root bandwidth 200Mbit besteffort dual-dsthost\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + iface:                                   "qdisc cake cafe: root bandwidth 50Mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                     "qdisc cake caff: root bandwidth 200Mbit besteffort dual-dsthost\n",
 		"tc\x00filter\x00show\x00dev\x00" + iface + "\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
 	}
 }
@@ -128,8 +128,8 @@ func TestQosGetReturnsStoredConfigurationWithoutApplying(t *testing.T) {
 		dryRun: true,
 		readOutputs: map[string]string{
 			"ip\x00link\x00show\x00dev\x00" + ifb:                             "7: " + ifb + ": <BROADCAST,UP> mtu 1500",
-			"tc\x00qdisc\x00show\x00dev\x00wan0":                              "qdisc cake 1: root bandwidth 50Mbit diffserv4 dual-srchost\n",
-			"tc\x00qdisc\x00show\x00dev\x00" + ifb:                            "qdisc cake 1: root bandwidth 200Mbit diffserv4 dual-dsthost\n",
+			"tc\x00qdisc\x00show\x00dev\x00wan0":                              "qdisc cake cafe: root bandwidth 50Mbit diffserv4 dual-srchost\n",
+			"tc\x00qdisc\x00show\x00dev\x00" + ifb:                            "qdisc cake caff: root bandwidth 200Mbit diffserv4 dual-dsthost\n",
 			"tc\x00filter\x00show\x00dev\x00wan0\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall action mirred egress redirect to device " + ifb,
 		},
 	}
@@ -217,7 +217,7 @@ func TestQosPutAppliesBeforePersistingAndPreservesLinkFields(t *testing.T) {
 		stored.Enabled != original.Enabled {
 		t.Errorf("PUT changed non-QoS link fields: got %#v, original %#v", stored, original)
 	}
-	if !containsEvent(exec.events, "write:tc qdisc replace dev wan0 root handle 1: cake bandwidth 50mbit diffserv4 dual-srchost") {
+	if !containsEvent(exec.events, "write:tc qdisc replace dev wan0 root handle cafe: cake bandwidth 50mbit diffserv4 dual-srchost") {
 		t.Errorf("PUT did not apply the requested configuration first; events = %v", exec.events)
 	}
 }
@@ -311,7 +311,7 @@ func TestQosPutRejectsNewerLinkLifecycleAndRestoresWithoutOverwritingIt(t *testi
 		stored.QoSDownloadMbps != original.QoSDownloadMbps || stored.QoSInteractive != original.QoSInteractive {
 		t.Fatalf("stale QoS PUT changed newer QoS fields: got %+v, want %+v", stored, original)
 	}
-	if !containsEventAfter(exec.events, "write:tc qdisc replace dev wan0 root handle 1: cake bandwidth 75mbit", "write:tc filter del dev wan0 ingress pref 49152") {
+	if !containsEventAfter(exec.events, "write:tc qdisc replace dev wan0 root handle cafe: cake bandwidth 75mbit", "write:tc filter del dev wan0 ingress pref 49152") {
 		t.Fatalf("stale QoS PUT did not restore the prior kernel config: %v", exec.events)
 	}
 }
@@ -396,11 +396,11 @@ func TestQosCompensationReconciliationDetachesFromCanceledRequest(t *testing.T) 
 func containsEventAfter(events []string, first, second string) bool {
 	firstIndex := -1
 	for i, event := range events {
-		if firstIndex == -1 && event == first {
+		if firstIndex == -1 && strings.HasPrefix(event, first) {
 			firstIndex = i
 			continue
 		}
-		if firstIndex != -1 && event == second {
+		if firstIndex != -1 && strings.HasPrefix(event, second) {
 			return true
 		}
 	}
@@ -468,7 +468,7 @@ func TestQosPostReturnsBeforeAndAfterMeasurements(t *testing.T) {
 			firstPing = i
 		} else if strings.HasPrefix(event, "read:ping") && secondPing == -1 {
 			secondPing = i
-		} else if strings.HasPrefix(event, "write:tc qdisc replace dev wan0 root handle 1: cake") && firstApply == -1 {
+		} else if strings.HasPrefix(event, "write:tc qdisc replace dev wan0 root handle cafe: cake") && firstApply == -1 {
 			firstApply = i
 		}
 	}
@@ -483,19 +483,9 @@ func TestQosPostRejectsMovedLinkBeforeFirstPing(t *testing.T) {
 	link.QoSEnabled = true
 	link.QoSUploadMbps = 50
 	link.QoSDownloadMbps = 200
-	h, db, service := newQosHandlerServiceFixture(t, link, exec)
-
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	lockDone := make(chan error, 1)
-	go func() {
-		lockDone <- service.WithInterfaceLock(context.Background(), link.Interface, func(qos.InterfaceOperations) error {
-			close(entered)
-			<-release
-			return nil
-		})
-	}()
-	<-entered
+	_, db, service := newQosHandlerServiceFixture(t, link, exec)
+	barrier := &measureBarrierService{Service: service, entered: make(chan struct{}), release: make(chan struct{})}
+	h := handlers.NewQosHandler(barrier, db)
 
 	response := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -504,6 +494,7 @@ func TestQosPostRejectsMovedLinkBeforeFirstPing(t *testing.T) {
 		h.Test(rec, req)
 		response <- rec
 	}()
+	<-barrier.entered
 	current, err := db.GetLink(link.ID)
 	if err != nil {
 		t.Fatalf("GetLink before move: %v", err)
@@ -512,10 +503,7 @@ func TestQosPostRejectsMovedLinkBeforeFirstPing(t *testing.T) {
 	if err := db.UpdateLink(current); err != nil {
 		t.Fatalf("move link: %v", err)
 	}
-	close(release)
-	if err := <-lockDone; err != nil {
-		t.Fatalf("release interface lock: %v", err)
-	}
+	close(barrier.release)
 	rec := <-response
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("moved link POST status = %d, body = %s; want 409", rec.Code, rec.Body.String())
@@ -533,19 +521,9 @@ func TestQosPostRejectsDeletedLinkBeforeFirstPing(t *testing.T) {
 	link.QoSEnabled = true
 	link.QoSUploadMbps = 50
 	link.QoSDownloadMbps = 200
-	h, db, service := newQosHandlerServiceFixture(t, link, exec)
-
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	lockDone := make(chan error, 1)
-	go func() {
-		lockDone <- service.WithInterfaceLock(context.Background(), link.Interface, func(qos.InterfaceOperations) error {
-			close(entered)
-			<-release
-			return nil
-		})
-	}()
-	<-entered
+	_, db, service := newQosHandlerServiceFixture(t, link, exec)
+	barrier := &measureBarrierService{Service: service, entered: make(chan struct{}), release: make(chan struct{})}
+	h := handlers.NewQosHandler(barrier, db)
 
 	response := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -554,13 +532,11 @@ func TestQosPostRejectsDeletedLinkBeforeFirstPing(t *testing.T) {
 		h.Test(rec, req)
 		response <- rec
 	}()
+	<-barrier.entered
 	if err := db.DeleteLink(link.ID); err != nil {
 		t.Fatalf("delete link: %v", err)
 	}
-	close(release)
-	if err := <-lockDone; err != nil {
-		t.Fatalf("release interface lock: %v", err)
-	}
+	close(barrier.release)
 	rec := <-response
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("deleted link POST status = %d, body = %s; want 404", rec.Code, rec.Body.String())
@@ -570,6 +546,86 @@ func TestQosPostRejectsDeletedLinkBeforeFirstPing(t *testing.T) {
 			t.Fatalf("deleted link was pinged before lifecycle validation: %v", exec.events)
 		}
 	}
+}
+
+type measureBarrierService struct {
+	*qos.Service
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *measureBarrierService) MeasureCurrentBeforeAfter(ctx context.Context, iface string, load func() (qos.Config, error)) (qos.Comparison, error) {
+	close(s.entered)
+	select {
+	case <-ctx.Done():
+		return qos.Comparison{}, ctx.Err()
+	case <-s.release:
+	}
+	return s.Service.MeasureCurrentBeforeAfter(ctx, iface, load)
+}
+
+func TestLinksUpdateCanceledWhileWaitingForQosLockDoesNotMutateDatabase(t *testing.T) {
+	original := qosLink()
+	exec := &qosHandlerExec{dryRun: true}
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.CreateLink(&original); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+	underlying := qos.NewService(exec)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- underlying.WithInterfaceLock(context.Background(), original.Interface, func(qos.InterfaceOperations) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	waiting := &lockEntryService{Service: underlying, entered: make(chan struct{})}
+	h := handlers.NewLinksHandler(links.NewService(db), db, nil, nil)
+	h.SetQosService(waiting)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := withChiURLParam(httptest.NewRequest(http.MethodPut, "/api/links/wan-1", strings.NewReader(`{"name":"must-not-persist","interface":"wan0","weight":70,"enabled":true}`)).WithContext(ctx), "id", original.ID)
+		rec := httptest.NewRecorder()
+		h.Update(rec, req)
+		response <- rec
+	}()
+	<-waiting.entered
+	cancel()
+	rec := <-response
+	if rec.Code >= 200 && rec.Code < 300 {
+		t.Fatalf("canceled link update status = %d, body = %s; want failure", rec.Code, rec.Body.String())
+	}
+	stored, err := db.GetLink(original.ID)
+	if err != nil {
+		t.Fatalf("GetLink: %v", err)
+	}
+	if stored.Name != original.Name || stored.Interface != original.Interface {
+		t.Fatalf("canceled lock waiter mutated database: got %+v, want name=%q interface=%q", stored, original.Name, original.Interface)
+	}
+	close(release)
+	if err := <-holderDone; err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+}
+
+type lockEntryService struct {
+	*qos.Service
+	entered chan struct{}
+}
+
+func (s *lockEntryService) WithInterfaceLock(ctx context.Context, iface string, fn func(qos.InterfaceOperations) error) error {
+	close(s.entered)
+	return s.Service.WithInterfaceLock(ctx, iface, fn)
 }
 
 func TestLinksUpdateReturnsConflictWhenLinkMovesBeforeSharedLockCallback(t *testing.T) {
@@ -699,11 +755,11 @@ func (lifecycleQosOperations) Apply(context.Context, qos.Config) (qos.State, err
 	return qos.State{}, nil
 }
 
-func (lifecycleQosOperations) ApplyNetem(context.Context, int, int) error {
+func (lifecycleQosOperations) ApplyNetem(context.Context, qos.NetemFault) error {
 	return nil
 }
 
-func (lifecycleQosOperations) RestoreAfterNetem(context.Context, qos.Config) (qos.State, error) {
+func (lifecycleQosOperations) RestoreAfterNetem(context.Context, qos.Config, qos.NetemFault) (qos.State, error) {
 	return qos.State{}, nil
 }
 
@@ -903,8 +959,8 @@ func TestLinksDeleteReturns500AndAttemptsFreshReconciliationWhenCleanupRestoreFa
 	}
 	ifb := qos.IFBName(original.Interface)
 	exec.readOutputs = map[string]string{
-		"tc\x00qdisc\x00show\x00dev\x00" + original.Interface:                                   "qdisc cake 1: root bandwidth 50Mbit besteffort dual-srchost\n",
-		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                                  "qdisc cake 1: root bandwidth 200Mbit besteffort dual-dsthost\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + original.Interface:                                   "qdisc cake cafe: root bandwidth 50Mbit besteffort dual-srchost\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                                  "qdisc cake caff: root bandwidth 200Mbit besteffort dual-dsthost\n",
 		"tc\x00filter\x00show\x00dev\x00" + original.Interface + "\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
 	}
 	closed := false

@@ -220,6 +220,24 @@ func TestBuildServicesUsesTheSameQosServiceForAPIAndBoot(t *testing.T) {
 		t.Fatal("api.Server does not hold the QoS service created by buildServices")
 	}
 	if serverField.Pointer() != reflect.ValueOf(s.qosSvc).Pointer() {
-		t.Fatalf("API and boot received different QoS service instances: api=%p boot=%p", serverField.Pointer(), s.qosSvc)
+		t.Fatalf("API and boot received different QoS service instances: api=%#x boot=%p", serverField.Pointer(), s.qosSvc)
+	}
+}
+
+func TestBuildServicesUsesOneDurableStressServiceForAPIAndBoot(t *testing.T) {
+	s := buildTestServices(t)
+	if s.stressSvc == nil {
+		t.Fatal("buildServices did not create the stress service used for boot recovery")
+	}
+	serverField := reflect.ValueOf(s.server).Elem().FieldByName("stressSvc")
+	if !serverField.IsValid() || serverField.IsNil() {
+		t.Fatal("api.Server does not hold the stress service created by buildServices")
+	}
+	if serverField.Pointer() != reflect.ValueOf(s.stressSvc).Pointer() {
+		t.Fatalf("API and boot received different stress service instances: api=%#x boot=%p", serverField.Pointer(), s.stressSvc)
+	}
+	recoveryField := reflect.ValueOf(s.stressSvc).Elem().FieldByName("recovery")
+	if !recoveryField.IsValid() || recoveryField.IsNil() {
+		t.Fatal("production stress service has no durable recovery store")
 	}
 }

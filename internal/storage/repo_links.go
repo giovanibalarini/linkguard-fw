@@ -2,10 +2,16 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrLinkStateChanged marks a failed lifecycle/QoS compare-and-swap without
+// requiring HTTP callers to import database/sql. The returned error also wraps
+// sql.ErrNoRows for repository callers that historically checked it.
+var ErrLinkStateChanged = errors.New("link state changed")
 
 // ─── Links repository ────────────────────────────────────────────────────────
 
@@ -109,7 +115,7 @@ func (db *DB) UpdateLinkQoS(id, expectedInterface string, enabled bool, uploadMb
 		return err
 	}
 	if affected == 0 {
-		return sql.ErrNoRows
+		return errors.Join(ErrLinkStateChanged, sql.ErrNoRows)
 	}
 	return nil
 }
@@ -142,7 +148,7 @@ func (db *DB) UpdateLinkQoSIfCurrent(
 		return err
 	}
 	if affected == 0 {
-		return sql.ErrNoRows
+		return errors.Join(ErrLinkStateChanged, sql.ErrNoRows)
 	}
 	return nil
 }

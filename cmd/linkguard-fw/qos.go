@@ -6,7 +6,17 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/qos"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/stresstest"
 )
+
+func recoverStressTestOnBoot(ctx context.Context, svc *stresstest.Service) {
+	if svc == nil {
+		return
+	}
+	if err := svc.RecoverInterrupted(ctx); err != nil {
+		slog.Error("não foi possível recuperar stress test interrompido no boot", "err", err)
+	}
+}
 
 // reconcileQoSOnBoot reapplies enabled QoS and removes stale objects for every
 // persisted link. The loader is called while each interface is locked by

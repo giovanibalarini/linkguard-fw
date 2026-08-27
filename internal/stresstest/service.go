@@ -23,9 +23,11 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/links"
 	"github.com/giovanibalarini/linkguard-fw/internal/qos"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
-// reIface constrains interface names (embedded in the watchdog shell command).
+// reIface constrains interface names passed to ip/tc and persisted in the
+// crash-recovery lease.
 var reIface = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,15}$`)
 
 const (
@@ -80,6 +82,7 @@ type Service struct {
 	linkSvc  *links.Service
 	alertSvc *alerts.Service
 	qosSvc   qosCoordinator
+	recovery recoveryStore
 
 	mu             sync.Mutex
 	active         *Test
@@ -92,6 +95,12 @@ type Service struct {
 
 type qosCoordinator interface {
 	WithInterfaceLock(context.Context, string, func(qos.InterfaceOperations) error) error
+}
+
+type recoveryStore interface {
+	SaveStressRecoveryLease(*storage.StressRecoveryLease) error
+	GetStressRecoveryLease() (*storage.StressRecoveryLease, error)
+	ClearStressRecoveryLease(string) error
 }
 
 // NewService creates a stress-test Service.
@@ -113,6 +122,14 @@ func NewService(exec firewall.Executor, linkSvc *links.Service, alertSvc *alerts
 func (s *Service) SetQosService(service qosCoordinator) {
 	if service != nil {
 		s.qosSvc = service
+	}
+}
+
+// SetRecoveryStore wires the durable lease used to recover a fault after a
+// process or host crash. Start fails closed until this dependency is present.
+func (s *Service) SetRecoveryStore(store recoveryStore) {
+	if store != nil {
+		s.recovery = store
 	}
 }
 
@@ -205,9 +222,9 @@ func (s *Service) Start(p StartParams) (*Test, error) {
 	if tgt == nil || !tgt.enabled || tgt.iface == "" {
 		return nil, fmt.Errorf("link inválido ou desabilitado")
 	}
-	// Defense-in-depth: the interface is embedded in a shell command (watchdog),
-	// so reject anything outside a strict interface charset even though links
-	// are validated on creation.
+	// Defense-in-depth: reject anything outside a strict interface charset even
+	// though links are validated on creation. Recovery may replay this argv
+	// after a restart, so the persisted identifier must remain self-validating.
 	if !reIface.MatchString(tgt.iface) {
 		return nil, fmt.Errorf("nome de interface inválido")
 	}
@@ -227,6 +244,15 @@ func (s *Service) Start(p StartParams) (*Test, error) {
 		State:       "running",
 		StartedAt:   s.nowFn(),
 		Samples:     []Sample{},
+	}
+	if s.recovery == nil {
+		return nil, errors.New("armazenamento de recuperação do stress test não configurado")
+	}
+	if err := s.recovery.SaveStressRecoveryLease(&storage.StressRecoveryLease{
+		TestID: t.ID, LinkID: t.LinkID, Interface: t.Interface, Mode: string(t.Mode),
+		DelayMs: t.DelayMs, LossPct: t.LossPct, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return nil, fmt.Errorf("registrar recuperação do stress test: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -255,13 +281,17 @@ type linkInfo struct {
 func (s *Service) run(ctx context.Context, t *Test) {
 	origRoute := s.currentDefault()
 	s.armWatchdog(t)
-	defer s.disarmWatchdog()
 
 	s.appendSample(t, "baseline")
 	if err := s.applyFault(t); err != nil {
 		slog.Error("não foi possível aplicar a falha do stress test", "link_id", t.LinkID, "interface", t.Interface, "err", err)
-		s.restore(t, origRoute)
-		s.finalizeError(t, err)
+		restoreErr := s.restore(t, origRoute)
+		if restoreErr == nil {
+			s.disarmWatchdog()
+		} else {
+			slog.Error("não foi possível reconciliar o stress test que falhou ao iniciar", "link_id", t.LinkID, "interface", t.Interface, "err", restoreErr)
+		}
+		s.finalizeError(t, errors.Join(err, restoreErr), restoreErr == nil)
 		return
 	}
 
@@ -287,8 +317,13 @@ func (s *Service) run(ctx context.Context, t *Test) {
 		s.removeFault(t)
 	}
 	aborted := ctx.Err() != nil
-	s.restore(t, origRoute)
-	s.finalize(t, aborted)
+	restoreErr := s.restore(t, origRoute)
+	if restoreErr == nil {
+		s.disarmWatchdog()
+	} else {
+		slog.Error("não foi possível restaurar interface/QoS após stress test", "link_id", t.LinkID, "interface", t.Interface, "err", restoreErr)
+	}
+	s.finalize(t, aborted, restoreErr == nil)
 }
 
 func (s *Service) wait(ctx context.Context, d time.Duration) {
@@ -319,7 +354,7 @@ func (s *Service) applyFault(t *Test) error {
 			_, err := s.exec.Execute(ctx, "ip", "link", "set", t.Interface, "down")
 			return err
 		}
-		return ops.ApplyNetem(ctx, t.DelayMs, t.LossPct)
+		return ops.ApplyNetem(ctx, qos.NetemFault{DelayMs: t.DelayMs, LossPct: t.LossPct})
 	})
 }
 
@@ -333,11 +368,14 @@ func (s *Service) removeFault(t *Test) {
 
 // restore guarantees the link is up, an owned netem is cleared, persisted QoS
 // is reapplied, and the prior default route is restored.
-func (s *Service) restore(t *Test, origFlat string) {
+func (s *Service) restore(t *Test, origFlat string) error {
 	ctx, cancel := bg()
 	defer cancel()
 	if err := s.restoreInterface(ctx, t); err != nil {
-		slog.Error("não foi possível restaurar interface/QoS após stress test", "link_id", t.LinkID, "interface", t.Interface, "err", err)
+		return err
+	}
+	if err := s.clearRecoveryLease(t.ID); err != nil {
+		return err
 	}
 	if origFlat != "" {
 		args := append([]string{"route", "replace"}, strings.Fields(origFlat)...)
@@ -346,6 +384,57 @@ func (s *Service) restore(t *Test, origFlat string) {
 	if s.alertSvc != nil {
 		_ = s.alertSvc.LinkOnline(t.LinkName, t.LinkID)
 	}
+	return nil
+}
+
+// RecoverInterrupted reconciles the singleton lease left by an interrupted
+// process. It clears the lease only after the exact owned fault is safely
+// removed and current persisted QoS has been reapplied.
+func (s *Service) RecoverInterrupted(ctx context.Context) error {
+	if s.recovery == nil {
+		return errors.New("armazenamento de recuperação do stress test não configurado")
+	}
+	lease, err := s.recovery.GetStressRecoveryLease()
+	if err != nil || lease == nil {
+		return err
+	}
+	if !reIface.MatchString(lease.Interface) {
+		return fmt.Errorf("lease de recuperação tem interface inválida %q", lease.Interface)
+	}
+	t := &Test{
+		ID: lease.TestID, LinkID: lease.LinkID, Interface: lease.Interface,
+		Mode: Mode(lease.Mode), DelayMs: lease.DelayMs, LossPct: lease.LossPct,
+	}
+	if t.Mode != ModeOutage && t.Mode != ModeDegrade {
+		return fmt.Errorf("lease de recuperação tem modo inválido %q", lease.Mode)
+	}
+	if t.Mode == ModeDegrade {
+		fault := qos.NetemFault{DelayMs: t.DelayMs, LossPct: t.LossPct}
+		if fault.DelayMs <= 0 || fault.LossPct < 0 || fault.LossPct > 100 {
+			return errors.New("lease de recuperação tem assinatura netem inválida")
+		}
+	}
+	if err := s.restoreInterface(ctx, t); err != nil {
+		return err
+	}
+	return s.clearRecoveryLease(t.ID)
+}
+
+func (s *Service) clearRecoveryLease(testID string) error {
+	if s.recovery == nil {
+		return errors.New("armazenamento de recuperação do stress test não configurado")
+	}
+	lease, err := s.recovery.GetStressRecoveryLease()
+	if err != nil {
+		return err
+	}
+	if lease == nil {
+		return nil
+	}
+	if lease.TestID != testID {
+		return fmt.Errorf("lease de recuperação pertence ao teste %q, não %q", lease.TestID, testID)
+	}
+	return s.recovery.ClearStressRecoveryLease(testID)
 }
 
 func (s *Service) restoreInterface(ctx context.Context, t *Test) error {
@@ -362,7 +451,7 @@ func (s *Service) restoreInterface(ctx context.Context, t *Test) error {
 			cfg = qos.Config{Interface: t.Interface}
 		}
 		if t.Mode == ModeDegrade {
-			_, err = ops.RestoreAfterNetem(ctx, cfg)
+			_, err = ops.RestoreAfterNetem(ctx, cfg, qos.NetemFault{DelayMs: t.DelayMs, LossPct: t.LossPct})
 		} else {
 			_, err = ops.Apply(ctx, cfg)
 		}
@@ -430,6 +519,10 @@ func (s *Service) armWatchdog(t *Test) {
 		defer cancel()
 		if err := s.restoreInterface(ctx, &snapshot); err != nil {
 			slog.Error("watchdog não conseguiu restaurar interface/QoS", "link_id", snapshot.LinkID, "interface", snapshot.Interface, "err", err)
+			return
+		}
+		if err := s.clearRecoveryLease(snapshot.ID); err != nil {
+			slog.Error("watchdog restaurou a interface, mas não confirmou a lease", "link_id", snapshot.LinkID, "interface", snapshot.Interface, "err", err)
 		}
 	}()
 }
@@ -466,7 +559,7 @@ func (s *Service) appendSample(t *Test, phase string) {
 	s.mu.Unlock()
 }
 
-func (s *Service) finalize(t *Test, aborted bool) {
+func (s *Service) finalize(t *Test, aborted, restored bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pingFail, dnsFail, n := 0, 0, 0
@@ -486,8 +579,13 @@ func (s *Service) finalize(t *Test, aborted bool) {
 		t.PingLossPct = float64(pingFail) / float64(n) * 100
 		t.DNSLossPct = float64(dnsFail) / float64(n) * 100
 	}
-	t.Restored = true
+	t.Restored = restored
 	t.EndedAt = s.nowFn()
+	if !restored {
+		t.State = "error"
+		t.Message = "Teste encerrado, mas a restauração ficou pendente para o watchdog/boot."
+		return
+	}
 	if aborted {
 		t.State = "aborted"
 		t.Message = "Teste abortado — link restaurado."
@@ -498,11 +596,15 @@ func (s *Service) finalize(t *Test, aborted bool) {
 	}
 }
 
-func (s *Service) finalizeError(t *Test, err error) {
+func (s *Service) finalizeError(t *Test, err error, restored bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t.Restored = true
+	t.Restored = restored
 	t.EndedAt = s.nowFn()
 	t.State = "error"
-	t.Message = "Falha ao aplicar o teste; o link foi reconciliado: " + err.Error()
+	if restored {
+		t.Message = "Falha ao aplicar o teste; o link foi reconciliado: " + err.Error()
+	} else {
+		t.Message = "Falha ao aplicar o teste; restauração pendente para o watchdog/boot: " + err.Error()
+	}
 }

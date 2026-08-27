@@ -100,6 +100,7 @@ type Server struct {
 	wgSvc     *wireguard.Service
 	netH      *handlers.NetsvcHandler
 	qosSvc    *qos.Service
+	stressSvc *stresstest.Service
 }
 
 // Config holds server configuration.
@@ -148,6 +149,8 @@ type Config struct {
 	WireGuard *wireguard.Service
 	// QoS é o serviço compartilhado pelo handler e pela reconciliação de boot.
 	QoS *qos.Service
+	// StressTest is the process-wide service shared by HTTP and boot recovery.
+	StressTest *stresstest.Service
 }
 
 // New creates and wires up the HTTP server.
@@ -188,6 +191,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 		backupSched: backupSched,
 		webFS:       cfg.WebFS,
 		qosSvc:      cfg.QoS,
+		stressSvc:   cfg.StressTest,
 	}
 
 	s.dnstapSvc = cfg.DNSTap
@@ -491,10 +495,17 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermRoutesWrite)).Post("/api/routing/balance/rollback", routingH.Rollback)
 
 		// Link stress-test (on-demand fault injection: outage / degradation)
-		stressSvc := stresstest.NewService(s.exec, s.linkSvc, s.alertSvc)
-		if s.qosSvc != nil {
-			stressSvc.SetQosService(s.qosSvc)
+		stressSvc := s.stressSvc
+		if stressSvc == nil {
+			stressSvc = stresstest.NewService(s.exec, s.linkSvc, s.alertSvc)
+			if s.qosSvc != nil {
+				stressSvc.SetQosService(s.qosSvc)
+			}
+			if s.db != nil {
+				stressSvc.SetRecoveryStore(s.db)
+			}
 		}
+		s.stressSvc = stressSvc
 		stressH := handlers.NewStressTestHandler(stressSvc, s.db)
 		r.With(require(auth.PermRoutesRead)).Get("/api/stresstest/status", stressH.Status)
 		r.With(require(auth.PermRoutesWrite)).Post("/api/stresstest/start", stressH.Start)

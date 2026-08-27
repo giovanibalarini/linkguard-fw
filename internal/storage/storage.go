@@ -252,6 +252,7 @@ func upWireGuard(tx *sql.Tx) error {
 	// aplica quando chegar. Número REPETIDO é que seria fatal — a migração
 	// seria dada como aplicada numa base que nunca a viu.
 	{19, "links: configuração QoS por WAN", upAddLinkQoS},
+	{20, "stress test: lease de recuperação", upStressRecoveryLease},
 }
 
 const createSchemaMigrationsTable = `
@@ -526,6 +527,24 @@ func upAddLinkQoS(tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+// upStressRecoveryLease creates a singleton operational lease. INSERT (rather
+// than upsert) is intentional: a new test must never overwrite evidence that
+// an earlier process may have left an interface down or under netem.
+func upStressRecoveryLease(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS stress_recovery_lease (
+			singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
+			test_id    TEXT NOT NULL UNIQUE,
+			link_id    TEXT NOT NULL,
+			interface  TEXT NOT NULL,
+			mode       TEXT NOT NULL CHECK (mode IN ('outage', 'degrade')),
+			delay_ms   INTEGER NOT NULL DEFAULT 0,
+			loss_pct   INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL
+		)`)
+	return err
 }
 
 // migrateAddFirewallRuleGroupID adiciona firewall_rules.group_id em bancos

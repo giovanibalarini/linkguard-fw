@@ -68,7 +68,10 @@ func (s *Service) Measure(ctx context.Context, iface string) (Measurement, error
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return Measurement{}, err
 	}
-	unlock := s.lockInterface(iface)
+	unlock, err := s.lockInterface(ctx, iface)
+	if err != nil {
+		return Measurement{}, err
+	}
 	defer unlock()
 	return s.measure(ctx, iface)
 }
@@ -92,7 +95,10 @@ func (s *Service) MeasureBeforeAfter(ctx context.Context, cfg Config) (Compariso
 	if err := cfg.Validate(); err != nil {
 		return Comparison{}, err
 	}
-	unlock := s.lockInterface(cfg.Interface)
+	unlock, err := s.lockInterface(ctx, cfg.Interface)
+	if err != nil {
+		return Comparison{}, err
+	}
 	defer unlock()
 	return s.measureBeforeAfter(ctx, cfg)
 }
@@ -106,7 +112,10 @@ func (s *Service) MeasureCurrentBeforeAfter(ctx context.Context, iface string, l
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return Comparison{}, err
 	}
-	unlock := s.lockInterface(iface)
+	unlock, err := s.lockInterface(ctx, iface)
+	if err != nil {
+		return Comparison{}, err
+	}
 	defer unlock()
 
 	cfg, err := load()
