@@ -683,3 +683,243 @@ links.ddns.error.save:
 links.ddns.error.check:
   pt: "Não foi possível verificar agora."
   en: "Could not check right now."
+
+# ─── Bloqueio e direcionamento por domínio (issue #123) ─────────────────────
+links.domains.title:
+  pt: "Políticas por domínio"
+  en: "Domain policies"
+links.domains.subtitle:
+  pt: "Aprende endereços nas respostas DNS observadas e aplica bloqueio ou direcionamento IPv4 com TTL limitado."
+  en: "Learns addresses from observed DNS responses and applies blocking or bounded-TTL IPv4 routing."
+links.domains.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
+links.domains.add:
+  pt: "Novo alvo"
+  en: "New target"
+links.domains.ready:
+  pt: "reconciliado"
+  en: "reconciled"
+links.domains.notReady:
+  pt: "aguardando reconciliação"
+  en: "awaiting reconciliation"
+links.domains.runtimeAlive:
+  pt: "dnstap ativo"
+  en: "dnstap active"
+links.domains.runtimeDown:
+  pt: "dnstap inativo"
+  en: "dnstap inactive"
+links.domains.kernelRead:
+  pt: "kernel conferido"
+  en: "kernel checked"
+links.domains.kernelUnknown:
+  pt: "kernel não conferido"
+  en: "kernel not checked"
+links.domains.routingIpv6Supported:
+  pt: "direcionamento IPv6 disponível"
+  en: "IPv6 routing available"
+links.domains.routingIpv6Unsupported:
+  pt: "direcionamento somente IPv4"
+  en: "IPv4-only routing"
+links.domains.dryRun:
+  pt: "ensaio global"
+  en: "global dry run"
+links.domains.readOnly:
+  pt: "somente leitura"
+  en: "read only"
+links.domains.empty:
+  pt: "Nenhum alvo de domínio configurado."
+  en: "No domain target configured."
+
+links.domains.caveat.title:
+  pt: "Limites que afetam o resultado"
+  en: "Limits that affect the result"
+links.domains.caveat.cdn:
+  pt: "CDN: um domínio pode compartilhar IP com outros serviços; bloquear ou direcionar esse IP pode afetá-los até o TTL expirar. Use ensaio e confira a rotação."
+  en: "CDN: a domain may share an IP with other services; blocking or routing that IP can affect them until its TTL expires. Use trial mode and inspect rotation."
+links.domains.caveat.encryptedDns:
+  pt: "DoH/DoT: só respostas do resolvedor configurado e visíveis no dnstap são aprendidas. Clientes que contornam o DNS local não são cobertos sem controle separado de vazamento DNS."
+  en: "DoH/DoT: only configured-resolver responses visible through dnstap are learned. Clients bypassing local DNS are not covered without separate DNS-leak controls."
+links.domains.caveat.vpn:
+  pt: "VPN: o firewall normalmente vê apenas o endpoint do túnel, não os domínios ou endereços internos."
+  en: "VPN: the firewall normally sees only the tunnel endpoint, not inner domains or addresses."
+links.domains.caveat.fixedIp:
+  pt: "IP fixo ou acesso direto: sem uma resposta DNS observada não há aprendizado; use uma regra explícita de IP/CIDR."
+  en: "Fixed IP or direct access: without an observed DNS response nothing is learned; use an explicit IP/CIDR rule."
+links.domains.caveat.ipv6:
+  pt: "IPv6: bloqueio aprende IPv4 e IPv6, mas direcionamento por domínio suporta somente IPv4; respostas IPv6 de alvos direcionados são descartadas e contabilizadas abaixo."
+  en: "IPv6: blocking learns IPv4 and IPv6, but domain routing supports IPv4 only; IPv6 answers for routed targets are discarded and counted below."
+
+links.domains.phase.active:
+  pt: "ativo"
+  en: "active"
+links.domains.phase.suspended:
+  pt: "suspenso"
+  en: "suspended"
+links.domains.phase.trial:
+  pt: "ensaio"
+  en: "trial"
+links.domains.cap.block:
+  pt: "bloquear"
+  en: "block"
+links.domains.cap.route:
+  pt: "direcionar"
+  en: "route"
+links.domains.action.promote:
+  pt: "Promover"
+  en: "Promote"
+links.domains.action.demote:
+  pt: "Voltar a ensaio"
+  en: "Return to trial"
+links.domains.action.edit:
+  pt: "Editar alvo"
+  en: "Edit target"
+links.domains.action.delete:
+  pt: "Excluir alvo"
+  en: "Delete target"
+
+links.domains.metric.intent:
+  pt: "intenção"
+  en: "intent"
+links.domains.metric.effective:
+  pt: "estado efetivo"
+  en: "effective state"
+links.domains.metric.link:
+  pt: "link efetivo"
+  en: "effective link"
+links.domains.metric.index:
+  pt: "IPs no índice"
+  en: "index IPs"
+links.domains.metric.kernel:
+  pt: "IPs no kernel"
+  en: "kernel IPs"
+links.domains.metric.rotation:
+  pt: "rotação"
+  en: "rotation"
+links.domains.metric.lastLearned:
+  pt: "último aprendizado"
+  en: "last learned"
+links.domains.metric.ipv6Discarded:
+  pt: "IPv6 não direcionado"
+  en: "IPv6 not routed"
+links.domains.warn.mismatch:
+  pt: "índice e kernel divergentes"
+  en: "index and kernel differ"
+links.domains.warn.limit:
+  pt: "limite de {limit} endereços atingido"
+  en: "{limit}-address limit reached"
+links.domains.warn.overflows:
+  pt: "{n} endereços excederam o limite"
+  en: "{n} addresses exceeded the limit"
+links.domains.warn.rejected:
+  pt: "{n} respostas rejeitadas"
+  en: "{n} answers rejected"
+links.domains.warn.rejectedOwn:
+  pt: "{n} endereços próprios/locais recusados"
+  en: "{n} own/local addresses rejected"
+links.domains.warn.refcount:
+  pt: "{n} sobreposições sem vaga de referência"
+  en: "{n} overlaps had no reference slot"
+
+links.domains.form.createTitle:
+  pt: "Novo alvo de domínio"
+  en: "New domain target"
+links.domains.form.editTitle:
+  pt: "Editar alvo de domínio"
+  en: "Edit domain target"
+links.domains.form.domain:
+  pt: "Domínio"
+  en: "Domain"
+links.domains.form.capability:
+  pt: "Ação"
+  en: "Action"
+links.domains.form.link:
+  pt: "Link de saída"
+  en: "Egress link"
+links.domains.form.selectLink:
+  pt: "Selecione um link"
+  en: "Select a link"
+links.domains.form.note:
+  pt: "Observação"
+  en: "Note"
+links.domains.form.trialHelp:
+  pt: "Criação e edição nunca ativam a política. O alvo fica em ensaio até uma promoção explícita."
+  en: "Creation and editing never activate the policy. The target remains in trial until explicitly promoted."
+
+links.domains.promote.title:
+  pt: "Promover política para ativa"
+  en: "Promote policy to active"
+links.domains.promote.body:
+  pt: "A promoção passa a aplicar a ação imediatamente aos endereços já aprendidos e às próximas respostas DNS. Em CDN, IPs compartilhados podem afetar outros serviços até o TTL expirar."
+  en: "Promotion immediately applies the action to learned addresses and future DNS answers. With a CDN, shared IPs may affect other services until the TTL expires."
+links.domains.promote.suspended:
+  pt: "A intenção ficará ativa, mas o enforcement continuará suspenso até a dependência indicada se recuperar."
+  en: "The intent will become active, but enforcement remains suspended until the indicated dependency recovers."
+links.domains.promote.confirm:
+  pt: "Promover"
+  en: "Promote"
+links.domains.demote.title:
+  pt: "Voltar política a ensaio"
+  en: "Return policy to trial"
+links.domains.demote.body:
+  pt: "O enforcement deste alvo será removido com segurança; observação e métricas continuarão disponíveis."
+  en: "Enforcement for this target will be safely removed; observation and metrics remain available."
+links.domains.delete.title:
+  pt: "Excluir alvo de domínio"
+  en: "Delete domain target"
+links.domains.delete.body:
+  pt: "Excluir {domain}? Apenas o estado pertencente a este alvo será removido."
+  en: "Delete {domain}? Only state owned by this target will be removed."
+links.domains.delete.confirm:
+  pt: "Excluir"
+  en: "Delete"
+
+links.domains.reason.boot:
+  pt: "Suspenso: a inicialização ainda não concluiu a reconciliação do firewall."
+  en: "Suspended: startup has not finished reconciling the firewall."
+links.domains.reason.blockMissing:
+  pt: "Suspenso: o grupo sistêmico de bloqueio por domínio não existe."
+  en: "Suspended: the system domain-blocking group is missing."
+links.domains.reason.blockDisabled:
+  pt: "Suspenso: o grupo sistêmico de bloqueio por domínio está desabilitado."
+  en: "Suspended: the system domain-blocking group is disabled."
+links.domains.reason.linkMissing:
+  pt: "Suspenso: o link configurado não existe mais."
+  en: "Suspended: the configured link no longer exists."
+links.domains.reason.linkDisabled:
+  pt: "Suspenso: o link configurado está desabilitado."
+  en: "Suspended: the configured link is disabled."
+links.domains.reason.linkUnconfigured:
+  pt: "Suspenso: o link não possui tabela de roteamento válida."
+  en: "Suspended: the link has no valid routing table."
+links.domains.reason.linkOffline:
+  pt: "Suspenso automaticamente: a WAN está offline. A política será reconciliada após a recuperação da rota."
+  en: "Automatically suspended: the WAN is offline. The policy will reconcile after route recovery."
+links.domains.reason.linkNotReady:
+  pt: "Suspenso: a WAN ainda não está pronta para tráfego."
+  en: "Suspended: the WAN is not ready for traffic yet."
+links.domains.reason.invalidIntent:
+  pt: "Suspenso: a configuração persistida é inválida e não foi aplicada."
+  en: "Suspended: persisted configuration is invalid and was not applied."
+links.domains.reason.unknown:
+  pt: "Suspenso: consulte o erro de reconciliação."
+  en: "Suspended: inspect the reconciliation error."
+
+links.domains.validation.domain:
+  pt: "Informe um domínio ASCII válido com ao menos dois rótulos."
+  en: "Enter a valid ASCII domain with at least two labels."
+links.domains.validation.capability:
+  pt: "A ação selecionada é inválida."
+  en: "The selected action is invalid."
+links.domains.validation.linkRequired:
+  pt: "Selecione um link para direcionamento."
+  en: "Select a link for routing."
+links.domains.validation.linkUnknown:
+  pt: "O link selecionado não está mais disponível."
+  en: "The selected link is no longer available."
+links.domains.validation.blockLink:
+  pt: "Bloqueio não aceita um link de saída oculto."
+  en: "Blocking cannot carry a hidden egress link."
+links.domains.validation.note:
+  pt: "A observação deve ter até 500 caracteres e não pode conter controles ou quebras de linha."
+  en: "The note must have at most 500 characters and contain no control characters or line breaks."
