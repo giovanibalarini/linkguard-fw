@@ -6472,6 +6472,16 @@ except Exception as e: print('bloqueado:%s' % type(e).__name__)
     bad "o painel recusou promover o domínio ($st)"; encerra_d "não foi promovido"; return
   fi
   sleep 4
+  # DUAS MEDIÇÕES, PORQUE HÁ DUAS EXPLICAÇÕES COM GRAVIDADES DIFERENTES.
+  #
+  # Se promover não aplicar o que já foi aprendido, o bloqueio só passa a valer
+  # na próxima resposta de DNS — e com o cache do cliente isso pode levar horas.
+  # É falha, mas é outra falha, e o conserto é outro. Se nem depois de uma
+  # consulta nova o tráfego for barrado, o enforcement não funciona.
+  #
+  # A primeira medição é logo após promover, sem consulta nova. A segunda é
+  # depois de forçar uma resposta de DNS. Separar as duas é o que transforma
+  # "não barrou" numa acusação precisa em vez de um dedo apontado.
   local depois
   depois=$(vm "ip netns exec lgdom timeout 8 python3 -c \"
 import socket
@@ -6479,13 +6489,37 @@ try:
     socket.create_connection(('$resolvido',80),5); print('passou')
 except Exception as e: print('bloqueado:%s' % type(e).__name__)
 \" 2>/dev/null" | tr -d '\r' | tail -1)
-  if [[ "$depois" == passou ]]; then
-    bad "o domínio foi promovido e o tráfego CONTINUOU passando: a regra está na chain e não descarta" \
-        "$(vm "nft list chain inet linkguard forward 2>/dev/null | grep dom_blocked" | tr -d '\r' | head -c 160)"
-  elif [[ "$depois" == bloqueado:* ]]; then
-    ok "promovido, o domínio barra o tráfego do host da LAN no fio ($depois)"
-  else
+  if [[ "$depois" == bloqueado:* ]]; then
+    ok "promovido, o domínio barra o tráfego do host da LAN no fio, sem precisar de consulta nova ($depois)"
+  elif [[ "$depois" != passou ]]; then
     bad "não consegui medir o tráfego depois da promoção" "${depois:-sem saída}"
+  else
+    # Segunda medição: força uma resposta de DNS nova e mede de novo.
+    vm "python3 -c \"
+import socket,struct
+q=struct.pack('>HHHHHH',0xd203,0x0100,1,0,0,0)+b'\\x03deb\\x06debian\\x03org\\x00'+struct.pack('>HH',1,1)
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(6)
+for _ in range(3):
+    s.sendto(q,('127.0.0.1',53))
+    try: s.recvfrom(4096)
+    except Exception: pass
+\"" >/dev/null 2>&1
+    sleep 6
+    local apos_consulta no_set
+    no_set=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null | grep -c elements" | tr -d '\r' | head -1)
+    apos_consulta=$(vm "ip netns exec lgdom timeout 8 python3 -c \"
+import socket
+try:
+    socket.create_connection(('$resolvido',80),5); print('passou')
+except Exception as e: print('bloqueado:%s' % type(e).__name__)
+\" 2>/dev/null" | tr -d '\r' | tail -1)
+    if [[ "$apos_consulta" == bloqueado:* ]]; then
+      bad "PROMOVER NÃO APLICA O QUE JÁ FOI APRENDIDO: só barrou depois de uma consulta de DNS nova" \
+          "com o cache do cliente, o admin promove e o bloqueio demora — endereços no set após a consulta: ${no_set:-0}"
+    else
+      bad "O ENFORCEMENT NÃO BARRA: nem depois de promover, nem depois de consulta de DNS nova" \
+          "set: ${no_set:-0} elemento(s) | chain: $(vm "nft list chain inet linkguard forward 2>/dev/null | grep dom_blocked" | tr -d '\r' | head -c 140)"
+    fi
   fi
   M3=1
 
