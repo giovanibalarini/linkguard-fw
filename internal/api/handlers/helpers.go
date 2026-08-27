@@ -11,6 +11,10 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
+type domainRoutingReconciler interface {
+	Reconcile(context.Context) error
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

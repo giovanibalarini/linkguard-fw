@@ -276,6 +276,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// Links
 		linksH := handlers.NewLinksHandler(s.linkSvc, s.db, s.nftSvc, s.routeSvc)
+		if cfg.DomainRouting != nil {
+			linksH.SetDomainRouting(cfg.DomainRouting)
+		}
 		// Mudar a interface de um link muda o escopo da medição de conversa
 		// (#115) — a regra casa por iifname. Sem esta ligação, o nome antigo
 		// ficaria na regra até o próximo boot, com a medição calada.
@@ -291,7 +294,10 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// Regras por domínio podem bloquear ou escolher uma WAN, mas seu dono no
 		// RBAC é Links: leitura acompanha links.read e toda mutação links.write.
-		domainTargetsH := handlers.NewDomainTargetsHandler(cfg.DomainRouting, s.db)
+		domainTargetsH := handlers.NewDomainTargetsHandler(nil, s.db)
+		if cfg.DomainRouting != nil {
+			domainTargetsH = handlers.NewDomainTargetsHandler(cfg.DomainRouting, s.db)
+		}
 		registerDomainTargetRoutes(r, require, domainTargetsH)
 
 		// DNS dinâmico por link (#129). Mesma permissão dos links: é
@@ -361,6 +367,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// nftables (native firewall management — replaces iptables)
 		nftH := handlers.NewNftablesHandler(s.nftSvc, s.db, s.frSvc)
+		if cfg.DomainRouting != nil {
+			nftH.SetDomainRouting(cfg.DomainRouting)
+		}
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/overview", nftH.Overview)
 		r.With(require(auth.PermFirewallRead)).Get("/api/nftables/ruleset", nftH.Ruleset)
 		// Pré-visualização: renderiza a linha nft pelo MESMO código que monta a

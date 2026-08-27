@@ -31,6 +31,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
+	"github.com/giovanibalarini/linkguard-fw/internal/domainrouting"
 	"github.com/giovanibalarini/linkguard-fw/internal/domtargets"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
@@ -397,7 +398,8 @@ type services struct {
 	dnstapSvc *dnstap.Servico
 	// domSvc é o alimentador de alvo por domínio (#123). Escreve no KERNEL e
 	// não no banco, então não é um spawnWriter — ver startBackground.
-	domSvc *domtargets.Servico
+	domSvc        *domtargets.Servico
+	domainRouting *domainrouting.Coordinator
 
 	// ntpInputState é a MESMA fonte que foi entregue a
 	// nftSvc.SetInputChainSources, guardada aqui porque a reconciliação de
@@ -708,6 +710,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// antes de qualquer Run, porque o observador é lido sem lock pelas
 	// goroutines de conexão — ver SetObservador.
 	domSvc := domtargets.NovoServico(nftSvc)
+	domainRouting := domainrouting.New(db, domSvc)
 	// As faixas e os endereços da PRÓPRIA caixa, que o filtro de categoria do
 	// índice não tem como recusar: o endereço da WAN é público (o ddns existe
 	// para publicá-lo), o gateway de um uplink /30 é público, e com prefixo
@@ -751,17 +754,18 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	hostSampler.SetPorHost(porHost)
 
 	server := api.New(api.Config{
-		Addr:        cfg.Addr(),
-		DryRun:      cfg.DryRun,
-		WebFS:       linkguardfw.WebFS,
-		PromReg:     promReg,
-		Version:     version,
-		PkgExec:     pkgExec,
-		CaptureExec: capExec,
-		DNSTap:      dnstapSvc,
-		PorHost:     porHost,
-		Fluxos:      fluxosSvc,
-		HostQuota:   hostQuotaSvc,
+		Addr:          cfg.Addr(),
+		DryRun:        cfg.DryRun,
+		WebFS:         linkguardfw.WebFS,
+		PromReg:       promReg,
+		Version:       version,
+		PkgExec:       pkgExec,
+		CaptureExec:   capExec,
+		DNSTap:        dnstapSvc,
+		PorHost:       porHost,
+		Fluxos:        fluxosSvc,
+		HostQuota:     hostQuotaSvc,
+		DomainRouting: domainRouting,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
@@ -812,6 +816,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		interval:         interval,
 		dnstapSvc:        dnstapSvc,
 		domSvc:           domSvc,
+		domainRouting:    domainRouting,
 	}, nil
 }
 
@@ -825,15 +830,34 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 // de lá para por que essa separação não é arbitrária.
 func wireCallbacks(ctx context.Context, s *services) {
 	monitor, balancerSvc, failoverSvc := s.monitor, s.balancerSvc, s.failoverSvc
+	domainRouting := s.domainRouting
 
 	// On a link state change, balance mode rebuilds the weighted multipath
 	// default route; otherwise the legacy per-table failover handles it.
 	monitor.OnStatusChange(func(link *storage.Link, oldStatus, newStatus string) {
+		reconcileDomains := func() {
+			if domainRouting == nil {
+				return
+			}
+			if err := domainRouting.Reconcile(ctx); err != nil {
+				slog.Warn("não foi possível reconciliar os alvos por domínio após mudança de estado da WAN", "err", err)
+			}
+		}
+		// O monitor já persistiu newStatus. Na queda, tirar a mark vem primeiro
+		// para nenhum fluxo novo entrar durante os até 30 s do failover. Na
+		// recuperação, a ordem se inverte: a rota volta antes de a intenção ser
+		// reabilitada.
+		if newStatus == links.StatusOffline {
+			reconcileDomains()
+		}
 		if balancerSvc.Active() {
 			balancerSvc.OnLinkChange(link, oldStatus, newStatus)
-			return
+		} else {
+			failoverSvc.HandleStatusChange(link, oldStatus, newStatus)
 		}
-		failoverSvc.HandleStatusChange(link, oldStatus, newStatus)
+		if newStatus != links.StatusOffline {
+			reconcileDomains()
+		}
 	})
 	// A link that stays degraded past the admin-configured threshold triggers
 	// active flow eviction (balance mode only; itself gated by a toggle). The
@@ -897,6 +921,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	hostSampler := s.hostSampler
 	backupSched, journalSched, updatesSched := s.backupSched, s.journalSched, s.updatesSched
 	netifSvc, aiClient := s.netifSvc, s.aiClient
+	domainRouting := s.domainRouting
 	ntpInputState := s.ntpInputState
 	interval := s.interval
 
@@ -938,6 +963,9 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	// pode ser chamado de novo quando uma tentativa posterior de instalar a
 	// base finalmente der certo.
 	provisionSystem := func() {
+		// O gate dos alvos por domínio só abre no fim se TODAS as peças de que
+		// o enforcement depende tiverem sido comprovadas nesta passada.
+		domainBootReady := true
 		// A primeira coisa DESTA função, antes de qualquer reconciliação
 		// (Fase C2, spec §5.1): se ficou uma mudança de firewall aplicada e
 		// não confirmada, reverta — tenha ela expirado ou não.
@@ -992,6 +1020,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 		// by hand once; this makes a fresh install self-sufficient instead of
 		// silently failing the first time an admin uses the Firewall screen.
 		if configuredLinks, err := linkSvc.List(); err != nil {
+			domainBootReady = false
 			slog.Warn("could not load links for nftables bootstrap", "err", err)
 		} else {
 			wanInterfaces := make([]string, 0, len(configuredLinks))
@@ -1088,8 +1117,10 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// ANTES de o LinkGuard subir. Sem esta linha, endereços aprendidos
 			// há semanas voltariam a valer sem ninguém para reconfirmá-los.
 			if err := s.nftSvc.EnsureDomainStructures(ctx); err != nil {
+				domainBootReady = false
 				slog.Warn("não foi possível garantir as estruturas de alvo por domínio no boot", "err", err)
 			} else if err := s.nftSvc.FlushDomainStructures(ctx); err != nil {
+				domainBootReady = false
 				slog.Warn("não foi possível esvaziar as estruturas de alvo por domínio no boot", "err", err)
 			}
 
@@ -1115,9 +1146,11 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// nunca discordarem.
 			caminhos := links.WANPaths(configuredLinks)
 			if err := nftSvc.EnsureConnMark(ctx, connMarksDe(caminhos)); err != nil {
+				domainBootReady = false
 				slog.Warn("não foi possível reconciliar a marcação de conexão no boot", "err", err)
 			}
 			if err := routeSvc.EnsureReplyRouting(ctx, replyRoutesDe(caminhos)); err != nil {
+				domainBootReady = false
 				slog.Warn("não foi possível reconciliar o roteamento de retorno no boot", "err", err)
 			}
 
@@ -1133,6 +1166,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// groups (Phase C1) it belongs to ReconcileGroups, called below via
 			// frSvc.Reconcile — the only place that knows the admin's groups.
 			if err := nftSvc.ReconcileStructuralChains(ctx, connMarksDe(caminhos)...); err != nil {
+				domainBootReady = false
 				slog.Warn("não foi possível reconciliar a chain estrutural (mark_hosts) no boot", "err", err)
 			}
 
@@ -1160,6 +1194,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// tem os bloqueios dentro), com apply-status não-ok e alerta
 			// crítico. A próxima inicialização tenta de novo.
 			if err := frSvc.EnsureSystemGroups(ctx); err != nil {
+				domainBootReady = false
 				slog.Warn("não foi possível criar os grupos do sistema (hosts e destinos bloqueados)", "err", err)
 			}
 
@@ -1198,6 +1233,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 				slog.Warn("não foi possível migrar as regras soltas para o grupo padrão", "err", err)
 			}
 			if err := frSvc.Reconcile(ctx); err != nil {
+				domainBootReady = false
 				slog.Warn("não foi possível reconciliar os grupos de regras (chain forward) a partir do banco no boot", "err", err)
 
 				// m1 da revisão da Fase C2: frSvc.Reconcile → nftSvc.ReconcileGroups
@@ -1238,6 +1274,21 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 				} else if err := nftSvc.ReconcileNTPInput(ctx, networks, serving); err != nil {
 					slog.Warn("não foi possível reconciliar a chain de proteção do NTP no boot", "err", err)
 				}
+			}
+
+		}
+
+		// Só agora sets/map, chain de marcação, policy routing e grupos estão
+		// coerentes. Uma falha em qualquer etapa fecha o gate de novo e publica
+		// ensaio/boot_pending, inclusive se a leitura dos links falhou ou numa
+		// tentativa posterior de provisionamento.
+		if domainRouting != nil {
+			if domainBootReady {
+				if err := domainRouting.Prepare(ctx); err != nil {
+					slog.Warn("não foi possível ativar os alvos por domínio no boot", "err", err)
+				}
+			} else if err := domainRouting.Hold(ctx); err != nil {
+				slog.Warn("não foi possível manter os alvos por domínio suspensos no boot", "err", err)
 			}
 		}
 
@@ -1375,6 +1426,16 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 
 	go ddnsSvc.Run(ctx)
 
+	// O coordenador publica a intenção ainda atrás do gate de boot. Assim a API
+	// já mostra tudo como boot_pending e o alimentador só recebe ensaio até as
+	// estruturas/chains serem verificadas por provisionSystem.
+	if domainRouting != nil {
+		if err := domainRouting.Reconcile(ctx); err != nil {
+			slog.Warn("alvo por domínio: não consegui carregar a intenção no boot", "err", err)
+		}
+	}
+	go s.domSvc.Run(ctx)
+
 	// Coletor de dnstap (#116). Sobe sempre; quem decide se há entrega é o
 	// unbound, e ele só entrega quando o admin liga o recurso na tela.
 	//
@@ -1386,23 +1447,6 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			slog.Warn("dnstap: o coletor não subiu; o mapa endereço → nome fica vazio", "err", err)
 		}
 	}()
-	// Alimentador de alvo por domínio (#123). NÃO é spawnWriter: ele escreve no
-	// kernel, não no banco, e o que ele guarda em memória é cache de resposta de
-	// DNS — perder no desligamento é o comportamento certo, porque cache que
-	// sobrevive ao reboot afirma sobre endereços o que ninguém mais confirmou.
-	//
-	// Nesta entrega ele não muda um pacote: as estruturas que ele enche não são
-	// olhadas por nenhuma chain, e todo domínio nasce em ensaio.
-	go s.domSvc.Run(ctx)
-	go func() {
-		alvos, err := s.db.ListDomainTargets()
-		if err != nil {
-			slog.Warn("alvo por domínio: não consegui carregar a lista", "err", err)
-			return
-		}
-		s.domSvc.DefinirAlvos(alvosDeDominio(alvos))
-	}()
-
 	go balancerSvc.Run(ctx)
 	spawnWriter("backup", func() { backupSched.Run(ctx) })
 	go journalSched.Run(ctx)
@@ -1420,36 +1464,6 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	})
 
 	return &writers
-}
-
-// alvosDeDominio traduz as linhas do banco para o índice do alimentador.
-//
-// A tradução mora aqui, no ponto de montagem, e não dentro de domtargets: o
-// alimentador não conhece o banco de propósito, e é isso que deixa a parte que
-// decide (o índice) ser testada sem um arquivo de SQLite por perto.
-//
-// Estágio que não seja exatamente "ativo" vira ensaio. É a mesma decisão que a
-// coluna do banco já toma no DEFAULT, repetida aqui porque este é o último
-// ponto em que um valor estranho — de um backup antigo, de uma edição à mão no
-// banco — ainda pode ser recusado antes de virar escrita no firewall.
-func alvosDeDominio(linhas []storage.DomainTarget) []domtargets.Alvo {
-	out := make([]domtargets.Alvo, 0, len(linhas))
-	for _, l := range linhas {
-		a := domtargets.Alvo{
-			Dominio:    l.Domain,
-			Capacidade: domtargets.Barrar,
-			Estagio:    domtargets.Ensaio,
-			Marca:      l.Mark,
-		}
-		if l.Capability == storage.DomainCapDirecionar {
-			a.Capacidade = domtargets.Direcionar
-		}
-		if l.Stage == storage.DomainStageAtivo {
-			a.Estagio = domtargets.Ativo
-		}
-		out = append(out, a)
-	}
-	return out
 }
 
 // serveHTTP é o fim do boot: sobe o painel e fica nele até o processo receber

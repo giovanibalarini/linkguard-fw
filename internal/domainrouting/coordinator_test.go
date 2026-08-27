@@ -130,6 +130,30 @@ func TestBootGateKeepsActiveIntentSuspendedUntilPrepare(t *testing.T) {
 	}
 }
 
+func TestHoldClosesAnAlreadyOpenBootGate(t *testing.T) {
+	db := newDB(t)
+	addBlockGroup(t, db, true)
+	link := addLink(t, db, "online", true, 200)
+	addActiveRoute(t, db, link.ID)
+	runtime := &fakeRuntime{}
+	coordinator := domainrouting.New(db, runtime)
+	if err := coordinator.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := coordinator.Hold(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state := coordinator.State(context.Background())
+	row := targetView(t, state, "video.example.com")
+	if state.Ready || !row.Suspended || row.SuspensionReason != domainrouting.ReasonBootPending || row.EffectiveStage != storage.DomainStageEnsaio {
+		t.Fatalf("Hold não fechou o gate: state=%+v target=%+v", state, row)
+	}
+	if got, _ := runtime.alvo(row.Domain); got.Estagio != domtargets.Ensaio {
+		t.Fatalf("runtime continuou ativo após Hold: %+v", got)
+	}
+}
+
 func TestWANStatusSuspendsAndReenablesWithoutResurrectingStoredMark(t *testing.T) {
 	db := newDB(t)
 	addBlockGroup(t, db, true)

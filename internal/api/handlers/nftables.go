@@ -18,15 +18,18 @@ import (
 // NftablesHandler exposes the native nftables ruleset and its backups. This
 // replaces the legacy iptables handler — the firewall is managed via nft now.
 type NftablesHandler struct {
-	svc *nftables.Service
-	db  *storage.DB
-	fr  *firewallrules.Service
+	svc           *nftables.Service
+	db            *storage.DB
+	fr            *firewallrules.Service
+	domainRouting domainRoutingReconciler
 }
 
 // NewNftablesHandler creates an NftablesHandler.
 func NewNftablesHandler(svc *nftables.Service, db *storage.DB, fr *firewallrules.Service) *NftablesHandler {
 	return &NftablesHandler{svc: svc, db: db, fr: fr}
 }
+
+func (h *NftablesHandler) SetDomainRouting(r domainRoutingReconciler) { h.domainRouting = r }
 
 // confirmWindowBlocks é a TRAVA do confirmar-ou-reverte (Fase C2, spec §5.3):
 // devolve true — e já respondeu ao cliente — quando a mutação que está

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -477,6 +478,11 @@ func (h *NftablesHandler) ToggleGroup(w http.ResponseWriter, r *http.Request) {
 	})
 	if !ok {
 		return
+	}
+	if h.domainRouting != nil {
+		if err := h.domainRouting.Reconcile(r.Context()); err != nil {
+			slog.Warn("não foi possível reconciliar os alvos por domínio após ligar/desligar grupo", "err", err)
+		}
 	}
 	writeJSON(w, http.StatusOK, okResult(h.pendingViewOf(out)))
 }
