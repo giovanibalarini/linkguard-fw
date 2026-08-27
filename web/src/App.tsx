@@ -22,6 +22,7 @@ import Dns from './pages/Dns';
 import Ntp from './pages/Ntp';
 import Changelog from './pages/Changelog';
 import Traffic from './pages/Traffic';
+import Vpn from './pages/Vpn';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth();
@@ -40,6 +41,7 @@ function AppRoutes() {
           <Route path="links" element={<Links />} />
           <Route path="routes" element={<Routes_ />} />
           <Route path="firewall" element={<Firewall />} />
+          <Route path="vpn" element={<Vpn />} />
           <Route path="hosts" element={<Hosts />} />
           <Route path="dhcp" element={<Dhcp />} />
           <Route path="dns" element={<Dns />} />

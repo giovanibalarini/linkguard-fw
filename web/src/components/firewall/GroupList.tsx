@@ -11,7 +11,7 @@
 import type { DragEvent } from 'react';
 import { Plus, RefreshCw, GripVertical, Lock, AlertTriangle, DoorOpen } from 'lucide-react';
 import IconButton from '../ui/IconButton';
-import { adminGroupsAbove , groupDisplayNameKey} from '../../lib/blockGroups';
+import { adminGroupsAbove, groupDisplayNameKey, isWireGuardPeerGroup } from '../../lib/blockGroups';
 import { useI18n } from '../../i18n';
 import { moveItem, splitGroupRules } from '../../lib/groupRules';
 import { SYSTEM_KINDS, formatCount, groupConnState, groupScope, membersOf } from './groupMeta';
@@ -108,6 +108,7 @@ export default function GroupList({
             // vale nada enquanto o kernel ainda o avalia.
             const staleOff = !g.enabled && g.applied;
             const sys = SYSTEM_KINDS[g.kind];
+            const vpnManaged = isWireGuardPeerGroup(g.kind);
             const n = sys ? membersOf(g, managed).length : rules.length;
             const noun = sys
               ? (n === 1 ? t(sys.member[0]) : t(sys.member[1]))
@@ -163,10 +164,10 @@ export default function GroupList({
                   <span className="min-w-0 flex-1">
                     <span className={`flex items-center gap-1.5 text-sm ${active ? 'text-white font-medium' : 'text-gray-200'}`}>
                       <span className="truncate">{nomeDoGrupo(g)}</span>
-                      {sys && (
+                      {(sys || vpnManaged) && (
                         <Lock
                           className="w-3 h-3 shrink-0 text-gray-500"
-                          aria-label={t('fwx.aria.systemGroup')}
+                          aria-label={t(vpnManaged ? 'vpn.firewall.managed' : 'fwx.aria.systemGroup')}
                         />
                       )}
                       {inputScope && (
@@ -193,6 +194,7 @@ export default function GroupList({
                         {t('fwx.label.newOnly')} · <span className="font-mono">ct state new</span>
                       </span>
                     )}
+                    {vpnManaged && <span className="block text-[11px] text-blue-300/80">{t('vpn.firewall.managed')}</span>}
                     {!g.enabled && !staleOff && <span className="block text-[11px] text-gray-500">{t('fw.groups.off')}</span>}
                     {staleOff && <span className="block text-[11px] text-yellow-500">{t('fw.groups.offStillInFirewall')}</span>}
                     {notApplied && <span className="block text-[11px] text-yellow-500">{t('fw.groups.configuredNotApplied')}</span>}

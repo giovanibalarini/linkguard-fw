@@ -25,6 +25,9 @@ nav.links:
 nav.firewall:
   pt: "Firewall"
   en: "Firewall"
+nav.vpn:
+  pt: "VPN"
+  en: "VPN"
 nav.hosts:
   pt: "Hosts"
   en: "Hosts"

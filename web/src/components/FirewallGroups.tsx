@@ -8,7 +8,7 @@ import client from '../api/client';
 import { useI18n } from '../i18n';
 import IconButton from './ui/IconButton';
 import { useAuth } from '../context/AuthContext';
-import { adminGroupsAbove, isSystemGroup , groupDisplayNameKey} from '../lib/blockGroups';
+import { adminGroupsAbove, groupDisplayNameKey, isSystemGroup, isWireGuardPeerGroup } from '../lib/blockGroups';
 // As duas contas que erram em silêncio (o corte da chain e a tradução de ordem
 // local → global) moram em lib/groupRules desde que ganharam asserção própria:
 // aqui dentro nada as alcançava sem montar a tela inteira, e é a ordem de
@@ -318,6 +318,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
   // blocos vazios sugeriria que ele os tem e que estão neutros, o que é
   // diferente de não existirem (spec §2.1).
   const selectedSys = selected ? SYSTEM_KINDS[selected.kind] : undefined;
+  const selectedVPNManaged = selected ? isWireGuardPeerGroup(selected.kind) : false;
   const selectedIdx = selected ? groups.findIndex((g) => g.id === selected.id) : -1;
   // adminGroupsAbove devolve os grupos do admin LIGADOS que estão antes da
   // posição na lista — a condição do aviso da spec §2.2. `groups` já vem
@@ -471,7 +472,7 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                     {t('fwx.badge.notApplied.group')}
                   </span>
                 )}
-                {canWrite && (
+                {canWrite && !selectedVPNManaged && (
                   <>
                     <button
                       onClick={() => toggleGroup(selected)}
@@ -487,6 +488,13 @@ export default function FirewallGroups({ ifaces, canWrite, onMsg }: Props) {
                 )}
               </div>
             </div>
+
+            {selectedVPNManaged && (
+              <p className="text-xs text-blue-300/80 flex items-start gap-1.5">
+                <Lock className="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+                <span>{t('vpn.firewall.managed')}</span>
+              </p>
+            )}
 
             {canWrite && locked && (
               <p className="text-[11px] text-amber-300/80 flex items-start gap-1.5">

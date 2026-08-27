@@ -1,0 +1,156 @@
+# WireGuard VPN — configuration, one-time enrollment and peer management.
+vpn.subtitle:
+  pt: "Acesso remoto seguro, identidades por usuário e integração com o firewall."
+  en: "Secure remote access, per-user identities, and firewall integration."
+vpn.refresh:
+  pt: "Atualizar"
+  en: "Refresh"
+vpn.saved:
+  pt: "Configuração da VPN salva e reconciliada."
+  en: "VPN configuration saved and reconciled."
+vpn.lastApplyFailed:
+  pt: "A última reconciliação falhou: {error}"
+  en: "The last reconciliation failed: {error}"
+vpn.error.load:
+  pt: "Não foi possível carregar a VPN."
+  en: "Could not load the VPN."
+vpn.error.operation:
+  pt: "Não foi possível concluir a operação."
+  en: "Could not complete the operation."
+vpn.error.timeout:
+  pt: "A operação continua no servidor. Atualize a tela em alguns instantes."
+  en: "The operation is still running on the server. Refresh in a moment."
+
+vpn.status.title:
+  pt: "Estado do serviço"
+  en: "Service status"
+vpn.status.desired:
+  pt: "Configuração"
+  en: "Configuration"
+vpn.status.enabled:
+  pt: "Ativada"
+  en: "Enabled"
+vpn.status.disabled:
+  pt: "Desativada"
+  en: "Disabled"
+vpn.status.service:
+  pt: "Serviço"
+  en: "Service"
+vpn.status.running:
+  pt: "Em execução"
+  en: "Running"
+vpn.status.stopped:
+  pt: "Parado"
+  en: "Stopped"
+vpn.status.peers:
+  pt: "Peers"
+  en: "Peers"
+vpn.status.publicKey:
+  pt: "Chave pública do servidor"
+  en: "Server public key"
+
+vpn.config.title:
+  pt: "Configuração do túnel"
+  en: "Tunnel configuration"
+vpn.config.enable:
+  pt: "Ativar WireGuard sob demanda"
+  en: "Enable WireGuard on demand"
+vpn.config.address:
+  pt: "Endereço do servidor e rede do túnel"
+  en: "Server address and tunnel network"
+vpn.config.port:
+  pt: "Porta UDP"
+  en: "UDP port"
+vpn.config.ddnsLink:
+  pt: "Link WAN com DDNS"
+  en: "WAN link with DDNS"
+vpn.config.noDDNS:
+  pt: "Nenhum — usar endpoint explícito"
+  en: "None — use the explicit endpoint"
+vpn.config.explicitEndpoint:
+  pt: "Hostname ou IP público de fallback"
+  en: "Fallback public hostname or IP"
+vpn.config.endpointHint:
+  pt: "Ao gerar um cliente, o hostname DDNS do link selecionado tem prioridade; o endpoint explícito é usado como fallback."
+  en: "When generating a client, the selected link's DDNS hostname takes priority; the explicit endpoint is the fallback."
+vpn.config.save:
+  pt: "Salvar e aplicar"
+  en: "Save and apply"
+
+vpn.enrollment.title:
+  pt: "Minha identidade VPN"
+  en: "My VPN identity"
+vpn.enrollment.explain:
+  pt: "Cada usuário local tem um único par de chaves. Gerar novamente rotaciona a identidade anterior."
+  en: "Each local user has one keypair. Generating it again rotates the previous identity."
+vpn.enrollment.current:
+  pt: "Identidade atual: {address}. A chave privada não pode ser recuperada pelo painel."
+  en: "Current identity: {address}. The private key cannot be recovered from the panel."
+vpn.enrollment.create:
+  pt: "Gerar configuração"
+  en: "Generate configuration"
+vpn.enrollment.rotate:
+  pt: "Rotacionar e gerar novamente"
+  en: "Rotate and generate again"
+vpn.enrollment.rotateConfirm:
+  pt: "A configuração atual deixará de conectar. Rotacionar a sua identidade agora?"
+  en: "Your current configuration will stop connecting. Rotate your identity now?"
+vpn.enrollment.created:
+  pt: "Identidade criada. Salve a configuração antes de fechar esta seção."
+  en: "Identity created. Save the configuration before closing this section."
+vpn.enrollment.onceTitle:
+  pt: "Exibição única — contém chave privada"
+  en: "One-time display — contains a private key"
+vpn.enrollment.onceWarning:
+  pt: "Baixe ou copie agora. Ao fechar ou recarregar a página, o painel não devolverá esta configuração nem o QR code."
+  en: "Download or copy it now. After you close or reload the page, the panel will not return this configuration or QR code."
+vpn.enrollment.download:
+  pt: "Baixar .conf"
+  en: "Download .conf"
+vpn.enrollment.copy:
+  pt: "Copiar"
+  en: "Copy"
+vpn.enrollment.close:
+  pt: "Fechar e apagar da tela"
+  en: "Close and clear from screen"
+vpn.enrollment.copied:
+  pt: "Configuração copiada."
+  en: "Configuration copied."
+vpn.enrollment.copyFailed:
+  pt: "O navegador recusou a cópia; selecione o texto manualmente."
+  en: "The browser refused clipboard access; select the text manually."
+vpn.enrollment.qrAlt:
+  pt: "QR code da configuração WireGuard"
+  en: "WireGuard configuration QR code"
+vpn.enrollment.noQR:
+  pt: "O QR code não pôde ser gerado; use o arquivo ou o texto."
+  en: "The QR code could not be generated; use the file or text."
+vpn.enrollment.vaultNote:
+  pt: "A identidade fica associada ao seu usuário e projetada em um grupo próprio do firewall."
+  en: "The identity stays tied to your user and is projected into its own firewall group."
+
+vpn.peers.title:
+  pt: "Usuários com acesso VPN"
+  en: "Users with VPN access"
+vpn.peers.empty:
+  pt: "Nenhum usuário enrolado."
+  en: "No enrolled users."
+vpn.peer.firewallGroup:
+  pt: "grupo gerenciado no firewall"
+  en: "managed firewall group"
+vpn.peer.revoke:
+  pt: "Revogar"
+  en: "Revoke"
+vpn.peer.revokeMine:
+  pt: "Revogar minha identidade"
+  en: "Revoke my identity"
+vpn.peer.revokeConfirm:
+  pt: "Revogar o acesso VPN de {user}? A configuração instalada nesse dispositivo deixará de conectar."
+  en: "Revoke VPN access for {user}? The configuration installed on that device will stop connecting."
+vpn.peer.revoked:
+  pt: "Identidade VPN revogada."
+  en: "VPN identity revoked."
+
+vpn.firewall.managed:
+  pt: "Identidade e endereço gerenciados pela tela de VPN; as regras deste grupo continuam editáveis."
+  en: "Identity and address are managed on the VPN screen; this group's rules remain editable."
