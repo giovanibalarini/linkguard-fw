@@ -10,6 +10,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/validate"
 )
 
 // O índice do alvo por domínio (#123), terceira parte: a decisão.
@@ -338,21 +339,7 @@ func NovoIndice(agora func() time.Time) *Indice {
 // curinga nem regex neste casamento, e aceitar *.exemplo.com aqui criaria a
 // expectativa de um recurso que não existe.
 func NormalizarDominio(s string) (string, bool) {
-	d := strings.ToLower(strings.TrimSpace(s))
-	d = strings.Trim(d, ".")
-	if d == "" || len(d) > 253 {
-		return "", false
-	}
-	if !strings.Contains(d, ".") || strings.Contains(d, "..") {
-		return "", false
-	}
-	for _, r := range d {
-		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '-'
-		if !ok {
-			return "", false
-		}
-	}
-	return d, true
+	return validate.NormalizeDomainTarget(s)
 }
 
 // prefixosProibidos4 é o espaço v4 que NÃO pode virar regra e que

@@ -118,6 +118,40 @@ func DomainWire(d string) bool {
 	return true
 }
 
+// NormalizeDomainTarget devolve a forma canônica de um SUFIXO de domínio que
+// pode virar alvo de firewall, ou false quando o valor não é seguro.
+//
+// É mais estrito que Domain/DomainWire de propósito: aqueles validadores
+// também servem sufixo DHCP e entradas de blocklist do unbound (onde rótulo
+// único e sublinhado são legítimos). Um alvo por domínio casa por sufixo e
+// pode bloquear tráfego, então exige ao menos dois rótulos e somente o formato
+// hostname ASCII (LDH), com 1..63 bytes por rótulo e hífen fora das pontas.
+func NormalizeDomainTarget(raw string) (string, bool) {
+	d := strings.ToLower(strings.TrimSpace(raw))
+	if strings.HasSuffix(d, ".") {
+		d = strings.TrimSuffix(d, ".")
+	}
+	if d == "" || len(d) > 253 || strings.HasPrefix(d, ".") || !strings.Contains(d, ".") {
+		return "", false
+	}
+	labels := strings.Split(d, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || !asciiAlphaNum(label[0]) || !asciiAlphaNum(label[len(label)-1]) {
+			return "", false
+		}
+		for i := 1; i < len(label)-1; i++ {
+			if !asciiAlphaNum(label[i]) && label[i] != '-' {
+				return "", false
+			}
+		}
+	}
+	return d, true
+}
+
+func asciiAlphaNum(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9'
+}
+
 // IPv4 diz se s é um endereço IPv4.
 //
 // Existe porque net.ParseIP NÃO serve para esta pergunta: ele aceita IPv6 com o

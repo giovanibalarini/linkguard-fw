@@ -39,6 +39,23 @@ func TestValidDomain(t *testing.T) {
 	}
 }
 
+func TestNormalizeDomainTargetValidatesEveryDNSLabel(t *testing.T) {
+	got, ok := NormalizeDomainTarget("  WWW.Exemplo.COM.  ")
+	if !ok || got != "www.exemplo.com" {
+		t.Fatalf("normalização = %q, %v; queria www.exemplo.com, true", got, ok)
+	}
+
+	label64 := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, raw := range []string{
+		"", "com", ".example.com", "example..com", "-api.example.com",
+		"api-.example.com", label64 + ".example", "café.example", "example.com/path",
+	} {
+		if got, ok := NormalizeDomainTarget(raw); ok {
+			t.Errorf("NormalizeDomainTarget(%q) = %q, true; queria recusa", raw, got)
+		}
+	}
+}
+
 // TestValidIface: o nome de interface é interpolado em kea-dhcp4.conf e em
 // unidades do networkd; o charset é o do kernel (IFNAMSIZ-1 = 15 bytes), sem
 // espaço, aspas ou quebra de linha.
