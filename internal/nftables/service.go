@@ -385,9 +385,10 @@ func (s *Service) Ruleset(ctx context.Context) (string, error) {
 	return s.exec.ExecuteRead(ctx, "nft", "list", "table", Family, Table)
 }
 
-// Save returns the current ruleset for storage as a backup (same as Ruleset).
+// Save returns the durable ruleset for storage as a backup. DNS-derived
+// domain elements are runtime cache and are deliberately omitted.
 func (s *Service) Save(ctx context.Context) (string, error) {
-	return s.Ruleset(ctx)
+	return s.PersistentRuleset(ctx)
 }
 
 // ErrNoLinkguardTable é a recusa de restaurar um snapshot que não contém a
@@ -899,7 +900,7 @@ func (s *Service) Persist(ctx context.Context) error {
 	// passa por recordPersist. A recusa do `nft list table` conta como falha de
 	// persistência porque a consequência é a mesma — o arquivo de boot fica com
 	// o conteúdo antigo (ou não existe) enquanto o kernel tem outro.
-	tbl, err := s.exec.ExecuteRead(ctx, "nft", "list", "table", Family, Table)
+	tbl, err := s.PersistentRuleset(ctx)
 	if err != nil {
 		s.recordPersist(err)
 		return err

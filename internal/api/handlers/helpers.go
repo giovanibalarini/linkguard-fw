@@ -42,7 +42,7 @@ func decodeJSON(r *http.Request, v interface{}) error {
 // ruleset. Best-effort: a failed snapshot must never fail the mutation that
 // triggered it — the live change already applied, this is just backup.
 func saveNftSnapshot(ctx context.Context, db *storage.DB, nft *nftables.Service) {
-	rs, err := nft.Ruleset(ctx)
+	rs, err := nft.PersistentRuleset(ctx)
 	if err != nil {
 		slog.Warn("could not read nftables ruleset to persist it", "err", err)
 		return
