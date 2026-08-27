@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
@@ -102,4 +103,13 @@ func auditAction(db *storage.DB, r *http.Request, action, resource, details stri
 		Details:  details,
 		IP:       r.RemoteAddr,
 	})
+}
+
+// actingUser is shared audit metadata. "unknown" is only reachable from
+// unauthenticated tests; every production mutation is behind auth middleware.
+func actingUser(r *http.Request) string {
+	if c := auth.ClaimsFromContext(r.Context()); c != nil {
+		return c.Username
+	}
+	return "unknown"
 }

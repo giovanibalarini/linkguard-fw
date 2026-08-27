@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -50,6 +51,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 	"github.com/giovanibalarini/linkguard-fw/internal/tsdb"
 	"github.com/giovanibalarini/linkguard-fw/internal/updater"
+	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
 )
 
 // Server holds all dependencies needed to serve HTTP requests.
@@ -94,6 +96,8 @@ type Server struct {
 	metricasHostH *handlers.MetricasHostHandler
 	// fluxosSvc é o registro de conversa por host (#115).
 	fluxosSvc *hostflows.Servico
+	wgSvc     *wireguard.Service
+	netH      *handlers.NetsvcHandler
 }
 
 // Config holds server configuration.
@@ -136,6 +140,10 @@ type Config struct {
 	// DomainRouting coordena intenção persistida e runtime dnstap/nft. Como o
 	// roteador nasce em New, ele também precisa chegar pela Config.
 	DomainRouting *domainrouting.Coordinator
+	// WireGuard is optional for compatibility with focused server tests. Main
+	// always supplies it; keeping it in Config avoids widening New's already
+	// large positional dependency list.
+	WireGuard *wireguard.Service
 }
 
 // New creates and wires up the HTTP server.
@@ -180,6 +188,7 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 	s.dnstapSvc = cfg.DNSTap
 	s.fluxosSvc = cfg.Fluxos
 	s.hostQuotaSvc = cfg.HostQuota
+	s.wgSvc = cfg.WireGuard
 	s.router = s.buildRouter(cfg)
 	return s
 }
@@ -187,6 +196,15 @@ func New(cfg Config, db *storage.DB, exec firewall.Executor,
 // Handler returns the HTTP handler (for use in http.Server).
 func (s *Server) Handler() http.Handler {
 	return s.router
+}
+
+// ReconcileVPNDNS reapplies the current DHCP/DNS desired state so unbound's
+// runtime WireGuard listener is restored on boot after the tunnel exists.
+func (s *Server) ReconcileVPNDNS(ctx context.Context) error {
+	if s.netH == nil {
+		return nil
+	}
+	return s.netH.ReloadCurrent(ctx)
 }
 
 func (s *Server) buildRouter(cfg Config) *chi.Mux {
@@ -544,6 +562,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 
 		// DHCP / DNS (Kea + unbound)
 		netH := handlers.NewNetsvcHandler(s.db, s.netSvc, s.alertSvc, s.nftSvc)
+		s.netH = netH
 		if s.dnstapSvc != nil {
 			netH.SetDNSMapa(s.dnstapSvc.Mapa())
 		}
@@ -560,6 +579,19 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermDHCPRead)).Get("/api/dns/mapa", netH.MapaDeDominios)
 		r.With(require(auth.PermDHCPRead)).Get("/api/netsvc/preview", netH.Preview)
 		r.With(require(auth.PermDHCPWrite)).Post("/api/netsvc/apply", netH.Apply)
+
+		// WireGuard is managed on demand. Enrollment is deliberately a POST
+		// with no matching GET for client material: the private config and QR
+		// exist in that one protected response only.
+		if s.wgSvc != nil {
+			vpnH := handlers.NewWireGuardHandler(s.db, s.wgSvc, s.frSvc, s.nftSvc)
+			vpnH.SetDNSReload(netH.ReloadCurrent)
+			r.With(require(auth.PermVPNRead)).Get("/api/vpn", vpnH.Get)
+			r.With(require(auth.PermVPNWrite)).Put("/api/vpn", vpnH.UpdateConfig)
+			r.With(require(auth.PermVPNEnroll)).Post("/api/vpn/enrollment", vpnH.EnrollSelf)
+			r.With(require(auth.PermVPNEnroll)).Delete("/api/vpn/enrollment", vpnH.RevokeSelf)
+			r.With(require(auth.PermVPNWrite)).Delete("/api/vpn/peers/{userID}", vpnH.RevokePeer)
+		}
 
 		// DNS query log (unbound journal; opt-in via DNS log_queries)
 		dnsLogH := handlers.NewDNSLogHandler(dnslog.NewService(s.exec))

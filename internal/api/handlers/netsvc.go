@@ -164,6 +164,13 @@ func (h *NetsvcHandler) doReload(ctx context.Context) error {
 	return err
 }
 
+// ReloadCurrent exposes the canonical reload path to sibling feature wiring
+// (currently WireGuard). It does not accept caller-provided configuration;
+// the persisted netsvc state remains the only source of DHCP/DNS settings.
+func (h *NetsvcHandler) ReloadCurrent(ctx context.Context) error {
+	return h.doReload(ctx)
+}
+
 // reconcileDNSGuard traduz a configuração da tela de DNS para o firewall.
 //
 // O resolver é o próprio endereço que o DHCP anuncia aos clientes: se a caixa

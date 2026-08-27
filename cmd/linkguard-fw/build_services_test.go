@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
+	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -73,6 +75,30 @@ func buildTestServices(t *testing.T) *services {
 		t.Fatalf("buildServices: %v", err)
 	}
 	return s
+}
+
+func TestBuildServicesWiresWireGuardIntoUnbound(t *testing.T) {
+	s := buildTestServices(t)
+	if s.wgSvc == nil {
+		t.Fatal("buildServices did not create the WireGuard service")
+	}
+	if err := s.db.SaveWireGuardConfig(&storage.WireGuardConfig{
+		Enabled: true, ListenPort: 51820, Address: "10.7.0.1/24", EndpointHost: "vpn.example.test",
+	}); err != nil {
+		t.Fatalf("SaveWireGuardConfig: %v", err)
+	}
+	files, err := s.keaSvc.GenerateConfigs(netsvc.DefaultConfig(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("GenerateConfigs: %v", err)
+	}
+	joined := ""
+	for _, file := range files {
+		joined += file.Content
+	}
+	if !strings.Contains(joined, "interface: 10.7.0.1") ||
+		!strings.Contains(joined, "access-control: 10.7.0.0/24 allow") {
+		t.Fatalf("WireGuard DNS binding was not wired into unbound:\n%s", joined)
+	}
 }
 
 // TestBuildServicesWiresThePersistGuard mede, no objeto que o boot usa, o que
