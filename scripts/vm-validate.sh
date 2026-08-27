@@ -2519,7 +2519,16 @@ PYEOF
   st=$(status POST /api/links "$tok" '{"name":"WAN P","interface":"lg-wanp","gateway":"10.77.0.2","ip_address":"10.77.0.1","weight":1,"enabled":true,"monitor_hosts":"10.77.0.2","dns_test":"10.77.0.2"}')
   if [[ "$st" == "200" || "$st" == "201" ]]; then ok "WAN de teste cadastrada pelo painel"
   else bad "não consegui cadastrar a WAN de teste: $st"; return; fi
-  sleep 2
+  # A ESPERA É MEDIDA, NÃO CHUTADA. Eram dois segundos fixos, e a reconciliação
+  # da marcação de conexão às vezes leva mais — a asserção passou em três
+  # rodadas seguidas e reprovou na quarta, com o mesmo produto. Asserção
+  # instável é quase tão ruim quanto asserção errada: ela ensina quem lê o
+  # resumo a desconfiar do resumo.
+  local i
+  for i in $(seq 1 12); do
+    vm "nft list chain inet linkguard conn_mark 2>/dev/null" | grep -q 'lg-wanp' && break
+    sleep 2
+  done
   if vm "nft list chain inet linkguard conn_mark 2>/dev/null" | grep -q 'lg-wanp'; then
     ok "a marcação de conexão pegou a WAN nova"
   else bad "sem marcação de conexão para a WAN nova; a bateria não testaria o que quer"; fi
