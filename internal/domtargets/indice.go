@@ -215,6 +215,10 @@ type Contadores struct {
 	// são o que separa trabalho feito de trabalho tentado — Lotes sozinho conta
 	// as duas coisas como uma.
 	Confirmados uint64
+	// PromovidosDoEnsaio são endereços que foram para o kernel NO ATO da
+	// promoção, aproveitando o que o ensaio já tinha aprendido. É a medida do
+	// que o admin teria esperado o DNS reensinar. Ver Indice.ensaiados.
+	PromovidosDoEnsaio uint64
 	// PodadosTotal é quanto o índice já esqueceu por vencimento.
 	PodadosTotal uint64
 	// Vivos e Dominios são ESTADO, não histórico: quantos endereços o índice
@@ -305,6 +309,22 @@ type Indice struct {
 	porDominio map[string]int
 	vistos     map[string]*rotatividade
 	estat      map[string]*estatDominio
+	// ensaiados é o que o DNS ensinou de um domínio que ainda NÃO escreve:
+	// endereço -> quando o prazo daquele aprendizado vence.
+	//
+	// NÃO É O ESPELHO, e a distinção é a razão de ser um mapa separado em vez
+	// de uma marca dentro de ends. O espelho responde "o que o kernel tem", e
+	// misturar nele endereço de ensaio produziria de volta a tela que afirma
+	// bloqueio onde não há. Este mapa responde outra pergunta: "se eu promover
+	// agora, o que já dá para aplicar sem esperar o próximo DNS".
+	//
+	// Ele existe porque sem ele promover não fazia nada. O admin apertava
+	// promover, a tela dizia ativo, e o kernel só recebia o primeiro endereço
+	// quando algum cliente da rede fizesse uma consulta NOVA que chegasse ao
+	// resolver — o que com cache de TTL longo, e com o cache do próprio
+	// navegador em cima, é meia hora ou mais de firewall aberto embaixo de uma
+	// tela que diz fechado. Ver replayEnsaio.
+	ensaiados map[string]map[netip.Addr]time.Time
 
 	// protegidos são as faixas da PRÓPRIA caixa. Ver DefinirProtegidos.
 	protegidos []netip.Prefix
@@ -325,6 +345,7 @@ func NovoIndice(agora func() time.Time) *Indice {
 		porDominio: map[string]int{},
 		vistos:     map[string]*rotatividade{},
 		estat:      map[string]*estatDominio{},
+		ensaiados:  map[string]map[netip.Addr]time.Time{},
 	}
 }
 
@@ -520,9 +541,26 @@ func (i *Indice) DefinirAlvos(alvos []Alvo) Ajuste {
 		}
 		novos[d] = a
 	}
+
+	// Quem ACABOU de virar ativo. Só esses replicam o aprendizado do ensaio:
+	// domínio que já estava ativo tem os endereços dele no espelho, e replicar
+	// a lista inteira a cada mudança de estado de WAN daria uma volta no poço
+	// de todo mundo para não decidir nada.
+	promovidos := make([]Alvo, 0, 4)
+	for d, a := range novos {
+		if a.Estagio != Ativo {
+			continue
+		}
+		antigo, tinha := i.alvos[d]
+		if !tinha || antigo.Estagio != Ativo {
+			promovidos = append(promovidos, a)
+		}
+	}
+	sort.Slice(promovidos, func(x, y int) bool { return promovidos[x].Dominio < promovidos[y].Dominio })
+
 	i.alvos = novos
 	i.esquecerNaoListados()
-	return i.reconciliar()
+	return i.reconciliar(promovidos)
 }
 
 // esquecerNaoListados apaga a observação de domínio que saiu da lista.
@@ -545,6 +583,109 @@ func (i *Indice) esquecerNaoListados() {
 			delete(i.estat, d)
 		}
 	}
+	// O aprendizado de ensaio segue a mesma regra, e por um motivo mais duro
+	// que o da estatística: promover um domínio recolocado meses depois
+	// escreveria no kernel os endereços da configuração ANTERIOR — que a essa
+	// altura pertencem a outro serviço.
+	for d := range i.ensaiados {
+		_, ok := i.alvos[d]
+		if !ok {
+			delete(i.ensaiados, d)
+		}
+	}
+}
+
+// guardarEnsaio anota o que o DNS ensinou de um domínio que ainda não escreve.
+// Com o lock segurado.
+//
+// Guarda o VENCIMENTO, não só o endereço, e é essa a diferença entre a
+// promoção aplicar o que vale agora e ela ressuscitar o que já rodou. Uma CDN
+// troca de endereço o dia inteiro; o que ela servia às oito da manhã pode ser
+// de outro cliente às dez, e escrever isso num set de bloqueio barra um site
+// que o admin nunca listou. Endereço vencido não é replicado — ver replayEnsaio.
+//
+// Aplica só o filtro de CATEGORIA aqui. Os dois filtros de verdade (Utilizavel
+// e protegido) rodam no caminho normal, no momento de escrever, que é quando
+// eles têm de valer: a lista de faixas protegidas muda com a WAN, e uma decisão
+// tomada no ensaio de ontem não pode dispensar a checagem de hoje.
+func (i *Indice) guardarEnsaio(dominio string, addrs []netip.Addr, prazo time.Duration, agora time.Time) {
+	poco := i.ensaiados[dominio]
+	if poco == nil {
+		poco = map[netip.Addr]time.Time{}
+		i.ensaiados[dominio] = poco
+	}
+	vence := agora.Add(prazo)
+	for _, a := range addrs {
+		if !Utilizavel(a) {
+			continue
+		}
+		if _, ja := poco[a]; ja {
+			poco[a] = vence
+			continue
+		}
+		if len(poco) >= MaxPorDominio {
+			// Cheio: primeiro joga fora o que já venceu, que é lixo por
+			// definição. Se ainda não couber, o novo não entra — o mesmo
+			// "recusa quando não cabe" do resto do arquivo, e não uma
+			// substituição que faria o poço decidir sozinho qual endereço do
+			// domínio o admin vai bloquear.
+			i.limparEnsaioVencido(poco, agora)
+			if len(poco) >= MaxPorDominio {
+				continue
+			}
+		}
+		poco[a] = vence
+	}
+}
+
+func (i *Indice) limparEnsaioVencido(poco map[netip.Addr]time.Time, agora time.Time) {
+	for a, vence := range poco {
+		if !vence.After(agora) {
+			delete(poco, a)
+		}
+	}
+}
+
+// replayEnsaio aplica, na promoção, o que o ensaio já aprendeu. Com o lock
+// segurado.
+//
+// Passa pelo MESMO absorverEndereco do caminho normal, de propósito: os tetos,
+// os dois filtros, o refcount e a regra de "barrar ganha de direcionar" são a
+// parte que decide se um endereço pode virar regra, e uma segunda porta de
+// entrada que os pulasse seria a forma de o produto escrever exatamente o que
+// esses filtros existem para impedir.
+func (i *Indice) replayEnsaio(aj *Ajuste, alvo Alvo, agora time.Time) {
+	poco := i.ensaiados[alvo.Dominio]
+	if len(poco) == 0 {
+		return
+	}
+	i.limparEnsaioVencido(poco, agora)
+
+	// Ordem estável: os tetos fazem o índice recusar a partir de um ponto, e
+	// com iteração de mapa QUAIS endereços entram mudaria a cada promoção.
+	restantes := make([]netip.Addr, 0, len(poco))
+	for a := range poco {
+		restantes = append(restantes, a)
+	}
+	sort.Slice(restantes, func(x, y int) bool { return restantes[x].Less(restantes[y]) })
+
+	est := i.estatDe(alvo.Dominio)
+	antes := len(aj.Escritas)
+	for _, a := range restantes {
+		if !i.aceitavel(alvo.Dominio, est, a) {
+			delete(poco, a)
+			continue
+		}
+		if !podeEntrar(a, alvo.Capacidade) {
+			i.cont.DirecionadoV6Descartado++
+			est.direcionadoV6++
+			continue
+		}
+		// O prazo é o que RESTA daquele aprendizado, grampeado pelos mesmos
+		// limites do caminho normal.
+		i.absorverEndereco(aj, alvo, est, a, grampear(poco[a].Sub(agora)), agora)
+	}
+	i.cont.PromovidosDoEnsaio += uint64(len(aj.Escritas) - antes)
 }
 
 // Alvos devolve a lista corrente, ordenada, para a tela.
@@ -583,8 +724,9 @@ func (i *Indice) estatDe(d string) *estatDominio {
 
 // reconciliar reavalia todo endereço vivo contra a lista corrente. Chamada com
 // o lock segurado.
-func (i *Indice) reconciliar() Ajuste {
+func (i *Indice) reconciliar(promovidos []Alvo) Ajuste {
 	var aj Ajuste
+	agora := i.agora()
 	for addr, r := range i.ends {
 		// Quem não está mais na lista, ou caiu para ensaio, deixa de
 		// reivindicar. O refcount é o que decide se o endereço sai.
@@ -592,6 +734,14 @@ func (i *Indice) reconciliar() Ajuste {
 			a, ok := i.alvos[d]
 			if ok && a.Estagio == Ativo {
 				continue
+			}
+			if ok {
+				// Rebaixado para ensaio, e não removido: o endereço sai do
+				// kernel agora (é o resto deste laço), mas o que o DNS ensinou
+				// continua sabido. Sem isto, rebaixar e promover de volta
+				// jogaria fora o aprendizado e devolveria a espera pelo próximo
+				// DNS que esta correção existe para eliminar.
+				i.guardarEnsaio(d, []netip.Addr{addr}, r.expira.Sub(agora), agora)
 			}
 			delete(r.dominios, d)
 			i.baixarContagem(d)
@@ -631,6 +781,9 @@ func (i *Indice) reconciliar() Ajuste {
 		r.pendPrazo = r.concedido
 		r.pendCap = capa
 		r.pendMarca = marca
+	}
+	for _, a := range promovidos {
+		i.replayEnsaio(&aj, a, agora)
 	}
 	return aj
 }
@@ -789,6 +942,10 @@ func (i *Indice) Aprender(nome string, addrs []netip.Addr, ttl time.Duration) Aj
 
 	if alvo.Estagio != Ativo {
 		i.cont.EmEnsaio++
+		// Ensaio continua não escrevendo uma linha no kernel — só passa a
+		// LEMBRAR, para que promover aplique na hora em vez de esperar o
+		// resolver reensinar. Ver Indice.ensaiados.
+		i.guardarEnsaio(alvo.Dominio, addrs, grampear(ttl), agora)
 		return aj
 	}
 
@@ -1077,6 +1234,16 @@ func (i *Indice) Podar() int {
 		n++
 	}
 	i.cont.PodadosTotal += uint64(n)
+
+	// O aprendizado de ensaio vence pelo mesmo relógio. Não conta em
+	// PodadosTotal — aquele número é sobre o que o kernel tinha, e somar aqui
+	// misturaria endereço que estava barrado com endereço que nunca esteve.
+	for d, poco := range i.ensaiados {
+		i.limparEnsaioVencido(poco, corte)
+		if len(poco) == 0 {
+			delete(i.ensaiados, d)
+		}
+	}
 	return n
 }
 
