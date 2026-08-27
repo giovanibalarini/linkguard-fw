@@ -528,7 +528,7 @@ func TestEnsureInstalledIsANoOpInDryRun(t *testing.T) {
 // installed on demand: naming a package without saying what its absence
 // breaks leaves the admin guessing.
 func TestEveryOnDemandPackageHasAConsequence(t *testing.T) {
-	for _, pkg := range []string{"kea-dhcp4-server", "unbound", "dns-root-data", "chrony"} {
+	for _, pkg := range []string{"kea-dhcp4-server", "unbound", "dns-root-data", "chrony", "wireguard-tools", "qrencode"} {
 		if strings.TrimSpace(consequences[pkg]) == "" {
 			t.Errorf("on-demand package %s has no consequence text", pkg)
 		}

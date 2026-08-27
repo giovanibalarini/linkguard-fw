@@ -69,6 +69,8 @@ var consequences = map[string]string{
 	"unbound":          "sem ele não existe resolvedor DNS local: a LAN fica sem o DNS do próprio firewall, e o bloqueio de domínios e o log de consultas deixam de valer",
 	"dns-root-data":    "sem ele o unbound nem sobe: falta a âncora DNSSEC da raiz (/var/lib/unbound/root.key) e o resolvedor aborta na inicialização, deixando a LAN sem DNS",
 	"chrony":           "sem ele o relógio da máquina não sincroniza por NTP: logs, certificados e o próprio agendamento ficam sujeitos a desvio de horário",
+	"wireguard-tools":  "sem ele a VPN WireGuard não pode criar a interface nem aplicar os peers configurados no painel",
+	"qrencode":         "sem ele o painel não consegue gerar o QR code one-time para importar a configuração WireGuard no celular",
 }
 
 // Alerter is the panel-facing side of Ensure. Kept as a local interface (same
