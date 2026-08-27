@@ -59,6 +59,42 @@ func TestDisableRecoversAfterRestartAtEveryJournalBoundary(t *testing.T) {
 	}
 }
 
+func TestStandaloneApplyCompletesAfterRestartAtEveryKernelBoundary(t *testing.T) {
+	for write := 1; write <= 6; write++ {
+		t.Run(fmt.Sprintf("after_kernel_write_%d", write), func(t *testing.T) {
+			kernel := newRestartKernel()
+			db, service := restartService(t, kernel, recoveryBoundary{panicWrite: write})
+			cfg := qos.Config{Interface: "wan0", Enabled: true, UploadMbps: 50, DownloadMbps: 200}
+			mustCrash(t, func() { _, _ = service.Apply(context.Background(), cfg) })
+			recoverAfterReopen(t, db, kernel)
+			state, err := qos.NewService(kernel).Observe(context.Background(), cfg.Interface)
+			if err != nil || !state.Enabled {
+				t.Fatalf("standalone Apply recovery = %+v, %v; want completed enabled state", state, err)
+			}
+		})
+	}
+}
+
+func TestStandaloneDisableCompletesAfterRestartAtEveryKernelBoundary(t *testing.T) {
+	for write := 1; write <= 4; write++ {
+		t.Run(fmt.Sprintf("after_kernel_write_%d", write), func(t *testing.T) {
+			kernel := newRestartKernel()
+			cfg := qos.Config{Interface: "wan0", Enabled: true, UploadMbps: 50, DownloadMbps: 200}
+			if _, err := qos.NewService(kernel).Apply(context.Background(), cfg); err != nil {
+				t.Fatalf("seed managed QoS: %v", err)
+			}
+			kernel.resetWrites()
+			db, service := restartService(t, kernel, recoveryBoundary{panicWrite: write})
+			mustCrash(t, func() { _, _ = service.Disable(context.Background(), cfg.Interface) })
+			recoverAfterReopen(t, db, kernel)
+			state, err := qos.NewService(kernel).Observe(context.Background(), cfg.Interface)
+			if err != nil || state.Enabled || kernel.hasManagedObjects() {
+				t.Fatalf("standalone Disable recovery = %+v, %v, kernel=%+v; want completed disabled state", state, err, kernel)
+			}
+		})
+	}
+}
+
 func TestRestartRecoveryPreservesUnrecordedRootAndLease(t *testing.T) {
 	kernel := newRestartKernel()
 	kernel.egress = "qdisc cake 1: root bandwidth 99mbit besteffort nat dual-srchost\n"

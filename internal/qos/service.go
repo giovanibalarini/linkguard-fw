@@ -453,12 +453,14 @@ func (s *Service) beginOperation(target, recovery Config, intent OperationIntent
 		return "", nil
 	}
 	lease := &OperationLease{
-		ID:            uuid.NewString(),
-		Interface:     target.Interface,
-		Intent:        intent,
-		Target:        target,
-		Recovery:      recovery,
-		IFBExisted:    ownership.ifbExists,
+		ID:        uuid.NewString(),
+		Interface: target.Interface,
+		Intent:    intent,
+		Target:    target,
+		Recovery:  recovery,
+		// A complete managed chain owns its IFB, so recovery may remove and
+		// recreate it. Preserve only an IFB that predated LinkGuard ownership.
+		IFBExisted:    ownership.ifbExists && !ownership.chainOwned,
 		IFBWasUp:      ownership.ifbUp,
 		ClsactExisted: ownership.clsact,
 		CreatedAt:     time.Now().UTC(),
