@@ -127,6 +127,29 @@ func (db *DB) DeleteUser(id string) error {
 		return err
 	}
 	defer tx.Rollback()
+	// A VPN identity is owned by the local panel user. Delete the complete
+	// ownership graph in this same transaction so no encrypted private key,
+	// managed firewall group or rule survives after its principal disappears.
+	var peerSecret, peerGroup string
+	err = tx.QueryRow(`SELECT secret_name, firewall_group_id FROM wireguard_peers WHERE user_id = ?`, id).
+		Scan(&peerSecret, &peerGroup)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		if _, err := tx.Exec(`DELETE FROM wireguard_peers WHERE user_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM firewall_rules WHERE group_id = ?`, peerGroup); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM firewall_groups WHERE id = ?`, peerGroup); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM secrets WHERE name = ?`, peerSecret); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(`DELETE FROM user_roles WHERE user_id = ?`, id); err != nil {
 		return err
 	}
