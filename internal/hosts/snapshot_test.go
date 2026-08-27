@@ -80,6 +80,36 @@ func TestSetBlockedPersistsLiveSnapshot(t *testing.T) {
 	}
 }
 
+func TestSetBlockedDoesNotPersistTransientDomainCache(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.UpsertHostSighting("aa:bb:cc:dd:ee:ff", "192.168.3.50"); err != nil {
+		t.Fatalf("UpsertHostSighting: %v", err)
+	}
+
+	const liveRuleset = "table inet linkguard {\n\tset blocked_hosts {\n\t\telements = { 192.168.3.50 }\n\t}\n\tset dom_blocked {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t\telements = { 9.9.9.9 timeout 1h }\n\t}\n}\n"
+	exec := &fakeExec{ruleset: liveRuleset}
+	svc := hosts.NewService(exec, db, nftables.NewService(exec), fakeNetProvider{})
+
+	if err := svc.SetBlocked(context.Background(), "aa:bb:cc:dd:ee:ff", true); err != nil {
+		t.Fatalf("SetBlocked: %v", err)
+	}
+
+	got, err := db.GetSetting(nftables.LiveSnapshotSettingKey)
+	if err != nil {
+		t.Fatalf("GetSetting: %v", err)
+	}
+	if strings.Contains(got, "9.9.9.9") {
+		t.Fatalf("snapshot de host persistiu cache DNS transitório:\n%s", got)
+	}
+	if !strings.Contains(got, "192.168.3.50") || !strings.Contains(got, "set dom_blocked {") {
+		t.Fatalf("snapshot perdeu estado durável ao retirar o cache DNS:\n%s", got)
+	}
+}
+
 // execGravador guarda os comandos, para o teste abaixo poder afirmar o que foi
 // escrito no firewall — e não só que nada explodiu.
 type execGravador struct {

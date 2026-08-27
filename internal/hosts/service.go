@@ -252,7 +252,7 @@ func (s *Service) SetBlocked(ctx context.Context, mac string, blocked bool) erro
 	if ip == "" {
 		// Sem IP conhecido não há o que pôr no set IPv4 — mas o bloqueio por
 		// MAC acima JÁ está valendo, que é a diferença desta mudança.
-		if rs, err := s.nft.Ruleset(ctx); err == nil {
+		if rs, err := s.nft.PersistentRuleset(ctx); err == nil {
 			_ = s.db.SetSetting(nftables.LiveSnapshotSettingKey, rs)
 		}
 		return nil
@@ -266,7 +266,7 @@ func (s *Service) SetBlocked(ctx context.Context, mac string, blocked bool) erro
 	// too, not just the host_metadata flag (mirrors the handlers-package
 	// saveNftSnapshot; duplicated here rather than imported to avoid this
 	// package depending on internal/api/handlers).
-	if rs, err := s.nft.Ruleset(ctx); err == nil {
+	if rs, err := s.nft.PersistentRuleset(ctx); err == nil {
 		_ = s.db.SetSetting(nftables.LiveSnapshotSettingKey, rs)
 	}
 	return nil
