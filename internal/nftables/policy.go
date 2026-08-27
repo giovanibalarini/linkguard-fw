@@ -133,6 +133,29 @@ func (s *Service) wanInterfaces() ([]string, error) {
 	return ifaces, nil
 }
 
+// SetWireGuardInputSource connects the canonical input-chain renderer to the
+// persisted VPN desired state. The port is validated again here at the sink.
+func (s *Service) SetWireGuardInputSource(src func() (bool, int, error)) {
+	s.wireGuardInputSource = src
+}
+
+func (s *Service) wireGuardInputPort() (int, error) {
+	if s.wireGuardInputSource == nil {
+		return 0, nil
+	}
+	enabled, port, err := s.wireGuardInputSource()
+	if err != nil {
+		return 0, fmt.Errorf("ler a porta WireGuard para reconstruir a chain %s: %w", InputChain, err)
+	}
+	if !enabled {
+		return 0, nil
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("porta WireGuard inválida no estado persistido: %d", port)
+	}
+	return port, nil
+}
+
 // SetWANMgmtClosedSource liga a fonte da decisão de fechar as portas de
 // gerência nas WANs (#119, fase 3b).
 //

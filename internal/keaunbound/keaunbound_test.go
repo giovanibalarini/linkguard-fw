@@ -180,6 +180,49 @@ func TestReloadConfigsValidatesWritesAndReloads(t *testing.T) {
 	}
 }
 
+func TestServiceAddsRuntimeDNSBindingSource(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	s.SetDNSBindingSource(func() (string, string, bool, error) {
+		return "10.7.0.1", "10.7.0.0/24", true, nil
+	})
+
+	files, err := s.GenerateConfigs(netsvc.DefaultConfig(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("GenerateConfigs: %v", err)
+	}
+	var unbound string
+	for _, file := range files {
+		if file.Path == s.unboundConf {
+			unbound = file.Content
+		}
+	}
+	if !strings.Contains(unbound, "interface: 10.7.0.1") {
+		t.Fatalf("unbound config does not listen on the WireGuard address:\n%s", unbound)
+	}
+	if !strings.Contains(unbound, "access-control: 10.7.0.0/24 allow") {
+		t.Fatalf("unbound config does not authorize the WireGuard network:\n%s", unbound)
+	}
+}
+
+func TestReloadConfigsRejectsMissingRuntimeDNSAddressBeforeWrite(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+	s.SetDNSBindingSource(func() (string, string, bool, error) {
+		return "10.7.0.1", "10.7.0.0/24", true, nil
+	})
+
+	if _, err := s.ReloadConfigs(context.Background(), netsvc.DefaultConfig(), nil, nil, ""); err == nil {
+		t.Fatal("expected missing WireGuard address to abort reload")
+	}
+	if _, err := os.Stat(s.unboundConf); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unbound config must not be written, stat err = %v", err)
+	}
+	if _, err := os.Stat(s.keaConf); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("kea config must not be written, stat err = %v", err)
+	}
+}
+
 // TestValidateKeaWritesTempFileNextToRealConfig is the regression test for a
 // real production bug: the validate temp file used to go to os.TempDir()
 // (/tmp), but Debian's kea-dhcp4 AppArmor profile only allows reading under
@@ -441,6 +484,30 @@ func TestGenerateUnboundConfigRecursiveByDefault(t *testing.T) {
 	}
 	if strings.Contains(out, "log-queries") {
 		t.Errorf("log-queries should be off by default")
+	}
+}
+
+func TestGenerateUnboundConfigListensOnAndAuthorizesWireGuardTunnel(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	cfg.ExtraListenAddresses = []string{"10.7.0.1"}
+	cfg.ExtraAccessNetworks = []string{"10.7.0.0/24"}
+	out, _, err := GenerateUnboundConfig(cfg, nil)
+	if err != nil {
+		t.Fatalf("GenerateUnboundConfig: %v", err)
+	}
+	if !strings.Contains(out, "  interface: 10.7.0.1\n") {
+		t.Fatalf("WireGuard listen address missing:\n%s", out)
+	}
+	if !strings.Contains(out, "  access-control: 10.7.0.0/24 allow\n") {
+		t.Fatalf("WireGuard access-control missing:\n%s", out)
+	}
+}
+
+func TestGenerateUnboundConfigRejectsInjectedExtraBindingAtSink(t *testing.T) {
+	cfg := netsvc.DefaultConfig()
+	cfg.ExtraListenAddresses = []string{"10.7.0.1\ninterface: 0.0.0.0"}
+	if _, _, err := GenerateUnboundConfig(cfg, nil); err == nil {
+		t.Fatal("injected WireGuard listen address reached unbound renderer")
 	}
 }
 

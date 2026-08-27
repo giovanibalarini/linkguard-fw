@@ -87,7 +87,7 @@ import (
 // nasce sem link nenhum, o resultado é byte a byte o de antes. Um firewall que
 // descartasse "tudo que vem da WAN" sem saber quais são as WANs descartaria
 // nada ou tudo, e as duas respostas estão erradas.
-func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada, contencaoLigada bool) [][]string {
+func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada, contencaoLigada bool, wireGuardPorts ...int) [][]string {
 	nomes := make([]string, 0, len(wanIfaces))
 	vistos := map[string]bool{}
 	for _, iface := range wanIfaces {
@@ -216,6 +216,17 @@ func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada, cont
 				regras = append(regras, abuseRules(wanIfaces, portas)...)
 			}
 			regras = append(regras, []string{"iifname", set, "tcp", "dport", portas, "counter", "accept"})
+		}
+	}
+
+	// WireGuard escuta na própria caixa. A liberação fica na mesma fonte
+	// canônica da proteção WAN e antes do drop final; assim ela acompanha toda
+	// WAN atual sem PostUp, shell ou uma segunda chain que outra reconciliação
+	// apagaria. A connection mark de #120 continua lembrando por qual WAN o
+	// handshake entrou e marca a resposta no hook output.
+	if len(wireGuardPorts) > 0 {
+		if port := wireGuardPorts[0]; port >= 1 && port <= 65535 {
+			regras = append(regras, []string{"iifname", set, "udp", "dport", strconv.Itoa(port), "counter", "accept"})
 		}
 	}
 

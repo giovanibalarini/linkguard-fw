@@ -261,6 +261,12 @@ func IsSystemGroup(kind string) bool {
 	return ok
 }
 
+// IsWireGuardPeerGroup reports whether the group is the firewall projection
+// of a VPN identity. It remains chain-backed (and therefore intentionally is
+// not a system group), but its identity and source address are owned by the
+// WireGuard enrollment lifecycle rather than the generic groups API.
+func IsWireGuardPeerGroup(kind string) bool { return kind == GroupKindWireGuardPeer }
+
 // StoredGroup is this package's own view of a rule group, deliberately
 // independent of internal/storage.FirewallGroup — internal/nftables must
 // not import internal/storage (a cycle), exactly like StoredRule already

@@ -692,5 +692,10 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 		slog.Warn("não foi possível ler a contenção de borda para o pré-voo", "err", cerr)
 		cont = false
 	}
-	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans, fechada, cont), ensureInput)
+	wireGuardPort, wgErr := s.wireGuardInputPort()
+	if wgErr != nil {
+		slog.Warn("não foi possível ler a porta WireGuard para o pré-voo; a liberação VPN não entra no candidato", "err", wgErr)
+		wireGuardPort = 0
+	}
+	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans, fechada, cont, wireGuardPort), ensureInput)
 }

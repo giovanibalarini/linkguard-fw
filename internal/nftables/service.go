@@ -73,6 +73,10 @@ type Service struct {
 	// emite regra nenhuma, o comportamento de toda máquina anterior a esta
 	// entrega. Erro de leitura ABORTA: ver wanInterfaces.
 	wanInterfacesSource func() ([]string, error)
+	// wireGuardInputSource é a porta UDP do serviço VPN quando habilitado.
+	// Ausente resolve para desligado; erro/porta inválida aborta a reconstrução
+	// para não apagar uma liberação válida por causa de estado ilegível.
+	wireGuardInputSource func() (enabled bool, port int, err error)
 	// wanMgmtClosedSource é a decisão do admin de fechar as portas de gerência
 	// nas WANs (#119, fase 3b). Ausente resolve para aberto — o estado que não
 	// tranca ninguém. Ver wanMgmtClosed.

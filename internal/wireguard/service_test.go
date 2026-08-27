@@ -241,6 +241,49 @@ func TestApplyRefusesCorruptPersistedConfigBeforeReplacingLiveFile(t *testing.T)
 	}
 }
 
+func TestReconcileRepairsMissingManagedPeerGroup(t *testing.T) {
+	svc, db, _, _ := newServiceTest(t)
+	user := &storage.User{Username: "davi"}
+	if err := db.CreateUser(user, "hash", nil); err != nil {
+		t.Fatal(err)
+	}
+	c := DefaultConfig()
+	c.Enabled = true
+	c.EndpointHost = "vpn.example.net"
+	if err := svc.UpdateConfig(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	svc.qr = &qrSpy{}
+	if _, err := svc.Enroll(context.Background(), user.ID); err != nil {
+		t.Fatal(err)
+	}
+	peer, _ := db.GetWireGuardPeer(user.ID)
+	if err := db.DeleteFirewallGroup(peer.FirewallGroupID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	found := false
+	for _, g := range mustWireGuardGroups(t, db) {
+		if g.ID == peer.FirewallGroupID && g.Kind == "wireguard_peer" && g.CondSaddr == peer.Address {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("reconcile did not recreate the peer firewall group")
+	}
+}
+
+func mustWireGuardGroups(t *testing.T, db *storage.DB) []storage.FirewallGroup {
+	t.Helper()
+	groups, err := db.ListFirewallGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return groups
+}
+
 func callsContaining(calls []string, needle string) int {
 	n := 0
 	for _, call := range calls {

@@ -269,6 +269,11 @@ func (h *NftablesHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 			"este é um grupo do sistema: o nome e a condição de entrada dele não são editáveis; use reordenar ou ligar/desligar")
 		return
 	}
+	if nftables.IsWireGuardPeerGroup(existing.Kind) {
+		writeError(w, http.StatusBadRequest,
+			"este grupo pertence a um peer WireGuard; gerencie a identidade e o endereço pela tela de VPN")
+		return
+	}
 
 	row := existing
 	row.Name, row.CondSaddr, row.CondDaddr = b.Name, b.CondSaddr, b.CondDaddr
@@ -394,6 +399,11 @@ func (h *NftablesHandler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 			"este é um grupo do sistema e não pode ser removido; para desativá-lo, use o botão de ligar/desligar")
 		return
 	}
+	if nftables.IsWireGuardPeerGroup(g.Kind) {
+		writeError(w, http.StatusBadRequest,
+			"este grupo pertence a um peer WireGuard; revogue o peer pela tela de VPN")
+		return
+	}
 	// Sem preflight, pela mesma razão de DeleteRule (ver o comentário desta
 	// função): tirar um jump da forward e apagar uma chain não é algo que o
 	// nft possa recusar por sintaxe.
@@ -433,6 +443,11 @@ func (h *NftablesHandler) ToggleGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	g, found := h.findGroup(w, id)
 	if !found {
+		return
+	}
+	if nftables.IsWireGuardPeerGroup(g.Kind) {
+		writeError(w, http.StatusBadRequest,
+			"este grupo pertence a um peer WireGuard e acompanha o estado do serviço VPN")
 		return
 	}
 

@@ -52,6 +52,34 @@ func TestODescarteCasaSomenteConexaoNova(t *testing.T) {
 	}
 }
 
+func TestWireGuardIsAcceptedOnEveryWANBeforeTheDefaultDrop(t *testing.T) {
+	rules := linhas(WANInputRules([]string{"wan0", "wan1"}, gerencia, false, true, 51820))
+	joined := strings.Join(rules, "\n")
+	want := `iifname { "wan0", "wan1" } udp dport 51820 counter accept`
+	if !strings.Contains(joined, want) {
+		t.Fatalf("WireGuard WAN accept is missing:\n%s", joined)
+	}
+	acceptAt, dropAt := strings.Index(joined, want), strings.LastIndex(joined, "ct state new counter drop")
+	if acceptAt < 0 || dropAt < 0 || acceptAt > dropAt {
+		t.Fatalf("WireGuard accept must precede the WAN drop:\n%s", joined)
+	}
+}
+
+func TestInvalidPersistedWireGuardPortAbortsInputReconcile(t *testing.T) {
+	exec := &recordExec{}
+	s := NewService(exec)
+	s.SetInputChainSources(func() ([]StoredGroup, error) { return nil, nil }, func() ([]string, bool, error) { return nil, false, nil })
+	s.SetWANInterfacesSource(func() ([]string, error) { return []string{"wan0"}, nil })
+	s.SetAdminAccessSource(func() (AdminAccess, error) { return gerencia, nil })
+	s.SetWireGuardInputSource(func() (bool, int, error) { return true, 70000, nil })
+	if err := s.ReconcileInputProtection(context.Background()); err == nil {
+		t.Fatal("invalid persisted WireGuard port should abort without touching input")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("input chain changed after sink validation failure: %v", exec.calls)
+	}
+}
+
 func TestOAdminNaoPodeSerTrancadoForaPelaLAN(t *testing.T) {
 	// Nenhuma regra desta lista pode casar tráfego que não venha de uma WAN.
 	// É esta propriedade — e não um teste de 90 segundos — que torna seguro
