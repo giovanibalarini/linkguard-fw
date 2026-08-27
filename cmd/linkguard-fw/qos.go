@@ -18,6 +18,15 @@ func recoverStressTestOnBoot(ctx context.Context, svc *stresstest.Service) {
 	}
 }
 
+func recoverQoSOnBoot(ctx context.Context, svc *qos.Service) {
+	if svc == nil {
+		return
+	}
+	if err := svc.RecoverInterrupted(ctx); err != nil {
+		slog.Error("não foi possível recuperar operação QoS interrompida no boot", "err", err)
+	}
+}
+
 // reconcileQoSOnBoot reapplies enabled QoS and removes stale objects for every
 // persisted link. The loader is called while each interface is locked by
 // ApplyCurrent, so an API mutation cannot be followed by a stale boot apply.

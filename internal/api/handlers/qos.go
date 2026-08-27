@@ -17,7 +17,7 @@ import (
 
 type qosService interface {
 	Apply(context.Context, qos.Config) (qos.State, error)
-	ApplyAndPersist(context.Context, qos.Config, qos.Config, func() error) (qos.State, error)
+	ApplyAndPersist(context.Context, qos.Config, qos.Config, func(string) error) (qos.State, error)
 	ApplyCurrent(context.Context, string, func() (qos.Config, error)) (qos.State, error)
 	ApplyCurrentAndPersist(context.Context, string, func() (qos.ApplyPlan, error)) (qos.State, error)
 	Observe(context.Context, string) (qos.State, error)
@@ -124,10 +124,15 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return qos.ApplyPlan{
 			Config:   applyConfig,
 			Rollback: rollback,
-			Persist: func() error {
-				return h.db.UpdateLinkQoSIfCurrent(link.ID, current.Interface, current.Enabled,
+			Persist: func(operationID string) error {
+				if operationID == "" {
+					return h.db.UpdateLinkQoSIfCurrent(link.ID, current.Interface, current.Enabled,
+						current.QoSEnabled, current.QoSUploadMbps, current.QoSDownloadMbps, current.QoSInteractive,
+						desired.Enabled, desired.UploadMbps, desired.DownloadMbps, desired.Interactive)
+				}
+				return h.db.UpdateLinkQoSIfCurrentAndClearOperation(link.ID, current.Interface, current.Enabled,
 					current.QoSEnabled, current.QoSUploadMbps, current.QoSDownloadMbps, current.QoSInteractive,
-					desired.Enabled, desired.UploadMbps, desired.DownloadMbps, desired.Interactive)
+					desired.Enabled, desired.UploadMbps, desired.DownloadMbps, desired.Interactive, operationID)
 			},
 		}, nil
 	})

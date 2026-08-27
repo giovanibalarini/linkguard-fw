@@ -189,6 +189,28 @@ func TestRecoverStressTestOnBootRestoresOutageAndClearsLease(t *testing.T) {
 	}
 }
 
+func TestRecoverQoSOnBootConsumesInterruptedOperation(t *testing.T) {
+	db := openBootQosDB(t)
+	lease := &qos.OperationLease{
+		ID: "qos-boot-op", Interface: "wan0", Intent: qos.OperationApply,
+		Target:   qos.Config{Interface: "wan0", Enabled: true, UploadMbps: 50, DownloadMbps: 200},
+		Recovery: qos.Config{Interface: "wan0"},
+	}
+	if err := db.SaveQoSOperationLease(lease); err != nil {
+		t.Fatalf("SaveQoSOperationLease: %v", err)
+	}
+	exec := &bootQosExec{realWrites: true}
+	service := qos.NewService(exec)
+	service.SetOperationStore(db)
+
+	recoverQoSOnBoot(context.Background(), service)
+
+	got, err := db.ListQoSOperationLeases()
+	if err != nil || len(got) != 0 {
+		t.Fatalf("boot QoS leases = %#v, %v; want empty", got, err)
+	}
+}
+
 func TestRecoverStressTestOnBootPreservesForeignCakeOneAndLease(t *testing.T) {
 	db := openBootQosDB(t)
 	link := &storage.Link{ID: "wan-degrade", Name: "WAN degrade", Interface: "wan0", Enabled: true}

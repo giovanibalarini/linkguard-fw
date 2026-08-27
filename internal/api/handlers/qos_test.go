@@ -719,7 +719,7 @@ func (s *linkLifecycleQosStub) Apply(context.Context, qos.Config) (qos.State, er
 	return qos.State{}, nil
 }
 
-func (s *linkLifecycleQosStub) ApplyAndPersist(context.Context, qos.Config, qos.Config, func() error) (qos.State, error) {
+func (s *linkLifecycleQosStub) ApplyAndPersist(context.Context, qos.Config, qos.Config, func(string) error) (qos.State, error) {
 	return qos.State{}, nil
 }
 
@@ -1050,12 +1050,12 @@ func (s *qosUpdateServiceStub) Apply(ctx context.Context, cfg qos.Config) (qos.S
 	return s.apply(ctx, cfg)
 }
 
-func (s *qosUpdateServiceStub) ApplyAndPersist(ctx context.Context, cfg, _ qos.Config, persist func() error) (qos.State, error) {
+func (s *qosUpdateServiceStub) ApplyAndPersist(ctx context.Context, cfg, _ qos.Config, persist func(string) error) (qos.State, error) {
 	state, err := s.apply(ctx, cfg)
 	if err != nil {
 		return qos.State{}, err
 	}
-	if err := persist(); err != nil {
+	if err := persist(""); err != nil {
 		return qos.State{}, err
 	}
 	return state, nil
@@ -1083,7 +1083,7 @@ func (s *qosUpdateServiceStub) ApplyCurrentAndPersist(ctx context.Context, _ str
 	if err != nil {
 		return qos.State{}, err
 	}
-	if err := plan.Persist(); err != nil {
+	if err := plan.Persist(""); err != nil {
 		return qos.State{}, err
 	}
 	return state, nil

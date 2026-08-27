@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
+	"github.com/google/uuid"
 )
 
 const redirectFilterPriority = "49152"
@@ -50,7 +51,7 @@ type State struct {
 type ApplyPlan struct {
 	Config   Config
 	Rollback Config
-	Persist  func() error
+	Persist  func(operationID string) error
 }
 
 // NetemFault is the exact stress-test impairment owned by LinkGuard. The
@@ -83,7 +84,8 @@ func newInterfaceSemaphore() *interfaceSemaphore {
 
 // Service applies QoS changes through the firewall command executor.
 type Service struct {
-	exec firewall.Executor
+	exec  firewall.Executor
+	store OperationStore
 
 	locksMu       sync.Mutex
 	interfaceLock map[string]*interfaceSemaphore
@@ -92,6 +94,12 @@ type Service struct {
 // NewService creates a QoS service.
 func NewService(exec firewall.Executor) *Service {
 	return &Service{exec: exec, interfaceLock: make(map[string]*interfaceSemaphore)}
+}
+
+// SetOperationStore enables cross-process recovery for Apply and Disable.
+// It must be configured before the service is made available to callers.
+func (s *Service) SetOperationStore(store OperationStore) {
+	s.store = store
 }
 
 // Apply validates and applies one WAN's desired QoS configuration.
@@ -104,14 +112,14 @@ func (s *Service) Apply(ctx context.Context, cfg Config) (State, error) {
 		return State{}, err
 	}
 	defer unlock()
-	return s.apply(ctx, cfg)
+	return s.applyDurable(ctx, cfg, cfg, operationIntent(cfg))
 }
 
 // ApplyAndPersist applies cfg and invokes persist while the interface lock is
 // held. If persistence fails, rollback is applied before returning the error.
 // Keeping the kernel change and its durable configuration in one critical
 // section prevents boot/API operations from interleaving on one interface.
-func (s *Service) ApplyAndPersist(ctx context.Context, cfg, rollback Config, persist func() error) (State, error) {
+func (s *Service) ApplyAndPersist(ctx context.Context, cfg, rollback Config, persist func(string) error) (State, error) {
 	if err := cfg.Validate(); err != nil {
 		return State{}, err
 	}
@@ -147,7 +155,7 @@ func (s *Service) ApplyCurrentAndPersist(ctx context.Context, iface string, load
 	return s.applyAndPersistLocked(ctx, plan.Config, plan.Rollback, plan.Persist)
 }
 
-func (s *Service) applyAndPersistLocked(ctx context.Context, cfg, rollback Config, persist func() error) (State, error) {
+func (s *Service) applyAndPersistLocked(ctx context.Context, cfg, rollback Config, persist func(string) error) (State, error) {
 	if err := cfg.Validate(); err != nil {
 		return State{}, err
 	}
@@ -155,20 +163,46 @@ func (s *Service) applyAndPersistLocked(ctx context.Context, cfg, rollback Confi
 		return State{}, errors.New("qos persistence callback is nil")
 	}
 
-	state, err := s.apply(ctx, cfg)
+	if rollback.Interface != cfg.Interface || rollback.Validate() != nil {
+		rollback = Config{Interface: cfg.Interface}
+	}
+	ownership, err := s.inspectOwnership(ctx, cfg.Interface)
 	if err != nil {
 		return State{}, err
 	}
-	if err := persist(); err != nil {
-		if rollback.Interface != cfg.Interface || rollback.Validate() != nil {
-			rollback = Config{Interface: cfg.Interface}
+	if err := validateApplyOwnership(cfg, ownership); err != nil {
+		return State{}, err
+	}
+	leaseID, err := s.beginOperation(cfg, rollback, operationIntent(cfg), ownership)
+	if err != nil {
+		return State{}, err
+	}
+	state, err := s.applyFromOwnership(ctx, cfg, ownership, leaseID)
+	if err != nil {
+		if clearErr := s.clearCompensatedOperation(leaseID, cfg.Interface, err); clearErr != nil {
+			return State{}, clearErr
 		}
+		return State{}, err
+	}
+	if err := persist(leaseID); err != nil {
 		repairCtx, cancel := detachedRepairContext(ctx)
 		defer cancel()
 		if _, restoreErr := s.apply(repairCtx, rollback); restoreErr != nil {
 			return State{}, fmt.Errorf("%w: persist QoS: %v; restore QoS: %v", ErrCompensationFailed, err, restoreErr)
 		}
+		if clearErr := s.clearOperation(leaseID, cfg.Interface); clearErr != nil {
+			return State{}, fmt.Errorf("%w: persist QoS: %v; clear recovered operation: %v", ErrCompensationFailed, err, clearErr)
+		}
 		return State{}, fmt.Errorf("persist QoS: %w", err)
+	}
+	if leaseID != "" {
+		pending, listErr := s.operationPending(leaseID)
+		if listErr != nil {
+			return State{}, fmt.Errorf("verify persisted QoS operation: %w", listErr)
+		}
+		if pending {
+			return State{}, errors.New("persist QoS callback did not atomically clear operation lease")
+		}
 	}
 	return state, nil
 }
@@ -196,7 +230,14 @@ func (s *Service) ApplyCurrent(ctx context.Context, iface string, load func() (C
 	if err := cfg.Validate(); err != nil {
 		return State{}, err
 	}
-	return s.apply(ctx, cfg)
+	return s.applyDurable(ctx, cfg, cfg, operationIntent(cfg))
+}
+
+func operationIntent(cfg Config) OperationIntent {
+	if cfg.Enabled {
+		return OperationApply
+	}
+	return OperationDisable
 }
 
 // InterfaceOperations are the QoS operations permitted while an interface
@@ -372,34 +413,144 @@ func (s *Service) restoreAfterNetem(ctx context.Context, cfg Config, fault Netem
 }
 
 func (s *Service) apply(ctx context.Context, cfg Config) (State, error) {
-	if !cfg.Enabled {
-		return s.disable(ctx, cfg.Interface)
-	}
 	ownership, err := s.inspectOwnership(ctx, cfg.Interface)
 	if err != nil {
 		return State{}, err
 	}
+	if err := validateApplyOwnership(cfg, ownership); err != nil {
+		return State{}, err
+	}
+	return s.applyFromOwnership(ctx, cfg, ownership, "")
+}
+
+func (s *Service) applyDurable(ctx context.Context, target, recovery Config, intent OperationIntent) (State, error) {
+	ownership, err := s.inspectOwnership(ctx, target.Interface)
+	if err != nil {
+		return State{}, err
+	}
+	if err := validateApplyOwnership(target, ownership); err != nil {
+		return State{}, err
+	}
+	operationID, err := s.beginOperation(target, recovery, intent, ownership)
+	if err != nil {
+		return State{}, err
+	}
+	state, err := s.applyFromOwnership(ctx, target, ownership, operationID)
+	if err != nil {
+		if clearErr := s.clearCompensatedOperation(operationID, target.Interface, err); clearErr != nil {
+			return State{}, clearErr
+		}
+		return State{}, err
+	}
+	if err := s.clearOperation(operationID, target.Interface); err != nil {
+		return State{}, fmt.Errorf("clear QoS operation lease: %w", err)
+	}
+	return state, nil
+}
+
+func (s *Service) beginOperation(target, recovery Config, intent OperationIntent, ownership ownershipState) (string, error) {
+	if s.store == nil || s.exec.IsDryRun() {
+		return "", nil
+	}
+	lease := &OperationLease{
+		ID:            uuid.NewString(),
+		Interface:     target.Interface,
+		Intent:        intent,
+		Target:        target,
+		Recovery:      recovery,
+		IFBExisted:    ownership.ifbExists,
+		IFBWasUp:      ownership.ifbUp,
+		ClsactExisted: ownership.clsact,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if ownership.chainOwned {
+		lease.BeforeEgress = exportedCakeSignature(ownership.egressSignature)
+		lease.BeforeIngress = exportedCakeSignature(ownership.ingressSignature)
+	}
+	if err := lease.Validate(); err != nil {
+		return "", err
+	}
+	if err := s.store.SaveQoSOperationLease(lease); err != nil {
+		return "", fmt.Errorf("save QoS operation lease: %w", err)
+	}
+	return lease.ID, nil
+}
+
+func exportedCakeSignature(sig rootSignature) *CakeSignature {
+	if sig.kind != "cake" {
+		return nil
+	}
+	return &CakeSignature{
+		Handle: sig.handle, Bandwidth: sig.bandwidth, Mode: sig.mode,
+		HostMode: sig.hostMode, NAT: sig.nat, Ingress: sig.ingress,
+	}
+}
+
+func (s *Service) clearCompensatedOperation(operationID, iface string, operationErr error) error {
+	if operationID == "" || errors.Is(operationErr, ErrCompensationFailed) {
+		return nil
+	}
+	if err := s.clearOperation(operationID, iface); err != nil {
+		return fmt.Errorf("%w: operation failed: %v; clear compensated lease: %v", ErrCompensationFailed, operationErr, err)
+	}
+	return nil
+}
+
+func (s *Service) clearOperation(operationID, iface string) error {
+	if operationID == "" || s.store == nil || s.exec.IsDryRun() {
+		return nil
+	}
+	return s.store.ClearQoSOperationLease(operationID, iface)
+}
+
+func (s *Service) operationPending(operationID string) (bool, error) {
+	if operationID == "" || s.store == nil {
+		return false, nil
+	}
+	leases, err := s.store.ListQoSOperationLeases()
+	if err != nil {
+		return false, err
+	}
+	for _, lease := range leases {
+		if lease.ID == operationID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func validateApplyOwnership(cfg Config, ownership ownershipState) error {
+	if !cfg.Enabled {
+		return nil
+	}
 	if ownership.egressForeign {
-		return State{}, fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, cfg.Interface)
+		return fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, cfg.Interface)
 	}
 	if ownership.ingressForeign {
-		return State{}, fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, IFBName(cfg.Interface))
+		return fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, IFBName(cfg.Interface))
 	}
 	if ownership.filterPresent && !ownership.redirectOwned {
-		return State{}, fmt.Errorf("%w: foreign ingress filter on %q", ErrOwnershipNotEstablished, cfg.Interface)
+		return fmt.Errorf("%w: foreign ingress filter on %q", ErrOwnershipNotEstablished, cfg.Interface)
 	}
-	return s.applyWithOwnership(ctx, cfg, ownership)
+	return nil
+}
+
+func (s *Service) applyFromOwnership(ctx context.Context, cfg Config, ownership ownershipState, operationID string) (State, error) {
+	if !cfg.Enabled {
+		return s.disableWithOwnership(ctx, cfg.Interface, ownership, operationID)
+	}
+	return s.applyWithOwnership(ctx, cfg, ownership, operationID)
 }
 
 type qosUndo func(context.Context) error
 
-func (s *Service) applyWithOwnership(ctx context.Context, cfg Config, ownership ownershipState) (State, error) {
+func (s *Service) applyWithOwnership(ctx context.Context, cfg Config, ownership ownershipState, operationIDs ...string) (State, error) {
 	mode := "besteffort"
 	if cfg.Interactive {
 		mode = "diffserv4"
 	}
 	ifb := IFBName(cfg.Interface)
-	journal := mutationJournal{service: s, ctx: ctx}
+	journal := s.newMutationJournal(ctx, firstOperationID(operationIDs))
 
 	if err := journal.run("apply egress CAKE", func(stepCtx context.Context) error {
 		return s.execute(stepCtx, "apply egress CAKE", "tc",
@@ -477,9 +628,22 @@ func (s *Service) applyWithOwnership(ctx context.Context, cfg Config, ownership 
 }
 
 type mutationJournal struct {
-	service *Service
-	ctx     context.Context
-	undos   []qosUndo
+	service     *Service
+	ctx         context.Context
+	operationID string
+	stage       int
+	undos       []qosUndo
+}
+
+func firstOperationID(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
+func (s *Service) newMutationJournal(ctx context.Context, operationID string) mutationJournal {
+	return mutationJournal{service: s, ctx: ctx, operationID: operationID}
 }
 
 func (j *mutationJournal) run(action string, mutate func(context.Context) error, undo qosUndo) error {
@@ -492,6 +656,16 @@ func (j *mutationJournal) run(action string, mutate func(context.Context) error,
 	}
 	if undo != nil {
 		j.undos = append(j.undos, undo)
+	}
+	if j.operationID != "" && j.service.store != nil && !j.service.exec.IsDryRun() {
+		if err := j.service.store.AdvanceQoSOperationLease(j.operationID, j.stage, j.stage+1); err != nil {
+			original := fmt.Errorf("journal %s: %w", action, err)
+			if repairErr := j.service.compensate(j.ctx, j.undos); repairErr != nil {
+				return fmt.Errorf("%w: %v; repair: %v", ErrCompensationFailed, original, repairErr)
+			}
+			return original
+		}
+		j.stage++
 	}
 	return nil
 }
@@ -844,7 +1018,8 @@ func (s *Service) Disable(ctx context.Context, iface string) (State, error) {
 		return State{}, err
 	}
 	defer unlock()
-	return s.disable(ctx, iface)
+	disabled := Config{Interface: iface}
+	return s.applyDurable(ctx, disabled, disabled, OperationDisable)
 }
 
 func (s *Service) disable(ctx context.Context, iface string) (State, error) {
@@ -855,9 +1030,9 @@ func (s *Service) disable(ctx context.Context, iface string) (State, error) {
 	return s.disableWithOwnership(ctx, iface, ownership)
 }
 
-func (s *Service) disableWithOwnership(ctx context.Context, iface string, ownership ownershipState) (State, error) {
+func (s *Service) disableWithOwnership(ctx context.Context, iface string, ownership ownershipState, operationIDs ...string) (State, error) {
 	ifb := IFBName(iface)
-	journal := mutationJournal{service: s, ctx: ctx}
+	journal := s.newMutationJournal(ctx, firstOperationID(operationIDs))
 
 	if ownership.redirectOwned {
 		if err := journal.run("remove ingress redirect", func(stepCtx context.Context) error {
