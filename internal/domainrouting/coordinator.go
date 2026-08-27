@@ -138,6 +138,16 @@ func (c *Coordinator) Prepare(ctx context.Context) error {
 	return nil
 }
 
+// Hold fecha o gate quando uma passada de provisionamento deixa de conseguir
+// provar que estruturas, chains e rotas estão prontas. Também republica a
+// lista imediatamente para remover do runtime qualquer intenção ativa.
+func (c *Coordinator) Hold(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ready = false
+	return c.reconcileLocked(ctx)
+}
+
 // Reconcile lê alvos, links e grupo numa única transação read-only e publica
 // a lista completa no runtime de uma vez.
 func (c *Coordinator) Reconcile(ctx context.Context) error {

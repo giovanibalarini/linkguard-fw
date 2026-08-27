@@ -29,6 +29,10 @@ type LinksHandler struct {
 	// pacote interno — o teto por arquivo do TestPackageBoundary existe
 	// justamente para a camada HTTP não acumular domínio sem ninguém notar.
 	fluxos reconciliadorDeFluxos
+	// domainRouting recompõe estágio efetivo e mark após qualquer mudança na
+	// configuração da WAN, inclusive quando o runtime nft não foi injetado em
+	// um teste ou numa instalação degradada.
+	domainRouting domainRoutingReconciler
 }
 
 // reconciliadorDeFluxos é o que o handler de links precisa do registro de
@@ -41,6 +45,8 @@ type reconciliadorDeFluxos interface {
 
 // SetFluxos liga o registro de conversa ao handler de links.
 func (h *LinksHandler) SetFluxos(r reconciliadorDeFluxos) { h.fluxos = r }
+
+func (h *LinksHandler) SetDomainRouting(r domainRoutingReconciler) { h.domainRouting = r }
 
 // NewLinksHandler creates the handler. nftSvc is needed because changing a
 // link's interface must also rebuild the firewall's NAT rule — before
@@ -62,6 +68,16 @@ func NewLinksHandler(svc *links.Service, db *storage.DB, nftSvc *nftables.Servic
 // Best-effort: a falha é registrada (e aparece no vigia de NAT) mas nunca
 // derruba a operação de link que o admin acabou de fazer.
 func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
+	if h.domainRouting != nil {
+		// A intenção por domínio é publicada por último: uma edição de table_id
+		// não pode começar a marcar pacotes antes de connmark e policy routing
+		// terem sido reconstruídos. O defer também cobre o runtime nft ausente.
+		defer func() {
+			if err := h.domainRouting.Reconcile(ctx); err != nil {
+				slog.Warn("não foi possível reconciliar os alvos por domínio após mudança de link", "err", err)
+			}
+		}()
+	}
 	if h.nftSvc == nil {
 		return
 	}
