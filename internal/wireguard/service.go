@@ -204,6 +204,16 @@ func (s *Service) applyEnabled(ctx context.Context, c Config) error {
 	if err != nil {
 		return err
 	}
+	for _, p := range storedPeers {
+		group := storage.FirewallGroup{ID: p.FirewallGroupID, Name: "VPN — " + p.Username,
+			ChainName: nftables.GroupChainName(p.FirewallGroupID), Enabled: true,
+			CondSaddr: p.Address, Fallthrough: nftables.FallthroughContinue,
+			Kind: nftables.GroupKindWireGuardPeer, Scope: nftables.ScopeForward,
+			ConnState: nftables.ConnStateAny}
+		if err := s.db.EnsureWireGuardPeerGroup(&group); err != nil {
+			return fmt.Errorf("não foi possível reconciliar o grupo do peer %s: %w", p.UserID, err)
+		}
+	}
 	peers := peersFromStorage(storedPeers)
 	content, err := RenderServerConfig(c, private, peers)
 	if err != nil {

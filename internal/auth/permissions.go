@@ -23,6 +23,7 @@ const (
 	PermDNSRead        Permission = "dns.read"
 	PermInterfacesRead Permission = "interfaces.read"
 	PermNTPRead        Permission = "ntp.read"
+	PermVPNRead        Permission = "vpn.read"
 
 	// Write / action access per feature area.
 	PermMonitoringWrite Permission = "monitoring.write" // resolver alerta
@@ -50,6 +51,11 @@ const (
 	PermDNSWrite        Permission = "dns.write"        // upstreams, blocklist, aplicar
 	PermInterfacesWrite Permission = "interfaces.write" // editar interface, identificar porta fisicamente
 	PermNTPWrite        Permission = "ntp.write"        // config de servidores/timezone, aplicar, instalar chrony
+	PermVPNWrite        Permission = "vpn.write"        // configurar serviço e revogar peers
+	// PermVPNEnroll entrega uma credencial de rede privada, mesmo que somente
+	// para o próprio usuário. É separada de vpn.read/write para que observar o
+	// estado ou operar o serviço não conceda acesso ao túnel por acidente.
+	PermVPNEnroll Permission = "vpn.enroll"
 
 	// PermTrafficCapture é separada de monitoring.read de propósito: ler
 	// gráfico de tráfego é leitura de painel, capturar pacote é observar a
@@ -126,6 +132,10 @@ var Catalog = []CatalogEntry{
 
 	{PermNTPRead, "NTP", "Ver NTP", "Ver status de sincronização, servidores configurados e fuso horário"},
 	{PermNTPWrite, "NTP", "Gerenciar NTP", "Configurar servidores/fuso horário, aplicar e instalar o chrony"},
+
+	{PermVPNRead, "VPN", "Ver WireGuard", "Ver estado, configuração pública e peers sem chaves privadas"},
+	{PermVPNWrite, "VPN", "Gerenciar WireGuard", "Ativar/configurar o serviço e revogar peers"},
+	{PermVPNEnroll, "VPN", "Enrolar a própria VPN", "Gerar ou rotacionar a própria configuração WireGuard one-time"},
 
 	{PermUsersManage, "Administração", "Gerenciar usuários", "Criar, editar e remover usuários e seus papéis"},
 	{PermRolesManage, "Administração", "Gerenciar papéis", "Criar, editar e remover papéis e suas permissões"},

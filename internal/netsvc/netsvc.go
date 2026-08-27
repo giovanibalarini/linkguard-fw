@@ -52,6 +52,13 @@ type Config struct {
 	// DNSExceptIPs são hosts isentos das duas medidas — quem roda resolver
 	// próprio na LAN de propósito.
 	DNSExceptIPs []string `json:"dns_except_ips"`
+
+	// ExtraListenAddresses/ExtraAccessNetworks are runtime-only bindings owned
+	// by other LinkGuard services (currently WireGuard). They never enter the
+	// DHCP/DNS settings JSON or backups; the provider re-derives them before
+	// every render/apply.
+	ExtraListenAddresses []string `json:"-"`
+	ExtraAccessNetworks  []string `json:"-"`
 }
 
 // DefaultConfig mirrors the previous isc-dhcp/bind9 behaviour for the strong stack.

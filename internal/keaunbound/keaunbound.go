@@ -126,6 +126,11 @@ type Service struct {
 	unboundCheckBin string
 	resolvConf      string
 	dhclientConf    string
+	// dnsBindingSource supplies transient listeners owned by another runtime
+	// service (currently WireGuard). They are deliberately not persisted in
+	// netsvc_config: the tunnel service remains the source of truth and every
+	// preview/apply is rebuilt from its current, validated state.
+	dnsBindingSource func() (address, network string, enabled bool, err error)
 }
 
 // NewService creates the provider.
@@ -149,6 +154,30 @@ func (s *Service) SetInstallExecutor(e firewall.Executor) {
 	if e != nil {
 		s.installExec = e
 	}
+}
+
+// SetDNSBindingSource adds a runtime-owned DNS listener and authorized
+// network to generated unbound configuration. The source is evaluated on
+// every preview/apply so boot reconciliation is idempotent and stale tunnel
+// state is never copied into netsvc persistence.
+func (s *Service) SetDNSBindingSource(source func() (address, network string, enabled bool, err error)) {
+	s.dnsBindingSource = source
+}
+
+func (s *Service) withRuntimeDNSBindings(c netsvc.Config) (netsvc.Config, error) {
+	if s.dnsBindingSource == nil {
+		return c, nil
+	}
+	address, network, enabled, err := s.dnsBindingSource()
+	if err != nil {
+		return c, fmt.Errorf("resolver DNS do túnel indisponível: %w", err)
+	}
+	if !enabled {
+		return c, nil
+	}
+	c.ExtraListenAddresses = append(c.ExtraListenAddresses, address)
+	c.ExtraAccessNetworks = append(c.ExtraAccessNetworks, network)
+	return c, nil
 }
 
 // Backend implements netsvc.Provider.
@@ -451,6 +480,11 @@ func isActiveSupersedeDomainNameServers(line string) bool {
 // ntpServer is threaded straight through to GenerateKeaConfig — see its doc
 // comment and netsvc.Provider.GenerateConfigs.
 func (s *Service) GenerateConfigs(c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) ([]netsvc.ConfigFile, error) {
+	var err error
+	c, err = s.withRuntimeDNSBindings(c)
+	if err != nil {
+		return nil, err
+	}
 	files, _, err := s.generateConfigs(c, res, blocked, ntpServer)
 	return files, err
 }
@@ -494,6 +528,11 @@ func (s *Service) generateConfigs(c netsvc.Config, res []netsvc.Reservation, blo
 // with an unexplained error about a directory that only exists because the
 // package does (the defect this step was added for — see ensurePackages).
 func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []netsvc.Reservation, blocked []string, ntpServer string) (netsvc.ApplyResult, error) {
+	var err error
+	c, err = s.withRuntimeDNSBindings(c)
+	if err != nil {
+		return netsvc.ApplyResult{}, err
+	}
 	installed, prereqWarnings, err := s.ensurePackages(ctx)
 	if err != nil {
 		return netsvc.ApplyResult{Warnings: prereqWarnings, Installed: installed}, err
@@ -555,6 +594,16 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 		// mesmo que vai para o disco.
 		if regen, w2, gerr := s.generateConfigs(c, res, blocked, ntpServer); gerr == nil {
 			files, warnings = regen, append(warnings, w2...)
+		}
+	}
+	for _, address := range c.ExtraListenAddresses {
+		if err := s.enderecoBindavel(ctx, address); err != nil {
+			// Unlike the LAN fallback above, a tunnel listener is optional and
+			// runtime-owned. Writing it while the address is absent would stop
+			// unbound on restart; silently omitting it would advertise a VPN
+			// whose DNS cannot work. Keep the active config untouched instead.
+			return netsvc.ApplyResult{Warnings: warnings, Installed: installed},
+				fmt.Errorf("endereço DNS do túnel indisponível (nada aplicado): %w", err)
 		}
 	}
 
@@ -1113,11 +1162,35 @@ func GenerateUnboundConfig(c netsvc.Config, blocked []string) (string, []string,
 	}
 	w("  interface: 127.0.0.1")
 	w("  access-control: 127.0.0.0/8 allow")
+	seenInterfaces := map[string]bool{"127.0.0.1": true, c.Gateway: true}
+	for _, raw := range c.ExtraListenAddresses {
+		ip := net.ParseIP(strings.TrimSpace(raw))
+		if ip == nil {
+			return "", warnings, fmt.Errorf("endereço adicional do unbound inválido: %q", raw)
+		}
+		canonical := ip.String()
+		if !seenInterfaces[canonical] {
+			w("  interface: " + canonical)
+			seenInterfaces[canonical] = true
+		}
+	}
 	if c.SubnetCIDR != "" {
 		if _, _, err := net.ParseCIDR(c.SubnetCIDR); err != nil {
 			return "", warnings, fmt.Errorf("sub-rede inválida (%q): sem o access-control correspondente o unbound recusaria as consultas da LAN: %w", c.SubnetCIDR, err)
 		}
 		w("  access-control: " + c.SubnetCIDR + " allow")
+	}
+	seenNetworks := map[string]bool{"127.0.0.0/8": true, c.SubnetCIDR: true}
+	for _, raw := range c.ExtraAccessNetworks {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err != nil {
+			return "", warnings, fmt.Errorf("rede adicional do unbound inválida: %q", raw)
+		}
+		canonical := network.String()
+		if !seenNetworks[canonical] {
+			w("  access-control: " + canonical + " allow")
+			seenNetworks[canonical] = true
+		}
 	}
 	w("  hide-identity: yes")
 	w("  hide-version: yes")

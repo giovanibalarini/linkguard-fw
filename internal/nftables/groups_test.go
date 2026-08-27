@@ -156,6 +156,15 @@ func TestIsSystemGroupRecognisesOnlyTheTwoBlockKinds(t *testing.T) {
 	}
 }
 
+func TestWireGuardPeerGroupIsManagedButUsesANormalChain(t *testing.T) {
+	if !IsWireGuardPeerGroup(GroupKindWireGuardPeer) {
+		t.Fatal("WireGuard peer kind must be recognized as VPN-managed")
+	}
+	if IsSystemGroup(GroupKindWireGuardPeer) {
+		t.Fatal("WireGuard peer groups need a normal chain for user firewall rules")
+	}
+}
+
 // A prova do m-3: IsSystemGroup e forwardChainRules leem o mesmo mapa
 // (systemGroupForwardRules), então não existe mais um kind que IsSystemGroup
 // reconheça como "do sistema" e forwardChainRules trate como admin — o

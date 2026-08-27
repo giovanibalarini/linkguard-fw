@@ -237,3 +237,48 @@ func (db *DB) DeleteWireGuardPeer(userID string) (*WireGuardPeer, error) {
 	}
 	return p, nil
 }
+
+// EnsureWireGuardPeerGroup repairs the managed projection without touching
+// its position or rules. It is safe on every boot and every VPN apply.
+func (db *DB) EnsureWireGuardPeerGroup(g *FirewallGroup) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var exists int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM firewall_groups WHERE id = ?`, g.ID).Scan(&exists); err != nil {
+		return err
+	}
+	now := time.Now()
+	if exists == 0 {
+		var maxPos sql.NullInt64
+		if err := tx.QueryRow(`SELECT MAX(position) FROM firewall_groups`).Scan(&maxPos); err != nil {
+			return err
+		}
+		g.Position = 0
+		if maxPos.Valid {
+			g.Position = int(maxPos.Int64) + 1
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO firewall_groups
+				(id, name, chain_name, position, enabled, cond_saddr, cond_daddr,
+				 cond_iif, fallthrough, kind, scope, conn_state, sched_days,
+				 sched_start, sched_end, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 1, ?, '', '', ?, ?, ?, ?, '', '', '', ?, ?)`,
+			g.ID, g.Name, g.ChainName, g.Position, g.CondSaddr, g.Fallthrough,
+			g.Kind, g.Scope, g.ConnState, now, now); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec(`
+			UPDATE firewall_groups SET name=?, chain_name=?, enabled=1, cond_saddr=?,
+				cond_daddr='', cond_iif='', fallthrough=?, kind=?, scope=?, conn_state=?,
+				sched_days='', sched_start='', sched_end='', updated_at=? WHERE id=?`,
+			g.Name, g.ChainName, g.CondSaddr, g.Fallthrough, g.Kind, g.Scope,
+			g.ConnState, now, g.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
