@@ -1,4 +1,4 @@
-import type { QosConfig, QosUpdateRequest } from '../types';
+import type { QosComparison, QosConfig, QosUpdateRequest } from '../types';
 
 export const QOS_MIN_MBPS = 1;
 export const QOS_MAX_MBPS = 1_000_000;
@@ -9,6 +9,19 @@ export interface QosDraft {
   downloadMbps: string;
   interactive: boolean;
 }
+
+export interface QosEditorState {
+  draft: QosDraft;
+  savedDraft: QosDraft;
+  comparison: QosComparison | null;
+}
+
+export type QosEditorAction =
+  | { type: 'draft-changed'; draft: QosDraft }
+  | { type: 'loaded'; draft: QosDraft }
+  | { type: 'saved'; draft: QosDraft }
+  | { type: 'test-started' }
+  | { type: 'test-succeeded'; comparison: QosComparison };
 
 export type QosDraftError =
   | 'upload_required'
@@ -31,6 +44,46 @@ export function qosDraftFrom(source: QosDraftSource): QosDraft {
     downloadMbps: source.download_mbps > 0 ? String(source.download_mbps) : '',
     interactive: source.interactive,
   };
+}
+
+export function sameQosDraft(a: QosDraft, b: QosDraft): boolean {
+  return a.enabled === b.enabled &&
+    a.uploadMbps === b.uploadMbps &&
+    a.downloadMbps === b.downloadMbps &&
+    a.interactive === b.interactive;
+}
+
+export function createQosEditorState(draft: QosDraft): QosEditorState {
+  return {
+    draft,
+    savedDraft: draft,
+    comparison: null,
+  };
+}
+
+/**
+ * Keeps form and measurement transitions atomic. In particular, a refreshed
+ * persisted baseline must not overwrite controls the operator has edited.
+ */
+export function qosEditorReducer(state: QosEditorState, action: QosEditorAction): QosEditorState {
+  switch (action.type) {
+    case 'draft-changed':
+      return { ...state, draft: action.draft, comparison: null };
+    case 'loaded': {
+      const dirty = !sameQosDraft(state.draft, state.savedDraft);
+      return {
+        draft: dirty ? state.draft : action.draft,
+        savedDraft: action.draft,
+        comparison: null,
+      };
+    }
+    case 'saved':
+      return { draft: action.draft, savedDraft: action.draft, comparison: null };
+    case 'test-started':
+      return { ...state, comparison: null };
+    case 'test-succeeded':
+      return { ...state, comparison: action.comparison };
+  }
 }
 
 function parseBandwidth(
