@@ -70,9 +70,39 @@ export interface QosMeasurement {
   loss_pct: number;
 }
 
+export interface QosLoadMeasurement {
+  offered_mbps: number;
+  latency: QosMeasurement | null;
+  throughput_mbps: number | null;
+  interface_mbps: number | null;
+  cpu_percent: number | null;
+  valid: boolean;
+  limitations: string[];
+}
+
+export interface QosPhaseMeasurement {
+  upload: QosLoadMeasurement;
+  download: QosLoadMeasurement;
+  valid: boolean;
+  limitations: string[];
+}
+
+export interface QosBenchmarkConditions {
+  server: string;
+  port: number;
+  duration_sec: number;
+  load_cap_mbps: number;
+  upload_offered_mbps: number;
+  download_offered_mbps: number;
+}
+
 export interface QosComparison {
-  before: QosMeasurement;
-  after: QosMeasurement;
+  baseline: QosPhaseMeasurement;
+  configured: QosPhaseMeasurement;
+  conditions: QosBenchmarkConditions;
+  valid: boolean;
+  restored: boolean;
+  limitations: string[];
 }
 
 export interface TimelinePoint {
