@@ -31,6 +31,10 @@ const (
 	GroupKindAdmin        = "admin"
 	GroupKindBlockedHosts = "blocked_hosts"
 	GroupKindBlocklist    = "blocklist"
+	// GroupKindWireGuardPeer is a normal chain-backed group whose identity
+	// and source address are owned by the VPN service. Admins may add rules to
+	// it, but its metadata is reconciled from the peer association.
+	GroupKindWireGuardPeer = "wireguard_peer"
 )
 
 // Scope diz para qual tráfego o grupo vale, e é o que decide em QUAL chain o
