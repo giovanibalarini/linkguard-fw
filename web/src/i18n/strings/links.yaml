@@ -473,8 +473,8 @@ links.qos.download:
   pt: "Download real (Mbps)"
   en: "Actual download (Mbps)"
 links.qos.bandwidthWarning:
-  pt: "Declare uma banda igual ou ligeiramente menor que a velocidade real. Informar mais banda do que o link entrega impede o CAKE de controlar a fila."
-  en: "Enter bandwidth equal to or slightly below the actual link speed. Declaring more bandwidth than the link can deliver prevents CAKE from controlling the queue."
+  pt: "CAKE processa cada pacote e aumenta o uso de CPU; em hardware limitado, pode reduzir a vazão máxima, sobretudo em links rápidos. Declare banda igual ou ligeiramente menor que a real e valide CPU/vazão sob carga antes de depender desta configuração."
+  en: "CAKE processes every packet and increases CPU use; on limited hardware it can reduce maximum throughput, especially on fast links. Enter bandwidth equal to or slightly below the real rate, and validate CPU/throughput under load before relying on this configuration."
 links.qos.save:
   pt: "Salvar e aplicar"
   en: "Save and apply"
@@ -491,11 +491,11 @@ links.qos.error.save:
   pt: "Falha ao aplicar a configuração de QoS."
   en: "Failed to apply the QoS configuration."
 links.qos.error.test:
-  pt: "Falha ao medir o link antes e depois do QoS."
-  en: "Failed to measure the link before and after QoS."
+  pt: "Falha ao executar o benchmark de bufferbloat."
+  en: "Failed to run the bufferbloat benchmark."
 links.qos.noPermission:
-  pt: "Você não tem permissão para alterar ou testar o QoS deste link."
-  en: "You do not have permission to change or test QoS on this link."
+  pt: "Você não tem permissão para alterar o QoS deste link."
+  en: "You do not have permission to change QoS on this link."
 links.qos.status.loading:
   pt: "carregando"
   en: "loading"
@@ -575,13 +575,116 @@ links.qos.test.loss:
   pt: "perda"
   en: "loss"
 
+links.qos.benchmark.title:
+  pt: "Benchmark honesto de bufferbloat"
+  en: "Honest bufferbloat benchmark"
+links.qos.benchmark.help:
+  pt: "Use um servidor iperf3 controlado por você. O teste remove temporariamente o CAKE para a baseline, aplica a mesma carga limitada com o CAKE configurado e restaura a configuração salva. Nenhum servidor público é usado por padrão."
+  en: "Use an iperf3 server you control. The test temporarily removes CAKE for the baseline, applies the same bounded load with configured CAKE, and restores the saved configuration. No public server is used by default."
+links.qos.benchmark.server:
+  pt: "Servidor iperf3 do operador"
+  en: "Operator iperf3 server"
+links.qos.benchmark.serverPlaceholder:
+  pt: "host ou IP (opcional)"
+  en: "host or IP (optional)"
+links.qos.benchmark.port:
+  pt: "Porta"
+  en: "Port"
+links.qos.benchmark.run:
+  pt: "Medir sob carga"
+  en: "Measure under load"
+links.qos.benchmark.running:
+  pt: "Medindo e restaurando..."
+  en: "Measuring and restoring..."
+links.qos.benchmark.loadWarning:
+  pt: "Gera upload e download por cerca de 20 s; carga limitada a 500 Mbps por direção."
+  en: "Generates upload and download for about 20s; load is capped at 500 Mbps per direction."
+links.qos.benchmark.noPermission:
+  pt: "Você não tem permissão para testar QoS (requer gestão de links)."
+  en: "You do not have permission to test QoS (link management required)."
+links.qos.benchmark.complete:
+  pt: "medição completa"
+  en: "complete measurement"
+links.qos.benchmark.limited:
+  pt: "resultado inválido/limitado"
+  en: "invalid/limited result"
+links.qos.benchmark.restored:
+  pt: "QoS restaurado"
+  en: "QoS restored"
+links.qos.benchmark.restoreUnknown:
+  pt: "restauração não confirmada"
+  en: "restoration not confirmed"
+links.qos.benchmark.noServer:
+  pt: "sem servidor"
+  en: "no server"
+links.qos.benchmark.baseline:
+  pt: "Baseline sem CAKE gerenciado"
+  en: "Baseline without managed CAKE"
+links.qos.benchmark.configured:
+  pt: "CAKE configurado sob a mesma carga"
+  en: "Configured CAKE under the same load"
+links.qos.benchmark.upload:
+  pt: "Upload"
+  en: "Upload"
+links.qos.benchmark.download:
+  pt: "Download"
+  en: "Download"
+links.qos.benchmark.latency:
+  pt: "latência média/máx."
+  en: "avg/max latency"
+links.qos.benchmark.iperfThroughput:
+  pt: "vazão iperf3"
+  en: "iperf3 throughput"
+links.qos.benchmark.interfaceThroughput:
+  pt: "vazão da interface"
+  en: "interface throughput"
+links.qos.benchmark.cpu:
+  pt: "CPU do sistema"
+  en: "system CPU"
+links.qos.benchmark.notMeasured:
+  pt: "não medido"
+  en: "not measured"
+links.qos.benchmark.noClaim:
+  pt: "Estes são valores brutos lado a lado. O LinkGuard não alega melhoria automática; resultado limitado, carga insuficiente ou métrica ausente não serve como evidência de ganho."
+  en: "These are raw side-by-side values. LinkGuard makes no automatic improvement claim; a limited result, insufficient load, or missing metric is not evidence of a gain."
+links.qos.benchmark.limitation.server_missing:
+  pt: "Nenhum servidor iperf3 foi informado; nenhuma carga foi gerada."
+  en: "No iperf3 server was supplied; no load was generated."
+links.qos.benchmark.limitation.iperf_unavailable:
+  pt: "iperf3 não está instalado ou executável neste firewall."
+  en: "iperf3 is not installed or executable on this firewall."
+links.qos.benchmark.limitation.iperf_failed:
+  pt: "A carga iperf3 falhou ou não devolveu vazão válida."
+  en: "The iperf3 load failed or did not return valid throughput."
+links.qos.benchmark.limitation.ping_failed:
+  pt: "Latência/perda sob carga não pôde ser medida."
+  en: "Latency/loss under load could not be measured."
+links.qos.benchmark.limitation.cpu_unavailable:
+  pt: "CPU durante a carga não pôde ser medida."
+  en: "CPU during load could not be measured."
+links.qos.benchmark.limitation.interface_metrics_unavailable:
+  pt: "Os contadores de vazão da interface não puderam ser medidos."
+  en: "Interface throughput counters could not be measured."
+links.qos.benchmark.limitation.insufficient_load:
+  pt: "A carga alcançada foi insuficiente para validar bufferbloat nesta configuração."
+  en: "The achieved load was insufficient to validate bufferbloat for this configuration."
+links.qos.benchmark.limitation.load_capped:
+  pt: "A banda configurada excede o teto seguro de 500 Mbps; o teste não saturou a configuração inteira."
+  en: "Configured bandwidth exceeds the safe 500 Mbps cap; the test did not saturate the full configuration."
+links.qos.benchmark.limitation.qos_disabled:
+  pt: "CAKE não está habilitado e salvo neste link."
+  en: "CAKE is not enabled and saved on this link."
+links.qos.benchmark.limitation.dry_run:
+  pt: "O firewall está em modo de simulação; nenhuma carga ou mudança real foi executada."
+  en: "The firewall is in dry-run mode; no real load or change was performed."
+
 # ─── Stress-test dos links ───────────────────────────────────────────────────
 links.stress.title:
-  pt: "Stress-test dos links"
-  en: "Link stress test"
+  pt: "Testes operacionais dos links"
+  en: "Operational link tests"
 links.stress.subtitle:
-  pt: "Testa uma WAN de cada vez, com restauração automática (à prova de falha do próprio painel)."
-  en: "Tests one WAN at a time and restores it automatically, even if this panel itself goes down."
+  pt: "Mede bufferbloat por WAN e, em multi-WAN, valida failover; ambos restauram o estado automaticamente, inclusive após reinício do processo."
+  en: "Measures bufferbloat per WAN and, for multi-WAN, validates failover; both restore state automatically, including after a process restart."
 links.stress.help.title:
   pt: "Stress-test"
   en: "Stress test"

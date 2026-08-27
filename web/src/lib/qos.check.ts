@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import { buildQosUpdate, createQosEditorState, qosDraftFrom, qosEditorReducer } from './qos.ts';
+import {
+  benchmarkResultIsComplete,
+  buildQosUpdate,
+  createQosEditorState,
+  qosDraftFrom,
+  qosEditorReducer,
+} from './qos.ts';
 import type { QosComparison } from '../types/index.ts';
 
 let checks = 0;
@@ -88,37 +94,48 @@ const check = (condition: unknown, message: string) => {
   );
 }
 
-// Component-state regressions: the production reducer must be the single
-// owner of draft and measurement transitions. A missing invalidation here
-// would let an old successful comparison survive a rerun failure or an edit.
+// A backend or compatibility bug must not let the UI present an incomplete
+// result as valid. CPU and both throughput sources are evidence, not optional
+// decoration; missing any of them keeps the result explicitly limited.
 {
-  const persisted = qosDraftFrom({
-    enabled: true,
-    upload_mbps: 50,
-    download_mbps: 300,
-    interactive: false,
-  });
-  const comparison: QosComparison = {
-    before: { min_ms: 20, avg_ms: 25, max_ms: 30, loss_pct: 0 },
-    after: { min_ms: 10, avg_ms: 12, max_ms: 15, loss_pct: 0 },
+  const complete: QosComparison = {
+    baseline: benchmarkPhase(),
+    configured: benchmarkPhase(),
+    conditions: {
+      server: 'iperf.operator.lan', port: 5201, duration_sec: 5,
+      load_cap_mbps: 500, upload_offered_mbps: 55, download_offered_mbps: 330,
+    },
+    valid: true,
+    restored: true,
+    limitations: [],
   };
+  check(benchmarkResultIsComplete(complete), 'complete raw metrics may be labelled complete');
+  const missingCPU: QosComparison = {
+    ...complete,
+    configured: {
+      ...complete.configured,
+      upload: { ...complete.configured.upload, cpu_percent: null, valid: false, limitations: ['cpu_unavailable'] },
+      valid: false,
+      limitations: ['cpu_unavailable'],
+    },
+    valid: false,
+    limitations: ['cpu_unavailable'],
+  };
+  check(!benchmarkResultIsComplete(missingCPU), 'missing CPU keeps benchmark limited');
+  check(!benchmarkResultIsComplete({ ...complete, valid: false }), 'backend invalid verdict is never upgraded by the UI');
+}
 
-  let state = createQosEditorState(persisted);
-  state = qosEditorReducer(state, { type: 'test-succeeded', comparison });
-  assert.deepEqual(state.comparison, comparison, 'a completed test publishes its own comparison');
-
-  state = qosEditorReducer(state, { type: 'test-started' });
-  assert.equal(
-    state.comparison,
-    null,
-    'starting a rerun clears the previous comparison before a possible failure',
-  );
-
-  state = qosEditorReducer(state, { type: 'test-succeeded', comparison });
-  const edited = { ...state.draft, uploadMbps: '45' };
-  state = qosEditorReducer(state, { type: 'draft-changed', draft: edited });
-  assert.equal(state.comparison, null, 'editing controls invalidates the measured comparison');
-  checks += 3;
+function benchmarkPhase() {
+  const direction = {
+    offered_mbps: 55,
+    latency: { min_ms: 10, avg_ms: 20, max_ms: 30, loss_pct: 0 },
+    throughput_mbps: 50,
+    interface_mbps: 49,
+    cpu_percent: 35,
+    valid: true,
+    limitations: [],
+  };
+  return { upload: direction, download: { ...direction, offered_mbps: 330 }, valid: true, limitations: [] };
 }
 
 // A refresh may finish while the operator has an unsaved draft (for example,

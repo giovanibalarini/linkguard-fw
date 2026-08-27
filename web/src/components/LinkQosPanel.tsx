@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useReducer, useState } from 'react';
-import { Activity, AlertTriangle, Check, Gauge, Loader2 } from 'lucide-react';
+import { AlertTriangle, Check, Gauge, Loader2 } from 'lucide-react';
 import client from '../api/client';
 import { useI18n } from '../i18n';
 import {
@@ -9,7 +9,7 @@ import {
   qosEditorReducer,
   sameQosDraft,
 } from '../lib/qos';
-import type { QosComparison, QosGetResponse, QosMeasurement, QosState, QosUpdateRequest, WanLink } from '../types';
+import type { QosGetResponse, QosState, QosUpdateRequest, WanLink } from '../types';
 import Panel from './ui/Panel';
 
 interface Props {
@@ -17,8 +17,6 @@ interface Props {
   canEdit: boolean;
   onUpdated?: (linkID: string, value: QosUpdateRequest) => void;
 }
-
-const TEST_TIMEOUT_MS = 35_000;
 
 interface ErrorNotice {
   fallbackKey: string;
@@ -34,22 +32,20 @@ function draftFromLink(link: WanLink) {
   });
 }
 
-/** Per-WAN CAKE editor and before/after latency measurement. */
+/** Per-WAN CAKE editor and observed kernel state. */
 export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
   const { t } = useI18n();
   const initialDraft = useMemo(() => draftFromLink(link), [link]);
   const [editor, dispatchEditor] = useReducer(qosEditorReducer, initialDraft, createQosEditorState);
-  const { draft, savedDraft, comparison } = editor;
+  const { draft, savedDraft } = editor;
   const [observed, setObserved] = useState<QosState | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [error, setError] = useState<ErrorNotice | null>(null);
   const [successKey, setSuccessKey] = useState('');
   const fieldID = useId();
   const uploadValidationID = `${fieldID}-upload-validation`;
   const downloadValidationID = `${fieldID}-download-validation`;
-  const testHintID = `${fieldID}-test-hint`;
 
   useEffect(() => {
     let active = true;
@@ -79,7 +75,7 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
 
   const update = useMemo(() => buildQosUpdate(draft), [draft]);
   const dirty = !sameQosDraft(draft, savedDraft);
-  const busy = loading || saving || testing;
+  const busy = loading || saving;
   const validationError = update.ok ? null : update.error;
   const uploadInvalid = validationError?.startsWith('upload_') ?? false;
   const downloadInvalid = validationError?.startsWith('download_') ?? false;
@@ -108,36 +104,7 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
     }
   };
 
-  const test = async () => {
-    dispatchEditor({ type: 'test-started' });
-    setTesting(true);
-    setError(null);
-    setSuccessKey('');
-    try {
-      const { data } = await client.post<QosComparison>(
-        `/api/links/${link.id}/qos/test`,
-        undefined,
-        { timeout: TEST_TIMEOUT_MS },
-      );
-      dispatchEditor({ type: 'test-succeeded', comparison: data });
-    } catch (e) {
-      setError(errorNotice(e, 'links.qos.error.test'));
-    } finally {
-      setTesting(false);
-    }
-  };
-
   const status = statusView(loading, link.enabled, savedDraft.enabled, observed);
-  const testDisabled = busy || dirty || !savedDraft.enabled || !link.enabled || !canEdit;
-  const testHint = !canEdit
-    ? t('links.qos.noPermission')
-    : !link.enabled
-      ? t('links.qos.test.linkDisabled')
-      : dirty
-        ? t('links.qos.test.saveFirst')
-        : !savedDraft.enabled
-          ? t('links.qos.test.enableFirst')
-          : t('links.qos.test.hint');
 
   return (
     <Panel
@@ -267,72 +234,8 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
         ) : (
           <p className="text-xs text-gray-600">{t('links.qos.noPermission')}</p>
         )}
-
-        <div className="border-t border-gray-800 pt-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="inline-flex items-center gap-2 text-sm font-medium text-white">
-                <Activity className="h-4 w-4 text-cyan-400" />
-                {t('links.qos.test.title')}
-              </h3>
-              <p id={testHintID} className="mt-1 text-[11px] text-gray-600">{testHint}</p>
-            </div>
-            {canEdit && (
-              <button
-                type="button"
-                onClick={test}
-                disabled={testDisabled}
-                aria-describedby={testHintID}
-                className="btn-secondary inline-flex items-center gap-2 text-xs disabled:opacity-40"
-              >
-                {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
-                {testing ? t('links.qos.test.running') : t('links.qos.test.run')}
-              </button>
-            )}
-          </div>
-
-          {comparison && (
-            <div role="status" aria-live="polite" aria-atomic="true">
-              <MeasurementComparison value={comparison} />
-            </div>
-          )}
-        </div>
       </div>
     </Panel>
-  );
-}
-
-function MeasurementComparison({ value }: { value: QosComparison }) {
-  const { t } = useI18n();
-  return (
-    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-      <MeasurementCard title={t('links.qos.test.before')} value={value.before} />
-      <MeasurementCard title={t('links.qos.test.after')} value={value.after} />
-    </div>
-  );
-}
-
-function MeasurementCard({ title, value }: { title: string; value: QosMeasurement }) {
-  const { t } = useI18n();
-  return (
-    <div className="rounded-lg border border-gray-800 bg-gray-950/40 p-3">
-      <p className="mb-2 text-xs font-medium text-gray-300">{title}</p>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-        <Metric label={t('links.qos.test.min')} value={`${value.min_ms.toFixed(1)} ms`} />
-        <Metric label={t('links.qos.test.avg')} value={`${value.avg_ms.toFixed(1)} ms`} />
-        <Metric label={t('links.qos.test.max')} value={`${value.max_ms.toFixed(1)} ms`} />
-        <Metric label={t('links.qos.test.loss')} value={`${value.loss_pct.toFixed(1)}%`} />
-      </dl>
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <dt className="text-gray-600">{label}</dt>
-      <dd className="font-mono text-gray-300">{value}</dd>
-    </div>
   );
 }
 

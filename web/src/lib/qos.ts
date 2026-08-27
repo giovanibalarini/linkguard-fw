@@ -13,15 +13,12 @@ export interface QosDraft {
 export interface QosEditorState {
   draft: QosDraft;
   savedDraft: QosDraft;
-  comparison: QosComparison | null;
 }
 
 export type QosEditorAction =
   | { type: 'draft-changed'; draft: QosDraft }
   | { type: 'loaded'; draft: QosDraft }
-  | { type: 'saved'; draft: QosDraft }
-  | { type: 'test-started' }
-  | { type: 'test-succeeded'; comparison: QosComparison };
+  | { type: 'saved'; draft: QosDraft };
 
 export type QosDraftError =
   | 'upload_required'
@@ -57,32 +54,26 @@ export function createQosEditorState(draft: QosDraft): QosEditorState {
   return {
     draft,
     savedDraft: draft,
-    comparison: null,
   };
 }
 
 /**
- * Keeps form and measurement transitions atomic. In particular, a refreshed
- * persisted baseline must not overwrite controls the operator has edited.
+ * Keeps persisted and edited form state atomic. A refresh must not overwrite
+ * controls the operator has already changed locally.
  */
 export function qosEditorReducer(state: QosEditorState, action: QosEditorAction): QosEditorState {
   switch (action.type) {
     case 'draft-changed':
-      return { ...state, draft: action.draft, comparison: null };
+      return { ...state, draft: action.draft };
     case 'loaded': {
       const dirty = !sameQosDraft(state.draft, state.savedDraft);
       return {
         draft: dirty ? state.draft : action.draft,
         savedDraft: action.draft,
-        comparison: null,
       };
     }
     case 'saved':
-      return { draft: action.draft, savedDraft: action.draft, comparison: null };
-    case 'test-started':
-      return { ...state, comparison: null };
-    case 'test-succeeded':
-      return { ...state, comparison: action.comparison };
+      return { draft: action.draft, savedDraft: action.draft };
   }
 }
 
@@ -127,4 +118,21 @@ export function buildQosUpdate(draft: QosDraft): QosUpdateResult {
       interactive: draft.interactive,
     },
   };
+}
+
+/**
+ * Defensive UI verdict: never upgrades a partial backend result into a
+ * complete measurement. It intentionally makes no improvement comparison.
+ */
+export function benchmarkResultIsComplete(value: QosComparison): boolean {
+  if (!value.valid || !value.restored || value.limitations.length > 0) return false;
+  for (const phase of [value.baseline, value.configured]) {
+    if (!phase.valid || phase.limitations.length > 0) return false;
+    for (const direction of [phase.upload, phase.download]) {
+      if (!direction.valid || direction.limitations.length > 0) return false;
+      if (direction.latency === null || direction.throughput_mbps === null ||
+          direction.interface_mbps === null || direction.cpu_percent === null) return false;
+    }
+  }
+  return true;
 }

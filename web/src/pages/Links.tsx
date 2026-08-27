@@ -372,7 +372,9 @@ export default function Links() {
         />
       ))}
 
-      {!loading && links.length >= 2 && <LinkStressTest links={links} canRun={can('routes.write')} />}
+      {!loading && links.length > 0 && (
+        <LinkStressTest links={links} canRun={can('routes.write')} canQosTest={can('links.write')} />
+      )}
 
       <Panel title={t('links.title')}>
         {loading ? (
