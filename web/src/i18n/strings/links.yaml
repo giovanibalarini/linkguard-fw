@@ -450,6 +450,131 @@ links.weekday.sat:
   pt: "Sáb"
   en: "Sat"
 
+# ─── Controle de filas CAKE por link (issue #121) ────────────────────────────
+links.qos.title:
+  pt: "Controle de filas — {name}"
+  en: "Queue control — {name}"
+links.qos.subtitle:
+  pt: "CAKE limita a fila desta WAN para manter latência estável quando o link está ocupado."
+  en: "CAKE controls this WAN's queue to keep latency stable while the link is busy."
+links.qos.enable:
+  pt: "Habilitar CAKE"
+  en: "Enable CAKE"
+links.qos.interactive:
+  pt: "Prioridade interativa"
+  en: "Interactive priority"
+links.qos.interactiveHint:
+  pt: "(diffserv4 para chamadas e jogos)"
+  en: "(diffserv4 for calls and games)"
+links.qos.upload:
+  pt: "Upload real (Mbps)"
+  en: "Actual upload (Mbps)"
+links.qos.download:
+  pt: "Download real (Mbps)"
+  en: "Actual download (Mbps)"
+links.qos.bandwidthWarning:
+  pt: "Declare uma banda igual ou ligeiramente menor que a velocidade real. Informar mais banda do que o link entrega impede o CAKE de controlar a fila."
+  en: "Enter bandwidth equal to or slightly below the actual link speed. Declaring more bandwidth than the link can deliver prevents CAKE from controlling the queue."
+links.qos.save:
+  pt: "Salvar e aplicar"
+  en: "Save and apply"
+links.qos.saving:
+  pt: "Aplicando..."
+  en: "Applying..."
+links.qos.success.saved:
+  pt: "Configuração de QoS aplicada e salva."
+  en: "QoS configuration applied and saved."
+links.qos.error.load:
+  pt: "Falha ao carregar o estado de QoS."
+  en: "Failed to load QoS state."
+links.qos.error.save:
+  pt: "Falha ao aplicar a configuração de QoS."
+  en: "Failed to apply the QoS configuration."
+links.qos.error.test:
+  pt: "Falha ao medir o link antes e depois do QoS."
+  en: "Failed to measure the link before and after QoS."
+links.qos.noPermission:
+  pt: "Você não tem permissão para alterar ou testar o QoS deste link."
+  en: "You do not have permission to change or test QoS on this link."
+links.qos.status.loading:
+  pt: "carregando"
+  en: "loading"
+links.qos.status.unknown:
+  pt: "estado desconhecido"
+  en: "unknown state"
+links.qos.status.active:
+  pt: "ativo"
+  en: "active"
+links.qos.status.inactive:
+  pt: "desligado"
+  en: "off"
+links.qos.status.pending:
+  pt: "não observado"
+  en: "not observed"
+links.qos.status.linkDisabled:
+  pt: "aguarda link habilitado"
+  en: "waiting for enabled link"
+links.qos.status.dryRun:
+  pt: "simulação"
+  en: "dry run"
+links.qos.validation.upload_required:
+  pt: "Informe a banda real de upload antes de habilitar o CAKE."
+  en: "Enter the actual upload bandwidth before enabling CAKE."
+links.qos.validation.upload_integer:
+  pt: "A banda de upload deve ser um número inteiro de Mbps."
+  en: "Upload bandwidth must be a whole number of Mbps."
+links.qos.validation.upload_range:
+  pt: "A banda de upload deve ficar entre 1 e 1.000.000 Mbps."
+  en: "Upload bandwidth must be between 1 and 1,000,000 Mbps."
+links.qos.validation.download_required:
+  pt: "Informe a banda real de download antes de habilitar o CAKE."
+  en: "Enter the actual download bandwidth before enabling CAKE."
+links.qos.validation.download_integer:
+  pt: "A banda de download deve ser um número inteiro de Mbps."
+  en: "Download bandwidth must be a whole number of Mbps."
+links.qos.validation.download_range:
+  pt: "A banda de download deve ficar entre 1 e 1.000.000 Mbps."
+  en: "Download bandwidth must be between 1 and 1,000,000 Mbps."
+links.qos.test.title:
+  pt: "Medição antes e depois"
+  en: "Before-and-after measurement"
+links.qos.test.run:
+  pt: "Medir agora"
+  en: "Measure now"
+links.qos.test.running:
+  pt: "Medindo..."
+  en: "Measuring..."
+links.qos.test.hint:
+  pt: "Faz duas amostras curtas de ping e reaplica a configuração salva entre elas."
+  en: "Takes two short ping samples and reapplies the saved configuration between them."
+links.qos.test.saveFirst:
+  pt: "Salve as alterações antes de medir; o teste usa a configuração persistida."
+  en: "Save your changes before measuring; the test uses the persisted configuration."
+links.qos.test.enableFirst:
+  pt: "Habilite e salve o CAKE para comparar as medições."
+  en: "Enable and save CAKE to compare measurements."
+links.qos.test.linkDisabled:
+  pt: "Habilite o link WAN antes de medir."
+  en: "Enable the WAN link before measuring."
+links.qos.test.before:
+  pt: "Antes"
+  en: "Before"
+links.qos.test.after:
+  pt: "Depois"
+  en: "After"
+links.qos.test.min:
+  pt: "mín."
+  en: "min"
+links.qos.test.avg:
+  pt: "média"
+  en: "avg"
+links.qos.test.max:
+  pt: "máx."
+  en: "max"
+links.qos.test.loss:
+  pt: "perda"
+  en: "loss"
+
 # ─── Stress-test dos links ───────────────────────────────────────────────────
 links.stress.title:
   pt: "Stress-test dos links"

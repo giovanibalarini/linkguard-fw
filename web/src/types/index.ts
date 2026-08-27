@@ -25,8 +25,54 @@ export interface WanLink {
   last_check: string | null;
   enabled: boolean;
   table_id: number;
+  qos_enabled: boolean;
+  qos_upload_mbps: number;
+  qos_download_mbps: number;
+  qos_interactive: boolean;
   created_at: string;
   updated_at: string;
+}
+
+// ─── Queue control per WAN (issue #121) ─────────────────────────────────────
+
+export interface QosConfig {
+  interface: string;
+  enabled: boolean;
+  upload_mbps: number;
+  download_mbps: number;
+  interactive: boolean;
+}
+
+export interface QosState {
+  enabled: boolean;
+  interface: string;
+  ifb: string;
+  mode: string;
+  dry_run: boolean;
+}
+
+export interface QosGetResponse {
+  desired: QosConfig;
+  observed: QosState;
+}
+
+export interface QosUpdateRequest {
+  enabled: boolean;
+  upload_mbps: number;
+  download_mbps: number;
+  interactive: boolean;
+}
+
+export interface QosMeasurement {
+  min_ms: number;
+  avg_ms: number;
+  max_ms: number;
+  loss_pct: number;
+}
+
+export interface QosComparison {
+  before: QosMeasurement;
+  after: QosMeasurement;
 }
 
 export interface TimelinePoint {

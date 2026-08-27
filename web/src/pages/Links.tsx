@@ -4,6 +4,7 @@ import DomainTargets from '../components/DomainTargets';
 import LinkDdns from '../components/LinkDdns';
 import LinkQuota from '../components/LinkQuota';
 import LinkStressTest from '../components/LinkStressTest';
+import LinkQosPanel from '../components/LinkQosPanel';
 import { useAuth } from '../context/AuthContext';
 import { Plus, Pencil, Trash2, RefreshCw, Wifi, Wand2, Network } from 'lucide-react';
 import StatusBadge from '../components/StatusBadge';
@@ -12,7 +13,7 @@ import { useI18n } from '../i18n';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
 import IconButton from '../components/ui/IconButton';
-import type { WanLink, SystemMetrics, InterfaceMetrics } from '../types';
+import type { WanLink, SystemMetrics, InterfaceMetrics, QosUpdateRequest } from '../types';
 
 const emptyLink: Partial<WanLink> = {
   name: '',
@@ -317,6 +318,16 @@ export default function Links() {
     return alias ? `${alias} (${name})` : name;
   };
 
+  const handleQosUpdated = (linkID: string, value: QosUpdateRequest) => {
+    setLinks((current) => current.map((link) => link.id === linkID ? {
+      ...link,
+      qos_enabled: value.enabled,
+      qos_upload_mbps: value.upload_mbps,
+      qos_download_mbps: value.download_mbps,
+      qos_interactive: value.interactive,
+    } : link));
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -351,6 +362,15 @@ export default function Links() {
       {!loading && links.length > 0 && <LinkQuota canEdit={can('links.write')} />}
 
       {!loading && links.length > 0 && <LinkDdns canEdit={can('links.write')} />}
+
+      {!loading && links.map((link) => (
+        <LinkQosPanel
+          key={link.id}
+          link={link}
+          canEdit={can('links.write')}
+          onUpdated={handleQosUpdated}
+        />
+      ))}
 
       {!loading && links.length >= 2 && <LinkStressTest links={links} canRun={can('routes.write')} />}
 
