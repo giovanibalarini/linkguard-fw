@@ -24,6 +24,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/ddns"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnslog"
 	"github.com/giovanibalarini/linkguard-fw/internal/dnstap"
+	"github.com/giovanibalarini/linkguard-fw/internal/domainrouting"
 	"github.com/giovanibalarini/linkguard-fw/internal/failover"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewall"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
@@ -132,6 +133,9 @@ type Config struct {
 	// na mesma chamada, e um setter chamado depois chegaria com as rotas já
 	// registradas apontando para um campo nil.
 	HostQuota *hostquota.Service
+	// DomainRouting coordena intenção persistida e runtime dnstap/nft. Como o
+	// roteador nasce em New, ele também precisa chegar pela Config.
+	DomainRouting *domainrouting.Coordinator
 }
 
 // New creates and wires up the HTTP server.
@@ -284,6 +288,11 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermLinksRead)).Get("/api/links/{id}", linksH.Get)
 		r.With(require(auth.PermLinksWrite)).Put("/api/links/{id}", linksH.Update)
 		r.With(require(auth.PermLinksWrite)).Delete("/api/links/{id}", linksH.Delete)
+
+		// Regras por domínio podem bloquear ou escolher uma WAN, mas seu dono no
+		// RBAC é Links: leitura acompanha links.read e toda mutação links.write.
+		domainTargetsH := handlers.NewDomainTargetsHandler(cfg.DomainRouting, s.db)
+		registerDomainTargetRoutes(r, require, domainTargetsH)
 
 		// DNS dinâmico por link (#129). Mesma permissão dos links: é
 		// configuração de WAN, e quem pode mexer em link pode mexer nisto.
