@@ -131,7 +131,6 @@ func setHasTimeout(setBlock string) bool {
 	return false
 }
 
-
 func hasDynamicFlag(setBlock string) bool {
 	const keyword = "flags"
 
