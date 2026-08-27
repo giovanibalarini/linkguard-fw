@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import WanBalancing from '../components/WanBalancing';
+import DomainTargets from '../components/DomainTargets';
 import LinkDdns from '../components/LinkDdns';
 import LinkQuota from '../components/LinkQuota';
 import LinkStressTest from '../components/LinkStressTest';
@@ -342,6 +343,8 @@ export default function Links() {
       {success && (
         <div className="card border border-green-500/30 bg-green-500/10 text-green-400 text-sm">{success}</div>
       )}
+
+      {!loading && <DomainTargets links={links} canEdit={can('links.write')} />}
 
       {!loading && links.length >= 2 && <WanBalancing links={links} onChanged={fetchLinks} />}
 
