@@ -1467,10 +1467,20 @@ for q in json.load(sys.stdin):
   # S8 — o aviso não atravessou a fronteira da caixa. notificar_aparelho é
   # falso por padrão, e nenhum canal está configurado nesta VM: se algo tivesse
   # saído, teria falhado no envio e deixado rastro.
+  #
+  # A BUSCA É PELO APARELHO, NÃO PELA PALAVRA "notify". A primeira versão
+  # contava qualquer linha do journal que contivesse "notify" nos últimos
+  # cinco minutos — de qualquer bateria, de qualquer assunto, inclusive do
+  # próprio systemd. Bastou acrescentar uma bateria nova à suíte para ela
+  # reprovar com seis linhas que não tinham nada a ver com cota.
+  #
+  # O que esta asserção quer saber é se a IDENTIDADE DO APARELHO atravessou a
+  # fronteira. Então é o endereço físico dele que ela procura numa linha de
+  # notificação — imune a qualquer bateria vizinha, porque o MAC é sorteado.
   local envio
-  envio=$(vm "journalctl -u linkguard-fw --since '-5 min' --no-pager 2>/dev/null | grep -ci 'notify' || true" | tr -d "\\r")
-  if [[ "${envio:-0}" == "0" ]]; then ok "o alerta de cota não tentou sair da caixa"
-  else bad "houve $envio linha(s) de notificação com o portão de identidade fechado"; fi
+  envio=$(vm "journalctl -u linkguard-fw --since '-5 min' --no-pager 2>/dev/null | grep -i notif | grep -ci '$mac' || true" | tr -d "\\r" | tail -1)
+  if [[ "${envio:-0}" == "0" ]]; then ok "o aviso de cota não levou a identidade do aparelho para fora da caixa"
+  else bad "a identidade do aparelho apareceu em $envio linha(s) de notificação, com o portão fechado"; fi
 
   vm "ip netns del lgclient 2>/dev/null; ip link del veth-lgfw 2>/dev/null; true" >/dev/null 2>&1
 }
