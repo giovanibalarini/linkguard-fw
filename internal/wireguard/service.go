@@ -193,7 +193,7 @@ func (s *Service) applyDisabled(ctx context.Context) error {
 	if s.exec.IsDryRun() {
 		return nil
 	}
-	if active := s.isActive(ctx); active {
+	if s.isActive(ctx) || s.isEnabled(ctx) {
 		if _, err := s.exec.Execute(ctx, "systemctl", "disable", "--now", ServiceName); err != nil {
 			return fmt.Errorf("não foi possível parar o serviço WireGuard")
 		}
@@ -471,6 +471,11 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 func (s *Service) isActive(ctx context.Context) bool {
 	out, err := s.exec.ExecuteRead(ctx, "systemctl", "is-active", ServiceName)
 	return err == nil && strings.TrimSpace(out) == "active"
+}
+
+func (s *Service) isEnabled(ctx context.Context) bool {
+	out, err := s.exec.ExecuteRead(ctx, "systemctl", "is-enabled", ServiceName)
+	return err == nil && strings.TrimSpace(out) == "enabled"
 }
 
 func (s *Service) InputPort() (bool, int, error) {

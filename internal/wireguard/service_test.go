@@ -19,6 +19,7 @@ type serviceExec struct {
 	calls     []string
 	writes    []string
 	active    bool
+	enabled   bool
 	failStrip bool
 }
 
@@ -40,11 +41,15 @@ func (e *serviceExec) Execute(_ context.Context, cmd string, args ...string) (st
 		}
 		return "", err
 	case "systemctl":
+		if len(args) > 0 && args[0] == "enable" {
+			e.enabled = true
+		}
 		if len(args) > 0 && (args[0] == "restart" || args[0] == "start") {
 			e.active = true
 		}
 		if len(args) > 0 && args[0] == "disable" {
 			e.active = false
+			e.enabled = false
 		}
 	}
 	return "", nil
@@ -61,6 +66,12 @@ func (e *serviceExec) ExecuteRead(_ context.Context, cmd string, args ...string)
 		}
 		return "", nil
 	case "systemctl":
+		if len(args) > 0 && args[0] == "is-enabled" {
+			if e.enabled {
+				return "enabled", nil
+			}
+			return "disabled", errors.New("disabled")
+		}
 		if e.active {
 			return "active", nil
 		}
@@ -118,6 +129,22 @@ func TestDisabledReconcileDoesNotInstallPackagesOrCreatePrivateKey(t *testing.T)
 	}
 	if key, err := sec.Get(ServerSecret); err != nil || key != "" {
 		t.Fatalf("disabled service created server key: %q, %v", key, err)
+	}
+}
+
+func TestDisabledReconcileDisablesAnEnabledButInactiveUnit(t *testing.T) {
+	svc, _, _, exec := newServiceTest(t)
+	exec.enabled = true
+	exec.active = false
+
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if exec.enabled {
+		t.Fatal("inactive WireGuard unit remained enabled for the next boot")
+	}
+	if callsContaining(exec.calls, "systemctl disable --now "+ServiceName) != 1 {
+		t.Fatalf("disable --now not called exactly once: %v", exec.calls)
 	}
 }
 
