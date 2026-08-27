@@ -704,11 +704,26 @@ links.domains.notReady:
   pt: "aguardando reconciliação"
   en: "awaiting reconciliation"
 links.domains.runtimeAlive:
-  pt: "dnstap ativo"
-  en: "dnstap active"
+  pt: "alimentador ativo"
+  en: "feeder active"
 links.domains.runtimeDown:
-  pt: "dnstap inativo"
-  en: "dnstap inactive"
+  pt: "alimentador parado"
+  en: "feeder stopped"
+links.domains.observing:
+  pt: "observando o DNS"
+  en: "watching DNS"
+links.domains.notObserving:
+  pt: "coletor de DNS desligado"
+  en: "DNS collector off"
+links.domains.observingUnknown:
+  pt: "observação do DNS desconhecida"
+  en: "DNS observation unknown"
+links.domains.notObservingHelp:
+  pt: "O coletor de dnstap está desligado, então esta capacidade não recebe endereço nenhum: os domínios ativos não barram nem direcionam, e os zeros de rotatividade e último acesso abaixo NÃO querem dizer que ninguém acessou. Ligue o dnstap em Serviços de rede."
+  en: "The dnstap collector is off, so this capability receives no addresses at all: active domains neither block nor route, and the zeros for rotation and last seen below do NOT mean nobody visited. Turn dnstap on under Network services."
+links.domains.notMeasured:
+  pt: "sem medição"
+  en: "not measured"
 links.domains.kernelRead:
   pt: "kernel conferido"
   en: "kernel checked"

@@ -206,6 +206,13 @@ export default function DomainTargets({ links, canEdit }: Props) {
           <Tag variant={runtime?.vivo ? 'ok' : 'crit'}>
             {runtime?.vivo ? t('links.domains.runtimeAlive') : t('links.domains.runtimeDown')}
           </Tag>
+          <Tag variant={runtime?.observando === true ? 'ok' : runtime?.observando === false ? 'crit' : 'warn'}>
+            {runtime?.observando === true
+              ? t('links.domains.observing')
+              : runtime?.observando === false
+                ? t('links.domains.notObserving')
+                : t('links.domains.observingUnknown')}
+          </Tag>
           <Tag variant={runtime?.kernel_lido ? 'ok' : 'warn'}>
             {runtime?.kernel_lido ? t('links.domains.kernelRead') : t('links.domains.kernelUnknown')}
           </Tag>
@@ -217,6 +224,13 @@ export default function DomainTargets({ links, canEdit }: Props) {
           {runtime?.dry_run && <Tag variant="neutral">{t('links.domains.dryRun')}</Tag>}
           {!canEdit && <Tag variant="idle">{t('links.domains.readOnly')}</Tag>}
         </div>
+
+        {runtime?.observando === false && (
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>{t('links.domains.notObservingHelp')}</span>
+          </div>
+        )}
 
         {(error || state?.last_error || runtime?.kernel_erro) && (
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
@@ -245,6 +259,11 @@ export default function DomainTargets({ links, canEdit }: Props) {
             {state!.targets.map((target) => {
               const phase = phaseTag(target);
               const mismatch = runtime?.kernel_lido && target.no_kernel !== null && target.no_kernel !== target.no_index;
+              // Rotação e último aprendizado são OBSERVAÇÃO: os dois vêm do
+              // dnstap. Com o coletor desligado eles são zero por construção, e
+              // mostrar "0" ali afirma que ninguém acessou o nome — que é a
+              // conclusão oposta da verdadeira.
+              const measuring = runtime?.observando === true;
               return (
                 <li key={target.id} className="rounded-xl border border-gray-800 bg-gray-950/35 p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -293,8 +312,13 @@ export default function DomainTargets({ links, canEdit }: Props) {
                     <Metric label={t('links.domains.metric.kernel')}
                       value={target.no_kernel === null ? '?' : String(target.no_kernel)} warn={Boolean(mismatch)} />
                     <Metric label={t('links.domains.metric.rotation')}
-                      value={`${target.rotation}${target.rotation_truncated ? '+' : ''}`} warn={target.rotation_truncated} />
-                    <Metric label={t('links.domains.metric.lastLearned')} value={unixTime(target.last_learned)} />
+                      value={measuring
+                        ? `${target.rotation}${target.rotation_truncated ? '+' : ''}`
+                        : t('links.domains.notMeasured')}
+                      warn={target.rotation_truncated || !measuring} />
+                    <Metric label={t('links.domains.metric.lastLearned')}
+                      value={measuring ? unixTime(target.last_learned) : t('links.domains.notMeasured')}
+                      warn={!measuring} />
                     <Metric label={t('links.domains.metric.ipv6Discarded')}
                       value={String(target.routed_ipv6_discarded)} warn={target.routed_ipv6_discarded > 0} />
                   </dl>

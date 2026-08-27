@@ -48,6 +48,12 @@ export interface DomainRuntimeState {
   kernel_erro?: string;
   dry_run: boolean;
   vivo: boolean;
+  // observando é o COLETOR DE DNS, e não o alimentador. Um alimentador vivo
+  // numa caixa com o dnstap desligado nunca recebe endereço nenhum: a tela
+  // mostraria rotação zero e último aprendizado vazio em todo domínio, que é
+  // igualzinho a "ninguém acessou". null quer dizer que o produto não conseguiu
+  // perguntar; só true autoriza ler os zeros como ausência de acesso.
+  observando: boolean | null;
   reinicios: number;
   descartes: number;
   ignoradas: number;
