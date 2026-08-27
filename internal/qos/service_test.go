@@ -1743,3 +1743,46 @@ func writeCalls(calls []execCall) []execCall {
 	}
 	return writes
 }
+
+// TestDesligarRemoveOEgressoMesmoSemIFB prende o defeito que a bateria de VM
+// mediu: o painel respondia 200 ao desligar e a qdisc continuava limitando.
+//
+// A causa era `inspectOwnership` sair cedo quando o IFB não existe, deixando
+// `egressOwned` falso — e `disableWithOwnership` só remove o egresso sob essa
+// bandeira. O produto renegava a qdisc que ele mesmo instalou.
+//
+// A posse da CADEIA exige as três peças, e para APLICAR isso está certo. Para
+// REMOVER, cada peça responde pela própria assinatura: `egressMatches` casa o
+// handle e as flags que só nós escrevemos, então isto não autoriza remover
+// qdisc de terceiro.
+//
+// O estado que isto evitava era permanente: com a reconciliação de boot
+// recolocando a fila, a tela dizia desligado, o kernel dizia 25Mbit, e não
+// havia caminho pelo painel para sair.
+func TestDesligarRemoveOEgressoMesmoSemIFB(t *testing.T) {
+	const iface = "lgq0"
+	exec := newFakeExecutor()
+	// Cenário medido: o egresso é NOSSO (handle e flags nossos) e o IFB sumiu.
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", iface): "qdisc cake " + managedEgressHandle +
+			" root refcnt 2 bandwidth 25Mbit besteffort nat dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+	}
+	svc := NewService(exec)
+
+	if _, err := svc.Apply(context.Background(), Config{Interface: iface, Enabled: false}); err != nil {
+		t.Fatalf("desligar devolveu erro: %v", err)
+	}
+
+	var removeu bool
+	for _, c := range exec.calls {
+		if c.Command != "tc" || len(c.Args) < 4 {
+			continue
+		}
+		if c.Args[0] == "qdisc" && c.Args[1] == "del" && c.Args[3] == iface {
+			removeu = true
+		}
+	}
+	if !removeu {
+		t.Fatalf("desligar não emitiu `tc qdisc del` para %s; a fila continuaria limitando o link. Comandos: %v", iface, exec.calls)
+	}
+}

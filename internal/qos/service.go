@@ -1124,7 +1124,30 @@ func (s *Service) inspectOwnership(ctx context.Context, iface string) (ownership
 		redirectMatches: hasManagedRedirect(redirect, ifb),
 	}
 	if !exists {
-		ownership.egressForeign = hasForeignRootQdisc(egress, false)
+		// SEM O IFB, O EGRESSO CONTINUA SENDO NOSSO — e é isso que permite
+		// removê-lo.
+		//
+		// A posse da CADEIA exige as três peças (egresso, ingresso e o
+		// redirecionamento), e para APLICAR isso está certo: mexer numa cadeia
+		// incompleta é mexer no que talvez não seja nosso. Mas para REMOVER a
+		// regra é outra: cada peça responde pela própria assinatura.
+		//
+		// Sem esta linha, um IFB ausente — apagado à mão, perdido num rename de
+		// interface, ou nunca recriado — fazia o produto renegar a qdisc que ele
+		// mesmo instalou. `disableWithOwnership` só remove o egresso sob
+		// `egressOwned`, então desligar respondia 200 e a fila continuava
+		// limitando o link. Com a reconciliação de boot recolocando a fila, o
+		// estado virava permanente: a tela dizia desligado, o kernel dizia
+		// 25Mbit, e não havia caminho pelo painel para sair disso.
+		//
+		// Medido na VM: PUT {"enabled":false} devolveu 200 e o
+		// `tc qdisc show` continuou mostrando a cake, duas vezes seguidas.
+		//
+		// `egressMatches` vem de linkGuardCakeRootSignature, que casa o handle e
+		// as flags que só nós escrevemos — então isto NÃO autoriza remover
+		// qdisc de terceiro, que é a garantia que o resto deste arquivo protege.
+		ownership.egressOwned = egressMatches
+		ownership.egressForeign = hasForeignRootQdisc(egress, egressMatches)
 		return ownership, nil
 	}
 	ingress, err := s.read(ctx, "tc", "qdisc", "show", "dev", ifb)
