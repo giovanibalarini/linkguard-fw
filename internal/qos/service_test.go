@@ -414,14 +414,15 @@ func TestApplyCompensationUsesDetachedBoundedContext(t *testing.T) {
 	exec.readOut = map[string]string{
 		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc noqueue 0: root refcnt 2\n",
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	exec.failWhen = func(call execCall) error {
 		if !call.Read && call.Command == "tc" && hasPrefix(call.Args, "filter", "replace") {
+			cancel()
 			return errors.New("redirect failed")
 		}
 		return nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
 	cfg := validConfig()
 	cfg.Interface = "wan0"
 
@@ -815,6 +816,132 @@ func TestApplyRefusesForeignRootQdiscWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestApplyRefusesCakeHandleCollisionWithoutCompleteManagedChain(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc cake " + managedEgressHandle + " root bandwidth 50mbit besteffort dual-srchost\n",
+	}
+	service := NewService(exec)
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	if _, err := service.Apply(context.Background(), cfg); !errors.Is(err, ErrOwnershipNotEstablished) {
+		t.Fatalf("Apply() error = %v; want ErrOwnershipNotEstablished for a lone colliding CAKE root", err)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("Apply() mutated a colliding foreign CAKE root without a complete managed chain: %#v", exec.calls)
+		}
+	}
+}
+
+func TestDisablePreservesCakeHandleCollisionWithoutCompleteManagedChain(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc cake " + managedEgressHandle + " root bandwidth 50mbit besteffort dual-srchost\n",
+	}
+	service := NewService(exec)
+
+	if _, err := service.Disable(context.Background(), "wan0"); err != nil {
+		t.Fatalf("Disable() error = %v; want nil while preserving an unowned collision", err)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("Disable() mutated a colliding foreign CAKE root without a complete managed chain: %#v", exec.calls)
+		}
+	}
+}
+
+func TestApplyAndDisablePreserveForeignCakeOneRoot(t *testing.T) {
+	for _, operation := range []string{"apply", "disable"} {
+		t.Run(operation, func(t *testing.T) {
+			exec := newFakeExecutor()
+			exec.readOut = map[string]string{
+				executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc cake 1: root bandwidth 50mbit besteffort dual-srchost\n",
+			}
+			service := NewService(exec)
+			if operation == "apply" {
+				cfg := validConfig()
+				cfg.Interface = "wan0"
+				if _, err := service.Apply(context.Background(), cfg); !errors.Is(err, ErrOwnershipNotEstablished) {
+					t.Fatalf("Apply() error = %v; want ErrOwnershipNotEstablished", err)
+				}
+			} else if _, err := service.Disable(context.Background(), "wan0"); err != nil {
+				t.Fatalf("Disable() error = %v; want nil while preserving foreign cake 1:", err)
+			}
+			for _, call := range exec.calls {
+				if !call.Read {
+					t.Fatalf("%s mutated foreign cake 1: root: %#v", operation, exec.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestCompleteLegacyCakeOneChainCanBeMigratedOrDisabled(t *testing.T) {
+	for _, operation := range []string{"apply", "disable"} {
+		t.Run(operation, func(t *testing.T) {
+			exec := newFakeExecutor()
+			ifb := IFBName("wan0")
+			exec.ifbs[ifb] = true
+			exec.readOut = map[string]string{
+				executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                                             "qdisc cake 1: root bandwidth 50mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+				executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake 1: root bandwidth 200mbit besteffort dual-dsthost\n",
+				executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
+			}
+			service := NewService(exec)
+			if operation == "apply" {
+				cfg := validConfig()
+				cfg.Interface = "wan0"
+				if _, err := service.Apply(context.Background(), cfg); err != nil {
+					t.Fatalf("Apply legacy chain: %v", err)
+				}
+				if !containsWriteToken(exec.calls, managedEgressHandle) || !containsWriteToken(exec.calls, managedIngressHandle) {
+					t.Fatalf("Apply did not migrate legacy handles to reserved handles: %#v", exec.calls)
+				}
+			} else {
+				if _, err := service.Disable(context.Background(), "wan0"); err != nil {
+					t.Fatalf("Disable legacy chain: %v", err)
+				}
+				if countCommand(exec.calls, "tc", "qdisc", "del", "dev", "wan0", "root") != 1 ||
+					countCommand(exec.calls, "tc", "qdisc", "del", "dev", ifb, "root") != 1 {
+					t.Fatalf("Disable did not remove the complete legacy chain: %#v", exec.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestApplyCompensationDoesNotOverwriteRootChangedToCakeHandleCollision(t *testing.T) {
+	exec := newFakeExecutor()
+	rootKey := executorCallKey("tc", "qdisc", "show", "dev", "wan0")
+	exec.readOut = map[string]string{rootKey: "qdisc mq 0: root\n"}
+	exec.onExecute = func(call execCall) {
+		if call.Command == "tc" && hasPrefix(call.Args, "qdisc", "replace", "dev", "wan0", "root") {
+			exec.readOut[rootKey] = "qdisc cake 1: root bandwidth 999gbit diffserv4 dual-dsthost\n"
+		}
+	}
+	exec.failWhen = func(call execCall) error {
+		if call.Command == "ip" && hasPrefix(call.Args, "link", "add") {
+			return errors.New("simulated IFB creation failure")
+		}
+		return nil
+	}
+	service := NewService(exec)
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	_, err := service.Apply(context.Background(), cfg)
+	if !errors.Is(err, ErrCompensationFailed) {
+		t.Fatalf("Apply() error = %v; want ErrCompensationFailed after ownership changed during rollback", err)
+	}
+	for _, call := range writeCalls(exec.calls) {
+		if call.Command == "tc" && hasPrefix(call.Args, "qdisc", "replace", "dev", "wan0", "root", "mq") {
+			t.Fatalf("compensation overwrote a colliding foreign CAKE root with the prior default: %#v", exec.calls)
+		}
+	}
+}
+
 func TestApplyRefusesForeignMirredFilterWithoutWriting(t *testing.T) {
 	ifb := IFBName("wan0")
 	exec := newFakeExecutor()
@@ -843,7 +970,7 @@ func TestApplyNetemRefusesExplicitForeignRootWithoutWriting(t *testing.T) {
 	service := NewService(exec)
 
 	err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
-		return ops.ApplyNetem(context.Background(), 500, 20)
+		return ops.ApplyNetem(context.Background(), NetemFault{DelayMs: 500, LossPct: 20})
 	})
 	if !errors.Is(err, ErrOwnershipNotEstablished) {
 		t.Fatalf("ApplyNetem() error = %v; want ErrOwnershipNotEstablished", err)
@@ -851,6 +978,26 @@ func TestApplyNetemRefusesExplicitForeignRootWithoutWriting(t *testing.T) {
 	for _, call := range exec.calls {
 		if !call.Read {
 			t.Fatalf("ApplyNetem() wrote while a foreign root qdisc was present: %#v", exec.calls)
+		}
+	}
+}
+
+func TestApplyNetemRefusesCakeHandleCollisionWithoutCompleteManagedChain(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc cake 1: root bandwidth 50mbit besteffort dual-srchost\n",
+	}
+	service := NewService(exec)
+
+	err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
+		return ops.ApplyNetem(context.Background(), NetemFault{DelayMs: 500, LossPct: 20})
+	})
+	if !errors.Is(err, ErrOwnershipNotEstablished) {
+		t.Fatalf("ApplyNetem() error = %v; want ErrOwnershipNotEstablished", err)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("ApplyNetem() replaced a colliding foreign CAKE root: %#v", exec.calls)
 		}
 	}
 }
@@ -874,7 +1021,7 @@ func TestRestoreAfterNetemDeletesOnlyOwnedFaultAndReappliesPersistedQoS(t *testi
 	service := NewService(exec)
 
 	err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
-		_, err := ops.RestoreAfterNetem(context.Background(), cfg)
+		_, err := ops.RestoreAfterNetem(context.Background(), cfg, NetemFault{DelayMs: 500, LossPct: 20})
 		return err
 	})
 	if err != nil {
@@ -896,7 +1043,7 @@ func TestRestoreAfterNetemPreservesRootThatBecameForeign(t *testing.T) {
 	service := NewService(exec)
 
 	err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
-		_, err := ops.RestoreAfterNetem(context.Background(), Config{Interface: "wan0"})
+		_, err := ops.RestoreAfterNetem(context.Background(), Config{Interface: "wan0"}, NetemFault{DelayMs: 500, LossPct: 20})
 		return err
 	})
 	if !errors.Is(err, ErrOwnershipNotEstablished) {
@@ -907,6 +1054,110 @@ func TestRestoreAfterNetemPreservesRootThatBecameForeign(t *testing.T) {
 			t.Fatalf("RestoreAfterNetem() mutated a foreign root qdisc: %#v", exec.calls)
 		}
 	}
+}
+
+func TestRestoreAfterNetemPreservesNetemTwoWithDifferentOrExtendedSignature(t *testing.T) {
+	for _, output := range []string{
+		"qdisc netem 2: root limit 1000 delay 450ms loss 20%\n",
+		"qdisc netem 2: root limit 1000 delay 500ms loss 20% reorder 25%\n",
+		"qdisc netem 2: root limit 1000 delay 500ms 25ms loss 20%\n",
+	} {
+		t.Run(strings.TrimSpace(output), func(t *testing.T) {
+			exec := newFakeExecutor()
+			exec.readOut = map[string]string{
+				executorCallKey("tc", "qdisc", "show", "dev", "wan0"): output,
+			}
+			service := NewService(exec)
+			err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
+				_, err := ops.RestoreAfterNetem(context.Background(), Config{Interface: "wan0"}, NetemFault{DelayMs: 500, LossPct: 20})
+				return err
+			})
+			if !errors.Is(err, ErrOwnershipNotEstablished) {
+				t.Fatalf("RestoreAfterNetem() error = %v; want ErrOwnershipNotEstablished", err)
+			}
+			for _, call := range exec.calls {
+				if !call.Read {
+					t.Fatalf("RestoreAfterNetem() mutated foreign netem 2: signature: %#v", exec.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestRestoreAfterNetemPreservesCakeHandleCollisionWithoutManagedChain(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.readOut = map[string]string{
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"): "qdisc cake 1: root bandwidth 900gbit diffserv4 dual-dsthost\n",
+	}
+	service := NewService(exec)
+
+	err := service.WithInterfaceLock(context.Background(), "wan0", func(ops InterfaceOperations) error {
+		_, err := ops.RestoreAfterNetem(context.Background(), Config{Interface: "wan0"}, NetemFault{DelayMs: 500, LossPct: 20})
+		return err
+	})
+	if !errors.Is(err, ErrOwnershipNotEstablished) {
+		t.Fatalf("RestoreAfterNetem() error = %v; want ErrOwnershipNotEstablished", err)
+	}
+	for _, call := range exec.calls {
+		if !call.Read {
+			t.Fatalf("RestoreAfterNetem() mutated a colliding foreign CAKE root: %#v", exec.calls)
+		}
+	}
+}
+
+func TestCakeSettingsPreservesSupportedBandwidthUnits(t *testing.T) {
+	for _, want := range []string{"640kbit", "50Mbit", "2gbit"} {
+		t.Run(want, func(t *testing.T) {
+			output := "qdisc cake " + managedEgressHandle + " root bandwidth " + want + " diffserv4 dual-srchost\n"
+			bandwidth, mode, ok := cakeSettings(output)
+			if !ok || bandwidth != want || mode != "diffserv4" {
+				t.Fatalf("cakeSettings(%q) = %q, %q, %v; want preserved bandwidth, diffserv4, true", output, bandwidth, mode, ok)
+			}
+		})
+	}
+}
+
+func TestApplyCompensationRestoresCakeBandwidthTokenVerbatim(t *testing.T) {
+	for _, want := range []string{"640kbit", "50Mbit", "2gbit"} {
+		t.Run(want, func(t *testing.T) {
+			exec := newFakeExecutor()
+			ifb := IFBName("wan0")
+			exec.ifbs[ifb] = true
+			exec.readOut = map[string]string{
+				executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                                             "qdisc cake " + managedEgressHandle + " root bandwidth " + want + " besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+				executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake " + managedIngressHandle + " root bandwidth 200mbit besteffort dual-dsthost\n",
+				executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
+			}
+			exec.failWhen = func(call execCall) error {
+				if !call.Read && call.Command == "tc" && hasPrefix(call.Args, "qdisc", "replace", "dev", ifb) {
+					return errors.New("simulated ingress failure")
+				}
+				return nil
+			}
+			cfg := validConfig()
+			cfg.Interface = "wan0"
+			cfg.UploadMbps = 75
+
+			if _, err := NewService(exec).Apply(context.Background(), cfg); err == nil {
+				t.Fatal("Apply() error = nil; want simulated ingress failure")
+			}
+			if !containsWriteSequence(exec.calls, "tc", []string{
+				"qdisc", "replace", "dev", "wan0", "root", "handle", managedEgressHandle,
+				"cake", "bandwidth", want, "besteffort", "dual-srchost",
+			}) {
+				t.Fatalf("compensation did not preserve bandwidth token %q: %#v", want, exec.calls)
+			}
+		})
+	}
+}
+
+func containsWriteSequence(calls []execCall, command string, args []string) bool {
+	for _, call := range calls {
+		if !call.Read && call.Command == command && reflect.DeepEqual(call.Args, args) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsWriteToken(calls []execCall, want string) bool {
@@ -1098,6 +1349,53 @@ func TestPerInterfaceQoSOperationsSerialize(t *testing.T) {
 	}
 	if exec.overlap {
 		t.Fatal("QoS operations used the same interface concurrently")
+	}
+}
+
+func TestWithInterfaceLockCanceledWaiterNeverEntersCallback(t *testing.T) {
+	service := NewService(newFakeExecutor())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- service.WithInterfaceLock(context.Background(), "wan0", func(InterfaceOperations) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	callbackRan := make(chan struct{}, 1)
+	waiterDone := make(chan error, 1)
+	go func() {
+		waiterDone <- service.WithInterfaceLock(ctx, "wan0", func(InterfaceOperations) error {
+			callbackRan <- struct{}{}
+			return nil
+		})
+	}()
+	cancel()
+
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled waiter error = %v; want context.Canceled", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		close(release)
+		<-holderDone
+		err := <-waiterDone
+		t.Fatalf("canceled waiter remained blocked until the lock was released (eventual error %v)", err)
+	}
+	close(release)
+	if err := <-holderDone; err != nil {
+		t.Fatalf("holder error = %v", err)
+	}
+	select {
+	case <-callbackRan:
+		t.Fatal("canceled waiter entered its callback after cancellation")
+	default:
 	}
 }
 

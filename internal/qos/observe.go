@@ -14,7 +14,10 @@ func (s *Service) Observe(ctx context.Context, iface string) (State, error) {
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return State{}, err
 	}
-	unlock := s.lockInterface(iface)
+	unlock, err := s.lockInterface(ctx, iface)
+	if err != nil {
+		return State{}, err
+	}
 	defer unlock()
 	return s.observe(ctx, iface)
 }
@@ -42,8 +45,7 @@ func (s *Service) observe(ctx context.Context, iface string) (State, error) {
 		return State{}, err
 	}
 
-	state.Enabled = hasManagedRootCake(egress, managedEgressHandle) &&
-		hasManagedRootCake(ingress, managedIngressHandle) && hasManagedRedirect(redirect, ifb)
+	state.Enabled = hasCompleteManagedChain(egress, ingress, redirect, ifb)
 	state.Mode = observedMode(egress, ingress)
 	return state, nil
 }
@@ -57,18 +59,14 @@ func (s *Service) read(ctx context.Context, command string, args ...string) (str
 }
 
 func hasRootCake(output string) bool {
-	return hasManagedRootCake(output, managedEgressHandle)
+	root, ok := rootQdisc(output)
+	return ok && root.kind == "cake"
 }
 
-func hasManagedRootCake(output, handle string) bool {
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 4 && fields[0] == "qdisc" && fields[1] == "cake" &&
-			fields[2] == handle && fields[3] == "root" {
-			return true
-		}
-	}
-	return false
+func hasCompleteManagedChain(egress, ingress, redirect, ifb string) bool {
+	_, egressOK := linkGuardCakeRootSignature(egress, managedEgressHandle, "dual-srchost")
+	_, ingressOK := linkGuardCakeRootSignature(ingress, managedIngressHandle, "dual-dsthost")
+	return egressOK && ingressOK && hasManagedRedirect(redirect, ifb)
 }
 
 func hasRootQdisc(output string) bool {
@@ -101,12 +99,12 @@ func rootQdisc(output string) (rootQdiscInfo, bool) {
 	return rootQdiscInfo{}, false
 }
 
-func hasForeignRootQdisc(output, managedHandle string) bool {
+func hasForeignRootQdisc(output string, owned bool) bool {
 	root, ok := rootQdisc(output)
 	if !ok {
 		return false
 	}
-	if root.kind == "cake" && root.handle == managedHandle {
+	if owned {
 		return false
 	}
 	if isReplaceableInitialRoot(root) {

@@ -28,7 +28,7 @@ func TestFinalizeSummary(t *testing.T) {
 			{Phase: "recovery", Ping: true, DNS: true},
 		},
 	}
-	s.finalize(test, false)
+	s.finalize(test, false, true)
 
 	// 4 non-baseline samples; 1 ping fail = 25%, 1 dns fail = 25%.
 	if test.PingLossPct != 25 {
@@ -45,7 +45,7 @@ func TestFinalizeSummary(t *testing.T) {
 func TestFinalizeAborted(t *testing.T) {
 	s := &Service{nowFn: func() string { return "00:00:00" }}
 	test := &Test{Samples: []Sample{{Phase: "fault", Ping: true, DNS: true}}}
-	s.finalize(test, true)
+	s.finalize(test, true, true)
 	if test.State != "aborted" {
 		t.Errorf("state=%q, want aborted", test.State)
 	}
@@ -76,6 +76,8 @@ func newTestServiceWithAlerts(t *testing.T) (*Service, *storage.DB) {
 	}
 	t.Cleanup(func() { db.Close() })
 	s := &Service{exec: firewall.NewDryRunExecutor(), linkSvc: links.NewService(db), alertSvc: alerts.NewService(db)}
+	s.SetRecoveryStore(db)
+	s.SetQosService(newRecordingQosCoordinator())
 	return s, db
 }
 
@@ -92,6 +94,9 @@ func countAlertsOfType(alerts []storage.Alert, typ string) int {
 func TestApplyFaultRaisesOutageAlert(t *testing.T) {
 	s, db := newTestServiceWithAlerts(t)
 	t2 := &Test{Mode: ModeOutage, LinkName: "WAN VIVO", LinkID: "id1", Interface: "eth0"}
+	if err := db.CreateLink(&storage.Link{ID: t2.LinkID, Name: t2.LinkName, Interface: t2.Interface, Enabled: true}); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
 
 	s.applyFault(t2)
 
@@ -103,7 +108,9 @@ func TestApplyFaultRaisesOutageAlert(t *testing.T) {
 		t.Errorf("link_offline alerts = %d, want 1 (all: %+v)", n, got)
 	}
 
-	s.restore(t2, "")
+	if err := s.restore(t2, ""); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
 
 	got, err = db.GetAlerts(false, 0)
 	if err != nil {
@@ -115,11 +122,15 @@ func TestApplyFaultRaisesOutageAlert(t *testing.T) {
 }
 
 type spyExecutor struct {
-	calls []string
+	calls     []string
+	onExecute func(string, []string)
 }
 
 func (f *spyExecutor) Execute(ctx context.Context, name string, args ...string) (string, error) {
 	f.calls = append(f.calls, strings.Join(append([]string{name}, args...), " "))
+	if f.onExecute != nil {
+		f.onExecute(name, append([]string(nil), args...))
+	}
 	return "", nil
 }
 func (f *spyExecutor) ExecuteRead(ctx context.Context, name string, args ...string) (string, error) {
@@ -215,12 +226,13 @@ func TestApplyFaultDegradeUsesSharedQoSLockAndDeterministicNetem(t *testing.T) {
 }
 
 type recordingQosCoordinator struct {
-	mu          sync.Mutex
-	locks       int
-	delayMs     int
-	lossPct     int
-	restored    qos.Config
-	restoreDone chan struct{}
+	mu           sync.Mutex
+	locks        int
+	delayMs      int
+	lossPct      int
+	restored     qos.Config
+	restoreFault qos.NetemFault
+	restoreDone  chan struct{}
 }
 
 func newRecordingQosCoordinator() *recordingQosCoordinator {
@@ -243,15 +255,18 @@ func (o recordingQosOperations) Apply(_ context.Context, cfg qos.Config) (qos.St
 	return qos.State{}, nil
 }
 
-func (o recordingQosOperations) ApplyNetem(_ context.Context, delayMs, lossPct int) error {
+func (o recordingQosOperations) ApplyNetem(_ context.Context, fault qos.NetemFault) error {
 	o.coordinator.mu.Lock()
-	o.coordinator.delayMs = delayMs
-	o.coordinator.lossPct = lossPct
+	o.coordinator.delayMs = fault.DelayMs
+	o.coordinator.lossPct = fault.LossPct
 	o.coordinator.mu.Unlock()
 	return nil
 }
 
-func (o recordingQosOperations) RestoreAfterNetem(_ context.Context, cfg qos.Config) (qos.State, error) {
+func (o recordingQosOperations) RestoreAfterNetem(_ context.Context, cfg qos.Config, fault qos.NetemFault) (qos.State, error) {
+	o.coordinator.mu.Lock()
+	o.coordinator.restoreFault = fault
+	o.coordinator.mu.Unlock()
 	o.coordinator.recordRestore(cfg)
 	return qos.State{}, nil
 }
@@ -282,4 +297,10 @@ func (c *recordingQosCoordinator) netem() (int, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.delayMs, c.lossPct
+}
+
+func (c *recordingQosCoordinator) restoredNetem() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.restoreFault.DelayMs, c.restoreFault.LossPct
 }

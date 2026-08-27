@@ -217,6 +217,10 @@ var allowedInternalImports = map[string]bool{
 	// traduz o erro em status. A regra — tetos, filtro, uma por vez, varredura
 	// do TTL — mora lá, e não aqui.
 	"internal/pktcapture": true,
+	// internal/qos owns queue-control validation, per-interface serialization,
+	// kernel apply/rollback, and measurements. Handlers only translate HTTP and
+	// delegate those operations.
+	"internal/qos":        true,
 	"internal/routes":     true,
 	"internal/secrets":    true,
 	"internal/storage":    true,

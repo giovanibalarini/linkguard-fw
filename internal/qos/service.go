@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,9 +16,10 @@ import (
 const redirectFilterPriority = "49152"
 
 const (
-	managedEgressHandle  = "1:"
-	managedIngressHandle = "1:"
+	managedEgressHandle  = "cafe:"
+	managedIngressHandle = "caff:"
 	managedNetemHandle   = "2:"
+	legacyCakeHandle     = "1:"
 	repairTimeout        = 15 * time.Second
 )
 
@@ -52,17 +54,45 @@ type ApplyPlan struct {
 	Persist  func() error
 }
 
+// NetemFault is the exact stress-test impairment owned by LinkGuard. The
+// values are carried into recovery so a colliding netem handle is never enough
+// evidence to remove somebody else's qdisc.
+type NetemFault struct {
+	DelayMs int
+	LossPct int
+}
+
+func (f NetemFault) validate() error {
+	if f.DelayMs <= 0 {
+		return errors.New("netem delay must be positive")
+	}
+	if f.LossPct < 0 || f.LossPct > 100 {
+		return errors.New("netem loss must be between 0 and 100 percent")
+	}
+	return nil
+}
+
+type interfaceSemaphore struct {
+	token chan struct{}
+}
+
+func newInterfaceSemaphore() *interfaceSemaphore {
+	lock := &interfaceSemaphore{token: make(chan struct{}, 1)}
+	lock.token <- struct{}{}
+	return lock
+}
+
 // Service applies QoS changes through the firewall command executor.
 type Service struct {
 	exec firewall.Executor
 
 	locksMu       sync.Mutex
-	interfaceLock map[string]*sync.Mutex
+	interfaceLock map[string]*interfaceSemaphore
 }
 
 // NewService creates a QoS service.
 func NewService(exec firewall.Executor) *Service {
-	return &Service{exec: exec, interfaceLock: make(map[string]*sync.Mutex)}
+	return &Service{exec: exec, interfaceLock: make(map[string]*interfaceSemaphore)}
 }
 
 // Apply validates and applies one WAN's desired QoS configuration.
@@ -70,7 +100,10 @@ func (s *Service) Apply(ctx context.Context, cfg Config) (State, error) {
 	if err := cfg.Validate(); err != nil {
 		return State{}, err
 	}
-	unlock := s.lockInterface(cfg.Interface)
+	unlock, err := s.lockInterface(ctx, cfg.Interface)
+	if err != nil {
+		return State{}, err
+	}
 	defer unlock()
 	return s.apply(ctx, cfg)
 }
@@ -83,7 +116,10 @@ func (s *Service) ApplyAndPersist(ctx context.Context, cfg, rollback Config, per
 	if err := cfg.Validate(); err != nil {
 		return State{}, err
 	}
-	unlock := s.lockInterface(cfg.Interface)
+	unlock, err := s.lockInterface(ctx, cfg.Interface)
+	if err != nil {
+		return State{}, err
+	}
 	defer unlock()
 	return s.applyAndPersistLocked(ctx, cfg, rollback, persist)
 }
@@ -96,7 +132,10 @@ func (s *Service) ApplyCurrentAndPersist(ctx context.Context, iface string, load
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return State{}, err
 	}
-	unlock := s.lockInterface(iface)
+	unlock, err := s.lockInterface(ctx, iface)
+	if err != nil {
+		return State{}, err
+	}
 	defer unlock()
 
 	plan, err := load()
@@ -142,7 +181,10 @@ func (s *Service) ApplyCurrent(ctx context.Context, iface string, load func() (C
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return State{}, err
 	}
-	unlock := s.lockInterface(iface)
+	unlock, err := s.lockInterface(ctx, iface)
+	if err != nil {
+		return State{}, err
+	}
 	defer unlock()
 
 	cfg, err := load()
@@ -162,8 +204,8 @@ func (s *Service) ApplyCurrent(ctx context.Context, iface string, load func() (C
 // lock is already held by WithInterfaceLock.
 type InterfaceOperations interface {
 	Apply(context.Context, Config) (State, error)
-	ApplyNetem(context.Context, int, int) error
-	RestoreAfterNetem(context.Context, Config) (State, error)
+	ApplyNetem(context.Context, NetemFault) error
+	RestoreAfterNetem(context.Context, Config, NetemFault) (State, error)
 }
 
 type lockedInterfaceOperations struct {
@@ -181,78 +223,153 @@ func (o lockedInterfaceOperations) Apply(ctx context.Context, cfg Config) (State
 	return o.service.apply(ctx, cfg)
 }
 
-func (o lockedInterfaceOperations) ApplyNetem(ctx context.Context, delayMs, lossPct int) error {
-	return o.service.applyNetem(ctx, o.iface, delayMs, lossPct)
+func (o lockedInterfaceOperations) ApplyNetem(ctx context.Context, fault NetemFault) error {
+	return o.service.applyNetem(ctx, o.iface, fault)
 }
 
-func (o lockedInterfaceOperations) RestoreAfterNetem(ctx context.Context, cfg Config) (State, error) {
+func (o lockedInterfaceOperations) RestoreAfterNetem(ctx context.Context, cfg Config, fault NetemFault) (State, error) {
 	if cfg.Interface != o.iface {
 		return State{}, fmt.Errorf("qos operation targets %q while %q is locked", cfg.Interface, o.iface)
 	}
 	if err := cfg.Validate(); err != nil {
 		return State{}, err
 	}
-	return o.service.restoreAfterNetem(ctx, cfg)
+	return o.service.restoreAfterNetem(ctx, cfg, fault)
 }
 
 // WithInterfaceLock serializes non-QoS link mutations with QoS operations
 // that use this shared service. The callback receives operations that reuse
 // the held lock and must not call a public method on this service.
-func (s *Service) WithInterfaceLock(_ context.Context, iface string, fn func(InterfaceOperations) error) error {
+func (s *Service) WithInterfaceLock(ctx context.Context, iface string, fn func(InterfaceOperations) error) error {
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return err
 	}
-	unlock := s.lockInterface(iface)
-	defer unlock()
 	if fn == nil {
 		return errors.New("qos interface lock callback is nil")
+	}
+	unlock, err := s.lockInterface(ctx, iface)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return fn(lockedInterfaceOperations{service: s, iface: iface})
 }
 
-func (s *Service) applyNetem(ctx context.Context, iface string, delayMs, lossPct int) error {
-	if delayMs <= 0 {
-		return errors.New("netem delay must be positive")
+func (s *Service) applyNetem(ctx context.Context, iface string, fault NetemFault) error {
+	if err := fault.validate(); err != nil {
+		return err
 	}
-	if lossPct < 0 || lossPct > 100 {
-		return errors.New("netem loss must be between 0 and 100 percent")
-	}
-	before, err := s.read(ctx, "tc", "qdisc", "show", "dev", iface)
+	ownership, err := s.inspectOwnership(ctx, iface)
 	if err != nil {
 		return err
 	}
-	root, exists := rootQdisc(before)
-	if exists && !isReplaceableInitialRoot(root) &&
-		!hasManagedRootCake(before, managedEgressHandle) &&
-		!hasManagedRootKind(before, "netem", managedNetemHandle) {
+	root, exists := rootQdisc(ownership.egressOutput)
+	if exists && !isReplaceableInitialRoot(root) && !ownership.chainOwned {
 		return fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, iface)
 	}
+	if ownership.ingressForeign || (ownership.filterPresent && !ownership.redirectOwned) {
+		return fmt.Errorf("%w: incomplete or foreign QoS chain on %q", ErrOwnershipNotEstablished, iface)
+	}
+	before := ownership.egressOutput
 	journal := mutationJournal{service: s, ctx: ctx}
 	return journal.run("apply stress-test netem", func(stepCtx context.Context) error {
 		return s.execute(stepCtx, "apply stress-test netem", "tc", "qdisc", "replace", "dev", iface,
-			"root", "handle", managedNetemHandle, "netem", "delay", strconv.Itoa(delayMs)+"ms", "loss", strconv.Itoa(lossPct)+"%")
+			"root", "handle", managedNetemHandle, "netem", "delay", strconv.Itoa(fault.DelayMs)+"ms", "loss", strconv.Itoa(fault.LossPct)+"%")
 	}, func(repairCtx context.Context) error {
-		return s.restoreRoot(repairCtx, iface, before, "netem", managedNetemHandle, managedEgressHandle, "dual-srchost")
+		return s.restoreRoot(repairCtx, iface, before, netemRootSignature(fault), ownership.egressSignature)
 	})
 }
 
-func (s *Service) restoreAfterNetem(ctx context.Context, cfg Config) (State, error) {
-	output, err := s.read(ctx, "tc", "qdisc", "show", "dev", cfg.Interface)
+func (s *Service) restoreAfterNetem(ctx context.Context, cfg Config, fault NetemFault) (State, error) {
+	if err := fault.validate(); err != nil {
+		return State{}, err
+	}
+	ownership, err := s.inspectOwnership(ctx, cfg.Interface)
 	if err != nil {
 		return State{}, err
 	}
-	root, exists := rootQdisc(output)
-	if exists && !isReplaceableInitialRoot(root) &&
-		!hasManagedRootCake(output, managedEgressHandle) &&
-		!hasManagedRootKind(output, "netem", managedNetemHandle) {
+	root, exists := rootQdisc(ownership.egressOutput)
+	if !exists || isReplaceableInitialRoot(root) {
+		return s.apply(ctx, cfg)
+	}
+	if root.kind == "cake" {
+		if !ownership.chainOwned {
+			return State{}, fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, cfg.Interface)
+		}
+		return s.apply(ctx, cfg)
+	}
+	if !netemRootSignature(fault).matches(ownership.egressOutput) {
 		return State{}, fmt.Errorf("%w: foreign root qdisc on %q", ErrOwnershipNotEstablished, cfg.Interface)
 	}
-	if hasManagedRootKind(output, "netem", managedNetemHandle) {
-		if err := s.removeManagedRoot(ctx, cfg.Interface, "netem", managedNetemHandle); err != nil {
-			return State{}, err
+	if ownership.filterPresent != ownership.redirectMatches {
+		return State{}, fmt.Errorf("%w: incomplete ingress redirect on %q", ErrOwnershipNotEstablished, cfg.Interface)
+	}
+	ingressSignature, ingressMatches := linkGuardCakeRootSignature(ownership.ingressOutput, managedIngressHandle, "dual-dsthost")
+	if hasRootQdisc(ownership.ingressOutput) != ingressMatches {
+		return State{}, fmt.Errorf("%w: incomplete or foreign ingress qdisc on %q", ErrOwnershipNotEstablished, IFBName(cfg.Interface))
+	}
+	if ingressMatches != ownership.redirectMatches {
+		return State{}, fmt.Errorf("%w: incomplete managed ingress chain on %q", ErrOwnershipNotEstablished, cfg.Interface)
+	}
+	ownership.egressOwned = true
+	ownership.egressForeign = false
+	ownership.egressSignature = netemRootSignature(fault)
+	ownership.ingressOwned = ingressMatches
+	ownership.ingressForeign = false
+	ownership.ingressSignature = ingressSignature
+	ownership.redirectOwned = ownership.redirectMatches
+	ownership.chainOwned = true
+	if !cfg.Enabled {
+		return s.disableWithOwnership(ctx, cfg.Interface, ownership)
+	}
+	if err := s.removeRootMatching(ctx, cfg.Interface, ownership.egressSignature); err != nil {
+		return State{}, err
+	}
+	repairNetem := func(original error) (State, error) {
+		repairErr := s.compensate(ctx, []qosUndo{func(repairCtx context.Context) error {
+			return s.restoreDeletedRoot(repairCtx, cfg.Interface, ownership.egressOutput, ownership.egressSignature)
+		}})
+		if repairErr != nil {
+			return State{}, fmt.Errorf("%w: restore after netem removal error: %v; repair: %v", ErrCompensationFailed, original, repairErr)
+		}
+		return State{}, original
+	}
+	currentEgress, err := s.read(ctx, "tc", "qdisc", "show", "dev", cfg.Interface)
+	if err != nil {
+		return repairNetem(err)
+	}
+	if current, exists := rootQdisc(currentEgress); exists && !isReplaceableInitialRoot(current) {
+		return repairNetem(fmt.Errorf("%w: root qdisc on %q changed after netem removal", ErrOwnershipNotEstablished, cfg.Interface))
+	}
+	if ownership.ingressOwned {
+		currentIngress, readErr := s.read(ctx, "tc", "qdisc", "show", "dev", IFBName(cfg.Interface))
+		if readErr != nil {
+			return repairNetem(readErr)
+		}
+		if !ownership.ingressSignature.matches(currentIngress) {
+			return repairNetem(fmt.Errorf("%w: ingress qdisc changed after netem removal", ErrOwnershipNotEstablished))
 		}
 	}
-	return s.apply(ctx, cfg)
+	if ownership.redirectOwned {
+		currentRedirect, readErr := s.read(ctx, "tc", "filter", "show", "dev", cfg.Interface, "ingress", "pref", redirectFilterPriority)
+		if readErr != nil {
+			return repairNetem(readErr)
+		}
+		if !hasManagedRedirect(currentRedirect, IFBName(cfg.Interface)) {
+			return repairNetem(fmt.Errorf("%w: ingress redirect changed after netem removal", ErrOwnershipNotEstablished))
+		}
+	}
+	ownership.egressOutput = currentEgress
+	ownership.egressOwned = false
+	ownership.egressForeign = false
+	state, applyErr := s.applyWithOwnership(ctx, cfg, ownership)
+	if applyErr == nil {
+		return state, nil
+	}
+	return repairNetem(applyErr)
 }
 
 func (s *Service) apply(ctx context.Context, cfg Config) (State, error) {
@@ -291,7 +408,8 @@ func (s *Service) applyWithOwnership(ctx context.Context, cfg Config, ownership 
 			"bandwidth", bandwidthArg(cfg.UploadMbps), mode, "dual-srchost")
 	}, func(repairCtx context.Context) error {
 		return s.restoreRoot(repairCtx, cfg.Interface, ownership.egressOutput,
-			"cake", managedEgressHandle, managedEgressHandle, "dual-srchost")
+			cakeRootSignature(managedEgressHandle, bandwidthArg(cfg.UploadMbps), mode, "dual-srchost"),
+			ownership.egressSignature)
 	}); err != nil {
 		return State{}, err
 	}
@@ -322,7 +440,8 @@ func (s *Service) applyWithOwnership(ctx context.Context, cfg Config, ownership 
 			"bandwidth", bandwidthArg(cfg.DownloadMbps), mode, "dual-dsthost")
 	}, func(repairCtx context.Context) error {
 		return s.restoreRoot(repairCtx, ifb, ownership.ingressOutput,
-			"cake", managedIngressHandle, managedIngressHandle, "dual-dsthost")
+			cakeRootSignature(managedIngressHandle, bandwidthArg(cfg.DownloadMbps), mode, "dual-dsthost"),
+			ownership.ingressSignature)
 	}); err != nil {
 		return State{}, err
 	}
@@ -397,70 +516,269 @@ func detachedRepairContext(ctx context.Context) (context.Context, context.Cancel
 	return context.WithTimeout(context.WithoutCancel(ctx), repairTimeout)
 }
 
-func (s *Service) restoreRoot(ctx context.Context, iface, previousOutput, currentKind, currentHandle, previousManagedHandle, hostMode string) error {
+var cakeBandwidthPattern = regexp.MustCompile(`(?i)^[0-9]+(?:\.[0-9]+)?(?:kbit|mbit|gbit)$`)
+
+type rootSignature struct {
+	kind      string
+	handle    string
+	bandwidth string
+	mode      string
+	hostMode  string
+	delayMs   int
+	lossPct   int
+}
+
+func cakeRootSignature(handle, bandwidth, mode, hostMode string) rootSignature {
+	return rootSignature{kind: "cake", handle: handle, bandwidth: bandwidth, mode: mode, hostMode: hostMode}
+}
+
+func netemRootSignature(fault NetemFault) rootSignature {
+	return rootSignature{kind: "netem", handle: managedNetemHandle, delayMs: fault.DelayMs, lossPct: fault.LossPct}
+}
+
+func managedCakeRootSignature(output, handle, hostMode string) (rootSignature, bool) {
+	line, ok := rootQdiscLine(output)
+	if !ok {
+		return rootSignature{}, false
+	}
+	root, ok := rootQdisc(line)
+	if !ok || root.kind != "cake" || root.handle != handle || !containsWord(strings.Fields(line), hostMode) {
+		return rootSignature{}, false
+	}
+	bandwidth, mode, ok := cakeSettings(line)
+	if !ok {
+		return rootSignature{}, false
+	}
+	return cakeRootSignature(handle, bandwidth, mode, hostMode), true
+}
+
+func linkGuardCakeRootSignature(output, managedHandle, hostMode string) (rootSignature, bool) {
+	if signature, ok := managedCakeRootSignature(output, managedHandle, hostMode); ok {
+		return signature, true
+	}
+	return managedCakeRootSignature(output, legacyCakeHandle, hostMode)
+}
+
+func (sig rootSignature) matches(output string) bool {
+	root, ok := rootQdisc(output)
+	if !ok || root.kind != sig.kind || root.handle != sig.handle {
+		return false
+	}
+	switch sig.kind {
+	case "cake":
+		bandwidth, mode, ok := cakeSettings(output)
+		return ok && strings.EqualFold(bandwidth, sig.bandwidth) && mode == sig.mode &&
+			containsWord(strings.Fields(output), sig.hostMode)
+	case "netem":
+		delayMs, lossPct, ok := netemSettings(output)
+		return ok && delayMs == sig.delayMs && lossPct == sig.lossPct
+	default:
+		return false
+	}
+}
+
+func (s *Service) restoreRoot(ctx context.Context, iface, previousOutput string, current, previousManaged rootSignature) error {
 	root, ok := rootQdisc(previousOutput)
 	if !ok {
-		return s.removeManagedRoot(ctx, iface, currentKind, currentHandle)
-	}
-	if isReplaceableInitialRoot(root) {
-		return s.execute(ctx, "restore initial root qdisc", "tc", "qdisc", "replace", "dev", iface, "root", root.kind)
-	}
-	if root.kind != "cake" || root.handle != previousManagedHandle {
-		return fmt.Errorf("%w: cannot restore root qdisc %q %q", ErrOwnershipNotEstablished, root.kind, root.handle)
+		currentOutput, err := s.read(ctx, "tc", "qdisc", "show", "dev", iface)
+		if err != nil {
+			return err
+		}
+		if !s.exec.IsDryRun() && !current.matches(currentOutput) {
+			if _, exists := rootQdisc(currentOutput); !exists {
+				return nil
+			}
+			return fmt.Errorf("%w: root qdisc on %q changed during repair", ErrOwnershipNotEstablished, iface)
+		}
+		return s.delete(ctx, "remove managed root qdisc", "tc", "qdisc", "del", "dev", iface, "root")
 	}
 	currentOutput, err := s.read(ctx, "tc", "qdisc", "show", "dev", iface)
 	if err != nil {
 		return err
 	}
-	current, currentExists := rootQdisc(currentOutput)
-	if currentExists && !hasManagedRootKind(currentOutput, currentKind, currentHandle) &&
-		!(current.kind == root.kind && current.handle == root.handle) {
+	if isReplaceableInitialRoot(root) {
+		if currentRoot, exists := rootQdisc(currentOutput); exists && currentRoot == root {
+			return nil
+		}
+		if !s.exec.IsDryRun() && !current.matches(currentOutput) {
+			return fmt.Errorf("%w: root qdisc on %q changed before default restoration", ErrOwnershipNotEstablished, iface)
+		}
+		return s.execute(ctx, "restore initial root qdisc", "tc", "qdisc", "replace", "dev", iface, "root", root.kind)
+	}
+	if root.kind == "netem" && root.handle == managedNetemHandle {
+		delayMs, lossPct, previousOK := netemSettings(previousOutput)
+		if !previousOK {
+			return errors.New("managed netem root has no complete restorable signature")
+		}
+		previous := netemRootSignature(NetemFault{DelayMs: delayMs, LossPct: lossPct})
+		if previous.matches(currentOutput) {
+			return nil
+		}
+		if !s.exec.IsDryRun() && !current.matches(currentOutput) {
+			return fmt.Errorf("%w: root qdisc on %q changed during netem repair", ErrOwnershipNotEstablished, iface)
+		}
+		return s.execute(ctx, "restore managed netem root", "tc", "qdisc", "replace", "dev", iface,
+			"root", "handle", managedNetemHandle, "netem", "delay", strconv.Itoa(delayMs)+"ms", "loss", strconv.Itoa(lossPct)+"%")
+	}
+	if root.kind != "cake" || previousManaged.kind != "cake" || root.handle != previousManaged.handle {
+		return fmt.Errorf("%w: cannot restore root qdisc %q %q", ErrOwnershipNotEstablished, root.kind, root.handle)
+	}
+	if !previousManaged.matches(previousOutput) {
+		return errors.New("managed CAKE root has no complete restorable signature")
+	}
+	if previousManaged.matches(currentOutput) {
+		return nil
+	}
+	if !s.exec.IsDryRun() && !current.matches(currentOutput) {
 		return fmt.Errorf("%w: root qdisc on %q changed during repair", ErrOwnershipNotEstablished, iface)
 	}
-	bandwidth, mode, ok := cakeSettings(previousOutput)
-	if !ok {
-		return errors.New("managed CAKE root has no restorable bandwidth")
-	}
 	return s.execute(ctx, "restore managed root qdisc", "tc", "qdisc", "replace", "dev", iface,
-		"root", "handle", previousManagedHandle, "cake", "bandwidth", bandwidth, mode, hostMode)
+		"root", "handle", previousManaged.handle, "cake", "bandwidth", previousManaged.bandwidth, previousManaged.mode, previousManaged.hostMode)
 }
 
 func cakeSettings(output string) (string, string, bool) {
-	fields := strings.Fields(output)
+	line, ok := rootQdiscLine(output)
+	if !ok {
+		return "", "", false
+	}
+	fields := strings.Fields(line)
 	bandwidth := ""
-	mode := "besteffort"
+	mode := ""
 	for i, field := range fields {
 		if field == "bandwidth" && i+1 < len(fields) {
-			value := strings.ToLower(fields[i+1])
-			if strings.HasSuffix(value, "mbit") {
+			value := fields[i+1]
+			if cakeBandwidthPattern.MatchString(value) {
 				bandwidth = value
 			}
 		}
-		if field == "diffserv4" {
+		if field == "diffserv4" || field == "besteffort" {
 			mode = field
 		}
 	}
-	return bandwidth, mode, bandwidth != ""
+	return bandwidth, mode, bandwidth != "" && mode != ""
+}
+
+func rootQdiscLine(output string) (string, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && fields[0] == "qdisc" && fields[3] == "root" {
+			return line, true
+		}
+	}
+	return "", false
+}
+
+func netemSettings(output string) (int, int, bool) {
+	line, ok := rootQdiscLine(output)
+	if !ok {
+		return 0, 0, false
+	}
+	fields := strings.Fields(line)
+	delayMs := 0
+	lossPct := 0
+	foundDelay := false
+	unsupported := map[string]bool{
+		"corrupt": true, "distribution": true, "duplicate": true, "gap": true,
+		"rate": true, "reorder": true, "seed": true, "slot": true,
+	}
+	for i, field := range fields {
+		if unsupported[field] {
+			return 0, 0, false
+		}
+		if field == "delay" && i+1 < len(fields) {
+			d, err := time.ParseDuration(strings.ToLower(fields[i+1]))
+			if err != nil || d <= 0 || d%time.Millisecond != 0 {
+				return 0, 0, false
+			}
+			delayMs = int(d / time.Millisecond)
+			foundDelay = true
+			if i+2 < len(fields) {
+				if _, jitterErr := time.ParseDuration(strings.ToLower(fields[i+2])); jitterErr == nil {
+					return 0, 0, false
+				}
+			}
+		}
+		if field == "loss" && i+1 < len(fields) {
+			value := strings.TrimSuffix(fields[i+1], "%")
+			loss, err := strconv.ParseFloat(value, 64)
+			if err != nil || loss < 0 || loss > 100 || loss != float64(int(loss)) {
+				return 0, 0, false
+			}
+			lossPct = int(loss)
+			if i+2 < len(fields) && strings.HasSuffix(fields[i+2], "%") {
+				return 0, 0, false
+			}
+		}
+	}
+	return delayMs, lossPct, foundDelay
+}
+
+func containsWord(fields []string, want string) bool {
+	for _, field := range fields {
+		if field == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) restoreRedirect(ctx context.Context, iface, ifb string) error {
+	output, err := s.read(ctx, "tc", "filter", "show", "dev", iface, "ingress", "pref", redirectFilterPriority)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(output) != "" {
+		if hasManagedRedirect(output, ifb) {
+			return nil
+		}
+		return fmt.Errorf("%w: ingress filter on %q changed during repair", ErrOwnershipNotEstablished, iface)
+	}
 	return s.execute(ctx, "restore ingress redirect", "tc", "filter", "replace", "dev", iface, "ingress",
 		"pref", redirectFilterPriority, "protocol", "all", "matchall", "action", "mirred", "egress", "redirect", "dev", ifb)
 }
 
-func (s *Service) removeManagedRoot(ctx context.Context, iface, kind, handle string) error {
+func (s *Service) removeRootMatching(ctx context.Context, iface string, expected rootSignature) error {
 	output, err := s.read(ctx, "tc", "qdisc", "show", "dev", iface)
 	if err != nil {
 		return err
 	}
-	root, ok := rootQdisc(output)
-	if !ok || isReplaceableInitialRoot(root) {
+	_, ok := rootQdisc(output)
+	if !ok {
 		return nil
 	}
-	if !hasManagedRootKind(output, kind, handle) {
+	if !expected.matches(output) {
 		return fmt.Errorf("%w: refusing to remove root qdisc on %q", ErrOwnershipNotEstablished, iface)
 	}
 	return s.delete(ctx, "remove managed root qdisc", "tc", "qdisc", "del", "dev", iface, "root")
+}
+
+func (s *Service) restoreDeletedRoot(ctx context.Context, iface, previousOutput string, previous rootSignature) error {
+	currentOutput, err := s.read(ctx, "tc", "qdisc", "show", "dev", iface)
+	if err != nil {
+		return err
+	}
+	if current, exists := rootQdisc(currentOutput); exists && !isReplaceableInitialRoot(current) {
+		return fmt.Errorf("%w: root qdisc on %q changed after managed deletion", ErrOwnershipNotEstablished, iface)
+	}
+	root, ok := rootQdisc(previousOutput)
+	if !ok {
+		return nil
+	}
+	if root.kind == "cake" {
+		if previous.kind != "cake" || !previous.matches(previousOutput) {
+			return errors.New("deleted CAKE root has no complete restorable signature")
+		}
+		return s.execute(ctx, "restore deleted CAKE root", "tc", "qdisc", "replace", "dev", iface,
+			"root", "handle", previous.handle, "cake", "bandwidth", previous.bandwidth, previous.mode, previous.hostMode)
+	}
+	if root.kind == "netem" && root.handle == managedNetemHandle {
+		if previous.kind != "netem" || !previous.matches(previousOutput) {
+			return errors.New("deleted netem root has no complete restorable signature")
+		}
+		return s.execute(ctx, "restore deleted netem root", "tc", "qdisc", "replace", "dev", iface,
+			"root", "handle", managedNetemHandle, "netem", "delay", strconv.Itoa(previous.delayMs)+"ms", "loss", strconv.Itoa(previous.lossPct)+"%")
+	}
+	return fmt.Errorf("%w: cannot restore deleted root qdisc %q %q", ErrOwnershipNotEstablished, root.kind, root.handle)
 }
 
 func (s *Service) removeManagedRedirect(ctx context.Context, iface, ifb string) error {
@@ -501,17 +819,24 @@ func (s *Service) Disable(ctx context.Context, iface string) (State, error) {
 	if err := (Config{Interface: iface}).Validate(); err != nil {
 		return State{}, err
 	}
-	unlock := s.lockInterface(iface)
+	unlock, err := s.lockInterface(ctx, iface)
+	if err != nil {
+		return State{}, err
+	}
 	defer unlock()
 	return s.disable(ctx, iface)
 }
 
 func (s *Service) disable(ctx context.Context, iface string) (State, error) {
-	ifb := IFBName(iface)
 	ownership, err := s.inspectOwnership(ctx, iface)
 	if err != nil {
 		return State{}, err
 	}
+	return s.disableWithOwnership(ctx, iface, ownership)
+}
+
+func (s *Service) disableWithOwnership(ctx context.Context, iface string, ownership ownershipState) (State, error) {
+	ifb := IFBName(iface)
 	journal := mutationJournal{service: s, ctx: ctx}
 
 	if ownership.redirectOwned {
@@ -524,11 +849,10 @@ func (s *Service) disable(ctx context.Context, iface string) (State, error) {
 		}
 	}
 	if ownership.egressOwned {
-		if err := journal.run("remove egress CAKE", func(stepCtx context.Context) error {
-			return s.removeManagedRoot(stepCtx, iface, "cake", managedEgressHandle)
+		if err := journal.run("remove managed egress root", func(stepCtx context.Context) error {
+			return s.removeRootMatching(stepCtx, iface, ownership.egressSignature)
 		}, func(repairCtx context.Context) error {
-			return s.restoreRoot(repairCtx, iface, ownership.egressOutput,
-				"cake", managedEgressHandle, managedEgressHandle, "dual-srchost")
+			return s.restoreDeletedRoot(repairCtx, iface, ownership.egressOutput, ownership.egressSignature)
 		}); err != nil {
 			return State{}, err
 		}
@@ -536,10 +860,9 @@ func (s *Service) disable(ctx context.Context, iface string) (State, error) {
 
 	if ownership.ingressOwned {
 		if err := journal.run("remove ingress CAKE", func(stepCtx context.Context) error {
-			return s.removeManagedRoot(stepCtx, ifb, "cake", managedIngressHandle)
+			return s.removeRootMatching(stepCtx, ifb, ownership.ingressSignature)
 		}, func(repairCtx context.Context) error {
-			return s.restoreRoot(repairCtx, ifb, ownership.ingressOutput,
-				"cake", managedIngressHandle, managedIngressHandle, "dual-dsthost")
+			return s.restoreDeletedRoot(repairCtx, ifb, ownership.ingressOutput, ownership.ingressSignature)
 		}); err != nil {
 			return State{}, err
 		}
@@ -562,17 +885,21 @@ func (s *Service) disable(ctx context.Context, iface string) (State, error) {
 }
 
 type ownershipState struct {
-	egressOutput   string
-	egressOwned    bool
-	egressForeign  bool
-	ifbExists      bool
-	ifbUp          bool
-	ingressOutput  string
-	ingressOwned   bool
-	ingressForeign bool
-	clsact         bool
-	filterPresent  bool
-	redirectOwned  bool
+	egressOutput     string
+	egressSignature  rootSignature
+	egressOwned      bool
+	egressForeign    bool
+	ifbExists        bool
+	ifbUp            bool
+	ingressOutput    string
+	ingressSignature rootSignature
+	ingressOwned     bool
+	ingressForeign   bool
+	clsact           bool
+	filterPresent    bool
+	redirectMatches  bool
+	redirectOwned    bool
+	chainOwned       bool
 }
 
 func (s *Service) inspectOwnership(ctx context.Context, iface string) (ownershipState, error) {
@@ -589,17 +916,18 @@ func (s *Service) inspectOwnership(ctx context.Context, iface string) (ownership
 	if err != nil {
 		return ownershipState{}, err
 	}
+	egressSignature, egressMatches := linkGuardCakeRootSignature(egress, managedEgressHandle, "dual-srchost")
 	ownership := ownershipState{
-		egressOutput:  egress,
-		egressOwned:   hasManagedRootCake(egress, managedEgressHandle),
-		egressForeign: hasForeignRootQdisc(egress, managedEgressHandle),
-		ifbExists:     exists,
-		ifbUp:         up,
-		clsact:        hasClsact(egress),
-		filterPresent: hasFilterRecord(redirect),
-		redirectOwned: hasManagedRedirect(redirect, ifb),
+		egressOutput:    egress,
+		egressSignature: egressSignature,
+		ifbExists:       exists,
+		ifbUp:           up,
+		clsact:          hasClsact(egress),
+		filterPresent:   hasFilterRecord(redirect),
+		redirectMatches: hasManagedRedirect(redirect, ifb),
 	}
 	if !exists {
+		ownership.egressForeign = hasForeignRootQdisc(egress, false)
 		return ownership, nil
 	}
 	ingress, err := s.read(ctx, "tc", "qdisc", "show", "dev", ifb)
@@ -607,25 +935,41 @@ func (s *Service) inspectOwnership(ctx context.Context, iface string) (ownership
 		return ownershipState{}, err
 	}
 	ownership.ingressOutput = ingress
-	ownership.ingressOwned = hasManagedRootCake(ingress, managedIngressHandle)
-	ownership.ingressForeign = hasForeignRootQdisc(ingress, managedIngressHandle)
+	ownership.ingressSignature, ownership.ingressOwned = linkGuardCakeRootSignature(ingress, managedIngressHandle, "dual-dsthost")
+	ownership.chainOwned = egressMatches && ownership.ingressOwned && ownership.redirectMatches
+	ownership.egressOwned = ownership.chainOwned
+	ownership.ingressOwned = ownership.chainOwned
+	ownership.redirectOwned = ownership.chainOwned
+	ownership.egressForeign = hasForeignRootQdisc(egress, ownership.chainOwned)
+	ownership.ingressForeign = hasForeignRootQdisc(ingress, ownership.chainOwned)
 	return ownership, nil
 }
 
-func (s *Service) lockInterface(iface string) func() {
+func (s *Service) lockInterface(ctx context.Context, iface string) (func(), error) {
+	if ctx == nil {
+		return nil, errors.New("qos interface lock context is nil")
+	}
 	s.locksMu.Lock()
 	if s.interfaceLock == nil {
-		s.interfaceLock = make(map[string]*sync.Mutex)
+		s.interfaceLock = make(map[string]*interfaceSemaphore)
 	}
 	lock := s.interfaceLock[iface]
 	if lock == nil {
-		lock = &sync.Mutex{}
+		lock = newInterfaceSemaphore()
 		s.interfaceLock[iface] = lock
 	}
 	s.locksMu.Unlock()
 
-	lock.Lock()
-	return lock.Unlock
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-lock.token:
+	}
+	if err := ctx.Err(); err != nil {
+		lock.token <- struct{}{}
+		return nil, err
+	}
+	return func() { lock.token <- struct{}{} }, nil
 }
 
 func (s *Service) ifbState(ctx context.Context, ifb string) (bool, bool, error) {

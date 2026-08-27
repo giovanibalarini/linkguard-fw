@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -145,7 +144,7 @@ func (h *QosHandler) Update(w http.ResponseWriter, r *http.Request) {
 			h.writeLinkError(w, err)
 			return
 		}
-		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, qos.ErrStaleInterface) {
+		if errors.Is(err, storage.ErrLinkStateChanged) || errors.Is(err, qos.ErrStaleInterface) {
 			writeError(w, http.StatusConflict, "link changed during QoS update; retry")
 			return
 		}

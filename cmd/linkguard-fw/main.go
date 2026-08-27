@@ -55,6 +55,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
+	"github.com/giovanibalarini/linkguard-fw/internal/stresstest"
 	"github.com/giovanibalarini/linkguard-fw/internal/sysprep"
 	"github.com/giovanibalarini/linkguard-fw/internal/system"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
@@ -386,6 +387,7 @@ type services struct {
 	hostSampler  *hosttraffic.Sampler
 	quotaSvc     *linkquota.Service
 	qosSvc       *qos.Service
+	stressSvc    *stresstest.Service
 	hostQuotaSvc *hostquota.Service
 	ddnsSvc      *ddns.Service
 	wgSvc        *wireguard.Service
@@ -503,6 +505,9 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	iptSvc := iptables.NewService(exec)
 	routeSvc := routes.NewService(exec)
 	qosSvc := qos.NewService(exec)
+	stressSvc := stresstest.NewService(exec, linkSvc, alertSvc)
+	stressSvc.SetQosService(qosSvc)
+	stressSvc.SetRecoveryStore(db)
 	failoverSvc := failover.NewService(failover.Config{
 		Enabled:          cfg.FailoverEnabled,
 		DryRun:           cfg.DryRun,
@@ -812,6 +817,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		DomainRouting: domainRouting,
 		WireGuard:     wgSvc,
 		QoS:           qosSvc,
+		StressTest:    stressSvc,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
@@ -848,6 +854,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		hostSampler:      hostSampler,
 		quotaSvc:         quotaSvc,
 		qosSvc:           qosSvc,
+		stressSvc:        stressSvc,
 		hostQuotaSvc:     hostQuotaSvc,
 		ddnsSvc:          ddnsSvc,
 		wgSvc:            wgSvc,
@@ -965,6 +972,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	monitor, metricsCollector, rrdSvc := s.monitor, s.metricsCollector, s.rrdSvc
 	quotaSvc := s.quotaSvc
 	qosSvc := s.qosSvc
+	stressSvc := s.stressSvc
 	hostQuotaSvc := s.hostQuotaSvc
 	ddnsSvc := s.ddnsSvc
 	wgSvc, server := s.wgSvc, s.server
@@ -974,6 +982,12 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	domainRouting := s.domainRouting
 	ntpInputState := s.ntpInputState
 	interval := s.interval
+
+	// Fault recovery is intentionally attempted before dependency bootstrap:
+	// an interrupted outage may have left a WAN administratively down. The
+	// retry inside provisionSystem covers a first attempt made before ip/tc are
+	// available on a partially provisioned host.
+	recoverStressTestOnBoot(ctx, stressSvc)
 
 	// bootPendingChecked prende a verificação de boot do confirmar-ou-reverte
 	// à primeira passada de provisionSystem que a tenha CONCLUÍDO.
@@ -1055,6 +1069,8 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 				bootPendingChecked = true
 			}
 		}
+
+		recoverStressTestOnBoot(ctx, stressSvc)
 
 		// Enable IPv4 forwarding so the box can route between LAN and WAN; it
 		// defaults to 0 on a fresh system and a firewall/router needs it on.

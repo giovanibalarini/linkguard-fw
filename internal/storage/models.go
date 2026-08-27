@@ -259,6 +259,19 @@ type PendingInterfaceChange struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// StressRecoveryLease records a fault that must be reconciled before another
+// stress test may start. It is operational state, deliberately separate from
+// settings so backup/restore cannot resurrect an old fault lease.
+type StressRecoveryLease struct {
+	TestID    string    `json:"test_id"`
+	LinkID    string    `json:"link_id"`
+	Interface string    `json:"interface"`
+	Mode      string    `json:"mode"`
+	DelayMs   int       `json:"delay_ms"`
+	LossPct   int       `json:"loss_pct"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // ─── FirewallRule (Phase B: the admin's rules live in the DB) ───────────────
 
 // FirewallRule is one of the admin's own rules for the `user_rules` chain,
