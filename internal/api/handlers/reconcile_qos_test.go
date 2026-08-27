@@ -48,7 +48,7 @@ func (s *freshReconcileStub) Apply(context.Context, qos.Config) (qos.State, erro
 	return qos.State{}, nil
 }
 
-func (s *freshReconcileStub) ApplyAndPersist(context.Context, qos.Config, qos.Config, func() error) (qos.State, error) {
+func (s *freshReconcileStub) ApplyAndPersist(context.Context, qos.Config, qos.Config, func(string) error) (qos.State, error) {
 	return qos.State{}, nil
 }
 

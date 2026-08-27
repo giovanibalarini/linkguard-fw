@@ -505,6 +505,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	iptSvc := iptables.NewService(exec)
 	routeSvc := routes.NewService(exec)
 	qosSvc := qos.NewService(exec)
+	qosSvc.SetOperationStore(db)
 	stressSvc := stresstest.NewService(exec, linkSvc, alertSvc)
 	stressSvc.SetQosService(qosSvc)
 	stressSvc.SetRecoveryStore(db)
@@ -987,6 +988,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 	// an interrupted outage may have left a WAN administratively down. The
 	// retry inside provisionSystem covers a first attempt made before ip/tc are
 	// available on a partially provisioned host.
+	recoverQoSOnBoot(ctx, qosSvc)
 	recoverStressTestOnBoot(ctx, stressSvc)
 
 	// bootPendingChecked prende a verificação de boot do confirmar-ou-reverte
@@ -1070,6 +1072,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			}
 		}
 
+		recoverQoSOnBoot(ctx, qosSvc)
 		recoverStressTestOnBoot(ctx, stressSvc)
 
 		// Enable IPv4 forwarding so the box can route between LAN and WAN; it

@@ -222,6 +222,10 @@ func TestBuildServicesUsesTheSameQosServiceForAPIAndBoot(t *testing.T) {
 	if serverField.Pointer() != reflect.ValueOf(s.qosSvc).Pointer() {
 		t.Fatalf("API and boot received different QoS service instances: api=%#x boot=%p", serverField.Pointer(), s.qosSvc)
 	}
+	storeField := reflect.ValueOf(s.qosSvc).Elem().FieldByName("store")
+	if !storeField.IsValid() || storeField.IsNil() {
+		t.Fatal("production QoS service has no durable operation store")
+	}
 }
 
 func TestBuildServicesUsesOneDurableStressServiceForAPIAndBoot(t *testing.T) {

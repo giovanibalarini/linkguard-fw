@@ -153,6 +153,61 @@ func (db *DB) UpdateLinkQoSIfCurrent(
 	return nil
 }
 
+// UpdateLinkQoSIfCurrentAndClearOperation commits the durable QoS row and
+// consumes its kernel-operation lease in one SQLite transaction. Therefore a
+// crash can observe either the old row plus recovery evidence or the new row
+// with no recovery evidence, never the unsafe middle state.
+func (db *DB) UpdateLinkQoSIfCurrentAndClearOperation(
+	id, expectedInterface string,
+	expectedEnabled, expectedQoSEnabled bool,
+	expectedUploadMbps, expectedDownloadMbps int,
+	expectedInteractive bool,
+	enabled bool, uploadMbps, downloadMbps int, interactive bool,
+	operationID string,
+) error {
+	if operationID == "" {
+		return errors.New("qos operation id is required for atomic persistence")
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after a successful commit
+	result, err := tx.Exec(`
+		UPDATE links SET qos_enabled=?, qos_upload_mbps=?, qos_download_mbps=?,
+		    qos_interactive=?, updated_at=?
+		WHERE id=? AND interface=? AND enabled=?
+		  AND qos_enabled=? AND qos_upload_mbps=? AND qos_download_mbps=?
+		  AND qos_interactive=?`,
+		boolToInt(enabled), uploadMbps, downloadMbps, boolToInt(interactive), time.Now(),
+		id, expectedInterface, boolToInt(expectedEnabled), boolToInt(expectedQoSEnabled),
+		expectedUploadMbps, expectedDownloadMbps, boolToInt(expectedInteractive))
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return errors.Join(ErrLinkStateChanged, sql.ErrNoRows)
+	}
+	result, err = tx.Exec(`
+		DELETE FROM qos_operation_lease
+		WHERE operation_id = ? AND interface = ?`, operationID, expectedInterface)
+	if err != nil {
+		return err
+	}
+	affected, err = result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
 // UpdateLinkNonQoS updates link fields owned by the generic link service while
 // leaving the QoS columns untouched. This prevents a stale link snapshot from
 // overwriting a concurrent QoS mutation.

@@ -1374,7 +1374,7 @@ func TestApplyCurrentAndPersistRestoresKernelConfigAfterPersistenceError(t *test
 		return ApplyPlan{
 			Config:   apply,
 			Rollback: rollback,
-			Persist:  func() error { return errors.New("database unavailable") },
+			Persist:  func(string) error { return errors.New("database unavailable") },
 		}, nil
 	})
 	if err == nil {
@@ -1416,7 +1416,7 @@ func TestApplyCurrentAndPersistReturnsDistinctCompensationFailure(t *testing.T) 
 		return ApplyPlan{
 			Config:   apply,
 			Rollback: rollback,
-			Persist:  func() error { return sql.ErrNoRows },
+			Persist:  func(string) error { return sql.ErrNoRows },
 		}, nil
 	})
 	if !errors.Is(err, ErrCompensationFailed) {
@@ -1425,6 +1425,133 @@ func TestApplyCurrentAndPersistReturnsDistinctCompensationFailure(t *testing.T) 
 	if errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("compensation failure retained sql.ErrNoRows mapping: %v", err)
 	}
+}
+
+func TestApplyDurablyJournalsEveryKernelMutation(t *testing.T) {
+	exec := newFakeExecutor()
+	store := newRecordingOperationStore(exec)
+	service := NewService(exec)
+	service.SetOperationStore(store)
+
+	if _, err := service.Apply(context.Background(), validConfig()); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if store.savedAfterWrites != 0 {
+		t.Fatalf("lease saved after %d kernel writes; want before first write", store.savedAfterWrites)
+	}
+	if got, want := store.advances, [][2]int{{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("journal advances = %#v; want %#v", got, want)
+	}
+	if len(store.leases) != 0 {
+		t.Fatalf("successful Apply left durable lease: %#v", store.leases)
+	}
+}
+
+func TestDisableDurablyJournalsEveryKernelMutation(t *testing.T) {
+	exec := newFakeExecutor()
+	configureManagedKernelObjects(exec, "wan0")
+	store := newRecordingOperationStore(exec)
+	service := NewService(exec)
+	service.SetOperationStore(store)
+
+	if _, err := service.Disable(context.Background(), "wan0"); err != nil {
+		t.Fatalf("Disable() error = %v", err)
+	}
+	if got, want := store.advances, [][2]int{{0, 1}, {1, 2}, {2, 3}, {3, 4}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("journal advances = %#v; want %#v", got, want)
+	}
+	if store.savedLease.Intent != OperationDisable || store.savedLease.Recovery.Enabled {
+		t.Fatalf("Disable lease = %#v; want disable intent and disabled recovery", store.savedLease)
+	}
+	if len(store.leases) != 0 {
+		t.Fatalf("successful Disable left durable lease: %#v", store.leases)
+	}
+}
+
+func TestApplyCurrentAndPersistPassesLeaseForAtomicDatabaseCommit(t *testing.T) {
+	exec := newFakeExecutor()
+	store := newRecordingOperationStore(exec)
+	service := NewService(exec)
+	service.SetOperationStore(store)
+	cfg := validConfig()
+	rollback := Config{Interface: cfg.Interface}
+	var persistedID string
+
+	_, err := service.ApplyCurrentAndPersist(context.Background(), cfg.Interface, func() (ApplyPlan, error) {
+		return ApplyPlan{
+			Config: cfg, Rollback: rollback,
+			Persist: func(operationID string) error {
+				persistedID = operationID
+				return store.ClearQoSOperationLease(operationID, cfg.Interface)
+			},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("ApplyCurrentAndPersist() error = %v", err)
+	}
+	if persistedID == "" || persistedID != store.savedLease.ID {
+		t.Fatalf("persistence operation id = %q; saved lease = %#v", persistedID, store.savedLease)
+	}
+	if store.savedLease.Recovery != rollback {
+		t.Fatalf("recovery config = %#v; want rollback %#v", store.savedLease.Recovery, rollback)
+	}
+}
+
+type recordingOperationStore struct {
+	exec             *fakeExecutor
+	leases           map[string]OperationLease
+	savedLease       OperationLease
+	savedAfterWrites int
+	advances         [][2]int
+}
+
+func newRecordingOperationStore(exec *fakeExecutor) *recordingOperationStore {
+	return &recordingOperationStore{exec: exec, leases: make(map[string]OperationLease)}
+}
+
+func (s *recordingOperationStore) SaveQoSOperationLease(lease *OperationLease) error {
+	s.savedAfterWrites = countExecutorWrites(s.exec.calls)
+	s.savedLease = *lease
+	s.leases[lease.ID] = *lease
+	return nil
+}
+
+func (s *recordingOperationStore) AdvanceQoSOperationLease(id string, from, to int) error {
+	lease, ok := s.leases[id]
+	if !ok || lease.Stage != from || to != from+1 {
+		return sql.ErrNoRows
+	}
+	lease.Stage = to
+	s.leases[id] = lease
+	s.advances = append(s.advances, [2]int{from, to})
+	return nil
+}
+
+func (s *recordingOperationStore) ListQoSOperationLeases() ([]OperationLease, error) {
+	out := make([]OperationLease, 0, len(s.leases))
+	for _, lease := range s.leases {
+		out = append(out, lease)
+	}
+	return out, nil
+}
+
+func (s *recordingOperationStore) ClearQoSOperationLease(id, iface string) error {
+	lease, ok := s.leases[id]
+	if !ok || lease.Interface != iface {
+		return sql.ErrNoRows
+	}
+	delete(s.leases, id)
+	return nil
+}
+
+func countExecutorWrites(calls []execCall) int {
+	count := 0
+	for _, call := range calls {
+		if !call.Read {
+			count++
+		}
+	}
+	return count
 }
 
 func TestPerInterfaceQoSOperationsSerialize(t *testing.T) {

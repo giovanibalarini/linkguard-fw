@@ -253,6 +253,7 @@ func upWireGuard(tx *sql.Tx) error {
 	// seria dada como aplicada numa base que nunca a viu.
 	{19, "links: configuração QoS por WAN", upAddLinkQoS},
 	{20, "stress test: lease de recuperação", upStressRecoveryLease},
+	{21, "QoS: journal durável de operações", upQoSOperationLease},
 }
 
 const createSchemaMigrationsTable = `
@@ -543,6 +544,22 @@ func upStressRecoveryLease(tx *sql.Tx) error {
 			delay_ms   INTEGER NOT NULL DEFAULT 0,
 			loss_pct   INTEGER NOT NULL DEFAULT 0,
 			created_at DATETIME NOT NULL
+		)`)
+	return err
+}
+
+// upQoSOperationLease stores one unresolved operation per interface. Payload
+// is version-tolerant JSON while the fields used for exclusion, ordering and
+// compare-and-swap remain explicit SQLite columns.
+func upQoSOperationLease(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS qos_operation_lease (
+			operation_id TEXT PRIMARY KEY,
+			interface    TEXT NOT NULL UNIQUE,
+			intent       TEXT NOT NULL CHECK (intent IN ('apply', 'disable', 'benchmark')),
+			stage        INTEGER NOT NULL DEFAULT 0 CHECK (stage >= 0),
+			payload      TEXT NOT NULL,
+			created_at   DATETIME NOT NULL
 		)`)
 	return err
 }
