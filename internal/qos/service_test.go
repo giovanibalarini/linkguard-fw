@@ -1555,17 +1555,24 @@ func countExecutorWrites(calls []execCall) int {
 }
 
 func TestPerInterfaceQoSOperationsSerialize(t *testing.T) {
-	exec := newBlockingQosExecutor()
+	exec := newBenchmarkExecutor()
 	service := NewService(exec)
-	cfg := validConfig()
-	cfg.Interface = "wan0"
+	cfg := benchmarkConfig()
+	configureManagedKernelObjects(exec.fakeExecutor, cfg.Interface)
+	loaded := make(chan struct{})
+	release := make(chan struct{})
 
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := service.MeasureBeforeAfter(context.Background(), cfg)
+		_, err := service.BenchmarkCurrent(context.Background(), cfg.Interface,
+			BenchmarkRequest{Server: "iperf.operator.lan"}, func() (Config, error) {
+				close(loaded)
+				<-release
+				return cfg, nil
+			})
 		firstDone <- err
 	}()
-	<-exec.firstCall
+	<-loaded
 
 	secondDone := make(chan error, 1)
 	go func() {
@@ -1573,19 +1580,19 @@ func TestPerInterfaceQoSOperationsSerialize(t *testing.T) {
 		secondDone <- err
 	}()
 	select {
-	case <-exec.secondCall:
-		t.Fatal("Apply entered the executor while MeasureBeforeAfter was still using the interface")
+	case err := <-secondDone:
+		t.Fatalf("Apply completed while BenchmarkCurrent held the interface lock: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	close(exec.release)
+	close(release)
 	select {
 	case err := <-firstDone:
 		if err != nil {
-			t.Fatalf("MeasureBeforeAfter() error = %v; want nil", err)
+			t.Fatalf("BenchmarkCurrent() error = %v; want nil", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("MeasureBeforeAfter() did not finish after releasing the executor")
+		t.Fatal("BenchmarkCurrent() did not finish after releasing the loader")
 	}
 	select {
 	case err := <-secondDone:
@@ -1593,10 +1600,7 @@ func TestPerInterfaceQoSOperationsSerialize(t *testing.T) {
 			t.Fatalf("Apply() error = %v; want nil", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Apply() did not finish after MeasureBeforeAfter() released the interface")
-	}
-	if exec.overlap {
-		t.Fatal("QoS operations used the same interface concurrently")
+		t.Fatal("Apply() did not finish after BenchmarkCurrent() released the interface")
 	}
 }
 

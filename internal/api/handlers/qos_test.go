@@ -432,21 +432,15 @@ func TestQosPutRejectsMalformedAndInvalidPayloadsBeforeApplying(t *testing.T) {
 	}
 }
 
-func TestQosPostReturnsBeforeAndAfterMeasurements(t *testing.T) {
-	exec := &qosHandlerExec{
-		dryRun: true,
-		pingOutputs: []string{
-			"5 packets transmitted, 5 received, 0% packet loss\nround-trip min/avg/max = 10/20/30 ms\n",
-			"5 packets transmitted, 5 received, 0% packet loss\nround-trip min/avg/max = 8/12/18 ms\n",
-		},
-	}
+func TestQosPostReturnsExplicitLimitedResultWithoutPublicDefaultServer(t *testing.T) {
+	exec := &qosHandlerExec{dryRun: true}
 	link := qosLink()
 	link.QoSEnabled = true
 	link.QoSUploadMbps = 50
 	link.QoSDownloadMbps = 200
 	h, _ := newQosHandlerFixture(t, link, exec)
 
-	req := withChiURLParam(httptest.NewRequest(http.MethodPost, "/api/links/wan-1/qos/test", nil), "id", "wan-1")
+	req := withChiURLParam(httptest.NewRequest(http.MethodPost, "/api/links/wan-1/qos/test", strings.NewReader(`{"server":"iperf.operator.lan","port":5202}`)), "id", "wan-1")
 	rec := httptest.NewRecorder()
 	h.Test(rec, req)
 
@@ -455,25 +449,11 @@ func TestQosPostReturnsBeforeAndAfterMeasurements(t *testing.T) {
 	}
 	var got qos.Comparison
 	decodeQosJSON(t, rec, &got)
-	want := qos.Comparison{
-		Before: qos.Measurement{MinMs: 10, AvgMs: 20, MaxMs: 30, LossPct: 0},
-		After:  qos.Measurement{MinMs: 8, AvgMs: 12, MaxMs: 18, LossPct: 0},
+	if got.Valid || len(got.Limitations) != 1 || got.Limitations[0] != qos.LimitationDryRun {
+		t.Errorf("comparison = %#v; want explicit dry_run limitation and no validity claim", got)
 	}
-	if got != want {
-		t.Errorf("comparison = %#v, want %#v", got, want)
-	}
-	firstPing, secondPing, firstApply := -1, -1, -1
-	for i, event := range exec.events {
-		if strings.HasPrefix(event, "read:ping") && firstPing == -1 {
-			firstPing = i
-		} else if strings.HasPrefix(event, "read:ping") && secondPing == -1 {
-			secondPing = i
-		} else if strings.HasPrefix(event, "write:tc qdisc replace dev wan0 root handle cafe: cake") && firstApply == -1 {
-			firstApply = i
-		}
-	}
-	if firstPing == -1 || firstApply <= firstPing || secondPing <= firstApply {
-		t.Errorf("expected ping → apply → ping ordering, events = %v", exec.events)
+	if got.Conditions.Server != "iperf.operator.lan" || got.Conditions.Port != 5202 {
+		t.Errorf("operator server was not preserved: %#v", got.Conditions)
 	}
 }
 
@@ -489,7 +469,7 @@ func TestQosPostRejectsMovedLinkBeforeFirstPing(t *testing.T) {
 
 	response := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		req := withChiURLParam(httptest.NewRequest(http.MethodPost, "/api/links/wan-1/qos/test", nil), "id", link.ID)
+		req := withChiURLParam(httptest.NewRequest(http.MethodPost, "/api/links/wan-1/qos/test", strings.NewReader(`{"server":"iperf.operator.lan"}`)), "id", link.ID)
 		rec := httptest.NewRecorder()
 		h.Test(rec, req)
 		response <- rec
@@ -527,7 +507,7 @@ func TestQosPostRejectsDeletedLinkBeforeFirstPing(t *testing.T) {
 
 	response := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		req := withChiURLParam(httptest.NewRequest(http.MethodPost, "/api/links/wan-1/qos/test", nil), "id", link.ID)
+		req := withChiURLParam(httptest.NewRequest(http.MethodPost, "/api/links/wan-1/qos/test", strings.NewReader(`{"server":"iperf.operator.lan"}`)), "id", link.ID)
 		rec := httptest.NewRecorder()
 		h.Test(rec, req)
 		response <- rec
@@ -554,14 +534,14 @@ type measureBarrierService struct {
 	release chan struct{}
 }
 
-func (s *measureBarrierService) MeasureCurrentBeforeAfter(ctx context.Context, iface string, load func() (qos.Config, error)) (qos.Comparison, error) {
+func (s *measureBarrierService) BenchmarkCurrent(ctx context.Context, iface string, request qos.BenchmarkRequest, load func() (qos.Config, error)) (qos.Comparison, error) {
 	close(s.entered)
 	select {
 	case <-ctx.Done():
 		return qos.Comparison{}, ctx.Err()
 	case <-s.release:
 	}
-	return s.Service.MeasureCurrentBeforeAfter(ctx, iface, load)
+	return s.Service.BenchmarkCurrent(ctx, iface, request, load)
 }
 
 func TestLinksUpdateCanceledWhileWaitingForQosLockDoesNotMutateDatabase(t *testing.T) {
@@ -735,11 +715,7 @@ func (s *linkLifecycleQosStub) Observe(context.Context, string) (qos.State, erro
 	return qos.State{}, nil
 }
 
-func (s *linkLifecycleQosStub) MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error) {
-	return qos.Comparison{}, nil
-}
-
-func (s *linkLifecycleQosStub) MeasureCurrentBeforeAfter(context.Context, string, func() (qos.Config, error)) (qos.Comparison, error) {
+func (s *linkLifecycleQosStub) BenchmarkCurrent(context.Context, string, qos.BenchmarkRequest, func() (qos.Config, error)) (qos.Comparison, error) {
 	return qos.Comparison{}, nil
 }
 
@@ -1093,16 +1069,12 @@ func (*qosUpdateServiceStub) Observe(context.Context, string) (qos.State, error)
 	return qos.State{}, nil
 }
 
-func (*qosUpdateServiceStub) MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error) {
-	return qos.Comparison{}, nil
-}
-
-func (s *qosUpdateServiceStub) MeasureCurrentBeforeAfter(ctx context.Context, _ string, load func() (qos.Config, error)) (qos.Comparison, error) {
-	cfg, err := load()
+func (s *qosUpdateServiceStub) BenchmarkCurrent(ctx context.Context, _ string, _ qos.BenchmarkRequest, load func() (qos.Config, error)) (qos.Comparison, error) {
+	_, err := load()
 	if err != nil {
 		return qos.Comparison{}, err
 	}
-	return s.MeasureBeforeAfter(ctx, cfg)
+	return qos.Comparison{}, ctx.Err()
 }
 
 func TestLinksUpdateReconcilesQoSWhenLinkIsDisabled(t *testing.T) {
