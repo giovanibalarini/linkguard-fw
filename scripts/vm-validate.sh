@@ -6342,17 +6342,26 @@ for _ in range(3):
   sleep 4
   local kern_desl diz_desl
   kern_desl=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null | grep -c elements" | tr -d '\r' | head -1)
+  # A API TEM UM CAMPO PARA ISSO, e é nele que se pergunta. A primeira versão
+  # varria o JSON atrás das palavras "desligado", "coletor", "inativo" — quer
+  # dizer, adivinhava como o produto se expressaria. `State.Ready` é a resposta
+  # que ele já dá: falso quando a capacidade não está operante.
   diz_desl=$(body GET /api/domain-targets "$tok" | python3 -c "
 import json,sys
-print(json.dumps(json.load(sys.stdin))[:400].lower())" 2>/dev/null)
+d=json.load(sys.stdin)
+r=d.get('ready') if isinstance(d,dict) else None
+print('nao-pronto' if r is False else ('pronto' if r is True else 'sem-campo'))" 2>/dev/null)
   if [[ "${kern_desl:-0}" != "0" ]]; then
     bad "com o dnstap DESLIGADO o produto aprendeu endereço: está medindo o que ninguém mandou medir" \
         "$(vm "nft list set inet linkguard dom_blocked 2>/dev/null" | tr -d '\r' | head -c 160)"
-  elif grep -qE 'dnstap|coletor|desligad|disabled|inativ' <<<"$diz_desl"; then
-    ok "com o dnstap desligado nada é aprendido, e a tela diz que não está medindo"
+  elif [[ "$diz_desl" == "nao-pronto" ]]; then
+    ok "com o dnstap desligado nada é aprendido, e a API diz que a capacidade não está pronta"
+  elif [[ "$diz_desl" == "sem-campo" ]]; then
+    pular "D2-6. Dnstap desligado não aprende, e a tela diz" \
+          "a resposta da API não traz o campo 'ready'; não sei onde ela expressaria isso"
   else
-    bad "com o dnstap desligado nada foi aprendido, mas a tela não avisa: zero endereços lê-se como 'ninguém acessou'" \
-        "$(head -c 220 <<<"$diz_desl")"
+    bad "com o dnstap desligado nada foi aprendido, mas a API se diz PRONTA: zero endereços lê-se como 'ninguém acessou'" \
+        "$(body GET /api/domain-targets "$tok" | head -c 220)"
   fi
   M6=1
 
@@ -6381,25 +6390,44 @@ print(n)
   fi
   ok "o unbound da caixa respondeu a consulta ($respondeu de 6)"
 
-  # ── D2-1 — O ENDEREÇO APRENDIDO É O QUE O RESOLVER RESPONDEU ───────────────
-  local resolvido aprendidos i
+  # ── D2-1 — O ENSAIO APRENDE, E APRENDE SEM ESCREVER NO KERNEL ─────────────
+  #
+  # ESTA ASSERÇÃO JÁ ESTEVE ERRADA, E O ERRO ERA MEU. A primeira versão
+  # procurava o endereço aprendido dentro do `dom_blocked` enquanto o domínio
+  # ainda estava em ensaio — e ensaio, por desenho declarado no próprio código,
+  # "aprende os endereços, conta a rotatividade e NÃO escreve uma linha no
+  # kernel". A bateria cobrava do produto exatamente o que ele promete não
+  # fazer, e a falha que ela imprimia acusava o produto de um acerto.
+  #
+  # O ensaio tem telemetria própria — last_learned e rotation — e é ali que se
+  # prova que o ciclo de aprendizado fechou sem enforcement nenhum.
+  local resolvido aprendeu i kernel_ensaio
   resolvido=$(vm "python3 -c \"
 import socket
 print(sorted({i[4][0] for i in socket.getaddrinfo('$DOM',80,socket.AF_INET)})[0])
 \" 2>/dev/null" | tr -d '\r' | tail -1)
   for i in $(seq 1 10); do
-    aprendidos=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null" | tr -d '\r' | tr '\n' ' ')
-    grep -q 'elements' <<<"$aprendidos" && break
+    aprendeu=$(body GET /api/domain-targets "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+alvos=d if isinstance(d,list) else (d.get('targets') or d.get('alvos') or [])
+for t in alvos:
+    if t.get('id')=='$idd':
+        print(1 if (t.get('last_learned') or 0) > 0 or (t.get('rotation') or 0) > 0 else 0)" 2>/dev/null | head -1)
+    [[ "$aprendeu" == "1" ]] && break
     sleep 3
   done
-  if ! grep -q 'elements' <<<"$aprendidos"; then
-    bad "o resolver respondeu e nada chegou ao set: o aprendizado não fechou o ciclo" "${aprendidos:-vazio}"
+  kernel_ensaio=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null | grep -c elements" | tr -d '\r' | head -1)
+  if [[ "$aprendeu" != "1" ]]; then
+    bad "o resolver respondeu e o domínio não registrou aprendizado nenhum: o ciclo não fechou" \
+        "$(body GET /api/domain-targets "$tok" | head -c 220)"
     encerra_d "nada foi aprendido"; return
   fi
-  if [[ -n "$resolvido" ]] && grep -qF "$resolvido" <<<"$aprendidos"; then
-    ok "o endereço no kernel é o que o NOSSO resolver respondeu ($resolvido)"
+  if [[ "${kernel_ensaio:-0}" == "0" ]]; then
+    ok "em ensaio o produto aprendeu o endereço E não escreveu uma linha no kernel — as duas metades do contrato"
   else
-    ok "o set foi alimentado pelo resolver (endereço de referência não conferido: '${resolvido:-vazio}')"
+    bad "EM ENSAIO O PRODUTO ESCREVEU NO KERNEL: o estágio que promete só observar já está barrando" \
+        "$(vm "nft list set inet linkguard dom_blocked 2>/dev/null" | tr -d '\r' | head -c 160)"
   fi
   M1=1
 
