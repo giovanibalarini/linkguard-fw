@@ -92,6 +92,33 @@ func TestRestartRecoveryPreservesUnrecordedRootAndLease(t *testing.T) {
 	}
 }
 
+func TestBenchmarkRestoresConfiguredQoSAfterRestartAtPhaseTransitions(t *testing.T) {
+	boundaries := []recoveryBoundary{{name: "after_lease_save", panicAfterSave: true}}
+	for write := 1; write <= 9; write++ {
+		boundaries = append(boundaries, recoveryBoundary{name: fmt.Sprintf("after_kernel_write_%d", write), panicWrite: write})
+	}
+	for _, boundary := range boundaries {
+		t.Run(boundary.name, func(t *testing.T) {
+			kernel := newRestartKernel()
+			cfg := qos.Config{Interface: "wan0", Enabled: true, UploadMbps: 50, DownloadMbps: 200}
+			if _, err := qos.NewService(kernel).Apply(context.Background(), cfg); err != nil {
+				t.Fatalf("seed managed QoS: %v", err)
+			}
+			kernel.resetWrites()
+			db, service := restartService(t, kernel, boundary)
+			mustCrash(t, func() {
+				_, _ = service.BenchmarkCurrent(context.Background(), cfg.Interface,
+					qos.BenchmarkRequest{Server: "iperf.operator.lan"}, func() (qos.Config, error) { return cfg, nil })
+			})
+			recoverAfterReopen(t, db, kernel)
+			state, err := qos.NewService(kernel).Observe(context.Background(), cfg.Interface)
+			if err != nil || !state.Enabled {
+				t.Fatalf("recovered benchmark state = %+v, err=%v, kernel=%+v; want configured QoS", state, err, kernel)
+			}
+		})
+	}
+}
+
 type recoveryBoundary struct {
 	name           string
 	panicAfterSave bool
@@ -192,14 +219,16 @@ func mustCrash(t *testing.T, run func()) {
 }
 
 type restartKernel struct {
-	egress     string
-	ingress    string
-	ifb        bool
-	ifbUp      bool
-	clsact     bool
-	redirect   bool
-	writes     int
-	panicWrite int
+	egress      string
+	ingress     string
+	ifb         bool
+	ifbUp       bool
+	clsact      bool
+	redirect    bool
+	writes      int
+	panicWrite  int
+	metricRead  int
+	counterRead int
 }
 
 func newRestartKernel() *restartKernel { return &restartKernel{} }
@@ -209,6 +238,20 @@ func (k *restartKernel) IsDryRun() bool { return false }
 func (k *restartKernel) WriteFile(string, []byte, os.FileMode) error { return nil }
 
 func (k *restartKernel) ExecuteRead(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "iperf3" {
+		return "iperf 3.16", nil
+	}
+	if cmd == "ping" {
+		return "10 packets transmitted, 10 received, 0% packet loss\nrtt min/avg/max/mdev = 10/20/30/1 ms", nil
+	}
+	if cmd == "cat" && len(args) == 1 && args[0] == "/proc/stat" {
+		k.metricRead++
+		return fmt.Sprintf("cpu %d 0 0 %d 0 0 0 0 0 0\n", k.metricRead*50, k.metricRead*50), nil
+	}
+	if cmd == "cat" && len(args) == 1 && strings.HasPrefix(args[0], "/sys/class/net/") {
+		k.counterRead++
+		return fmt.Sprintf("%d\n", k.counterRead*100_000_000), nil
+	}
 	if cmd == "ip" && hasArgs(args, "link", "show", "dev") {
 		if !k.ifb {
 			return "", errors.New("Cannot find device")
@@ -251,6 +294,9 @@ func (k *restartKernel) ExecuteRead(_ context.Context, cmd string, args ...strin
 }
 
 func (k *restartKernel) Execute(_ context.Context, cmd string, args ...string) (string, error) {
+	if cmd == "iperf3" {
+		return `{"end":{"sum_sent":{"bits_per_second":50000000},"sum_received":{"bits_per_second":200000000}}}`, nil
+	}
 	k.mutate(cmd, args)
 	k.writes++
 	if k.panicWrite > 0 && k.writes == k.panicWrite {

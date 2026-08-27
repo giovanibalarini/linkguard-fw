@@ -21,8 +21,7 @@ type qosService interface {
 	ApplyCurrent(context.Context, string, func() (qos.Config, error)) (qos.State, error)
 	ApplyCurrentAndPersist(context.Context, string, func() (qos.ApplyPlan, error)) (qos.State, error)
 	Observe(context.Context, string) (qos.State, error)
-	MeasureBeforeAfter(context.Context, qos.Config) (qos.Comparison, error)
-	MeasureCurrentBeforeAfter(context.Context, string, func() (qos.Config, error)) (qos.Comparison, error)
+	BenchmarkCurrent(context.Context, string, qos.BenchmarkRequest, func() (qos.Config, error)) (qos.Comparison, error)
 }
 
 type qosInterfaceLocker interface {
@@ -164,14 +163,20 @@ func emergencyQosReconcileContext(parent context.Context) (context.Context, cont
 	return context.WithTimeout(context.WithoutCancel(parent), emergencyQosReconcileTimeout)
 }
 
-// Test measures a link before and after reapplying its persisted QoS config.
+// Test runs an operator-targeted bufferbloat benchmark with and without the
+// managed CAKE chain, then restores the persisted configuration.
 func (h *QosHandler) Test(w http.ResponseWriter, r *http.Request) {
 	link, err := h.loadLink(chi.URLParam(r, "id"))
 	if err != nil {
 		h.writeLinkError(w, err)
 		return
 	}
-	comparison, err := h.svc.MeasureCurrentBeforeAfter(r.Context(), link.Interface, func() (qos.Config, error) {
+	var request qos.BenchmarkRequest
+	if err := decodeJSON(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	comparison, err := h.svc.BenchmarkCurrent(r.Context(), link.Interface, request, func() (qos.Config, error) {
 		current, err := h.db.GetLink(link.ID)
 		if err != nil {
 			return qos.Config{}, err

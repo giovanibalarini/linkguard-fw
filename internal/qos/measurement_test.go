@@ -3,300 +3,361 @@ package qos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 )
 
-type execResult struct {
-	output string
-	err    error
-}
-
-type pingExecutor struct {
-	*fakeExecutor
-	pingResults []execResult
-}
-
-func newPingExecutor(results ...execResult) *pingExecutor {
-	return &pingExecutor{
-		fakeExecutor: newFakeExecutor(),
-		pingResults:  append([]execResult(nil), results...),
-	}
-}
-
-func (e *pingExecutor) ExecuteRead(ctx context.Context, command string, args ...string) (string, error) {
-	if command != "ping" {
-		return e.fakeExecutor.ExecuteRead(ctx, command, args...)
-	}
-	e.calls = append(e.calls, execCall{Read: true, Command: command, Args: append([]string(nil), args...)})
-	if len(e.pingResults) == 0 {
-		return "", errors.New("unexpected ping")
-	}
-	result := e.pingResults[0]
-	e.pingResults = e.pingResults[1:]
-	return result.output, result.err
-}
-
-func TestParsePingSummaryLinux(t *testing.T) {
-	output := `PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data.
-64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time=8.12 ms
-
---- 1.1.1.1 ping statistics ---
-5 packets transmitted, 5 received, 0% packet loss, time 4005ms
-rtt min/avg/max/mdev = 8.123/9.456/12.789/1.111 ms
-`
-
-	got, err := ParsePingSummary(output)
+func TestParsePingSummaryLinuxAndTotalLoss(t *testing.T) {
+	got, err := ParsePingSummary(`5 packets transmitted, 4 received, 20% packet loss
+rtt min/avg/max/mdev = 8.123/9.456/12.789/1.111 ms`)
 	if err != nil {
-		t.Fatalf("ParsePingSummary() error = %v; want nil", err)
+		t.Fatalf("ParsePingSummary: %v", err)
 	}
-	want := Measurement{MinMs: 8.123, AvgMs: 9.456, MaxMs: 12.789, LossPct: 0}
+	want := Measurement{MinMs: 8.123, AvgMs: 9.456, MaxMs: 12.789, LossPct: 20}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ParsePingSummary() = %#v; want %#v", got, want)
+		t.Fatalf("ParsePingSummary = %#v; want %#v", got, want)
+	}
+	total, err := ParsePingSummary("4 packets transmitted, 0 received, 100% packet loss")
+	if err != nil || total.LossPct != 100 {
+		t.Fatalf("total-loss summary = %#v, %v", total, err)
 	}
 }
 
-func TestParsePingSummaryBusyBox(t *testing.T) {
-	output := `PING 1.1.1.1 (1.1.1.1): 56 data bytes
-
---- 1.1.1.1 ping statistics ---
-4 packets transmitted, 3 packets received, 25% packet loss
-round-trip min/avg/max = 10.000/20.500/40.750 ms
-`
-
-	got, err := ParsePingSummary(output)
-	if err != nil {
-		t.Fatalf("ParsePingSummary() error = %v; want nil", err)
-	}
-	want := Measurement{MinMs: 10, AvgMs: 20.5, MaxMs: 40.75, LossPct: 25}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ParsePingSummary() = %#v; want %#v", got, want)
-	}
-}
-
-func TestParsePingSummaryBSD(t *testing.T) {
-	output := `PING 192.0.2.1 (192.0.2.1): 56 data bytes
-64 bytes from 192.0.2.1: icmp_seq=0 ttl=59 time=3.214 ms
-
---- 192.0.2.1 ping statistics ---
-4 packets transmitted, 4 packets received, 0.0% packet loss
-round-trip min/avg/max/stddev = 2.100/3.200/5.400/0.900 ms
-`
-
-	got, err := ParsePingSummary(output)
-	if err != nil {
-		t.Fatalf("ParsePingSummary() error = %v; want nil", err)
-	}
-	want := Measurement{MinMs: 2.1, AvgMs: 3.2, MaxMs: 5.4, LossPct: 0}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ParsePingSummary() = %#v; want %#v", got, want)
-	}
-}
-
-func TestParsePingSummaryAcceptsTotalLossWithoutRTTLine(t *testing.T) {
-	output := `--- 1.1.1.1 ping statistics ---
-4 packets transmitted, 0 received, 100% packet loss, time 3068ms
-`
-
-	got, err := ParsePingSummary(output)
-	if err != nil {
-		t.Fatalf("ParsePingSummary() error = %v; want nil", err)
-	}
-	want := Measurement{LossPct: 100}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ParsePingSummary() = %#v; want %#v", got, want)
-	}
-}
-
-func TestParsePingSummaryRejectsMissingSummary(t *testing.T) {
-	if _, err := ParsePingSummary("ping: unknown host example.invalid"); err == nil {
-		t.Fatal("ParsePingSummary() error = nil; want malformed summary error")
-	}
-}
-
-func TestMeasureBindsPingToValidatedInterfaceWithSeparateArguments(t *testing.T) {
-	exec := newPingExecutor(execResult{output: `4 packets transmitted, 4 received, 0% packet loss
-rtt min/avg/max/mdev = 1.000/2.000/3.000/0.200 ms
-`})
+func TestBenchmarkWithoutOperatorServerIsInvalidAndDoesNotMutateKernel(t *testing.T) {
+	exec := newBenchmarkExecutor()
 	service := NewService(exec)
+	cfg := benchmarkConfig()
 
-	got, err := service.Measure(context.Background(), "wan0")
-	if err != nil {
-		t.Fatalf("Measure() error = %v; want nil", err)
-	}
-	want := Measurement{MinMs: 1, AvgMs: 2, MaxMs: 3}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Measure() = %#v; want %#v", got, want)
-	}
-	wantCalls := []execCall{{
-		Read:    true,
-		Command: "ping",
-		Args:    []string{"-n", "-I", "wan0", "-c", "5", "-W", "2", "1.1.1.1"},
-	}}
-	if !reflect.DeepEqual(exec.calls, wantCalls) {
-		t.Fatalf("Measure() calls = %#v; want %#v", exec.calls, wantCalls)
-	}
-}
-
-func TestMeasurePropagatesPingExecutionFailureWithoutValidSummary(t *testing.T) {
-	exec := newPingExecutor(execResult{output: "ping: sendmsg: Operation not permitted\n", err: errors.New("exit status 2")})
-	service := NewService(exec)
-
-	if _, err := service.Measure(context.Background(), "wan0"); err == nil {
-		t.Fatal("Measure() error = nil; want ping execution error")
-	}
-	if len(exec.calls) != 1 {
-		t.Fatalf("Measure() calls = %#v; want one ping", exec.calls)
-	}
-}
-
-func TestMeasureAcceptsParsedTotalLossDespitePingExitError(t *testing.T) {
-	exec := newPingExecutor(execResult{
-		output: `4 packets transmitted, 0 received, 100% packet loss, time 3068ms
-`,
-		err: errors.New("exit status 1"),
-	})
-	service := NewService(exec)
-
-	got, err := service.Measure(context.Background(), "wan0")
-	if err != nil {
-		t.Fatalf("Measure() error = %v; want parsed loss measurement", err)
-	}
-	if got.LossPct != 100 {
-		t.Fatalf("Measure() loss = %v; want 100", got.LossPct)
-	}
-}
-
-func TestMeasureRejectsUnsafeInterfaceBeforePing(t *testing.T) {
-	exec := newPingExecutor()
-	service := NewService(exec)
-
-	if _, err := service.Measure(context.Background(), "wan0;reboot"); err == nil {
-		t.Fatal("Measure() error = nil; want validation error")
-	}
-	if len(exec.calls) != 0 {
-		t.Fatalf("Measure() calls after validation error = %#v; want none", exec.calls)
-	}
-}
-
-func TestMeasureBeforeAfterAppliesQoSBetweenSamples(t *testing.T) {
-	exec := newPingExecutor(
-		execResult{output: `5 packets transmitted, 5 received, 0% packet loss
-rtt min/avg/max/mdev = 10.000/20.000/30.000/1.000 ms
-`},
-		execResult{output: `5 packets transmitted, 4 received, 20% packet loss
-rtt min/avg/max/mdev = 5.000/8.000/12.000/1.000 ms
-`},
-	)
-	service := NewService(exec)
-	cfg := validConfig()
-	cfg.Interface = "wan0"
-
-	got, err := service.MeasureBeforeAfter(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("MeasureBeforeAfter() error = %v; want nil", err)
-	}
-	want := Comparison{
-		Before: Measurement{MinMs: 10, AvgMs: 20, MaxMs: 30},
-		After:  Measurement{MinMs: 5, AvgMs: 8, MaxMs: 12, LossPct: 20},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("MeasureBeforeAfter() = %#v; want %#v", got, want)
-	}
-	if len(exec.calls) < 3 || exec.calls[0].Command != "ping" || exec.calls[len(exec.calls)-1].Command != "ping" {
-		t.Fatalf("MeasureBeforeAfter() call order = %#v; want ping, apply commands, ping", exec.calls)
-	}
-	if countCommand(exec.calls[1:len(exec.calls)-1], "tc", "qdisc", "replace") != 2 {
-		t.Fatalf("MeasureBeforeAfter() did not apply QoS between samples: %#v", exec.calls)
-	}
-}
-
-func TestMeasureBeforeAfterStopsWhenApplyFails(t *testing.T) {
-	exec := newPingExecutor(
-		execResult{output: `5 packets transmitted, 5 received, 0% packet loss
-rtt min/avg/max/mdev = 10.000/20.000/30.000/1.000 ms
-`},
-		execResult{output: `5 packets transmitted, 5 received, 0% packet loss
-rtt min/avg/max/mdev = 5.000/8.000/12.000/1.000 ms
-`},
-	)
-	exec.failWhen = func(call execCall) error {
-		if !call.Read && call.Command == "tc" {
-			return errors.New("apply failed")
-		}
-		return nil
-	}
-	service := NewService(exec)
-	cfg := validConfig()
-	cfg.Interface = "wan0"
-
-	if _, err := service.MeasureBeforeAfter(context.Background(), cfg); err == nil {
-		t.Fatal("MeasureBeforeAfter() error = nil; want apply failure")
-	}
-	if got := countCommand(exec.calls, "ping"); got != 1 {
-		t.Fatalf("ping count after apply failure = %d; want 1", got)
-	}
-}
-
-func TestMeasureCurrentBeforeAfterLoadsConfigurationBeforeFirstPing(t *testing.T) {
-	exec := newPingExecutor(
-		execResult{output: `5 packets transmitted, 5 received, 0% packet loss
-rtt min/avg/max/mdev = 10.000/20.000/30.000/1.000 ms
-`},
-		execResult{output: `5 packets transmitted, 5 received, 0% packet loss
-rtt min/avg/max/mdev = 5.000/8.000/12.000/1.000 ms
-`},
-	)
-	service := NewService(exec)
-	loaded := false
-	cfg := validConfig()
-	cfg.Interface = "wan0"
-
-	got, err := service.MeasureCurrentBeforeAfter(context.Background(), "wan0", func() (Config, error) {
-		loaded = true
+	got, err := service.BenchmarkCurrent(context.Background(), cfg.Interface, BenchmarkRequest{}, func() (Config, error) {
 		return cfg, nil
 	})
 	if err != nil {
-		t.Fatalf("MeasureCurrentBeforeAfter() error = %v; want nil", err)
+		t.Fatalf("BenchmarkCurrent error = %v; want structured limitation", err)
 	}
-	if !loaded {
-		t.Fatal("MeasureCurrentBeforeAfter() did not call loader")
+	if got.Valid || !containsLimitation(got.Limitations, LimitationServerMissing) {
+		t.Fatalf("BenchmarkCurrent = %#v; want invalid server_missing result", got)
 	}
-	if got.Before.MinMs != 10 || got.After.MinMs != 5 {
-		t.Fatalf("MeasureCurrentBeforeAfter() = %#v; want before/after samples", got)
+	if countBenchmarkCommand(exec.snapshotCalls(), "tc") != 0 || countBenchmarkCommand(exec.snapshotCalls(), "iperf3") != 0 {
+		t.Fatalf("missing server touched kernel or ran iperf3: %#v", exec.snapshotCalls())
 	}
 }
 
-func TestMeasureCurrentBeforeAfterRejectsMovedOrDeletedConfigurationBeforePing(t *testing.T) {
-	tests := []struct {
-		name string
-		load func() (Config, error)
-	}{
-		{
-			name: "moved",
-			load: func() (Config, error) {
-				cfg := validConfig()
-				cfg.Interface = "wan1"
-				return cfg, nil
-			},
-		},
-		{
-			name: "deleted",
-			load: func() (Config, error) {
-				return Config{}, errors.New("link deleted")
-			},
-		},
+func TestBenchmarkWithoutIperf3IsInvalidAndDoesNotMutateKernel(t *testing.T) {
+	exec := newBenchmarkExecutor()
+	exec.iperfAvailable = false
+	service := NewService(exec)
+	cfg := benchmarkConfig()
+
+	got, err := service.BenchmarkCurrent(context.Background(), cfg.Interface, BenchmarkRequest{Server: "iperf.operator.lan"}, func() (Config, error) {
+		return cfg, nil
+	})
+	if err != nil {
+		t.Fatalf("BenchmarkCurrent error = %v; want structured limitation", err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			exec := newPingExecutor()
-			service := NewService(exec)
-			if _, err := service.MeasureCurrentBeforeAfter(context.Background(), "wan0", test.load); err == nil {
-				t.Fatal("MeasureCurrentBeforeAfter() error = nil; want loader/lifecycle error")
+	if got.Valid || !containsLimitation(got.Limitations, LimitationIperfUnavailable) {
+		t.Fatalf("BenchmarkCurrent = %#v; want invalid iperf_unavailable result", got)
+	}
+	if countBenchmarkWrites(exec.snapshotCalls()) != 0 {
+		t.Fatalf("missing iperf3 mutated kernel: %#v", exec.snapshotCalls())
+	}
+}
+
+func TestBenchmarkUsesRealBaselineBoundedIdenticalLoadAndRestoresQoS(t *testing.T) {
+	exec := newBenchmarkExecutor()
+	cfg := benchmarkConfig()
+	configureManagedKernelObjects(exec.fakeExecutor, cfg.Interface)
+	service := NewService(exec)
+
+	got, err := service.BenchmarkCurrent(context.Background(), cfg.Interface, BenchmarkRequest{
+		Server: "iperf.operator.lan", Port: 5202,
+	}, func() (Config, error) { return cfg, nil })
+	if err != nil {
+		t.Fatalf("BenchmarkCurrent error = %v", err)
+	}
+	if !got.Valid || !got.Restored || !got.Baseline.Valid || !got.Configured.Valid {
+		t.Fatalf("BenchmarkCurrent = %#v; want valid restored comparison", got)
+	}
+	if got.Baseline.Upload.Latency == nil || got.Baseline.Upload.ThroughputMbps == nil ||
+		got.Baseline.Upload.InterfaceMbps == nil || got.Baseline.Upload.CPUPercent == nil {
+		t.Fatalf("baseline upload omitted required observability: %#v", got.Baseline.Upload)
+	}
+	calls := exec.snapshotCalls()
+	iperfCalls := benchmarkCalls(calls, "iperf3", false)
+	if len(iperfCalls) != 4 {
+		t.Fatalf("iperf3 load calls = %#v; want upload/download in both phases", iperfCalls)
+	}
+	if !reflect.DeepEqual(iperfCalls[0].Args, iperfCalls[2].Args) || !reflect.DeepEqual(iperfCalls[1].Args, iperfCalls[3].Args) {
+		t.Fatalf("baseline/configured load conditions differ: %#v", iperfCalls)
+	}
+	for _, call := range iperfCalls {
+		joined := strings.Join(call.Args, " ")
+		if !strings.Contains(joined, "-c iperf.operator.lan") || !strings.Contains(joined, "-p 5202") || strings.Contains(joined, "1.1.1.1") {
+			t.Fatalf("iperf call uses an undeclared endpoint: %#v", call)
+		}
+	}
+	if !containsArgs(iperfCalls[0].Args, "-b", "55M") || !containsArgs(iperfCalls[1].Args, "-b", "220M") {
+		t.Fatalf("load is not the bounded 110%% offer: %#v", iperfCalls)
+	}
+	firstLoad := indexBenchmarkCommand(calls, "iperf3", false, 0)
+	if firstLoad < 0 || !hasWriteBefore(calls, firstLoad, "tc", "qdisc", "del", "dev", cfg.Interface, "root") {
+		t.Fatalf("baseline started before managed CAKE was removed: %#v", calls)
+	}
+	state, err := service.Observe(context.Background(), cfg.Interface)
+	if err != nil || !state.Enabled {
+		t.Fatalf("QoS after benchmark = %+v, %v; want restored managed chain", state, err)
+	}
+}
+
+func TestBenchmarkLabelsInsufficientLoadAndUnavailableMetricsWithoutClaimingValidity(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*benchmarkExecutor)
+		limitation string
+	}{
+		{name: "insufficient load", configure: func(e *benchmarkExecutor) { e.throughputMbps = 10 }, limitation: LimitationInsufficientLoad},
+		{name: "cpu unavailable", configure: func(e *benchmarkExecutor) { e.cpuAvailable = false }, limitation: LimitationCPUUnavailable},
+		{name: "interface metrics unavailable", configure: func(e *benchmarkExecutor) { e.counterAvailable = false }, limitation: LimitationInterfaceMetricsUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := newBenchmarkExecutor()
+			tt.configure(exec)
+			cfg := benchmarkConfig()
+			configureManagedKernelObjects(exec.fakeExecutor, cfg.Interface)
+			got, err := NewService(exec).BenchmarkCurrent(context.Background(), cfg.Interface,
+				BenchmarkRequest{Server: "iperf.operator.lan"}, func() (Config, error) { return cfg, nil })
+			if err != nil {
+				t.Fatalf("BenchmarkCurrent: %v", err)
 			}
-			if got := countCommand(exec.calls, "ping"); got != 0 {
-				t.Fatalf("MeasureCurrentBeforeAfter() ping count = %d; want 0", got)
+			if got.Valid || !containsLimitation(got.Limitations, tt.limitation) {
+				t.Fatalf("limited benchmark = %#v; want %q and valid=false", got, tt.limitation)
 			}
 		})
 	}
+}
+
+func TestBenchmarkCapsOfferedLoadAndMarksTheResultLimited(t *testing.T) {
+	exec := newBenchmarkExecutor()
+	cfg := benchmarkConfig()
+	cfg.UploadMbps = 1_000
+	cfg.DownloadMbps = 1_000
+	configureManagedKernelObjects(exec.fakeExecutor, cfg.Interface)
+	got, err := NewService(exec).BenchmarkCurrent(context.Background(), cfg.Interface,
+		BenchmarkRequest{Server: "iperf.operator.lan"}, func() (Config, error) { return cfg, nil })
+	if err != nil {
+		t.Fatalf("BenchmarkCurrent: %v", err)
+	}
+	if got.Valid || !containsLimitation(got.Limitations, LimitationLoadCapped) {
+		t.Fatalf("capped benchmark = %#v; want load_capped invalid result", got)
+	}
+	for _, call := range benchmarkCalls(exec.snapshotCalls(), "iperf3", false) {
+		if !containsArgs(call.Args, "-b", "500M") {
+			t.Fatalf("load exceeded safety cap: %#v", call)
+		}
+	}
+}
+
+func TestBenchmarkRestoresQoSAndClearsLeaseWhenLoadFails(t *testing.T) {
+	exec := newBenchmarkExecutor()
+	exec.iperfRunErr = errors.New("server unreachable")
+	cfg := benchmarkConfig()
+	configureManagedKernelObjects(exec.fakeExecutor, cfg.Interface)
+	store := newRecordingOperationStore(exec.fakeExecutor)
+	service := NewService(exec)
+	service.SetOperationStore(store)
+
+	got, err := service.BenchmarkCurrent(context.Background(), cfg.Interface,
+		BenchmarkRequest{Server: "iperf.operator.lan"}, func() (Config, error) { return cfg, nil })
+	if err != nil {
+		t.Fatalf("BenchmarkCurrent: %v", err)
+	}
+	if got.Valid || !got.Restored || !containsLimitation(got.Limitations, LimitationIperfFailed) {
+		t.Fatalf("failed-load result = %#v; want limited and restored", got)
+	}
+	if len(store.leases) != 0 {
+		t.Fatalf("benchmark restoration left lease: %#v", store.leases)
+	}
+	state, observeErr := service.Observe(context.Background(), cfg.Interface)
+	if observeErr != nil || !state.Enabled {
+		t.Fatalf("QoS after failed load = %+v, %v", state, observeErr)
+	}
+}
+
+func TestBenchmarkRejectsUnsafeServerBeforeExecutingCommands(t *testing.T) {
+	exec := newBenchmarkExecutor()
+	_, err := NewService(exec).BenchmarkCurrent(context.Background(), "wan0",
+		BenchmarkRequest{Server: "iperf.example; reboot"}, func() (Config, error) { return benchmarkConfig(), nil })
+	if err == nil {
+		t.Fatal("BenchmarkCurrent accepted unsafe server")
+	}
+	if len(exec.snapshotCalls()) != 0 {
+		t.Fatalf("unsafe server executed commands: %#v", exec.snapshotCalls())
+	}
+}
+
+func benchmarkConfig() Config {
+	return Config{Interface: "wan0", Enabled: true, UploadMbps: 50, DownloadMbps: 200}
+}
+
+type benchmarkExecutor struct {
+	*fakeExecutor
+	mu               sync.Mutex
+	iperfAvailable   bool
+	cpuAvailable     bool
+	counterAvailable bool
+	throughputMbps   float64
+	iperfRunErr      error
+	cpuReads         int
+	counterReads     map[string]int
+}
+
+func newBenchmarkExecutor() *benchmarkExecutor {
+	return &benchmarkExecutor{
+		fakeExecutor: newFakeExecutor(), iperfAvailable: true, cpuAvailable: true,
+		counterAvailable: true, counterReads: make(map[string]int),
+	}
+}
+
+func (e *benchmarkExecutor) Execute(ctx context.Context, command string, args ...string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if command == "iperf3" {
+		e.calls = append(e.calls, execCall{Command: command, Args: append([]string(nil), args...)})
+		if e.iperfRunErr != nil {
+			return "", e.iperfRunErr
+		}
+		throughput := e.throughputMbps
+		if throughput == 0 {
+			bitrate := strings.TrimSuffix(benchmarkTokenAfter(args, "-b"), "M")
+			offered, _ := strconv.ParseFloat(bitrate, 64)
+			throughput = offered * 0.95
+		}
+		bps := throughput * 1_000_000
+		return fmt.Sprintf(`{"end":{"sum_sent":{"bits_per_second":%.0f},"sum_received":{"bits_per_second":%.0f}}}`, bps, bps), nil
+	}
+	return e.fakeExecutor.Execute(ctx, command, args...)
+}
+
+func (e *benchmarkExecutor) ExecuteRead(ctx context.Context, command string, args ...string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if command == "iperf3" {
+		e.calls = append(e.calls, execCall{Read: true, Command: command, Args: append([]string(nil), args...)})
+		if !e.iperfAvailable {
+			return "", errors.New("executable file not found")
+		}
+		return "iperf 3.16", nil
+	}
+	if command == "ping" {
+		e.calls = append(e.calls, execCall{Read: true, Command: command, Args: append([]string(nil), args...)})
+		return "8 packets transmitted, 8 received, 0% packet loss\nrtt min/avg/max/mdev = 10.000/20.000/30.000/1.000 ms", nil
+	}
+	if command == "cat" && len(args) == 1 && args[0] == "/proc/stat" {
+		e.calls = append(e.calls, execCall{Read: true, Command: command, Args: append([]string(nil), args...)})
+		if !e.cpuAvailable {
+			return "", errors.New("proc unavailable")
+		}
+		e.cpuReads++
+		busy := e.cpuReads * 50
+		idle := e.cpuReads * 50
+		return fmt.Sprintf("cpu %d 0 0 %d 0 0 0 0 0 0\n", busy, idle), nil
+	}
+	if command == "cat" && len(args) == 1 && strings.HasPrefix(args[0], "/sys/class/net/") {
+		e.calls = append(e.calls, execCall{Read: true, Command: command, Args: append([]string(nil), args...)})
+		if !e.counterAvailable {
+			return "", errors.New("counter unavailable")
+		}
+		e.counterReads[args[0]]++
+		return fmt.Sprintf("%d\n", e.counterReads[args[0]]*100_000_000), nil
+	}
+	return e.fakeExecutor.ExecuteRead(ctx, command, args...)
+}
+
+func (e *benchmarkExecutor) snapshotCalls() []execCall {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]execCall(nil), e.calls...)
+}
+
+func containsLimitation(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func benchmarkCalls(calls []execCall, command string, read bool) []execCall {
+	var out []execCall
+	for _, call := range calls {
+		if call.Command == command && call.Read == read {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+func countBenchmarkCommand(calls []execCall, command string) int {
+	count := 0
+	for _, call := range calls {
+		if call.Command == command {
+			count++
+		}
+	}
+	return count
+}
+
+func countBenchmarkWrites(calls []execCall) int {
+	count := 0
+	for _, call := range calls {
+		if !call.Read {
+			count++
+		}
+	}
+	return count
+}
+
+func indexBenchmarkCommand(calls []execCall, command string, read bool, ordinal int) int {
+	seen := 0
+	for i, call := range calls {
+		if call.Command == command && call.Read == read {
+			if seen == ordinal {
+				return i
+			}
+			seen++
+		}
+	}
+	return -1
+}
+
+func hasWriteBefore(calls []execCall, end int, command string, args ...string) bool {
+	for _, call := range calls[:end] {
+		if !call.Read && call.Command == command && containsArgs(call.Args, args...) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArgs(values []string, sequence ...string) bool {
+	for start := 0; start+len(sequence) <= len(values); start++ {
+		if reflect.DeepEqual(values[start:start+len(sequence)], sequence) {
+			return true
+		}
+	}
+	return false
+}
+
+func benchmarkTokenAfter(values []string, token string) string {
+	for i, value := range values {
+		if value == token && i+1 < len(values) {
+			return values[i+1]
+		}
+	}
+	return ""
 }
