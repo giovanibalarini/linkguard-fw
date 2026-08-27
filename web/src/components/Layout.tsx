@@ -10,6 +10,7 @@ import {
   Activity, Settings, LogOut, ShieldCheck, Users, MonitorSmartphone,
   Menu, X, AlertTriangle, Cable, Server, Globe, Sparkles, SlidersHorizontal, Clock,
   AreaChart,
+  KeyRound,
 } from 'lucide-react';
 
 interface NavItem {
@@ -60,6 +61,7 @@ const navGroups: NavGroup[] = [
     id: 'seguranca', label: 'group.seguranca',
     items: [
       { to: '/firewall', label: 'nav.firewall', icon: Shield, perm: ['firewall.read'] },
+      { to: '/vpn', label: 'nav.vpn', icon: KeyRound, perm: ['vpn.read', 'vpn.write', 'vpn.enroll'] },
     ],
   },
   {

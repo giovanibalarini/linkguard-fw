@@ -368,7 +368,7 @@ export type GroupFallthrough = 'continue' | 'accept' | 'drop';
 // desconhecido cai no mesmo lado seguro — por isso a checagem é uma lista
 // fechada dos dois kinds de sistema (isSystemGroup em lib/blockGroups.ts), e
 // nunca `kind !== 'admin'`.
-export type FirewallGroupKind = '' | 'admin' | 'blocked_hosts' | 'blocklist';
+export type FirewallGroupKind = '' | 'admin' | 'blocked_hosts' | 'blocklist' | 'wireguard_peer';
 
 // GroupScope diz PARA QUAL TRÁFEGO o grupo vale, e é o que decide em qual
 // chain o `jump` dele é escrito (Fase C2, espelha internal/nftables/groups.go):

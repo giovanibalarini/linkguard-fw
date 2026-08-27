@@ -1,6 +1,9 @@
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
-import { KIND_BLOCKED_HOSTS, KIND_BLOCKLIST, groupDisplayNameKey, isSystemGroup } from './blockGroups.ts';
+import {
+  KIND_BLOCKED_HOSTS, KIND_BLOCKLIST, KIND_WIREGUARD_PEER,
+  groupDisplayNameKey, isSystemGroup, isWireGuardPeerGroup,
+} from './blockGroups.ts';
 
 let n = 0;
 const eq = (a: unknown, b: unknown, m: string) => { assert.deepStrictEqual(a, b, m); n++; };
@@ -16,6 +19,11 @@ const check = (c: unknown, m: string) => { assert.ok(c, m); n++; };
 {
   eq(groupDisplayNameKey(KIND_BLOCKED_HOSTS), 'fwx.systemGroup.blocked_hosts', 'grupo do sistema tem chave');
   eq(groupDisplayNameKey(KIND_BLOCKLIST), 'fwx.systemGroup.blocklist', 'o outro também');
+}
+
+{
+  check(isWireGuardPeerGroup(KIND_WIREGUARD_PEER), 'peer WireGuard é reconhecido como grupo gerenciado pela VPN');
+  check(!isSystemGroup(KIND_WIREGUARD_PEER), 'peer WireGuard continua chain-backed e não vira grupo de named set');
 }
 
 {

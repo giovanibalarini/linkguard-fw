@@ -4,6 +4,7 @@ import type { FirewallGroup, FirewallGroupKind } from '../types';
 // internal/nftables/groups.go (systemGroupForwardRules).
 export const KIND_BLOCKED_HOSTS = 'blocked_hosts';
 export const KIND_BLOCKLIST = 'blocklist';
+export const KIND_WIREGUARD_PEER = 'wireguard_peer';
 
 // isSystemGroup é uma lista fechada dos dois kinds de sistema, nunca
 // `kind !== 'admin'`: kind vazio (linhas criadas antes da coluna existir) e
@@ -12,6 +13,12 @@ export const KIND_BLOCKLIST = 'blocklist';
 // regra do backend.
 export function isSystemGroup(kind: string): boolean {
   return kind === KIND_BLOCKED_HOSTS || kind === KIND_BLOCKLIST;
+}
+
+// A peer group has a normal chain and editable firewall rules, but its name,
+// address, enabled state and lifetime are projections of VPN enrollment.
+export function isWireGuardPeerGroup(kind: string): boolean {
+  return kind === KIND_WIREGUARD_PEER;
 }
 
 /**
