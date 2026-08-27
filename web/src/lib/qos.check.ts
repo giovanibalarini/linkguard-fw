@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { buildQosUpdate, qosDraftFrom } from './qos.ts';
+import { buildQosUpdate, createQosEditorState, qosDraftFrom, qosEditorReducer } from './qos.ts';
+import type { QosComparison } from '../types/index.ts';
 
 let checks = 0;
 const check = (condition: unknown, message: string) => {
@@ -85,6 +86,66 @@ const check = (condition: unknown, message: string) => {
       JSON.stringify({ ok: false, error: 'download_range' }),
     'download bandwidth must stay inside the backend range',
   );
+}
+
+// Component-state regressions: the production reducer must be the single
+// owner of draft and measurement transitions. A missing invalidation here
+// would let an old successful comparison survive a rerun failure or an edit.
+{
+  const persisted = qosDraftFrom({
+    enabled: true,
+    upload_mbps: 50,
+    download_mbps: 300,
+    interactive: false,
+  });
+  const comparison: QosComparison = {
+    before: { min_ms: 20, avg_ms: 25, max_ms: 30, loss_pct: 0 },
+    after: { min_ms: 10, avg_ms: 12, max_ms: 15, loss_pct: 0 },
+  };
+
+  let state = createQosEditorState(persisted);
+  state = qosEditorReducer(state, { type: 'test-succeeded', comparison });
+  assert.deepEqual(state.comparison, comparison, 'a completed test publishes its own comparison');
+
+  state = qosEditorReducer(state, { type: 'test-started' });
+  assert.equal(
+    state.comparison,
+    null,
+    'starting a rerun clears the previous comparison before a possible failure',
+  );
+
+  state = qosEditorReducer(state, { type: 'test-succeeded', comparison });
+  const edited = { ...state.draft, uploadMbps: '45' };
+  state = qosEditorReducer(state, { type: 'draft-changed', draft: edited });
+  assert.equal(state.comparison, null, 'editing controls invalidates the measured comparison');
+  checks += 3;
+}
+
+// A refresh may finish while the operator has an unsaved draft (for example,
+// after an i18n context update). The persisted baseline can advance, but the
+// in-progress form values must not be replaced silently.
+{
+  const initial = qosDraftFrom({
+    enabled: true,
+    upload_mbps: 50,
+    download_mbps: 300,
+    interactive: false,
+  });
+  const refreshed = qosDraftFrom({
+    enabled: true,
+    upload_mbps: 60,
+    download_mbps: 400,
+    interactive: true,
+  });
+  const dirtyDraft = { ...initial, uploadMbps: '45' };
+
+  let state = createQosEditorState(initial);
+  state = qosEditorReducer(state, { type: 'draft-changed', draft: dirtyDraft });
+  state = qosEditorReducer(state, { type: 'loaded', draft: refreshed });
+
+  assert.deepEqual(state.draft, dirtyDraft, 'refresh preserves unsaved controls');
+  assert.deepEqual(state.savedDraft, refreshed, 'refresh still records the latest persisted baseline');
+  checks += 2;
 }
 
 console.log(`qos.check: ${checks} assertions OK`);

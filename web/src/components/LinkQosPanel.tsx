@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useReducer, useState } from 'react';
 import { Activity, AlertTriangle, Check, Gauge, Loader2 } from 'lucide-react';
 import client from '../api/client';
 import { useI18n } from '../i18n';
-import { buildQosUpdate, qosDraftFrom } from '../lib/qos';
+import {
+  buildQosUpdate,
+  createQosEditorState,
+  qosDraftFrom,
+  qosEditorReducer,
+  sameQosDraft,
+} from '../lib/qos';
 import type { QosComparison, QosGetResponse, QosMeasurement, QosState, QosUpdateRequest, WanLink } from '../types';
 import Panel from './ui/Panel';
 
@@ -13,6 +19,11 @@ interface Props {
 }
 
 const TEST_TIMEOUT_MS = 35_000;
+
+interface ErrorNotice {
+  fallbackKey: string;
+  message?: string;
+}
 
 function draftFromLink(link: WanLink) {
   return qosDraftFrom({
@@ -27,81 +38,90 @@ function draftFromLink(link: WanLink) {
 export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
   const { t } = useI18n();
   const initialDraft = useMemo(() => draftFromLink(link), [link]);
-  const [draft, setDraft] = useState(initialDraft);
-  const [savedDraft, setSavedDraft] = useState(initialDraft);
+  const [editor, dispatchEditor] = useReducer(qosEditorReducer, initialDraft, createQosEditorState);
+  const { draft, savedDraft, comparison } = editor;
   const [observed, setObserved] = useState<QosState | null>(null);
-  const [comparison, setComparison] = useState<QosComparison | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const [error, setError] = useState<ErrorNotice | null>(null);
+  const [successKey, setSuccessKey] = useState('');
+  const fieldID = useId();
+  const uploadValidationID = `${fieldID}-upload-validation`;
+  const downloadValidationID = `${fieldID}-download-validation`;
+  const testHintID = `${fieldID}-test-hint`;
 
   useEffect(() => {
     let active = true;
     setLoading(true);
-    setError('');
+    setError(null);
     client.get<QosGetResponse>(`/api/links/${link.id}/qos`)
       .then(({ data }) => {
         if (!active) return;
         const next = qosDraftFrom(data.desired);
-        setDraft(next);
-        setSavedDraft(next);
+        dispatchEditor({ type: 'loaded', draft: next });
         setObserved(data.observed);
       })
       .catch((e) => {
-        if (active) setError(errorMessage(e, t('links.qos.error.load')));
+        if (active) setError(errorNotice(e, 'links.qos.error.load'));
       })
       .finally(() => {
         if (active) setLoading(false);
       });
     return () => { active = false; };
-  }, [link.id, t]);
+  }, [link.id]);
 
   useEffect(() => {
-    if (!success) return;
-    const timer = setTimeout(() => setSuccess(''), 4000);
+    if (!successKey) return;
+    const timer = setTimeout(() => setSuccessKey(''), 4000);
     return () => clearTimeout(timer);
-  }, [success]);
+  }, [successKey]);
 
   const update = useMemo(() => buildQosUpdate(draft), [draft]);
-  const dirty = !sameDraft(draft, savedDraft);
+  const dirty = !sameQosDraft(draft, savedDraft);
   const busy = loading || saving || testing;
+  const validationError = update.ok ? null : update.error;
+  const uploadInvalid = validationError?.startsWith('upload_') ?? false;
+  const downloadInvalid = validationError?.startsWith('download_') ?? false;
+  const renderedError = error?.message || (error ? t(error.fallbackKey) : '');
+
+  const changeDraft = (next: typeof draft) => {
+    dispatchEditor({ type: 'draft-changed', draft: next });
+  };
 
   const save = async () => {
     if (!update.ok) return;
     setSaving(true);
-    setError('');
-    setSuccess('');
+    setError(null);
+    setSuccessKey('');
     try {
       const { data } = await client.put<QosState>(`/api/links/${link.id}/qos`, update.value);
       const persisted = qosDraftFrom(update.value);
-      setDraft(persisted);
-      setSavedDraft(persisted);
+      dispatchEditor({ type: 'saved', draft: persisted });
       setObserved(data);
-      setComparison(null);
-      setSuccess(t('links.qos.success.saved'));
+      setSuccessKey('links.qos.success.saved');
       onUpdated?.(link.id, update.value);
     } catch (e) {
-      setError(errorMessage(e, t('links.qos.error.save')));
+      setError(errorNotice(e, 'links.qos.error.save'));
     } finally {
       setSaving(false);
     }
   };
 
   const test = async () => {
+    dispatchEditor({ type: 'test-started' });
     setTesting(true);
-    setError('');
-    setSuccess('');
+    setError(null);
+    setSuccessKey('');
     try {
       const { data } = await client.post<QosComparison>(
         `/api/links/${link.id}/qos/test`,
         undefined,
         { timeout: TEST_TIMEOUT_MS },
       );
-      setComparison(data);
+      dispatchEditor({ type: 'test-succeeded', comparison: data });
     } catch (e) {
-      setError(errorMessage(e, t('links.qos.error.test')));
+      setError(errorNotice(e, 'links.qos.error.test'));
     } finally {
       setTesting(false);
     }
@@ -122,16 +142,21 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
   return (
     <Panel
       title={
-        <span className="flex min-w-0 items-center gap-2">
+        <h2 className="flex min-w-0 items-center gap-2">
           <Gauge className="h-5 w-5 shrink-0 text-cyan-400" />
           <span className="truncate text-white font-semibold">
             {t('links.qos.title', { name: link.name })}
           </span>
           <span className="hidden sm:inline text-gray-600 font-mono text-xs">{link.interface}</span>
-        </span>
+        </h2>
       }
       action={
-        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${status.className}`}>
+        <span
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${status.className}`}
+        >
           {t(status.key)}{status.mode ? ` · ${status.mode}` : ''}
         </span>
       }
@@ -139,14 +164,14 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
     >
       <p className="text-gray-500 text-xs mb-4">{t('links.qos.subtitle')}</p>
 
-      {error && (
-        <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" /> {error}
+      {renderedError && (
+        <div role="alert" className="mb-3 flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" /> {renderedError}
         </div>
       )}
-      {success && (
-        <div className="mb-3 flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-400">
-          <Check className="w-4 h-4 mt-0.5 shrink-0" /> {success}
+      {successKey && (
+        <div role="status" aria-live="polite" aria-atomic="true" className="mb-3 flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-400">
+          <Check className="w-4 h-4 mt-0.5 shrink-0" /> {t(successKey)}
         </div>
       )}
 
@@ -156,7 +181,7 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
             <input
               type="checkbox"
               checked={draft.enabled}
-              onChange={(e) => setDraft((current) => ({ ...current, enabled: e.target.checked }))}
+              onChange={(e) => changeDraft({ ...draft, enabled: e.target.checked })}
               disabled={!canEdit || busy}
               className="h-4 w-4 accent-cyan-500 disabled:opacity-40"
             />
@@ -166,7 +191,7 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
             <input
               type="checkbox"
               checked={draft.interactive}
-              onChange={(e) => setDraft((current) => ({ ...current, interactive: e.target.checked }))}
+              onChange={(e) => changeDraft({ ...draft, interactive: e.target.checked })}
               disabled={!canEdit || busy || !draft.enabled}
               className="h-4 w-4 accent-cyan-500 disabled:opacity-40"
             />
@@ -187,8 +212,10 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
               step={1}
               inputMode="numeric"
               value={draft.uploadMbps}
-              onChange={(e) => setDraft((current) => ({ ...current, uploadMbps: e.target.value }))}
+              onChange={(e) => changeDraft({ ...draft, uploadMbps: e.target.value })}
               disabled={!canEdit || busy || !draft.enabled}
+              aria-invalid={uploadInvalid}
+              aria-describedby={uploadInvalid ? uploadValidationID : undefined}
               placeholder="50"
               className="input mt-1 w-full font-mono disabled:opacity-40"
             />
@@ -202,8 +229,10 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
               step={1}
               inputMode="numeric"
               value={draft.downloadMbps}
-              onChange={(e) => setDraft((current) => ({ ...current, downloadMbps: e.target.value }))}
+              onChange={(e) => changeDraft({ ...draft, downloadMbps: e.target.value })}
               disabled={!canEdit || busy || !draft.enabled}
+              aria-invalid={downloadInvalid}
+              aria-describedby={downloadInvalid ? downloadValidationID : undefined}
               placeholder="300"
               className="input mt-1 w-full font-mono disabled:opacity-40"
             />
@@ -216,7 +245,13 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
         </div>
 
         {!update.ok && (
-          <p className="text-xs text-red-400">{t(`links.qos.validation.${update.error}`)}</p>
+          <p
+            id={uploadInvalid ? uploadValidationID : downloadValidationID}
+            role="alert"
+            className="text-xs text-red-400"
+          >
+            {t(`links.qos.validation.${update.error}`)}
+          </p>
         )}
 
         {canEdit ? (
@@ -240,13 +275,14 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
                 <Activity className="h-4 w-4 text-cyan-400" />
                 {t('links.qos.test.title')}
               </h3>
-              <p className="mt-1 text-[11px] text-gray-600">{testHint}</p>
+              <p id={testHintID} className="mt-1 text-[11px] text-gray-600">{testHint}</p>
             </div>
             {canEdit && (
               <button
                 type="button"
                 onClick={test}
                 disabled={testDisabled}
+                aria-describedby={testHintID}
                 className="btn-secondary inline-flex items-center gap-2 text-xs disabled:opacity-40"
               >
                 {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
@@ -255,7 +291,11 @@ export default function LinkQosPanel({ link, canEdit, onUpdated }: Props) {
             )}
           </div>
 
-          {comparison && <MeasurementComparison value={comparison} />}
+          {comparison && (
+            <div role="status" aria-live="polite" aria-atomic="true">
+              <MeasurementComparison value={comparison} />
+            </div>
+          )}
         </div>
       </div>
     </Panel>
@@ -296,13 +336,6 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function sameDraft(a: ReturnType<typeof draftFromLink>, b: ReturnType<typeof draftFromLink>): boolean {
-  return a.enabled === b.enabled &&
-    a.uploadMbps === b.uploadMbps &&
-    a.downloadMbps === b.downloadMbps &&
-    a.interactive === b.interactive;
-}
-
 function statusView(loading: boolean, linkEnabled: boolean, desiredEnabled: boolean, observed: QosState | null) {
   if (loading) {
     return { key: 'links.qos.status.loading', className: 'border-gray-700 bg-gray-800 text-gray-400', mode: '' };
@@ -325,7 +358,8 @@ function statusView(loading: boolean, linkEnabled: boolean, desiredEnabled: bool
   return { key: 'links.qos.status.inactive', className: 'border-gray-700 bg-gray-800 text-gray-400', mode: '' };
 }
 
-function errorMessage(e: unknown, fallback: string): string {
+function errorNotice(e: unknown, fallbackKey: string): ErrorNotice {
   const ax = e as { response?: { data?: { error?: string } } };
-  return ax?.response?.data?.error || fallback;
+  const message = ax?.response?.data?.error?.trim();
+  return message ? { fallbackKey, message } : { fallbackKey };
 }
