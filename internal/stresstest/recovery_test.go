@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,86 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/qos"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
+
+func TestRecoverInterruptedWaitsForStartToPublishActiveLease(t *testing.T) {
+	db := openRecoveryDB(t)
+	target := &storage.Link{ID: "target-race", Name: "Target", Interface: "eth0", Enabled: true, Status: links.StatusOnline}
+	other := &storage.Link{ID: "other-race", Name: "Other", Interface: "eth1", Enabled: true, Status: links.StatusOnline}
+	for _, link := range []*storage.Link{target, other} {
+		if err := db.CreateLink(link); err != nil {
+			t.Fatalf("CreateLink(%s): %v", link.ID, err)
+		}
+	}
+
+	store := newSaveBarrierRecoveryStore(db)
+	svc := NewService(&spyExecutor{interfaceUp: map[string]bool{"eth0": true}}, links.NewService(db), nil)
+	svc.SetQosService(newRecordingQosCoordinator())
+	svc.SetRecoveryStore(store)
+	svc.nextID = func() string { return "stress-pre-publication" }
+
+	type startResult struct {
+		test *Test
+		err  error
+	}
+	startDone := make(chan startResult, 1)
+	go func() {
+		test, err := svc.Start(StartParams{LinkID: target.ID, Mode: ModeOutage, DurationSec: 30})
+		startDone <- startResult{test: test, err: err}
+	}()
+
+	select {
+	case <-store.saved:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not persist the recovery lease")
+	}
+
+	recoverDone := make(chan error, 1)
+	go func() { recoverDone <- svc.RecoverInterrupted(context.Background()) }()
+
+	var earlyRecovery error
+	recoveredBeforePublication := false
+	select {
+	case earlyRecovery = <-recoverDone:
+		recoveredBeforePublication = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(store.release)
+
+	var started startResult
+	select {
+	case started = <-startDone:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not publish the active test after releasing the lease barrier")
+	}
+	if started.err != nil {
+		t.Fatalf("Start: %v", started.err)
+	}
+	if !recoveredBeforePublication {
+		select {
+		case earlyRecovery = <-recoverDone:
+		case <-time.After(time.Second):
+			t.Fatal("RecoverInterrupted remained blocked after Start published active state")
+		}
+	}
+
+	lease, leaseErr := db.GetStressRecoveryLease()
+	status := svc.Status()
+	svc.Stop()
+	waitForStressCompletion(t, svc)
+
+	if recoveredBeforePublication {
+		t.Fatalf("RecoverInterrupted completed before Start published active state: %v", earlyRecovery)
+	}
+	if earlyRecovery != nil {
+		t.Fatalf("RecoverInterrupted: %v", earlyRecovery)
+	}
+	if leaseErr != nil || lease == nil || lease.TestID != started.test.ID {
+		t.Fatalf("live lease after serialized recovery = %+v, %v; want %q", lease, leaseErr, started.test.ID)
+	}
+	if status == nil || status.ID != started.test.ID || status.State != "running" {
+		t.Fatalf("active test after serialized recovery = %+v; want running %q", status, started.test.ID)
+	}
+}
 
 func TestStartPersistsRecoveryLeaseBeforeApplyingOutage(t *testing.T) {
 	db := openRecoveryDB(t)
@@ -351,6 +432,54 @@ func assertNoRecoveryLease(t *testing.T, db *storage.DB) {
 	if err != nil || lease != nil {
 		t.Fatalf("recovery lease after success = %+v, %v; want nil, nil", lease, err)
 	}
+}
+
+func waitForStressCompletion(t *testing.T, svc *Service) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		status := svc.Status()
+		if status != nil && status.State != "running" {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("stress test did not finish after Stop")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+type saveBarrierRecoveryStore struct {
+	delegate recoveryStore
+	saved    chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func newSaveBarrierRecoveryStore(delegate recoveryStore) *saveBarrierRecoveryStore {
+	return &saveBarrierRecoveryStore{
+		delegate: delegate,
+		saved:    make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+}
+
+func (s *saveBarrierRecoveryStore) SaveStressRecoveryLease(lease *storage.StressRecoveryLease) error {
+	if err := s.delegate.SaveStressRecoveryLease(lease); err != nil {
+		return err
+	}
+	s.once.Do(func() { close(s.saved) })
+	<-s.release
+	return nil
+}
+
+func (s *saveBarrierRecoveryStore) GetStressRecoveryLease() (*storage.StressRecoveryLease, error) {
+	return s.delegate.GetStressRecoveryLease()
+}
+
+func (s *saveBarrierRecoveryStore) ClearStressRecoveryLease(testID string) error {
+	return s.delegate.ClearStressRecoveryLease(testID)
 }
 
 func containsCall(calls []string, want string) bool {

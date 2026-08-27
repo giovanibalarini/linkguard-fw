@@ -89,6 +89,9 @@ type Service struct {
 	qosSvc   qosCoordinator
 	recovery recoveryStore
 
+	// lifecycleMu serializes recovery admission with the interval in Start
+	// between durable lease creation and publication of the matching live test.
+	lifecycleMu    sync.Mutex
 	mu             sync.Mutex
 	active         *Test
 	cancel         context.CancelFunc
@@ -183,6 +186,9 @@ func (s *Service) Stop() {
 // Start validates and launches a test. Returns an error if one is already
 // running, the link is unusable, or stressing it would kill the only WAN.
 func (s *Service) Start(p StartParams) (*Test, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	s.mu.Lock()
 	if s.active != nil && s.active.State == "running" {
 		s.mu.Unlock()
@@ -406,12 +412,21 @@ func (s *Service) restore(t *Test, origFlat string) error {
 // process. It clears the lease only after the exact owned fault is safely
 // removed and current persisted QoS has been reapplied.
 func (s *Service) RecoverInterrupted(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	if s.recovery == nil {
 		return errors.New("armazenamento de recuperação do stress test não configurado")
 	}
 	lease, err := s.recovery.GetStressRecoveryLease()
 	if err != nil || lease == nil {
 		return err
+	}
+	s.mu.Lock()
+	liveLease := s.active != nil && s.active.State == "running" && s.active.ID == lease.TestID
+	s.mu.Unlock()
+	if liveLease {
+		return nil
 	}
 	if s.exec.IsDryRun() {
 		return fmt.Errorf("%w: lease %q preservada", ErrDryRunRecoveryDeferred, lease.TestID)
