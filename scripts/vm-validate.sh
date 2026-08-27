@@ -6342,25 +6342,35 @@ for _ in range(3):
   sleep 4
   local kern_desl diz_desl
   kern_desl=$(vm "nft list set inet linkguard dom_blocked 2>/dev/null | grep -c elements" | tr -d '\r' | head -1)
-  # A API TEM UM CAMPO PARA ISSO, e é nele que se pergunta. A primeira versão
-  # varria o JSON atrás das palavras "desligado", "coletor", "inativo" — quer
-  # dizer, adivinhava como o produto se expressaria. `State.Ready` é a resposta
-  # que ele já dá: falso quando a capacidade não está operante.
+  # O QUE SE PROCURA É UM SINAL DE "NÃO ESTOU MEDINDO", em qualquer forma.
+  #
+  # Duas tentativas anteriores erraram o alvo: a primeira varria o JSON atrás
+  # das palavras "desligado"/"coletor"/"inativo" — adivinhando como o produto se
+  # expressaria; a segunda olhou `State.Ready`, que é prontidão interna do
+  # coordenador e não tem relação com o coletor estar alimentando.
+  #
+  # Medido: com o dnstap DESLIGADO a resposta traz `"ready": true` e zero
+  # endereços, e não há campo nenhum que separe "ninguém acessou" de "não estou
+  # medindo". A asserção aceita QUALQUER forma de dizer isso; o que ela reprova
+  # é a ausência de todas — porque zero sem ressalva é uma afirmação sobre a
+  # rede, e o produto não está em posição de fazê-la.
   diz_desl=$(body GET /api/domain-targets "$tok" | python3 -c "
 import json,sys
-d=json.load(sys.stdin)
-r=d.get('ready') if isinstance(d,dict) else None
-print('nao-pronto' if r is False else ('pronto' if r is True else 'sem-campo'))" 2>/dev/null)
+bruto=sys.stdin.read()
+d=json.loads(bruto)
+# qualquer sinal serve: um campo booleano de coletor/alimentador, uma razão de
+# suspensão, ou um texto que mencione o coletor.
+sinais=('dnstap','collector','coletor','feeder','alimentador','not_measuring','nao_medindo')
+tem=any(s in bruto.lower() for s in sinais)
+r=d.get(\"ready\") if isinstance(d,dict) else None
+print(\"avisa\" if tem or r is False else \"cala\")" 2>/dev/null)
   if [[ "${kern_desl:-0}" != "0" ]]; then
     bad "com o dnstap DESLIGADO o produto aprendeu endereço: está medindo o que ninguém mandou medir" \
         "$(vm "nft list set inet linkguard dom_blocked 2>/dev/null" | tr -d '\r' | head -c 160)"
-  elif [[ "$diz_desl" == "nao-pronto" ]]; then
-    ok "com o dnstap desligado nada é aprendido, e a API diz que a capacidade não está pronta"
-  elif [[ "$diz_desl" == "sem-campo" ]]; then
-    pular "D2-6. Dnstap desligado não aprende, e a tela diz" \
-          "a resposta da API não traz o campo 'ready'; não sei onde ela expressaria isso"
+  elif [[ "$diz_desl" == "avisa" ]]; then
+    ok "com o dnstap desligado nada é aprendido, e a resposta avisa que não está medindo"
   else
-    bad "com o dnstap desligado nada foi aprendido, mas a API se diz PRONTA: zero endereços lê-se como 'ninguém acessou'" \
+    bad "com o dnstap desligado a resposta não separa 'ninguém acessou' de 'não estou medindo': zero sem ressalva é afirmação sobre a rede" \
         "$(body GET /api/domain-targets "$tok" | head -c 220)"
   fi
   M6=1
