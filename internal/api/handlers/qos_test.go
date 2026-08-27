@@ -96,8 +96,8 @@ func decodeQosJSON(t *testing.T, rec *httptest.ResponseRecorder, target interfac
 func configureManagedQosReads(exec *qosHandlerExec, iface string, _, _ int) {
 	ifb := qos.IFBName(iface)
 	exec.readOutputs = map[string]string{
-		"tc\x00qdisc\x00show\x00dev\x00" + iface:                                   "qdisc cake cafe: root bandwidth 50Mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
-		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                     "qdisc cake caff: root bandwidth 200Mbit besteffort dual-dsthost\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + iface:                                   "qdisc cake cafe: root bandwidth 50Mbit besteffort nat dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                     "qdisc cake caff: root bandwidth 200Mbit besteffort nat dual-dsthost ingress\n",
 		"tc\x00filter\x00show\x00dev\x00" + iface + "\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
 	}
 }
@@ -128,8 +128,8 @@ func TestQosGetReturnsStoredConfigurationWithoutApplying(t *testing.T) {
 		dryRun: true,
 		readOutputs: map[string]string{
 			"ip\x00link\x00show\x00dev\x00" + ifb:                             "7: " + ifb + ": <BROADCAST,UP> mtu 1500",
-			"tc\x00qdisc\x00show\x00dev\x00wan0":                              "qdisc cake cafe: root bandwidth 50Mbit diffserv4 dual-srchost\n",
-			"tc\x00qdisc\x00show\x00dev\x00" + ifb:                            "qdisc cake caff: root bandwidth 200Mbit diffserv4 dual-dsthost\n",
+			"tc\x00qdisc\x00show\x00dev\x00wan0":                              "qdisc cake cafe: root bandwidth 50Mbit diffserv4 nat dual-srchost\n",
+			"tc\x00qdisc\x00show\x00dev\x00" + ifb:                            "qdisc cake caff: root bandwidth 200Mbit diffserv4 nat dual-dsthost ingress\n",
 			"tc\x00filter\x00show\x00dev\x00wan0\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall action mirred egress redirect to device " + ifb,
 		},
 	}
@@ -217,7 +217,7 @@ func TestQosPutAppliesBeforePersistingAndPreservesLinkFields(t *testing.T) {
 		stored.Enabled != original.Enabled {
 		t.Errorf("PUT changed non-QoS link fields: got %#v, original %#v", stored, original)
 	}
-	if !containsEvent(exec.events, "write:tc qdisc replace dev wan0 root handle cafe: cake bandwidth 50mbit diffserv4 dual-srchost") {
+	if !containsEvent(exec.events, "write:tc qdisc replace dev wan0 root handle cafe: cake bandwidth 50mbit diffserv4 nat dual-srchost") {
 		t.Errorf("PUT did not apply the requested configuration first; events = %v", exec.events)
 	}
 }
@@ -959,8 +959,8 @@ func TestLinksDeleteReturns500AndAttemptsFreshReconciliationWhenCleanupRestoreFa
 	}
 	ifb := qos.IFBName(original.Interface)
 	exec.readOutputs = map[string]string{
-		"tc\x00qdisc\x00show\x00dev\x00" + original.Interface:                                   "qdisc cake cafe: root bandwidth 50Mbit besteffort dual-srchost\n",
-		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                                  "qdisc cake caff: root bandwidth 200Mbit besteffort dual-dsthost\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + original.Interface:                                   "qdisc cake cafe: root bandwidth 50Mbit besteffort nat dual-srchost\n",
+		"tc\x00qdisc\x00show\x00dev\x00" + ifb:                                                  "qdisc cake caff: root bandwidth 200Mbit besteffort nat dual-dsthost ingress\n",
 		"tc\x00filter\x00show\x00dev\x00" + original.Interface + "\x00ingress\x00pref\x0049152": "filter protocol all pref 49152 matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
 	}
 	closed := false

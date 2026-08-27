@@ -64,8 +64,8 @@ func hasRootCake(output string) bool {
 }
 
 func hasCompleteManagedChain(egress, ingress, redirect, ifb string) bool {
-	_, egressOK := linkGuardCakeRootSignature(egress, managedEgressHandle, "dual-srchost")
-	_, ingressOK := linkGuardCakeRootSignature(ingress, managedIngressHandle, "dual-dsthost")
+	_, egressOK := linkGuardCakeRootSignature(egress, managedEgressHandle, "dual-srchost", false)
+	_, ingressOK := linkGuardCakeRootSignature(ingress, managedIngressHandle, "dual-dsthost", true)
 	return egressOK && ingressOK && hasManagedRedirect(redirect, ifb)
 }
 

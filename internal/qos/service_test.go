@@ -38,8 +38,8 @@ func configureManagedKernelObjects(exec *fakeExecutor, iface string) {
 	ifb := IFBName(iface)
 	exec.ifbs[ifb] = true
 	exec.readOut = map[string]string{
-		executorCallKey("tc", "qdisc", "show", "dev", iface):                                             "qdisc cake " + managedEgressHandle + " root refcnt 2 bandwidth 50Mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
-		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                               "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 500Mbit besteffort dual-dsthost\n",
+		executorCallKey("tc", "qdisc", "show", "dev", iface):                                             "qdisc cake " + managedEgressHandle + " root refcnt 2 bandwidth 50Mbit besteffort nat dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                               "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 500Mbit besteffort nat dual-dsthost ingress\n",
 		executorCallKey("tc", "filter", "show", "dev", iface, "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
 	}
 }
@@ -202,10 +202,10 @@ func TestApplyBuildsEgressIngressAndMatchallCommands(t *testing.T) {
 		{Read: true, Command: "tc", Args: []string{"qdisc", "show", "dev", "wan0"}},
 		{Read: true, Command: "tc", Args: []string{"filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority}},
 		{Read: true, Command: "ip", Args: []string{"link", "show", "dev", ifb}},
-		{Command: "tc", Args: []string{"qdisc", "replace", "dev", "wan0", "root", "handle", managedEgressHandle, "cake", "bandwidth", "50mbit", "besteffort", "dual-srchost"}},
+		{Command: "tc", Args: []string{"qdisc", "replace", "dev", "wan0", "root", "handle", managedEgressHandle, "cake", "bandwidth", "50mbit", "besteffort", "nat", "dual-srchost"}},
 		{Command: "ip", Args: []string{"link", "add", ifb, "type", "ifb"}},
 		{Command: "ip", Args: []string{"link", "set", "dev", ifb, "up"}},
-		{Command: "tc", Args: []string{"qdisc", "replace", "dev", ifb, "root", "handle", managedIngressHandle, "cake", "bandwidth", "500mbit", "besteffort", "dual-dsthost"}},
+		{Command: "tc", Args: []string{"qdisc", "replace", "dev", ifb, "root", "handle", managedIngressHandle, "cake", "bandwidth", "500mbit", "besteffort", "nat", "dual-dsthost", "ingress"}},
 		{Command: "tc", Args: []string{"qdisc", "add", "dev", "wan0", "clsact"}},
 		{Command: "tc", Args: []string{"filter", "replace", "dev", "wan0", "ingress", "pref", "49152", "protocol", "all", "matchall", "action", "mirred", "egress", "redirect", "dev", ifb}},
 	}
@@ -1085,7 +1085,7 @@ func TestRestoreAfterNetemDeletesOnlyOwnedFaultAndReappliesPersistedQoS(t *testi
 	rootKey := executorCallKey("tc", "qdisc", "show", "dev", "wan0")
 	exec.readOut = map[string]string{
 		rootKey: "qdisc netem " + managedNetemHandle + " root refcnt 2 limit 1000 delay 500ms loss 20%\n",
-		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 300Mbit diffserv4 dual-dsthost\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 300Mbit diffserv4 nat dual-dsthost ingress\n",
 		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
 	}
 	exec.onExecute = func(call execCall) {
@@ -1200,8 +1200,8 @@ func TestApplyCompensationRestoresCakeBandwidthTokenVerbatim(t *testing.T) {
 			ifb := IFBName("wan0")
 			exec.ifbs[ifb] = true
 			exec.readOut = map[string]string{
-				executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                                             "qdisc cake " + managedEgressHandle + " root bandwidth " + want + " besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
-				executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake " + managedIngressHandle + " root bandwidth 200mbit besteffort dual-dsthost\n",
+				executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                                             "qdisc cake " + managedEgressHandle + " root bandwidth " + want + " besteffort nat dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+				executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                "qdisc cake " + managedIngressHandle + " root bandwidth 200mbit besteffort nat dual-dsthost ingress\n",
 				executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred (Egress Redirect to device " + ifb + ")\n",
 			}
 			exec.failWhen = func(call execCall) error {
@@ -1219,7 +1219,7 @@ func TestApplyCompensationRestoresCakeBandwidthTokenVerbatim(t *testing.T) {
 			}
 			if !containsWriteSequence(exec.calls, "tc", []string{
 				"qdisc", "replace", "dev", "wan0", "root", "handle", managedEgressHandle,
-				"cake", "bandwidth", want, "besteffort", "dual-srchost",
+				"cake", "bandwidth", want, "besteffort", "nat", "dual-srchost",
 			}) {
 				t.Fatalf("compensation did not preserve bandwidth token %q: %#v", want, exec.calls)
 			}
@@ -1250,8 +1250,8 @@ func TestObserveReturnsManagedKernelStateWithReadOnlySeparatedArguments(t *testi
 	exec := newFakeExecutor()
 	exec.ifbs[ifb] = true
 	exec.readOut = map[string]string{
-		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                              "qdisc cake " + managedEgressHandle + " root refcnt 2 bandwidth 50Mbit diffserv4 dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
-		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                 "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 200Mbit diffserv4 dual-dsthost\n",
+		executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                              "qdisc cake " + managedEgressHandle + " root refcnt 2 bandwidth 50Mbit diffserv4 nat dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		executorCallKey("tc", "qdisc", "show", "dev", ifb):                                 "qdisc cake " + managedIngressHandle + " root refcnt 2 bandwidth 200Mbit diffserv4 nat dual-dsthost ingress\n",
 		executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", "49152"): "filter protocol all pref 49152\n\tmatchall action mirred egress redirect to device " + ifb + "\n",
 	}
 	service := NewService(exec)
@@ -1299,6 +1299,51 @@ func TestObserveDoesNotClaimForeignCakeRootIsManaged(t *testing.T) {
 	}
 	if state.Enabled {
 		t.Fatalf("Observe() claimed foreign egress cake was managed: %#v", state)
+	}
+}
+
+func TestObserveRequiresNatAndIngressCakeSemantics(t *testing.T) {
+	tests := []struct {
+		name    string
+		egress  string
+		ingress string
+	}{
+		{
+			name:    "egress_without_nat",
+			egress:  "qdisc cake " + managedEgressHandle + " root bandwidth 50Mbit diffserv4 dual-srchost\n",
+			ingress: "qdisc cake " + managedIngressHandle + " root bandwidth 200Mbit diffserv4 nat dual-dsthost ingress\n",
+		},
+		{
+			name:    "ifb_without_nat",
+			egress:  "qdisc cake " + managedEgressHandle + " root bandwidth 50Mbit diffserv4 nat dual-srchost\n",
+			ingress: "qdisc cake " + managedIngressHandle + " root bandwidth 200Mbit diffserv4 dual-dsthost ingress\n",
+		},
+		{
+			name:    "ifb_without_ingress",
+			egress:  "qdisc cake " + managedEgressHandle + " root bandwidth 50Mbit diffserv4 nat dual-srchost\n",
+			ingress: "qdisc cake " + managedIngressHandle + " root bandwidth 200Mbit diffserv4 nat dual-dsthost\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ifb := IFBName("wan0")
+			exec := newFakeExecutor()
+			exec.ifbs[ifb] = true
+			exec.readOut = map[string]string{
+				executorCallKey("tc", "qdisc", "show", "dev", "wan0"):                                             tt.egress,
+				executorCallKey("tc", "qdisc", "show", "dev", ifb):                                                tt.ingress,
+				executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority): "filter protocol all pref " + redirectFilterPriority + " matchall\n\taction order 1: mirred egress redirect to device " + ifb + "\n",
+			}
+
+			state, err := NewService(exec).Observe(context.Background(), "wan0")
+			if err != nil {
+				t.Fatalf("Observe() error = %v; want nil", err)
+			}
+			if state.Enabled {
+				t.Fatalf("Observe() accepted semantically incomplete CAKE chain: egress=%q ingress=%q", tt.egress, tt.ingress)
+			}
+		})
 	}
 }
 
