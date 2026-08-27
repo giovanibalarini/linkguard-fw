@@ -113,7 +113,11 @@ func TestOMaisEspecificoGanha(t *testing.T) {
 // com a internet inteira — e barrar `com` é derrubar a rede do cliente com um
 // campo de três letras.
 func TestDominioDeUmRotuloSoEhRecusado(t *testing.T) {
-	for _, d := range []string{"com", "localhost", "", ".", "  ", "*.exemplo.com", "exemplo com", "exemplo..com"} {
+	rotulo64 := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, d := range []string{
+		"com", "localhost", "", ".", "  ", "*.exemplo.com", "exemplo com", "exemplo..com",
+		"-api.exemplo.com", "api-.exemplo.com", rotulo64 + ".com", ".exemplo.com",
+	} {
 		if _, ok := NormalizarDominio(d); ok {
 			t.Errorf("%q foi aceito como domínio", d)
 		}

@@ -208,6 +208,7 @@ var schemaMigrations = []migration{
 	{14, "domain_targets", upDomainTargets},
 	{15, "cota por aparelho: host_quota e host_usage", upHostQuota},
 	{16, "hosts.quota nos papéis que já bloqueavam host", upGrantHostsQuota},
+	{17, "domain_targets.link_id", upAddDomainTargetLinkID},
 }
 
 const createSchemaMigrationsTable = `
@@ -599,6 +600,32 @@ func upDomainTargets(tx *sql.Tx) error {
 	}
 	if _, err := tx.Exec(createDomainTargetsTable); err != nil {
 		return fmt.Errorf("criar a tabela domain_targets: %w", err)
+	}
+	return nil
+}
+
+// upAddDomainTargetLinkID troca a identidade denormalizada (nome/mark) pelo id
+// estável do Link. Nome e mark permanecem para compatibilidade com backups
+// antigos, mas o runtime passa a resolvê-los sempre da linha atual de links.
+func upAddDomainTargetLinkID(tx *sql.Tx) error {
+	var count int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('domain_targets') WHERE name = 'link_id'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("checar domain_targets.link_id: %w", err)
+	}
+	if count == 0 {
+		if _, err := tx.Exec(`ALTER TABLE domain_targets ADD COLUMN link_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("adicionar domain_targets.link_id: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`
+		UPDATE domain_targets
+		   SET link_id = COALESCE((
+		       SELECT id FROM links WHERE links.name = domain_targets.link_name ORDER BY id LIMIT 1
+		   ), '')
+		 WHERE link_id = '' AND link_name <> ''`); err != nil {
+		return fmt.Errorf("retropreencher domain_targets.link_id: %w", err)
 	}
 	return nil
 }
@@ -1209,6 +1236,7 @@ CREATE TABLE IF NOT EXISTS domain_targets (
     domain     TEXT NOT NULL UNIQUE,
     capability TEXT NOT NULL DEFAULT 'barrar',
     stage      TEXT NOT NULL DEFAULT 'ensaio',
+    link_id    TEXT NOT NULL DEFAULT '',
     link_name  TEXT NOT NULL DEFAULT '',
     mark       INTEGER NOT NULL DEFAULT 0,
     note       TEXT NOT NULL DEFAULT '',
