@@ -21,7 +21,7 @@ func sanitizeDynamicSetElements(table string) string {
 		}
 
 		setBlock := table[setStart : setClose+1]
-		if hasDynamicFlag(setBlock) {
+		if hasTransientElements(setBlock) {
 			sanitizedBlock := removeElementsAssignments(setBlock)
 			if sanitizedBlock != setBlock {
 				sanitized.WriteString(table[last:setStart])
@@ -82,6 +82,55 @@ func matchingBrace(text string, open int) int {
 	}
 	return -1
 }
+
+// hasTransientElements diz se os elementos deste set são MEDIÇÃO, e portanto
+// não pertencem ao arquivo que o kernel carrega no boot.
+//
+// O critério é `dynamic` OU `timeout`, e a segunda metade não é zelo: o nft NÃO
+// IMPRIME linha `flags` para um set que só tem prazo. A saída real de uma caixa
+// é esta —
+//
+//	set dom_blocked {
+//		type ipv4_addr
+//		size 8192
+//		timeout 1h
+//	}
+//
+// — e um critério que procura só a palavra `dynamic` deixa passar os três sets
+// de alvo por domínio, que guardam endereços aprendidos de DNS: cache por
+// construção, e exatamente o conteúdo que esta correção existe para tirar do
+// arquivo de boot.
+//
+// Elemento com prazo é transitório por definição; configuração não expira. Os
+// sets que o admin monta à mão — blocklist, blocked_hosts, blocked_macs — e o
+// map host_wan não têm prazo nenhum, e continuam preservados byte a byte.
+func hasTransientElements(setBlock string) bool {
+	return hasDynamicFlag(setBlock) || setHasTimeout(setBlock)
+}
+
+// setHasTimeout procura a declaração `timeout` no CORPO do set, e não dentro
+// dos elementos: um elemento traz o próprio `timeout` na linha, e casar ali
+// tornaria o critério circular.
+func setHasTimeout(setBlock string) bool {
+	corpo := setBlock
+	if i := strings.Index(corpo, "elements"); i >= 0 {
+		corpo = corpo[:i]
+	}
+	for i := 0; i+len("timeout") <= len(corpo); i++ {
+		switch corpo[i] {
+		case '"':
+			i = skipQuoted(corpo, i)
+		case '#':
+			i = skipComment(corpo, i)
+		default:
+			if tokenAt(corpo, i, "timeout") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 
 func hasDynamicFlag(setBlock string) bool {
 	const keyword = "flags"
