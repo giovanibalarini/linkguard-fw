@@ -730,6 +730,25 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		return proprios
 	})
 	dnstapSvc.SetObservador(domSvc.Observar)
+
+	// UMA definição de "o coletor de DNS está ligado", usada por todo mundo que
+	// precisa dela. Lida A CADA CHAMADA porque o admin liga e desliga o dnstap
+	// na tela de serviços de rede sem reiniciar nada — um valor lido aqui no
+	// arranque estaria errado a partir do primeiro clique.
+	dnstapLigado := func() bool {
+		netCfg := netsvc.DefaultConfig()
+		if raw, _ := db.GetSetting("netsvc_config"); raw != "" {
+			_ = json.Unmarshal([]byte(raw), &netCfg)
+		}
+		return netCfg.DNSTapEnabled
+	}
+	// O alvo por domínio aprende SÓ pelo dnstap. Com o coletor desligado ele
+	// nunca recebe um endereço, e a tela mostraria rotatividade zero e último
+	// aprendizado zero em todo domínio listado — igualzinho a "ninguém acessou
+	// estes nomes". As duas leituras levam a ações opostas, e é por isso que a
+	// resposta da API tem de dizer qual das duas é. Ver Estado.Observando.
+	domSvc.DefinirFonteDeObservacao(dnstapLigado)
+
 	// O destino do fluxo ganha nome pelo mesmo mapa da #116. Sem coletor de
 	// dnstap ligado o mapa fica vazio e a tela mostra o endereço cru dizendo por
 	// quê — o que não pode é a tela deixar o admin achar que o destino não tem
@@ -741,13 +760,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// código morto. Quem sabe se o coletor está ligado é a configuração de
 	// serviços de rede, lida A CADA CONSULTA porque o admin liga e desliga o
 	// dnstap na tela sem reiniciar nada.
-	fluxosSvc.SetNomes(dnstapSvc.Mapa(), func() bool {
-		netCfg := netsvc.DefaultConfig()
-		if raw, _ := db.GetSetting("netsvc_config"); raw != "" {
-			_ = json.Unmarshal([]byte(raw), &netCfg)
-		}
-		return netCfg.DNSTapEnabled
-	})
+	fluxosSvc.SetNomes(dnstapSvc.Mapa(), dnstapLigado)
 	// Séries por aparelho para o coletor do cliente (#118). Fora do registro
 	// aberto do Prometheus de propósito — ver internal/metrics/exposicao.go.
 	porHost := metrics.NovoPorHost()

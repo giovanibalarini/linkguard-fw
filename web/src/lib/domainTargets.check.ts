@@ -62,6 +62,24 @@ for (const field of [
   check(component.includes(field), `estado observável precisa renderizar ${field}`);
 }
 
+// O ZERO SEM MEDIÇÃO NÃO PODE SER LIDO COMO ZERO MEDIDO. Rotação e último
+// aprendizado vêm os dois do dnstap; com o coletor desligado eles são zero por
+// construção, e imprimir "0" ali afirma que ninguém acessou o nome — a
+// conclusão oposta da verdadeira, e a que faz o admin promover um domínio
+// achando que ele é inofensivo.
+check(component.includes('runtime?.observando === true'), 'a tela precisa distinguir observando de não sei');
+check(component.includes('runtime?.observando === false'), 'coletor desligado precisa de tratamento próprio, separado de nil');
+check(component.includes("t('links.domains.notMeasured')"), 'rotação e último acesso precisam dizer "sem medição" quando não há medição');
+check(component.includes("t('links.domains.notObservingHelp')"), 'a tela precisa dizer o que fazer quando o coletor está desligado');
+for (const key of ['links.domains.observing', 'links.domains.notObserving', 'links.domains.observingUnknown',
+  'links.domains.notObservingHelp', 'links.domains.notMeasured']) {
+  check(strings.includes(`${key}:`), `dicionário precisa definir ${key}`);
+}
+// `vivo` é o ALIMENTADOR, e chamá-lo de dnstap era a mesma confusão por outro
+// caminho: a tela dizia "dnstap ativo" numa caixa com o dnstap desligado.
+const aliveLine = strings.slice(strings.indexOf('links.domains.runtimeAlive:'), strings.indexOf('links.domains.observing:'));
+check(!aliveLine.includes('dnstap'), 'o rótulo de `vivo` não pode se chamar dnstap: `vivo` é o alimentador');
+
 for (const term of ['CDN', 'DoH', 'DoT', 'VPN', 'IP fixo', 'IPv6']) {
   check(strings.includes(term), `caveat honesto precisa mencionar ${term}`);
 }

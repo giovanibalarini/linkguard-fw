@@ -17,6 +17,12 @@ func TestDomainRoutingProductionWiringAndBootOrder(t *testing.T) {
 		[]byte("DomainRouting: domainRouting"),
 		[]byte("domainRouting.Reconcile(ctx)"),
 		[]byte("domainRouting.Prepare(ctx)"),
+		// Sem esta, Estado.Observando responde nil em toda máquina e a tela
+		// perde a única coisa que separa "ninguém acessou este nome" de "eu
+		// não estou olhando o DNS". É de fiação porque o campo existir não
+		// adianta nada se ninguém o liga — foi exatamente assim que o aviso
+		// "o mapa está desligado" já virou código morto uma vez aqui.
+		[]byte("domSvc.DefinirFonteDeObservacao("),
 	}
 	for _, fragment := range required {
 		if !bytes.Contains(source, fragment) {

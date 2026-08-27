@@ -185,6 +185,15 @@ type Servico struct {
 	// poda porque o endereço da WAN muda sozinho num link discado.
 	fonteProtegidos func() []netip.Prefix
 
+	// fonteObservacao diz se o COLETOR DE DNS está ligado. É uma função, e não
+	// um booleano, pelo mesmo motivo do fonteProtegidos: o admin liga e desliga
+	// o dnstap na tela de serviços de rede sem reiniciar nada, e um valor
+	// congelado no arranque estaria errado a partir do primeiro clique.
+	//
+	// nil quer dizer que ninguém a ligou, e isso vira "não sei" na tela — nunca
+	// "estou medindo". Ver Estado.Observando.
+	fonteObservacao func() bool
+
 	mu          sync.Mutex
 	ajustesPend []Ajuste
 
@@ -238,6 +247,23 @@ func (s *Servico) DefinirFonteDeProtegidos(f func() []netip.Prefix) {
 	if f != nil {
 		s.fonteProtegidos = f
 	}
+}
+
+// DefinirFonteDeObservacao liga a pergunta "o coletor de DNS está ligado?".
+//
+// Sem ela, esta capacidade não tem como saber a diferença entre as duas
+// explicações do mesmo zero — e é a diferença inteira. Ver Estado.Observando.
+func (s *Servico) DefinirFonteDeObservacao(f func() bool) {
+	s.fonteObservacao = f
+}
+
+// Observando responde a pergunta, com nil para "ninguém me disse".
+func (s *Servico) Observando() *bool {
+	if s == nil || s.fonteObservacao == nil {
+		return nil
+	}
+	v := s.fonteObservacao()
+	return &v
 }
 
 // Observar recebe o que uma resposta de DNS ensinou. NUNCA BLOQUEIA E NUNCA
@@ -821,6 +847,23 @@ type Estado struct {
 	// tem de ser um campo, e não uma inferência a partir de um contador subindo.
 	Vivo      bool   `json:"vivo"`
 	Reinicios uint64 `json:"reinicios"`
+	// Observando diz se o COLETOR DE DNS está ligado, e é o que separa as duas
+	// explicações de todo zero abaixo: "ninguém acessou este nome" e "eu não
+	// estou olhando".
+	//
+	// Vivo NÃO responde isso. Vivo é o alimentador — o laço que escreve no
+	// kernel —, e ele sobe e roda feliz numa caixa com o dnstap desligado, onde
+	// Observar simplesmente nunca é chamado. A tela então mostra rotatividade
+	// zero e último aprendizado zero em todo domínio listado, e as duas
+	// leituras possíveis levam a ações opostas: promover um nome achando que
+	// ele é inofensivo, ou dar o bloqueio por funcionando quando ele não pode
+	// funcionar — o índice nunca vai receber um endereço para escrever.
+	//
+	// Ponteiro pela mesma disciplina de NoKernel, e aqui as três respostas são
+	// acionáveis: false manda o admin ligar o dnstap em serviços de rede, nil
+	// diz que o produto não conseguiu perguntar, e só true autoriza a ler os
+	// zeros como ausência de acesso.
+	Observando *bool `json:"observando"`
 
 	// Descartes são observações DE DOMÍNIO LISTADO que não couberam na fila.
 	// Ignoradas são as que nem entraram nela por não casar com domínio nenhum,
@@ -855,6 +898,7 @@ type Estado struct {
 func (s *Servico) Estado(ctx context.Context) Estado {
 	e := Estado{
 		Vivo:               s.vivo.Load(),
+		Observando:         s.Observando(),
 		Reinicios:          s.reinicios.Load(),
 		Descartes:          s.descartes.Load(),
 		Ignoradas:          s.ignoradas.Load(),

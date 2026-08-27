@@ -641,3 +641,40 @@ func TestSemLerOKernelALinhaDoDominioNaoAfirmaZero(t *testing.T) {
 		t.Fatalf("o que o índice acha que escreveu não aparece: %+v", e.Dominios[0])
 	}
 }
+
+// TestObservandoSeparaNinguemAcessouDeNaoEstouOlhando.
+//
+// O alvo por domínio aprende SÓ pelo dnstap. Com o coletor desligado o
+// alimentador sobe e roda feliz — Vivo continua true, o laço está de pé —, mas
+// Observar nunca é chamado, e a tela mostra rotatividade zero e último
+// aprendizado zero em todo domínio listado. Igualzinho a "ninguém acessou estes
+// nomes", e as duas leituras levam a ações opostas: promover um domínio achando
+// que ele é inofensivo, ou dar um bloqueio por funcionando quando ele não pode
+// funcionar.
+func TestObservandoSeparaNinguemAcessouDeNaoEstouOlhando(t *testing.T) {
+	ctx := context.Background()
+
+	s := NovoServico(nil)
+	if v := s.Estado(ctx).Observando; v != nil {
+		t.Errorf("sem fonte ligada, Observando devia ser nil (não sei); veio %v", *v)
+	}
+
+	s.DefinirFonteDeObservacao(func() bool { return false })
+	v := s.Estado(ctx).Observando
+	if v == nil || *v {
+		t.Fatalf("coletor desligado devia dar false; veio %v", v)
+	}
+
+	// E a leitura é A CADA CHAMADA: o admin liga o dnstap na tela de serviços
+	// de rede sem reiniciar nada, e um valor congelado no arranque estaria
+	// errado a partir do primeiro clique.
+	ligado := false
+	s.DefinirFonteDeObservacao(func() bool { return ligado })
+	if v := s.Estado(ctx).Observando; v == nil || *v {
+		t.Fatal("devia estar desligado ainda")
+	}
+	ligado = true
+	if v := s.Estado(ctx).Observando; v == nil || !*v {
+		t.Fatal("ligar o coletor não mudou a resposta: o valor ficou congelado no arranque")
+	}
+}
