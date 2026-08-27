@@ -118,8 +118,8 @@ func configureBootManagedObjects(exec *bootQosExec, interfaces ...string) {
 	for _, iface := range interfaces {
 		ifb := qos.IFBName(iface)
 		exec.readOutputs["ip link show dev "+ifb] = "6: " + ifb + ": <BROADCAST>"
-		exec.readOutputs["tc qdisc show dev "+iface] = "qdisc cake cafe: root bandwidth 50mbit besteffort dual-srchost"
-		exec.readOutputs["tc qdisc show dev "+ifb] = "qdisc cake caff: root bandwidth 200mbit besteffort dual-dsthost"
+		exec.readOutputs["tc qdisc show dev "+iface] = "qdisc cake cafe: root bandwidth 50mbit besteffort nat dual-srchost"
+		exec.readOutputs["tc qdisc show dev "+ifb] = "qdisc cake caff: root bandwidth 200mbit besteffort nat dual-dsthost ingress"
 		exec.readOutputs["tc filter show dev "+iface+" ingress pref 49152"] = "filter protocol all pref 49152 matchall\n action order 1: mirred egress redirect dev " + ifb
 	}
 }

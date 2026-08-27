@@ -306,7 +306,7 @@ func (s *Service) restoreAfterNetem(ctx context.Context, cfg Config, fault Netem
 	if ownership.filterPresent != ownership.redirectMatches {
 		return State{}, fmt.Errorf("%w: incomplete ingress redirect on %q", ErrOwnershipNotEstablished, cfg.Interface)
 	}
-	ingressSignature, ingressMatches := linkGuardCakeRootSignature(ownership.ingressOutput, managedIngressHandle, "dual-dsthost")
+	ingressSignature, ingressMatches := linkGuardCakeRootSignature(ownership.ingressOutput, managedIngressHandle, "dual-dsthost", true)
 	if hasRootQdisc(ownership.ingressOutput) != ingressMatches {
 		return State{}, fmt.Errorf("%w: incomplete or foreign ingress qdisc on %q", ErrOwnershipNotEstablished, IFBName(cfg.Interface))
 	}
@@ -404,10 +404,10 @@ func (s *Service) applyWithOwnership(ctx context.Context, cfg Config, ownership 
 	if err := journal.run("apply egress CAKE", func(stepCtx context.Context) error {
 		return s.execute(stepCtx, "apply egress CAKE", "tc",
 			"qdisc", "replace", "dev", cfg.Interface, "root", "handle", managedEgressHandle, "cake",
-			"bandwidth", bandwidthArg(cfg.UploadMbps), mode, "dual-srchost")
+			"bandwidth", bandwidthArg(cfg.UploadMbps), mode, "nat", "dual-srchost")
 	}, func(repairCtx context.Context) error {
 		return s.restoreRoot(repairCtx, cfg.Interface, ownership.egressOutput,
-			cakeRootSignature(managedEgressHandle, bandwidthArg(cfg.UploadMbps), mode, "dual-srchost"),
+			cakeRootSignature(managedEgressHandle, bandwidthArg(cfg.UploadMbps), mode, "dual-srchost", true, false),
 			ownership.egressSignature)
 	}); err != nil {
 		return State{}, err
@@ -436,10 +436,10 @@ func (s *Service) applyWithOwnership(ctx context.Context, cfg Config, ownership 
 	if err := journal.run("apply ingress CAKE", func(stepCtx context.Context) error {
 		return s.execute(stepCtx, "apply ingress CAKE", "tc",
 			"qdisc", "replace", "dev", ifb, "root", "handle", managedIngressHandle, "cake",
-			"bandwidth", bandwidthArg(cfg.DownloadMbps), mode, "dual-dsthost")
+			"bandwidth", bandwidthArg(cfg.DownloadMbps), mode, "nat", "dual-dsthost", "ingress")
 	}, func(repairCtx context.Context) error {
 		return s.restoreRoot(repairCtx, ifb, ownership.ingressOutput,
-			cakeRootSignature(managedIngressHandle, bandwidthArg(cfg.DownloadMbps), mode, "dual-dsthost"),
+			cakeRootSignature(managedIngressHandle, bandwidthArg(cfg.DownloadMbps), mode, "dual-dsthost", true, true),
 			ownership.ingressSignature)
 	}); err != nil {
 		return State{}, err
@@ -523,12 +523,17 @@ type rootSignature struct {
 	bandwidth string
 	mode      string
 	hostMode  string
+	nat       bool
+	ingress   bool
 	delayMs   int
 	lossPct   int
 }
 
-func cakeRootSignature(handle, bandwidth, mode, hostMode string) rootSignature {
-	return rootSignature{kind: "cake", handle: handle, bandwidth: bandwidth, mode: mode, hostMode: hostMode}
+func cakeRootSignature(handle, bandwidth, mode, hostMode string, nat, ingress bool) rootSignature {
+	return rootSignature{
+		kind: "cake", handle: handle, bandwidth: bandwidth, mode: mode,
+		hostMode: hostMode, nat: nat, ingress: ingress,
+	}
 }
 
 func netemRootSignature(fault NetemFault) rootSignature {
@@ -548,11 +553,14 @@ func managedCakeRootSignature(output, handle, hostMode string) (rootSignature, b
 	if !ok {
 		return rootSignature{}, false
 	}
-	return cakeRootSignature(handle, bandwidth, mode, hostMode), true
+	words := strings.Fields(line)
+	return cakeRootSignature(handle, bandwidth, mode, hostMode,
+		containsWord(words, "nat"), containsWord(words, "ingress")), true
 }
 
-func linkGuardCakeRootSignature(output, managedHandle, hostMode string) (rootSignature, bool) {
-	return managedCakeRootSignature(output, managedHandle, hostMode)
+func linkGuardCakeRootSignature(output, managedHandle, hostMode string, ingress bool) (rootSignature, bool) {
+	sig, ok := managedCakeRootSignature(output, managedHandle, hostMode)
+	return sig, ok && sig.nat && sig.ingress == ingress
 }
 
 func (sig rootSignature) matches(output string) bool {
@@ -563,8 +571,10 @@ func (sig rootSignature) matches(output string) bool {
 	switch sig.kind {
 	case "cake":
 		bandwidth, mode, ok := cakeSettings(output)
+		words := strings.Fields(output)
 		return ok && strings.EqualFold(bandwidth, sig.bandwidth) && mode == sig.mode &&
-			containsWord(strings.Fields(output), sig.hostMode)
+			containsWord(words, sig.hostMode) && containsWord(words, "nat") == sig.nat &&
+			containsWord(words, "ingress") == sig.ingress
 	case "netem":
 		delayMs, lossPct, ok := netemSettings(output)
 		return ok && delayMs == sig.delayMs && lossPct == sig.lossPct
@@ -628,8 +638,9 @@ func (s *Service) restoreRoot(ctx context.Context, iface, previousOutput string,
 	if !s.exec.IsDryRun() && !current.matches(currentOutput) {
 		return fmt.Errorf("%w: root qdisc on %q changed during repair", ErrOwnershipNotEstablished, iface)
 	}
-	return s.execute(ctx, "restore managed root qdisc", "tc", "qdisc", "replace", "dev", iface,
-		"root", "handle", previousManaged.handle, "cake", "bandwidth", previousManaged.bandwidth, previousManaged.mode, previousManaged.hostMode)
+	args := []string{"qdisc", "replace", "dev", iface, "root", "handle", previousManaged.handle, "cake"}
+	args = append(args, cakeSignatureArgs(previousManaged)...)
+	return s.execute(ctx, "restore managed root qdisc", "tc", args...)
 }
 
 func cakeSettings(output string) (string, string, bool) {
@@ -652,6 +663,18 @@ func cakeSettings(output string) (string, string, bool) {
 		}
 	}
 	return bandwidth, mode, bandwidth != "" && mode != ""
+}
+
+func cakeSignatureArgs(sig rootSignature) []string {
+	args := []string{"bandwidth", sig.bandwidth, sig.mode}
+	if sig.nat {
+		args = append(args, "nat")
+	}
+	args = append(args, sig.hostMode)
+	if sig.ingress {
+		args = append(args, "ingress")
+	}
+	return args
 }
 
 func rootQdiscLine(output string) (string, bool) {
@@ -764,8 +787,9 @@ func (s *Service) restoreDeletedRoot(ctx context.Context, iface, previousOutput 
 		if previous.kind != "cake" || !previous.matches(previousOutput) {
 			return errors.New("deleted CAKE root has no complete restorable signature")
 		}
-		return s.execute(ctx, "restore deleted CAKE root", "tc", "qdisc", "replace", "dev", iface,
-			"root", "handle", previous.handle, "cake", "bandwidth", previous.bandwidth, previous.mode, previous.hostMode)
+		args := []string{"qdisc", "replace", "dev", iface, "root", "handle", previous.handle, "cake"}
+		args = append(args, cakeSignatureArgs(previous)...)
+		return s.execute(ctx, "restore deleted CAKE root", "tc", args...)
 	}
 	if root.kind == "netem" && root.handle == managedNetemHandle {
 		if previous.kind != "netem" || !previous.matches(previousOutput) {
@@ -912,7 +936,7 @@ func (s *Service) inspectOwnership(ctx context.Context, iface string) (ownership
 	if err != nil {
 		return ownershipState{}, err
 	}
-	egressSignature, egressMatches := linkGuardCakeRootSignature(egress, managedEgressHandle, "dual-srchost")
+	egressSignature, egressMatches := linkGuardCakeRootSignature(egress, managedEgressHandle, "dual-srchost", false)
 	ownership := ownershipState{
 		egressOutput:    egress,
 		egressSignature: egressSignature,
@@ -931,7 +955,7 @@ func (s *Service) inspectOwnership(ctx context.Context, iface string) (ownership
 		return ownershipState{}, err
 	}
 	ownership.ingressOutput = ingress
-	ownership.ingressSignature, ownership.ingressOwned = linkGuardCakeRootSignature(ingress, managedIngressHandle, "dual-dsthost")
+	ownership.ingressSignature, ownership.ingressOwned = linkGuardCakeRootSignature(ingress, managedIngressHandle, "dual-dsthost", true)
 	ownership.chainOwned = egressMatches && ownership.ingressOwned && ownership.redirectMatches
 	ownership.egressOwned = ownership.chainOwned
 	ownership.ingressOwned = ownership.chainOwned
