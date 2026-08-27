@@ -209,6 +209,42 @@ var schemaMigrations = []migration{
 	{15, "cota por aparelho: host_quota e host_usage", upHostQuota},
 	{16, "hosts.quota nos papéis que já bloqueavam host", upGrantHostsQuota},
 	{17, "domain_targets.link_id", upAddDomainTargetLinkID},
+	// A 17 já foi consumida pelo alvo por domínio e JÁ RODOU em produção. O
+	// WireGuard nasceu com o mesmo número enquanto os dois ramos corriam em
+	// paralelo; mantê-lo em 17 faria a migração ser dada como aplicada numa
+	// base que nunca viu estas tabelas, e o serviço subiria sem elas.
+	{18, "wireguard: configuração e peers por usuário", upWireGuard},
+}
+
+func upWireGuard(tx *sql.Tx) error {
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS wireguard_config (
+			only_row        INTEGER PRIMARY KEY CHECK (only_row = 1),
+			enabled         INTEGER NOT NULL DEFAULT 0,
+			listen_port     INTEGER NOT NULL DEFAULT 51820,
+			address         TEXT NOT NULL DEFAULT '10.7.0.1/24',
+			endpoint_host   TEXT NOT NULL DEFAULT '',
+			endpoint_link_id TEXT NOT NULL DEFAULT '',
+			last_apply_ok   INTEGER NOT NULL DEFAULT 0,
+			last_apply_error TEXT NOT NULL DEFAULT '',
+			last_applied_at INTEGER NOT NULL DEFAULT 0,
+			updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS wireguard_peers (
+			user_id          TEXT PRIMARY KEY,
+			public_key       TEXT NOT NULL UNIQUE,
+			address          TEXT NOT NULL UNIQUE,
+			secret_name      TEXT NOT NULL UNIQUE,
+			firewall_group_id TEXT NOT NULL UNIQUE,
+			created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			rotated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`); err != nil {
+		return err
+	}
+	return nil
 }
 
 const createSchemaMigrationsTable = `
