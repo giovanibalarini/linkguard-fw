@@ -181,6 +181,30 @@ func TestSystemGroupKindKnownToIsSystemGroupIsAlwaysRenderedAsSystem(t *testing.
 	}
 }
 
+func TestDestinationBlockGroupAlsoMatchesLearnedDomainAddresses(t *testing.T) {
+	rules := systemGroupForwardRules[GroupKindBlocklist](false)
+	joined := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		joined = append(joined, strings.Join(rule, " "))
+	}
+	want := []string{
+		"ip daddr @" + DomBlockedSet + " counter drop",
+		"ip6 daddr @" + DomBlockedSet6 + " counter drop",
+	}
+	for _, expected := range want {
+		found := false
+		for _, got := range joined {
+			if got == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("grupo de destinos bloqueados não emite %q: %v", expected, joined)
+		}
+	}
+}
+
 // Kind vazio é o que toda linha antiga tem depois do ALTER TABLE. Ela é um
 // grupo do admin, e confundir isso com "sistema" travaria a edição de grupos
 // que o admin criou.

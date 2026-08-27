@@ -188,6 +188,8 @@ func TestForwardChainFollowsTheSingleOrderedList(t *testing.T) {
 		"ether saddr @blocked_macs counter drop",
 		"ip daddr @blocklist counter drop",
 		"ip saddr @blocklist counter drop",
+		"ip daddr @dom_blocked counter drop",
+		"ip6 daddr @dom_blocked6 counter drop",
 	}
 	if len(lines) != len(want) {
 		t.Fatalf("esperava %d linhas, obtive %d: %v", len(want), len(lines), lines)
@@ -328,9 +330,11 @@ func TestForwardChainKeepsTheFourAdministrativeBlocks(t *testing.T) {
 		"ether saddr @blocked_macs counter drop",
 		"ip daddr @blocklist counter drop",
 		"ip saddr @blocklist counter drop",
+		"ip daddr @dom_blocked counter drop",
+		"ip6 daddr @dom_blocked6 counter drop",
 	}
 	if len(lines) != len(want) {
-		t.Fatalf("só com os grupos do sistema a forward deveria ter os 5 bloqueios, tem %d:\n%v", len(lines), lines)
+		t.Fatalf("só com os grupos do sistema a forward deveria ter os 7 bloqueios, tem %d:\n%v", len(lines), lines)
 	}
 	for i := range want {
 		if lines[i] != want[i] {
@@ -854,6 +858,8 @@ func TestReconcileGroupsForwardCommandOrder(t *testing.T) {
 		"nft add rule inet linkguard forward ether saddr @blocked_macs counter drop",
 		"nft add rule inet linkguard forward ip daddr @blocklist counter drop",
 		"nft add rule inet linkguard forward ip saddr @blocklist counter drop",
+		"nft add rule inet linkguard forward ip daddr @dom_blocked counter drop",
+		"nft add rule inet linkguard forward ip6 daddr @dom_blocked6 counter drop",
 		"nft add rule inet linkguard forward ip saddr 192.168.50.0/24 counter jump grp_aaa",
 		"nft add rule inet linkguard forward ip saddr 192.168.3.10 counter jump grp_bbb",
 	}
@@ -2439,6 +2445,8 @@ func TestForwardChainKeepsSystemBlockLinesUntouchedByConnState(t *testing.T) {
 		"ether saddr @" + BlockedMACSet + " counter drop",
 		"ip daddr @blocklist counter drop",
 		"ip saddr @blocklist counter drop",
+		"ip daddr @" + DomBlockedSet + " counter drop",
+		"ip6 daddr @" + DomBlockedSet6 + " counter drop",
 	}
 	got := forwardLines(groups)
 	if len(got) != len(want) {

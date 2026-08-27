@@ -250,12 +250,39 @@ func forwardChainRules(groups []StoredGroup, logarBloqueios bool) [][]string {
 	return rules
 }
 
-// markHostsChainRules is the canonical rule set for mark_hosts — a single
-// rule, also carrying `counter`.
-func markHostsChainRules() [][]string {
-	return [][]string{
-		{"counter", "meta", "mark", "set", "ip", "saddr", "map", "@" + HostWanMap},
+// markHostsChainRules é a definição canônica da mark_hosts. O direcionamento
+// por domínio vem primeiro e só decide conexões novas ainda sem marca; a
+// fixação manual por host vem depois e, por isso, continua prevalecendo.
+//
+// Não se escreve `ct mark` aqui. O bit 0x10000 e o pinning de conexão pertencem
+// a conn_mark_out (#194); duplicar essa escrita reintroduziria a colisão que a
+// issue corrigiu.
+func markHostsChainRules(wans []WANMark) [][]string {
+	ifaces := make([]string, 0, len(wans))
+	vistos := make(map[string]bool, len(wans))
+	for _, wan := range wans {
+		if !reIface.MatchString(wan.Interface) || vistos[wan.Interface] {
+			continue
+		}
+		vistos[wan.Interface] = true
+		ifaces = append(ifaces, wan.Interface)
 	}
+	sort.Strings(ifaces)
+
+	rules := make([][]string, 0, 2)
+	if len(ifaces) > 0 {
+		quoted := make([]string, len(ifaces))
+		for j, iface := range ifaces {
+			quoted[j] = fmt.Sprintf("%q", iface)
+		}
+		rules = append(rules, []string{
+			"iifname", "!=", "{ " + strings.Join(quoted, ", ") + " }",
+			"ct", "state", "new", "meta", "mark", "0x0", "counter",
+			"meta", "mark", "set", "ip", "daddr", "map", "@" + DomWanMap,
+		})
+	}
+	rules = append(rules, []string{"counter", "meta", "mark", "set", "ip", "saddr", "map", "@" + HostWanMap})
+	return rules
 }
 
 // ReconcileStructuralChains rebuilds the mark_hosts chain from its canonical
@@ -289,12 +316,12 @@ func markHostsChainRules() [][]string {
 // data to zero each time. mark_hosts never had a counter in production
 // (nothing reconciled it before this); this is what starts counting it,
 // on the same schedule as everything else from now on.
-func (s *Service) ReconcileStructuralChains(ctx context.Context) error {
+func (s *Service) ReconcileStructuralChains(ctx context.Context, wans ...WANMark) error {
 	if s.exec.IsDryRun() {
 		return nil
 	}
 
-	if err := s.rebuildChain(ctx, MarkHostsChain, markHostsChainRules()); err != nil {
+	if err := s.rebuildChain(ctx, MarkHostsChain, markHostsChainRules(wans)); err != nil {
 		return err
 	}
 

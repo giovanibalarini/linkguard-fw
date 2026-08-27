@@ -118,6 +118,12 @@ func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
 	if err := h.nftSvc.EnsureConnMark(ctx, marcas); err != nil {
 		slog.Warn("não foi possível reconciliar a marcação de conexão após mudança de link", "err", err)
 	}
+	// A regra de domínio usa a MESMA lista de WANPath/marks do connmark e das
+	// tabelas de policy routing. Derivar por outra consulta permitiria que
+	// `dom_wan` marcasse para uma tabela que o caminho de volta não conhece.
+	if err := h.nftSvc.ReconcileStructuralChains(ctx, marcas...); err != nil {
+		slog.Warn("não foi possível reconciliar o direcionamento por domínio após mudança de link", "err", err)
+	}
 	if h.routeSvc != nil {
 		if err := h.routeSvc.EnsureReplyRouting(ctx, rotas); err != nil {
 			slog.Warn("não foi possível reconciliar o roteamento de retorno após mudança de link", "err", err)

@@ -1132,7 +1132,7 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// The forward chain used to be reconciled here too; since rule
 			// groups (Phase C1) it belongs to ReconcileGroups, called below via
 			// frSvc.Reconcile — the only place that knows the admin's groups.
-			if err := nftSvc.ReconcileStructuralChains(ctx); err != nil {
+			if err := nftSvc.ReconcileStructuralChains(ctx, connMarksDe(caminhos)...); err != nil {
 				slog.Warn("não foi possível reconciliar a chain estrutural (mark_hosts) no boot", "err", err)
 			}
 

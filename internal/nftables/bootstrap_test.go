@@ -261,8 +261,10 @@ func TestBuildBootstrapRulesetSanitizesInterfaces(t *testing.T) {
 	if strings.Contains(rs, "evil") || strings.Contains(rs, "flush ruleset;") {
 		t.Errorf("invalid interface name leaked into generated ruleset:\n%s", rs)
 	}
-	if strings.Count(rs, `"enp5s0"`) != 1 {
-		t.Errorf("expected deduplicated single occurrence of enp5s0, got:\n%s", rs)
+	// Uma ocorrência exclui tráfego vindo da WAN na mark_hosts; a outra
+	// aplica masquerade. A duplicata da entrada não pode criar uma terceira.
+	if strings.Count(rs, `"enp5s0"`) != 2 {
+		t.Errorf("expected one occurrence per canonical WAN-derived rule, got:\n%s", rs)
 	}
 }
 
