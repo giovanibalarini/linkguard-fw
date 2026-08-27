@@ -6745,7 +6745,21 @@ for l in json.load(sys.stdin):
   M2=1
 
   # W2-3 — DESLIGAR TEM DE TIRAR DO KERNEL, não só do banco.
-  status PUT "/api/links/$idq/qos" "$tok" '{"enabled":false}' >/dev/null 2>&1
+  #
+  # O CÓDIGO DE STATUS DO DESLIGAR É LIDO, e a primeira versão desta asserção o
+  # descartava com `>/dev/null 2>&1`. Isso custou caro: quando a qdisc ficou no
+  # kernel, não havia como saber se o produto tinha recusado o pedido (e dito
+  # por quê) ou aceitado e falhado em remover. Publiquei uma acusação de defeito
+  # sem essa informação, que é exatamente o tipo de conclusão que uma asserção
+  # existe para impedir.
+  local st_desl
+  st_desl=$(status PUT "/api/links/$idq/qos" "$tok" '{"enabled":false}')
+  if [[ "$st_desl" != "200" && "$st_desl" != "204" ]]; then
+    bad "o painel RECUSOU desligar a fila ($st_desl): não há caminho pela API para tirar a qdisc" \
+        "$(body PUT "/api/links/$idq/qos" "$tok" '{"enabled":false}' | head -c 200)"
+  else
+    ok "o painel aceitou o pedido de desligar ($st_desl)"
+  fi
   local qd2=""
   for i in $(seq 1 10); do
     qd2=$(vm "tc qdisc show dev $IFACE 2>/dev/null" | tr -d '\r' | tr '\n' ' ')
