@@ -227,6 +227,7 @@ var allowedInternalImports = map[string]bool{
 	"internal/tsdb":       true,
 	"internal/updater":    true,
 	"internal/validate":   true,
+	"internal/wireguard":  true,
 }
 
 // boundaryFile é um arquivo não-teste do pacote com seus imports diretos.

@@ -29,7 +29,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/firewallrules"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
@@ -431,16 +430,6 @@ func (h *NftablesHandler) RevertPendingChange(w http.ResponseWriter, r *http.Req
 	auditAction(h.db, r, "nft.pending.revert", "pending:"+id, p.Summary)
 	saveNftSnapshot(r.Context(), h.db, h.svc)
 	writeJSON(w, http.StatusOK, okResult(nil))
-}
-
-// actingUser é quem está fazendo a requisição, para o pendente e para a
-// auditoria. "unknown" só acontece em caminho sem autenticação (teste); em
-// produção toda rota destas passa pelo middleware de RBAC.
-func actingUser(r *http.Request) string {
-	if c := auth.ClaimsFromContext(r.Context()); c != nil {
-		return c.Username
-	}
-	return "unknown"
 }
 
 // groupReachesInput diz se este grupo é alcançado na chain input — isto é, se

@@ -139,6 +139,23 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	return s.reconcileLocked(ctx)
 }
 
+// RecordIntegrationError marks the desired state as not fully applied when a
+// caller fails to reconcile a dependent subsystem (firewall or DNS). The raw
+// dependency error is intentionally not persisted: it may contain command
+// stderr or paths and Overview is available to lower-privileged VPN readers.
+func (s *Service) RecordIntegrationError(integrationErr error) {
+	if integrationErr == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.Config()
+	if err != nil {
+		return
+	}
+	s.recordApply(c, fmt.Errorf("a integração da VPN com firewall/DNS não foi reconciliada"))
+}
+
 func (s *Service) reconcileLocked(ctx context.Context) error {
 	c, err := s.Config()
 	if err == nil {
