@@ -700,3 +700,135 @@ func TestSairDaListaApagaAObservacaoDoDominio(t *testing.T) {
 		t.Fatalf("a conta da configuração anterior atravessou: %d", n)
 	}
 }
+
+// TestPromoverAplicaOQueOEnsaioJaAprendeu é o par que faltava de
+// TestBaixarParaEnsaioTiraOsEnderecosDoKernelNaHora.
+//
+// Baixar tirava na hora; promover não punha. O admin apertava promover, a tela
+// dizia ativo, e o kernel só recebia o primeiro endereço quando algum cliente
+// da rede fizesse uma consulta NOVA que chegasse ao resolver — o que, com o
+// cache do unbound segurando o TTL e o cache do navegador em cima, é meia hora
+// ou mais de firewall aberto embaixo de uma tela que diz fechado. E o admin que
+// testa no PRÓPRIO navegador é justamente quem tem o nome mais quente em cache:
+// ele vê o site abrir e conclui que o produto não bloqueia.
+func TestPromoverAplicaOQueOEnsaioJaAprendeu(t *testing.T) {
+	rel := novoRelogio()
+	i := indiceCom(t, rel, Alvo{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ensaio})
+
+	// O ensaio observa. Nada vai para o kernel — a outra metade da promessa.
+	if aj := i.Aprender("www.exemplo.com", []netip.Addr{end(t, "93.184.216.34"), end(t, "93.184.216.35")}, time.Hour); !aj.Vazio() {
+		t.Fatalf("o ensaio escreveu no kernel: %+v", aj)
+	}
+
+	// Promove. Nenhum DNS novo acontece daqui para a frente.
+	aj := i.DefinirAlvos([]Alvo{{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ativo}})
+	if len(aj.Escritas) != 2 {
+		t.Fatalf("promover não aplicou o que o ensaio já sabia: %+v", aj.Escritas)
+	}
+	for _, e := range aj.Escritas {
+		if e.Capacidade != Barrar {
+			t.Errorf("endereço promovido foi para a estrutura errada: %+v", e)
+		}
+		if e.Substituir {
+			t.Errorf("promoção emitiu delete de elemento que o kernel nunca teve: %+v", e)
+		}
+	}
+	if n := i.Contadores().PromovidosDoEnsaio; n != 2 {
+		t.Errorf("PromovidosDoEnsaio=%d, queria 2", n)
+	}
+}
+
+// TestPromoverNaoRessuscitaEnderecoVencido é o freio do teste acima.
+//
+// Uma CDN troca de endereço o dia inteiro. O endereço que ela servia às oito da
+// manhã pode ser de outro cliente às dez, e escrever isso num set de bloqueio
+// barra um site que o admin nunca listou — um bloqueio sem causa visível, que
+// some sozinho no vencimento e por isso nunca é diagnosticado. Por isso o poço
+// do ensaio guarda o VENCIMENTO, e não só o endereço.
+func TestPromoverNaoRessuscitaEnderecoVencido(t *testing.T) {
+	rel := novoRelogio()
+	i := indiceCom(t, rel, Alvo{Dominio: "cdn.exemplo.com", Capacidade: Barrar, Estagio: Ensaio})
+
+	i.Aprender("cdn.exemplo.com", []netip.Addr{end(t, "93.184.216.34")}, 15*time.Minute)
+	rel.andar(20 * time.Minute)
+	i.Aprender("cdn.exemplo.com", []netip.Addr{end(t, "93.184.216.99")}, 15*time.Minute)
+
+	aj := i.DefinirAlvos([]Alvo{{Dominio: "cdn.exemplo.com", Capacidade: Barrar, Estagio: Ativo}})
+	if len(aj.Escritas) != 1 {
+		t.Fatalf("queria só o endereço vivo, veio: %+v", aj.Escritas)
+	}
+	if aj.Escritas[0].Addr != end(t, "93.184.216.99") {
+		t.Fatalf("promoveu o endereço que a CDN já largou: %+v", aj.Escritas[0])
+	}
+}
+
+// TestBaixarEPromoverDeVoltaNaoPerdeOAprendizado.
+//
+// Rebaixar tira do kernel, e é para isso que serve. Mas o que o DNS ensinou
+// continua sabido: se rebaixar jogasse fora o aprendizado, promover de volta
+// devolveria a espera pelo próximo DNS — o mesmo defeito, alcançado por um
+// caminho a mais.
+func TestBaixarEPromoverDeVoltaNaoPerdeOAprendizado(t *testing.T) {
+	rel := novoRelogio()
+	i := indiceCom(t, rel, Alvo{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ativo})
+	aprender(t, i, "exemplo.com", []netip.Addr{end(t, "93.184.216.34")}, time.Hour)
+
+	if aj := i.DefinirAlvos([]Alvo{{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ensaio}}); len(aj.Remocoes) != 1 {
+		t.Fatalf("baixar não tirou do kernel: %+v", aj)
+	}
+	rel.andar(5 * time.Minute)
+
+	aj := i.DefinirAlvos([]Alvo{{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ativo}})
+	if len(aj.Escritas) != 1 || aj.Escritas[0].Addr != end(t, "93.184.216.34") {
+		t.Fatalf("promover de volta perdeu o aprendizado: %+v", aj.Escritas)
+	}
+	if aj.Escritas[0].Substituir {
+		t.Error("emitiu delete de um elemento que o próprio rebaixamento tirou do kernel")
+	}
+}
+
+// TestDominioRemovidoNaoRessuscitaAoSerRecolocado.
+//
+// Sair da lista é diferente de baixar para ensaio. Um domínio removido e
+// recolocado meses depois é outra configuração; promovê-lo escreveria no kernel
+// os endereços da anterior, que a essa altura pertencem a outro serviço. É a
+// mesma regra que esquecerNaoListados já aplicava à rotatividade.
+func TestDominioRemovidoNaoRessuscitaAoSerRecolocado(t *testing.T) {
+	i := indiceCom(t, nil, Alvo{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ensaio})
+	i.Aprender("exemplo.com", []netip.Addr{end(t, "93.184.216.34")}, time.Hour)
+
+	i.DefinirAlvos(nil)
+	aj := i.DefinirAlvos([]Alvo{{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ativo}})
+	if !aj.Vazio() {
+		t.Fatalf("o aprendizado da configuração antiga sobreviveu à remoção: %+v", aj)
+	}
+}
+
+// TestPromocaoRespeitaOsFiltrosDeEndereco.
+//
+// O poço do ensaio não pode ser uma segunda porta de entrada que pula os
+// filtros. A faixa protegida muda com a WAN: um endereço aprendido ontem, que
+// hoje é o da própria caixa, tem de ser recusado HOJE — escrevê-lo põe o
+// firewall contra si mesmo, e passa pelo filtro de categoria sem esbarrar em
+// nada, porque o endereço público do link é público por construção.
+func TestPromocaoRespeitaOsFiltrosDeEndereco(t *testing.T) {
+	i := indiceCom(t, nil, Alvo{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ensaio})
+	// 45.33.32.0/24 é público de verdade, e é essa a graça: o filtro de
+	// CATEGORIA não tem o que recusar aqui. Quem recusa é o de faixa protegida,
+	// e é ele que este teste prende — usar uma faixa de documentação faria o
+	// teste passar pelo motivo errado e não guardar nada.
+	i.Aprender("exemplo.com", []netip.Addr{end(t, "45.33.32.156"), end(t, "93.184.216.34")}, time.Hour)
+
+	// A WAN mudou depois do aprendizado.
+	i.DefinirProtegidos([]netip.Prefix{netip.MustParsePrefix("45.33.32.0/24")})
+
+	aj := i.DefinirAlvos([]Alvo{{Dominio: "exemplo.com", Capacidade: Barrar, Estagio: Ativo}})
+	for _, e := range aj.Escritas {
+		if e.Addr == end(t, "45.33.32.156") {
+			t.Fatal("a promoção escreveu o endereço da própria caixa: o firewall barraria a si mesmo")
+		}
+	}
+	if len(aj.Escritas) != 1 {
+		t.Fatalf("queria o outro endereço aplicado: %+v", aj.Escritas)
+	}
+}
