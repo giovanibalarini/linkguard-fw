@@ -354,7 +354,7 @@ func bindDialer(device string, timeout time.Duration) *net.Dialer {
 	d.Control = func(_, _ string, c syscall.RawConn) error {
 		var serr error
 		if err := c.Control(func(fd uintptr) {
-			serr = syscall.SetsockoptString(int(fd), syscall.SOL_SOCKET, syscall.SO_BINDTODEVICE, device)
+			serr = bindSocketToDevice(int(fd), device)
 		}); err != nil {
 			return err
 		}
