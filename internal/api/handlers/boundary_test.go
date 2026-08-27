@@ -176,6 +176,10 @@ var allowedInternalImports = map[string]bool{
 	// leitura dos três formatos — Frame Streams, protobuf e o fio do DNS — e a
 	// decisão de prazo moram lá.
 	"internal/dnstap": true,
+	// internal/domainrouting entrou com a #123: o handler só traduz HTTP,
+	// audita e delega CRUD/reconciliação; a decisão de suspensão por WAN e a
+	// publicação atômica no runtime ficam no coordenador.
+	"internal/domainrouting": true,
 	// internal/hostflows entrou com o registro de conversa por host (#115): o
 	// handler traduz a consulta HTTP e grava a auditoria, e delega o resto. A
 	// janela rolante no kernel, o cache da leitura, a agregação com o corte
