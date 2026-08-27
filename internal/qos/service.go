@@ -19,7 +19,6 @@ const (
 	managedEgressHandle  = "cafe:"
 	managedIngressHandle = "caff:"
 	managedNetemHandle   = "2:"
-	legacyCakeHandle     = "1:"
 	repairTimeout        = 15 * time.Second
 )
 
@@ -418,7 +417,7 @@ func (s *Service) applyWithOwnership(ctx context.Context, cfg Config, ownership 
 		if err := journal.run("create IFB", func(stepCtx context.Context) error {
 			return s.execute(stepCtx, "create IFB", "ip", "link", "add", ifb, "type", "ifb")
 		}, func(repairCtx context.Context) error {
-			return s.delete(repairCtx, "remove IFB after failed QoS apply", "ip", "link", "del", "dev", ifb)
+			return s.removeIFBIfUnclaimed(repairCtx, ifb, "remove IFB after failed QoS apply")
 		}); err != nil {
 			return State{}, err
 		}
@@ -553,10 +552,7 @@ func managedCakeRootSignature(output, handle, hostMode string) (rootSignature, b
 }
 
 func linkGuardCakeRootSignature(output, managedHandle, hostMode string) (rootSignature, bool) {
-	if signature, ok := managedCakeRootSignature(output, managedHandle, hostMode); ok {
-		return signature, true
-	}
-	return managedCakeRootSignature(output, legacyCakeHandle, hostMode)
+	return managedCakeRootSignature(output, managedHandle, hostMode)
 }
 
 func (sig rootSignature) matches(output string) bool {
@@ -868,7 +864,7 @@ func (s *Service) disableWithOwnership(ctx context.Context, iface string, owners
 		}
 		if ownership.redirectOwned || !ownership.filterPresent {
 			if err := journal.run("remove IFB", func(stepCtx context.Context) error {
-				return s.delete(stepCtx, "remove IFB", "ip", "link", "del", "dev", ifb)
+				return s.removeIFBIfUnclaimed(stepCtx, ifb, "remove IFB")
 			}, func(repairCtx context.Context) error {
 				return s.restoreIFB(repairCtx, ifb, ownership.ifbUp)
 			}); err != nil {
@@ -998,6 +994,81 @@ func linkIsUp(output string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Service) removeIFBIfUnclaimed(ctx context.Context, ifb, action string) error {
+	// Dry-run writes cannot delete the device. Keep the intended command in the
+	// preview without expecting earlier no-op cleanup commands to change reads.
+	if s.exec.IsDryRun() {
+		return s.delete(ctx, action, "ip", "link", "del", "dev", ifb)
+	}
+	exists, _, err := s.ifbState(ctx, ifb)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if err := s.requireUnclaimedIFBState(ctx, ifb); err != nil {
+		return err
+	}
+
+	// Re-read qdiscs after the filter probes so ownership attached during the
+	// cleanup window is observed immediately before the destructive command.
+	qdiscs, err := s.read(ctx, "tc", "qdisc", "show", "dev", ifb)
+	if err != nil {
+		return err
+	}
+	if !hasOnlyDisposableIFBQdiscs(qdiscs) {
+		return fmt.Errorf("%w: IFB %q acquired qdisc ownership before deletion", ErrOwnershipNotEstablished, ifb)
+	}
+	exists, _, err = s.ifbState(ctx, ifb)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	return s.delete(ctx, action, "ip", "link", "del", "dev", ifb)
+}
+
+func (s *Service) requireUnclaimedIFBState(ctx context.Context, ifb string) error {
+	qdiscs, err := s.read(ctx, "tc", "qdisc", "show", "dev", ifb)
+	if err != nil {
+		return err
+	}
+	if !hasOnlyDisposableIFBQdiscs(qdiscs) {
+		return fmt.Errorf("%w: IFB %q has foreign or ambiguous qdiscs", ErrOwnershipNotEstablished, ifb)
+	}
+	for _, direction := range []string{"ingress", "egress"} {
+		filters, err := s.read(ctx, "tc", "filter", "show", "dev", ifb, direction)
+		if err != nil {
+			if isNotFoundError(err) {
+				continue
+			}
+			return err
+		}
+		if hasFilterRecord(filters) {
+			return fmt.Errorf("%w: IFB %q has a foreign %s filter", ErrOwnershipNotEstablished, ifb, direction)
+		}
+	}
+	return nil
+}
+
+func hasOnlyDisposableIFBQdiscs(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 4 || fields[0] != "qdisc" || fields[3] != "root" || fields[2] != "0:" {
+			return false
+		}
+		if fields[1] != "noqueue" && fields[1] != "noop" {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) restoreIFB(ctx context.Context, ifb string, wasUp bool) error {

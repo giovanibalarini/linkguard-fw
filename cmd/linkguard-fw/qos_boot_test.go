@@ -19,6 +19,7 @@ type bootQosExec struct {
 	failOn      string
 	events      []string
 	readOutputs map[string]string
+	realWrites  bool
 }
 
 func (e *bootQosExec) Execute(_ context.Context, cmd string, args ...string) (string, error) {
@@ -26,6 +27,12 @@ func (e *bootQosExec) Execute(_ context.Context, cmd string, args ...string) (st
 	e.events = append(e.events, event)
 	if e.failOn != "" && strings.Contains(event, e.failOn) {
 		return "", errors.New("simulated QoS failure")
+	}
+	if e.realWrites && cmd == "ip" && len(args) == 4 && args[0] == "link" && args[1] == "set" && args[3] == "up" {
+		if e.readOutputs == nil {
+			e.readOutputs = make(map[string]string)
+		}
+		e.readOutputs["ip link show dev "+args[2]] = "2: " + args[2] + ": <BROADCAST,UP> mtu 1500 state UP"
 	}
 	return "", nil
 }
@@ -38,7 +45,7 @@ func (e *bootQosExec) ExecuteRead(_ context.Context, cmd string, args ...string)
 	return "", nil
 }
 
-func (*bootQosExec) IsDryRun() bool { return true }
+func (e *bootQosExec) IsDryRun() bool { return !e.realWrites }
 
 func (*bootQosExec) WriteFile(string, []byte, os.FileMode) error { return nil }
 
@@ -134,6 +141,27 @@ func TestReconcileQoSOnBootPreservesForeignCakeOneRoots(t *testing.T) {
 	}
 }
 
+func TestReconcileQoSOnBootPreservesCompleteForeignCakeOneChains(t *testing.T) {
+	exec := &bootQosExec{readOutputs: make(map[string]string)}
+	links := []storage.Link{
+		{ID: "enabled", Interface: "wan-enabled", Enabled: true, QoSEnabled: true, QoSUploadMbps: 50, QoSDownloadMbps: 200},
+		{ID: "disabled", Interface: "wan-disabled", Enabled: true, QoSEnabled: false},
+	}
+	for _, link := range links {
+		ifb := qos.IFBName(link.Interface)
+		exec.readOutputs["ip link show dev "+ifb] = "6: " + ifb + ": <BROADCAST,UP>"
+		exec.readOutputs["tc qdisc show dev "+link.Interface] = "qdisc cake 1: root bandwidth 50mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n"
+		exec.readOutputs["tc qdisc show dev "+ifb] = "qdisc cake 1: root bandwidth 200mbit besteffort dual-dsthost\n"
+		exec.readOutputs["tc filter show dev "+link.Interface+" ingress pref 49152"] = "filter protocol all pref 49152 matchall\n action order 1: mirred egress redirect dev " + ifb
+	}
+
+	reconcileQoSOnBoot(context.Background(), qos.NewService(exec), func() ([]storage.Link, error) { return links, nil })
+
+	if len(exec.events) != 0 {
+		t.Fatalf("boot reconciliation mutated complete foreign CAKE 1: chains: %v", exec.events)
+	}
+}
+
 func TestRecoverStressTestOnBootRestoresOutageAndClearsLease(t *testing.T) {
 	db := openBootQosDB(t)
 	link := &storage.Link{ID: "wan-outage", Name: "WAN outage", Interface: "wan0", Enabled: true}
@@ -144,7 +172,7 @@ func TestRecoverStressTestOnBootRestoresOutageAndClearsLease(t *testing.T) {
 	if err := db.SaveStressRecoveryLease(lease); err != nil {
 		t.Fatalf("SaveStressRecoveryLease: %v", err)
 	}
-	exec := &bootQosExec{}
+	exec := &bootQosExec{realWrites: true}
 	qosSvc := qos.NewService(exec)
 	stressSvc := stresstest.NewService(exec, links.NewService(db), nil)
 	stressSvc.SetQosService(qosSvc)
@@ -173,8 +201,14 @@ func TestRecoverStressTestOnBootPreservesForeignCakeOneAndLease(t *testing.T) {
 	if err := db.SaveStressRecoveryLease(lease); err != nil {
 		t.Fatalf("SaveStressRecoveryLease: %v", err)
 	}
-	exec := &bootQosExec{readOutputs: map[string]string{
-		"tc qdisc show dev wan0": "qdisc cake 1: root bandwidth 50mbit besteffort dual-srchost",
+	ifb := qos.IFBName("wan0")
+	exec := &bootQosExec{realWrites: true, readOutputs: map[string]string{
+		"ip link show dev " + ifb:                    "6: " + ifb + ": <BROADCAST,UP>",
+		"tc qdisc show dev wan0":                     "qdisc cake 1: root bandwidth 50mbit besteffort dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n",
+		"tc qdisc show dev " + ifb:                   "qdisc cake 1: root bandwidth 200mbit besteffort dual-dsthost\n",
+		"tc filter show dev wan0 ingress pref 49152": "filter protocol all pref 49152 matchall\n action order 1: mirred egress redirect dev " + ifb,
+		"tc filter show dev " + ifb + " ingress":     "",
+		"tc filter show dev " + ifb + " egress":      "",
 	}}
 	qosSvc := qos.NewService(exec)
 	stressSvc := stresstest.NewService(exec, links.NewService(db), nil)

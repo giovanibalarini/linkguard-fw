@@ -66,6 +66,31 @@ func TestStartPersistsRecoveryLeaseBeforeApplyingOutage(t *testing.T) {
 	}
 }
 
+func TestStartDryRunDoesNotCreateDurableRecoveryLease(t *testing.T) {
+	db := openRecoveryDB(t)
+	target := &storage.Link{ID: "target-dry", Name: "Target", Interface: "eth0", Enabled: true, Status: links.StatusOnline}
+	other := &storage.Link{ID: "other-dry", Name: "Other", Interface: "eth1", Enabled: true, Status: links.StatusOnline}
+	for _, link := range []*storage.Link{target, other} {
+		if err := db.CreateLink(link); err != nil {
+			t.Fatalf("CreateLink(%s): %v", link.ID, err)
+		}
+	}
+	exec := &spyExecutor{dryRun: true}
+	coord := newRecordingQosCoordinator()
+	svc := NewService(exec, links.NewService(db), nil)
+	svc.SetQosService(coord)
+	svc.SetRecoveryStore(db)
+
+	if _, err := svc.Start(StartParams{LinkID: target.ID, Mode: ModeOutage, DurationSec: 30}); err != nil {
+		t.Fatalf("Start dry-run: %v", err)
+	}
+	lease, err := db.GetStressRecoveryLease()
+	if err != nil || lease != nil {
+		t.Fatalf("dry-run Start persisted recovery lease = %+v, %v; want nil, nil", lease, err)
+	}
+	svc.Stop()
+}
+
 func TestRecoverInterruptedOutageBringsInterfaceUpAndClearsDurableLease(t *testing.T) {
 	db := openRecoveryDB(t)
 	lease := &storage.StressRecoveryLease{
@@ -90,6 +115,57 @@ func TestRecoverInterruptedOutageBringsInterfaceUpAndClearsDurableLease(t *testi
 		t.Fatalf("outage recovery did not reconcile QoS under the shared lock: locks=%d cfg=%+v", coord.lockCount(), coord.restoredConfig())
 	}
 	assertNoRecoveryLease(t, db)
+}
+
+func TestRecoverInterruptedDryRunPreservesRealLeaseWithoutHostWrites(t *testing.T) {
+	db := openRecoveryDB(t)
+	lease := &storage.StressRecoveryLease{
+		TestID: "stress-dry-run", Interface: "eth0", Mode: string(ModeOutage), CreatedAt: time.Now().UTC(),
+	}
+	if err := db.SaveStressRecoveryLease(lease); err != nil {
+		t.Fatalf("SaveStressRecoveryLease: %v", err)
+	}
+	exec := &spyExecutor{dryRun: true, interfaceUp: map[string]bool{"eth0": false}}
+	coord := newRecordingQosCoordinator()
+	svc := NewService(exec, nil, nil)
+	svc.SetQosService(coord)
+	svc.SetRecoveryStore(db)
+
+	if err := svc.RecoverInterrupted(context.Background()); err == nil {
+		t.Fatal("RecoverInterrupted() error = nil in dry-run; want deferred recovery")
+	}
+	got, err := db.GetStressRecoveryLease()
+	if err != nil || got == nil || got.TestID != lease.TestID {
+		t.Fatalf("dry-run recovery consumed durable lease: got=%+v err=%v", got, err)
+	}
+	if exec.interfaceUp["eth0"] {
+		t.Fatal("dry-run recovery changed the observed host state")
+	}
+	if len(exec.calls) != 0 || coord.lockCount() != 0 {
+		t.Fatalf("dry-run recovery reached host/QoS mutations: calls=%v locks=%d", exec.calls, coord.lockCount())
+	}
+}
+
+func TestRecoverInterruptedOutagePreservesLeaseWhenInterfaceStillDown(t *testing.T) {
+	db := openRecoveryDB(t)
+	lease := &storage.StressRecoveryLease{
+		TestID: "stress-still-down", Interface: "eth0", Mode: string(ModeOutage), CreatedAt: time.Now().UTC(),
+	}
+	if err := db.SaveStressRecoveryLease(lease); err != nil {
+		t.Fatalf("SaveStressRecoveryLease: %v", err)
+	}
+	exec := &spyExecutor{ignoreLinkWrites: true, interfaceUp: map[string]bool{"eth0": false}}
+	svc := NewService(exec, nil, nil)
+	svc.SetQosService(newRecordingQosCoordinator())
+	svc.SetRecoveryStore(db)
+
+	if err := svc.RecoverInterrupted(context.Background()); err == nil {
+		t.Fatal("RecoverInterrupted() error = nil while interface remained down")
+	}
+	got, err := db.GetStressRecoveryLease()
+	if err != nil || got == nil || got.TestID != lease.TestID {
+		t.Fatalf("failed outage postcondition consumed durable lease: got=%+v err=%v", got, err)
+	}
 }
 
 func TestRecoverInterruptedOwnedNetemUsesPersistedSignatureAndClearsLease(t *testing.T) {
@@ -135,6 +211,127 @@ func TestRecoverInterruptedNetemCollisionPreservesLeaseForRetry(t *testing.T) {
 	got, err := db.GetStressRecoveryLease()
 	if err != nil || got == nil || got.TestID != lease.TestID {
 		t.Fatalf("collision discarded durable recovery lease: got=%+v err=%v", got, err)
+	}
+}
+
+func TestRecoveryRetiresLeaseForAuthoritativeDeletedOrMovedLink(t *testing.T) {
+	paths := []struct {
+		name string
+		run  func(*Service, *Test) error
+	}{
+		{name: "normal completion", run: func(svc *Service, test *Test) error { return svc.restore(test, "") }},
+		{name: "restart", run: func(svc *Service, _ *Test) error { return svc.RecoverInterrupted(context.Background()) }},
+	}
+	mutations := []struct {
+		name   string
+		mutate func(*testing.T, *storage.DB, *storage.Link)
+	}{
+		{name: "deleted", mutate: func(t *testing.T, db *storage.DB, link *storage.Link) {
+			t.Helper()
+			if err := db.DeleteLink(link.ID); err != nil {
+				t.Fatalf("DeleteLink: %v", err)
+			}
+		}},
+		{name: "moved", mutate: func(t *testing.T, db *storage.DB, link *storage.Link) {
+			t.Helper()
+			link.Interface = "eth9"
+			if err := db.UpdateLinkNonQoS(link); err != nil {
+				t.Fatalf("UpdateLinkNonQoS: %v", err)
+			}
+		}},
+	}
+
+	for _, path := range paths {
+		for _, mode := range []Mode{ModeOutage, ModeDegrade} {
+			for _, mutation := range mutations {
+				name := path.name + "/" + string(mode) + "/" + mutation.name
+				t.Run(name, func(t *testing.T) {
+					db := openRecoveryDB(t)
+					link := &storage.Link{
+						ID: "target", Name: "Target", Interface: "eth0", Enabled: true,
+						QoSEnabled: true, QoSUploadMbps: 50, QoSDownloadMbps: 200,
+					}
+					if err := db.CreateLink(link); err != nil {
+						t.Fatalf("CreateLink: %v", err)
+					}
+					lease := &storage.StressRecoveryLease{
+						TestID: "stress-lifecycle", LinkID: link.ID, Interface: "eth0", Mode: string(mode),
+						DelayMs: 500, LossPct: 20, CreatedAt: time.Now().UTC(),
+					}
+					if err := db.SaveStressRecoveryLease(lease); err != nil {
+						t.Fatalf("SaveStressRecoveryLease: %v", err)
+					}
+					mutation.mutate(t, db, link)
+
+					exec := &spyExecutor{interfaceUp: map[string]bool{"eth0": false}}
+					coord := newRecordingQosCoordinator()
+					svc := NewService(exec, links.NewService(db), nil)
+					svc.SetQosService(coord)
+					svc.SetRecoveryStore(db)
+					test := &Test{
+						ID: lease.TestID, LinkID: lease.LinkID, Interface: lease.Interface,
+						Mode: mode, DelayMs: lease.DelayMs, LossPct: lease.LossPct,
+					}
+
+					if err := path.run(svc, test); err != nil {
+						t.Fatalf("recovery error = %v; want safe disabled fallback", err)
+					}
+					got := coord.restoredConfig()
+					if got.Interface != "eth0" || got.Enabled {
+						t.Fatalf("recovery config = %+v; want disabled intent on recorded eth0", got)
+					}
+					assertNoRecoveryLease(t, db)
+				})
+			}
+		}
+	}
+}
+
+func TestRecoverInterruptedPreservesLeaseOnLinkStorageError(t *testing.T) {
+	leaseDB := openRecoveryDB(t)
+	lease := &storage.StressRecoveryLease{
+		TestID: "stress-storage-error", LinkID: "target", Interface: "eth0", Mode: string(ModeOutage), CreatedAt: time.Now().UTC(),
+	}
+	if err := leaseDB.SaveStressRecoveryLease(lease); err != nil {
+		t.Fatalf("SaveStressRecoveryLease: %v", err)
+	}
+	closedDB := openRecoveryDB(t)
+	if err := closedDB.Close(); err != nil {
+		t.Fatalf("Close link DB: %v", err)
+	}
+	exec := &spyExecutor{interfaceUp: map[string]bool{"eth0": false}}
+	svc := NewService(exec, links.NewService(closedDB), nil)
+	svc.SetQosService(newRecordingQosCoordinator())
+	svc.SetRecoveryStore(leaseDB)
+
+	if err := svc.RecoverInterrupted(context.Background()); err == nil {
+		t.Fatal("RecoverInterrupted() error = nil for link storage failure")
+	}
+	got, err := leaseDB.GetStressRecoveryLease()
+	if err != nil || got == nil || got.TestID != lease.TestID {
+		t.Fatalf("link storage failure consumed durable lease: got=%+v err=%v", got, err)
+	}
+}
+
+func TestRecoverInterruptedPreservesLeaseWhenLinkLoaderIsUnavailable(t *testing.T) {
+	db := openRecoveryDB(t)
+	lease := &storage.StressRecoveryLease{
+		TestID: "stress-no-loader", LinkID: "target", Interface: "eth0", Mode: string(ModeOutage), CreatedAt: time.Now().UTC(),
+	}
+	if err := db.SaveStressRecoveryLease(lease); err != nil {
+		t.Fatalf("SaveStressRecoveryLease: %v", err)
+	}
+	exec := &spyExecutor{interfaceUp: map[string]bool{"eth0": false}}
+	svc := NewService(exec, nil, nil)
+	svc.SetQosService(newRecordingQosCoordinator())
+	svc.SetRecoveryStore(db)
+
+	if err := svc.RecoverInterrupted(context.Background()); err == nil {
+		t.Fatal("RecoverInterrupted() error = nil without a link loader")
+	}
+	got, err := db.GetStressRecoveryLease()
+	if err != nil || got == nil || got.TestID != lease.TestID {
+		t.Fatalf("missing link loader consumed durable lease: got=%+v err=%v", got, err)
 	}
 }
 

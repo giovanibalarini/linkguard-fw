@@ -3,6 +3,7 @@ package links
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -20,6 +21,11 @@ const (
 	StatusDegraded = "degraded"
 	StatusUnknown  = "unknown"
 )
+
+// ErrNotFound distinguishes an authoritative missing link from a storage
+// failure. Recovery callers may safely interpret it as disabled intent while
+// retaining operational leases for every other load error.
+var ErrNotFound = errors.New("link not found")
 
 // Service handles link CRUD and state management.
 type Service struct {
@@ -64,7 +70,7 @@ func (s *Service) Get(id string) (*storage.Link, error) {
 		return nil, err
 	}
 	if l == nil {
-		return nil, fmt.Errorf("link %q not found", id)
+		return nil, fmt.Errorf("%w: %q", ErrNotFound, id)
 	}
 	return l, nil
 }

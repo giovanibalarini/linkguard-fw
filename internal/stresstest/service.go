@@ -47,6 +47,11 @@ const (
 	ModeDegrade Mode = "degrade" // tc netem delay/loss
 )
 
+// ErrDryRunRecoveryDeferred means a real durable recovery lease was found,
+// but the configured executor cannot mutate the host. The lease must remain
+// intact for a later startup with a real executor.
+var ErrDryRunRecoveryDeferred = errors.New("stress recovery deferred in dry-run mode")
+
 // Sample is one point on the continuity timeline.
 type Sample struct {
 	T     string `json:"t"`
@@ -248,11 +253,21 @@ func (s *Service) Start(p StartParams) (*Test, error) {
 	if s.recovery == nil {
 		return nil, errors.New("armazenamento de recuperação do stress test não configurado")
 	}
-	if err := s.recovery.SaveStressRecoveryLease(&storage.StressRecoveryLease{
-		TestID: t.ID, LinkID: t.LinkID, Interface: t.Interface, Mode: string(t.Mode),
-		DelayMs: t.DelayMs, LossPct: t.LossPct, CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		return nil, fmt.Errorf("registrar recuperação do stress test: %w", err)
+	if s.exec.IsDryRun() {
+		pending, err := s.recovery.GetStressRecoveryLease()
+		if err != nil {
+			return nil, fmt.Errorf("verificar recuperação pendente do stress test: %w", err)
+		}
+		if pending != nil {
+			return nil, fmt.Errorf("%w: lease %q ainda precisa ser reconciliada", ErrDryRunRecoveryDeferred, pending.TestID)
+		}
+	} else {
+		if err := s.recovery.SaveStressRecoveryLease(&storage.StressRecoveryLease{
+			TestID: t.ID, LinkID: t.LinkID, Interface: t.Interface, Mode: string(t.Mode),
+			DelayMs: t.DelayMs, LossPct: t.LossPct, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return nil, fmt.Errorf("registrar recuperação do stress test: %w", err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -398,6 +413,9 @@ func (s *Service) RecoverInterrupted(ctx context.Context) error {
 	if err != nil || lease == nil {
 		return err
 	}
+	if s.exec.IsDryRun() {
+		return fmt.Errorf("%w: lease %q preservada", ErrDryRunRecoveryDeferred, lease.TestID)
+	}
 	if !reIface.MatchString(lease.Interface) {
 		return fmt.Errorf("lease de recuperação tem interface inválida %q", lease.Interface)
 	}
@@ -444,6 +462,11 @@ func (s *Service) restoreInterface(ctx context.Context, t *Test) error {
 			if _, err := s.exec.Execute(ctx, "ip", "link", "set", t.Interface, "up"); err != nil {
 				return err
 			}
+			if !s.exec.IsDryRun() {
+				if err := s.verifyInterfaceUp(ctx, t.Interface); err != nil {
+					return err
+				}
+			}
 		}
 		cfg, err := s.loadEffectiveQoS(t.LinkID, t.Interface)
 		if err != nil {
@@ -459,13 +482,39 @@ func (s *Service) restoreInterface(ctx context.Context, t *Test) error {
 	})
 }
 
+func (s *Service) verifyInterfaceUp(ctx context.Context, iface string) error {
+	output, err := s.exec.ExecuteRead(ctx, "ip", "link", "show", "dev", iface)
+	if err != nil {
+		return fmt.Errorf("confirmar interface %q após recuperação: %w", iface, err)
+	}
+	start := strings.IndexByte(output, '<')
+	end := strings.IndexByte(output, '>')
+	if start >= 0 && end > start {
+		for _, flag := range strings.Split(output[start+1:end], ",") {
+			if strings.TrimSpace(flag) == "UP" {
+				return nil
+			}
+		}
+	}
+	if strings.Contains(output, " state UP ") || strings.HasSuffix(strings.TrimSpace(output), " state UP") {
+		return nil
+	}
+	return fmt.Errorf("interface %q continua sem a flag UP após recuperação", iface)
+}
+
 func (s *Service) loadEffectiveQoS(linkID, iface string) (qos.Config, error) {
 	cfg := qos.Config{Interface: iface}
-	if s.linkSvc == nil || linkID == "" {
+	if linkID == "" {
 		return cfg, nil
+	}
+	if s.linkSvc == nil {
+		return cfg, errors.New("serviço de links não configurado para recuperação do stress test")
 	}
 	link, err := s.linkSvc.Get(linkID)
 	if err != nil {
+		if errors.Is(err, links.ErrNotFound) {
+			return cfg, nil
+		}
 		return cfg, err
 	}
 	if link.Interface != iface || !link.Enabled || !link.QoSEnabled {

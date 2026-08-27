@@ -350,6 +350,35 @@ func TestApplyFailureReturnsCompensationFailureWhenRepairFails(t *testing.T) {
 	}
 }
 
+func TestApplyCompensationRechecksIFBBeforeDeletingCreatedDevice(t *testing.T) {
+	exec := newFakeExecutor()
+	ifb := IFBName("wan0")
+	ifbRootKey := executorCallKey("tc", "qdisc", "show", "dev", ifb)
+	exec.failWhen = func(call execCall) error {
+		if !call.Read && call.Command == "tc" && hasPrefix(call.Args, "filter", "replace", "dev", "wan0") {
+			return errors.New("redirect failed")
+		}
+		return nil
+	}
+	exec.onExecute = func(call execCall) {
+		if !call.Read && call.Command == "tc" && hasPrefix(call.Args, "qdisc", "del", "dev", ifb, "root") {
+			exec.readOut[ifbRootKey] = "qdisc htb 5: root refcnt 2 default 10\n"
+		}
+	}
+	cfg := validConfig()
+	cfg.Interface = "wan0"
+
+	if _, err := NewService(exec).Apply(context.Background(), cfg); err == nil {
+		t.Fatal("Apply() error = nil; want failed mutation with guarded compensation")
+	}
+	if countCommand(exec.calls, "ip", "link", "del", "dev", ifb) != 0 {
+		t.Fatalf("compensation deleted IFB after foreign ownership appeared: %#v", exec.calls)
+	}
+	if !exec.ifbs[ifb] || !strings.Contains(exec.readOut[ifbRootKey], "qdisc htb 5: root") {
+		t.Fatalf("compensation did not preserve foreign IFB state: exists=%v root=%q", exec.ifbs[ifb], exec.readOut[ifbRootKey])
+	}
+}
+
 func TestDisableFailureCompensatesSuccessfulKernelMutations(t *testing.T) {
 	exec := newFakeExecutor()
 	configureManagedKernelObjects(exec, "wan0")
@@ -385,6 +414,47 @@ func TestDisableFailureReturnsCompensationFailureWhenRepairFails(t *testing.T) {
 	_, err := NewService(exec).Disable(context.Background(), "wan0")
 	if !errors.Is(err, ErrCompensationFailed) {
 		t.Fatalf("Disable() error = %v; want ErrCompensationFailed", err)
+	}
+}
+
+func TestDisableRechecksIFBBeforeDeletingDevice(t *testing.T) {
+	exec := newFakeExecutor()
+	configureManagedKernelObjects(exec, "wan0")
+	ifb := IFBName("wan0")
+	ifbRootKey := executorCallKey("tc", "qdisc", "show", "dev", ifb)
+	exec.onExecute = func(call execCall) {
+		if !call.Read && call.Command == "tc" && hasPrefix(call.Args, "qdisc", "del", "dev", ifb, "root") {
+			exec.readOut[ifbRootKey] = "qdisc htb 5: root refcnt 2 default 10\n"
+		}
+	}
+
+	if _, err := NewService(exec).Disable(context.Background(), "wan0"); err == nil {
+		t.Fatal("Disable() error = nil after foreign IFB ownership appeared")
+	}
+	if countCommand(exec.calls, "ip", "link", "del", "dev", ifb) != 0 {
+		t.Fatalf("Disable() deleted IFB after foreign ownership appeared: %#v", exec.calls)
+	}
+	if !exec.ifbs[ifb] || !strings.Contains(exec.readOut[ifbRootKey], "qdisc htb 5: root") {
+		t.Fatalf("Disable() did not preserve foreign IFB state: exists=%v root=%q", exec.ifbs[ifb], exec.readOut[ifbRootKey])
+	}
+}
+
+func TestDisableTreatsMissingIFBFilterParentsAsUnclaimed(t *testing.T) {
+	exec := newFakeExecutor()
+	configureManagedKernelObjects(exec, "wan0")
+	ifb := IFBName("wan0")
+	exec.failWhen = func(call execCall) error {
+		if call.Read && call.Command == "tc" && hasPrefix(call.Args, "filter", "show", "dev", ifb) {
+			return errors.New("Parent Qdisc doesn't exist")
+		}
+		return nil
+	}
+
+	if _, err := NewService(exec).Disable(context.Background(), "wan0"); err != nil {
+		t.Fatalf("Disable() error = %v; missing filter parent means no attached filter", err)
+	}
+	if countCommand(exec.calls, "ip", "link", "del", "dev", ifb) != 1 {
+		t.Fatalf("Disable() did not remove an otherwise unclaimed IFB: %#v", exec.calls)
 	}
 }
 
@@ -878,7 +948,7 @@ func TestApplyAndDisablePreserveForeignCakeOneRoot(t *testing.T) {
 	}
 }
 
-func TestCompleteLegacyCakeOneChainCanBeMigratedOrDisabled(t *testing.T) {
+func TestCompleteLegacyCakeOneChainIsPreservedAsAmbiguousForeignState(t *testing.T) {
 	for _, operation := range []string{"apply", "disable"} {
 		t.Run(operation, func(t *testing.T) {
 			exec := newFakeExecutor()
@@ -893,32 +963,34 @@ func TestCompleteLegacyCakeOneChainCanBeMigratedOrDisabled(t *testing.T) {
 			if operation == "apply" {
 				cfg := validConfig()
 				cfg.Interface = "wan0"
-				if _, err := service.Apply(context.Background(), cfg); err != nil {
-					t.Fatalf("Apply legacy chain: %v", err)
-				}
-				if !containsWriteToken(exec.calls, managedEgressHandle) || !containsWriteToken(exec.calls, managedIngressHandle) {
-					t.Fatalf("Apply did not migrate legacy handles to reserved handles: %#v", exec.calls)
+				if _, err := service.Apply(context.Background(), cfg); !errors.Is(err, ErrOwnershipNotEstablished) {
+					t.Fatalf("Apply legacy chain error = %v; want ErrOwnershipNotEstablished", err)
 				}
 			} else {
 				if _, err := service.Disable(context.Background(), "wan0"); err != nil {
-					t.Fatalf("Disable legacy chain: %v", err)
+					t.Fatalf("Disable legacy chain: %v; want preservation without error", err)
 				}
-				if countCommand(exec.calls, "tc", "qdisc", "del", "dev", "wan0", "root") != 1 ||
-					countCommand(exec.calls, "tc", "qdisc", "del", "dev", ifb, "root") != 1 {
-					t.Fatalf("Disable did not remove the complete legacy chain: %#v", exec.calls)
+			}
+			for _, call := range exec.calls {
+				if !call.Read {
+					t.Fatalf("%s mutated ambiguous complete CAKE 1: chain: %#v", operation, exec.calls)
 				}
 			}
 		})
 	}
 }
 
-func TestApplyCompensationDoesNotOverwriteRootChangedToCakeHandleCollision(t *testing.T) {
+func TestApplyCompensationPreservesCompleteForeignLegacyChainAppearingDuringRepair(t *testing.T) {
 	exec := newFakeExecutor()
 	rootKey := executorCallKey("tc", "qdisc", "show", "dev", "wan0")
+	ifb := IFBName("wan0")
 	exec.readOut = map[string]string{rootKey: "qdisc mq 0: root\n"}
 	exec.onExecute = func(call execCall) {
 		if call.Command == "tc" && hasPrefix(call.Args, "qdisc", "replace", "dev", "wan0", "root") {
-			exec.readOut[rootKey] = "qdisc cake 1: root bandwidth 999gbit diffserv4 dual-dsthost\n"
+			exec.ifbs[ifb] = true
+			exec.readOut[rootKey] = "qdisc cake 1: root bandwidth 999gbit diffserv4 dual-srchost\nqdisc clsact ffff: parent ffff:fff1\n"
+			exec.readOut[executorCallKey("tc", "qdisc", "show", "dev", ifb)] = "qdisc cake 1: root bandwidth 999gbit diffserv4 dual-dsthost\n"
+			exec.readOut[executorCallKey("tc", "filter", "show", "dev", "wan0", "ingress", "pref", redirectFilterPriority)] = "filter protocol all pref " + redirectFilterPriority + " matchall\n action mirred egress redirect dev " + ifb
 		}
 	}
 	exec.failWhen = func(call execCall) error {
@@ -937,7 +1009,11 @@ func TestApplyCompensationDoesNotOverwriteRootChangedToCakeHandleCollision(t *te
 	}
 	for _, call := range writeCalls(exec.calls) {
 		if call.Command == "tc" && hasPrefix(call.Args, "qdisc", "replace", "dev", "wan0", "root", "mq") {
-			t.Fatalf("compensation overwrote a colliding foreign CAKE root with the prior default: %#v", exec.calls)
+			t.Fatalf("compensation overwrote the complete foreign CAKE 1: chain: %#v", exec.calls)
+		}
+		if (call.Command == "tc" && len(call.Args) > 1 && call.Args[1] == "del") ||
+			(call.Command == "ip" && hasPrefix(call.Args, "link", "del")) {
+			t.Fatalf("compensation deleted part of the complete foreign CAKE 1: chain: %#v", exec.calls)
 		}
 	}
 }
