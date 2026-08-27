@@ -6599,6 +6599,242 @@ print('')" 2>/dev/null | head -1)
   limpa_d
 }
 
+# ─── W2. Controle de fila por WAN (issue #121, PR #205) ──────────────────────
+#
+# A ASSERÇÃO QUE JUSTIFICA A BATERIA. Esta é a primeira vez que o produto
+# escreve num plano de controle que NÃO é o nftables: qdisc do `tc`, e um
+# dispositivo IFB que ele passa a possuir. Nada disso mora no `nft list
+# ruleset`, então nada disso é coberto pelo Persist, pelo snapshot ou por
+# qualquer uma das redes que o firewall ganhou depois dos três travamentos.
+#
+# O QUE SÓ UMA MÁQUINA RESPONDE, e é por isso que esta bateria existe:
+#
+#   1. A qdisc que a API diz ter aplicado está no kernel, com a banda pedida?
+#   2. Desligar a tira de lá, ou só do banco?
+#   3. Ela sobrevive a um restart do serviço — e, se não sobrevive, a TELA DIZ
+#      isso, ou continua afirmando que a fila está ligada?
+#
+# A terceira é a mais importante, e é onde esta bateria espera encontrar
+# problema: `grep 'qos\.' cmd/linkguard-fw/main.go` não devolve nada, ou seja
+# o boot não reconcilia fila nenhuma. Toda feature de kernel deste produto é
+# reconciliada no boot — EnsureAccounting, EnsureMSSClamp, EnsureConnMark —
+# justamente porque estrutura que não é recriada some em silêncio.
+#
+# E DUAS METADES DE SILÊNCIO, sem as quais o resto não significa nada:
+#
+#   W2-1 — nasce DESLIGADO. Nenhuma qdisc nova em interface nenhuma antes de
+#          alguém pedir. Sem esta, "a qdisc apareceu" não distingue a feature
+#          de um efeito colateral do boot.
+#   W2-6 — o benchmark sem servidor NÃO se declara completo. O resultado tem
+#          de vir marcado como não medido.
+#
+# A INTERFACE DE TESTE NUNCA É A DA SUÍTE. Aplicar 1 Mbps na enp0s2
+# estrangularia o SSH pelo qual este script fala com a caixa, e as baterias
+# seguintes falhariam por um motivo que ninguém relacionaria à fila. Usa-se
+# uma dummy, que não carrega tráfego de ninguém.
+battery_controle_de_fila() {
+  head_ "W2. Controle de fila por WAN"
+
+  local M1=0 M2=0 M3=0 M4=0 M5=0 M6=0
+  local tok="" idq="" limpou=0
+  local IFACE="lgq0"
+
+  limpa_q() {
+    [[ "$limpou" == 1 ]] && return
+    limpou=1
+    if [[ -n "$tok" && -n "$idq" ]]; then
+      status PUT "/api/links/$idq/qos" "$tok" '{"enabled":false}' >/dev/null 2>&1
+      sleep 2
+      status DELETE "/api/links/$idq" "$tok" >/dev/null 2>&1
+    fi
+    # A REDE DE SEGURANÇA É COBRADA, não silenciosa: se o produto não removeu a
+    # qdisc, quem remove é este script — e isso é FALHA, porque significa que a
+    # caixa ficaria com fila aplicada sem ninguém sabendo.
+    local sobrou
+    sobrou=$(vm "tc qdisc show dev $IFACE 2>/dev/null | grep -c cake" | tr -d '\r' | head -1)
+    if [[ "${sobrou:-0}" != "0" ]]; then
+      bad "a qdisc de teste sobreviveu à limpeza pelo painel; o arnês teve de removê-la" \
+          "$(vm "tc qdisc show dev $IFACE 2>/dev/null" | tr -d '\r' | head -c 160)"
+      vm "tc qdisc del dev $IFACE root 2>/dev/null; true" >/dev/null 2>&1
+    fi
+    vm "ip link del $IFACE 2>/dev/null; ip link del ifb-$IFACE 2>/dev/null; true" >/dev/null 2>&1
+  }
+
+  encerra_q() {
+    [[ "$M1" == 1 ]] || pular "W2-1. Nasce desligado" "$1"
+    [[ "$M2" == 1 ]] || pular "W2-2. Aplicar cria a qdisc com a banda pedida" "$1"
+    [[ "$M3" == 1 ]] || pular "W2-3. Desligar remove do kernel" "$1"
+    [[ "$M4" == 1 ]] || pular "W2-4. O que a tela diz depois do restart" "$1"
+    [[ "$M5" == 1 ]] || pular "W2-5. Existe reversão automática?" "$1"
+    [[ "$M6" == 1 ]] || pular "W2-6. Benchmark sem servidor não se diz completo" "$1"
+    limpa_q
+  }
+
+  local initial
+  initial=$(vm "cat /etc/linkguard-fw/initial-admin-password 2>/dev/null" | tr -d '\r\n')
+  tok=$(login admin "$initial")
+  [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  if [[ -z "$tok" ]]; then
+    bad "sem sessão administrativa; a bateria W2 não roda"; encerra_q "sem sessão"; return
+  fi
+
+  # O `tc` é dependência declarada do pacote (iproute2), mas confirmar é barato
+  # e a alternativa é uma bateria inteira reprovando por um binário ausente.
+  if ! vm "command -v tc >/dev/null 2>&1 && echo tem" | grep -q tem; then
+    bad "não há tc nesta caixa; o controle de fila não tem como funcionar aqui"
+    encerra_q "sem o tc"; return
+  fi
+
+  # W2-1 — A METADE DE SILÊNCIO QUE VEM PRIMEIRO: nada de fila antes de pedir.
+  local antes
+  antes=$(vm "tc qdisc show 2>/dev/null | grep -c cake" | tr -d '\r' | head -1)
+  if [[ "${antes:-0}" == "0" ]]; then
+    ok "nenhuma qdisc cake existe antes de alguém pedir — o controle de fila nasce desligado"
+  else
+    bad "já havia $antes qdisc(s) cake antes desta bateria; ou outra bateria as deixou, ou o produto liga fila sozinho" \
+        "$(vm "tc qdisc show 2>/dev/null | grep cake" | tr -d '\r' | head -c 200)"
+  fi
+  M1=1
+
+  # Uma interface de mentira que não carrega tráfego de ninguém. Ver o
+  # cabeçalho: nunca a interface por onde esta suíte fala.
+  vm "ip link del $IFACE 2>/dev/null
+      ip link add $IFACE type dummy && ip addr add 10.77.7.1/24 dev $IFACE && ip link set $IFACE up" >/dev/null 2>&1
+  if ! vm "ip -br link show $IFACE 2>/dev/null" | grep -q "$IFACE"; then
+    bad "não consegui criar a interface de teste; a bateria W2 não tem onde medir"
+    encerra_q "a interface de teste não subiu"; return
+  fi
+
+  local st
+  st=$(status POST /api/links "$tok" "{\"name\":\"WAN fila\",\"interface\":\"$IFACE\",\"gateway\":\"10.77.7.2\",\"ip_address\":\"10.77.7.1\",\"weight\":1,\"enabled\":true,\"monitor_hosts\":\"10.77.7.2\",\"dns_test\":\"10.77.7.2\"}")
+  if [[ "$st" != "200" && "$st" != "201" ]]; then
+    bad "o painel não aceitou cadastrar a WAN de teste ($st)"; encerra_q "a WAN de teste não entrou"; return
+  fi
+  idq=$(body GET /api/links "$tok" | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l.get('interface')=='$IFACE': print(l['id'])" 2>/dev/null)
+  if [[ -z "$idq" ]]; then
+    bad "a WAN de teste foi aceita mas não voltou na lista; sem id não há como aplicar fila"
+    encerra_q "sem id da WAN de teste"; return
+  fi
+
+  # W2-2 — APLICAR, E CONFERIR NO KERNEL. A resposta da API não conta: o que
+  # decide é o que o `tc` mostra.
+  st=$(status PUT "/api/links/$idq/qos" "$tok" '{"enabled":true,"upload_mbps":25,"download_mbps":50}')
+  if [[ "$st" != "200" ]]; then
+    bad "o painel recusou aplicar a fila ($st)"; encerra_q "a fila não foi aplicada"; return
+  fi
+  local qd="" i
+  for i in $(seq 1 10); do
+    qd=$(vm "tc qdisc show dev $IFACE 2>/dev/null" | tr -d '\r' | tr '\n' ' ')
+    grep -q cake <<<"$qd" && break
+    sleep 2
+  done
+  if grep -q cake <<<"$qd"; then
+    # 25 Mbit tem de aparecer na qdisc: é a banda que foi PEDIDA, e uma qdisc
+    # cake sem bandwidth é uma qdisc que não limita nada.
+    if grep -qE "bandwidth 25Mbit" <<<"$qd"; then
+      ok "a qdisc cake foi criada com a banda pedida (25Mbit de subida)"
+    else
+      bad "a qdisc existe mas não carrega a banda pedida: uma cake sem bandwidth não limita nada" "$qd"
+    fi
+  else
+    bad "a API disse que aplicou e o kernel não tem qdisc cake nesta interface" "${qd:-vazio}"
+  fi
+  M2=1
+
+  # W2-3 — DESLIGAR TEM DE TIRAR DO KERNEL, não só do banco.
+  status PUT "/api/links/$idq/qos" "$tok" '{"enabled":false}' >/dev/null 2>&1
+  local qd2=""
+  for i in $(seq 1 10); do
+    qd2=$(vm "tc qdisc show dev $IFACE 2>/dev/null" | tr -d '\r' | tr '\n' ' ')
+    grep -q cake <<<"$qd2" || break
+    sleep 2
+  done
+  if grep -q cake <<<"$qd2"; then
+    bad "desligar não removeu a qdisc do kernel: a fila continua limitando o link" "$qd2"
+  else
+    ok "desligar removeu a qdisc do kernel, e não só do banco"
+  fi
+  M3=1
+
+  # W2-4 — A ASSERÇÃO CENTRAL: o que a tela afirma depois de um restart.
+  #
+  # O boot NÃO reconcilia fila (não há chamada de qos no main.go), então a
+  # qdisc não volta. Isso por si só é uma escolha defensável — o que NÃO é
+  # defensável é a tela continuar dizendo "ligado" sobre um kernel sem fila.
+  # É a diferença entre uma feature que não persiste e uma feature que mente.
+  status PUT "/api/links/$idq/qos" "$tok" '{"enabled":true,"upload_mbps":25,"download_mbps":50}' >/dev/null 2>&1
+  sleep 3
+  vm "systemctl restart linkguard-fw" >/dev/null 2>&1
+  wait_api || { bad "o serviço não voltou depois do restart"; encerra_q "o serviço não voltou"; return; }
+  tok=$(login admin "$initial"); [[ -z "$tok" ]] && tok=$(login admin "NovaSenhaForte123")
+  sleep 3
+  local no_kernel diz_ligado
+  no_kernel=$(vm "tc qdisc show dev $IFACE 2>/dev/null | grep -c cake" | tr -d '\r' | head -1)
+  diz_ligado=$(body GET "/api/links/$idq/qos" "$tok" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print('sim' if d.get('enabled') else 'nao')" 2>/dev/null)
+  if [[ "${no_kernel:-0}" != "0" ]]; then
+    ok "a fila sobreviveu ao restart do serviço (o produto a reconcilia no boot)"
+  elif [[ "$diz_ligado" == "nao" ]]; then
+    ok "a fila não sobreviveu ao restart, e a tela diz DESLIGADO — não persiste, mas não mente"
+  else
+    bad "A TELA MENTE DEPOIS DO RESTART: diz que a fila está ligada e o kernel não tem qdisc nenhuma" \
+        "tela='$diz_ligado' | tc: $(vm "tc qdisc show dev $IFACE 2>/dev/null" | tr -d '\r' | head -c 120)"
+  fi
+  M4=1
+
+  # W2-5 — EXISTE REVERSÃO AUTOMÁTICA? Esta asserção não mede um defeito de
+  # código: mede a ausência de uma rede de proteção que este produto já
+  # construiu duas vezes e usa em toda mudança que pode cortar acesso — o
+  # ArmSeconds do balanceamento e a janela de 90s ao fechar a gerência.
+  #
+  # Um valor de banda errado é exatamente essa classe de mudança: com o piso
+  # em 1 Mbps, um erro de digitação num link de 300 Mbps corta 99,7% dele, e
+  # quem for desfazer vai fazê-lo através do link que acabou de estrangular.
+  status PUT "/api/links/$idq/qos" "$tok" '{"enabled":true,"upload_mbps":1,"download_mbps":1}' >/dev/null 2>&1
+  sleep 3
+  local pend
+  pend=$(body GET /api/nftables/pending "$tok" 2>/dev/null | head -c 200)
+  local aceitou1
+  aceitou1=$(vm "tc qdisc show dev $IFACE 2>/dev/null | grep -c 'bandwidth 1Mbit'" | tr -d '\r' | head -1)
+  if [[ "${aceitou1:-0}" == "0" ]]; then
+    ok "o produto recusou estrangular o link em 1 Mbit"
+  elif grep -qiE '"(pending|armed|expires)' <<<"$pend"; then
+    ok "1 Mbit foi aplicado, mas abriu janela de confirmar-ou-reverte"
+  else
+    bad "1 Mbit foi aplicado SEM janela de reversão: um erro de digitação estrangula o link até alguém desfazer à mão" \
+        "é a rede de proteção que o balanceamento (ArmSeconds) e o fechamento da gerência já usam"
+  fi
+  M5=1
+
+  # W2-6 — A OUTRA METADE DE SILÊNCIO: sem servidor, o benchmark não pode se
+  # declarar completo. Medir nada e dizer que mediu é pior que não medir.
+  local bench
+  bench=$(body POST "/api/links/$idq/qos/test" "$tok" '{}' 2>/dev/null)
+  local veredito
+  veredito=$(python3 -c "
+import json,sys
+try: d=json.loads(sys.argv[1])
+except Exception: print('ilegivel'); raise SystemExit
+lim=d.get('limitations') or []
+print('completo' if d.get('valid') and not lim else 'incompleto')" "$bench" 2>/dev/null)
+  if [[ "$veredito" == "incompleto" ]]; then
+    ok "sem servidor de medição, o benchmark se declara incompleto em vez de fingir que mediu"
+  elif [[ "$veredito" == "completo" ]]; then
+    bad "O BENCHMARK SE DECLAROU COMPLETO SEM SERVIDOR: nenhuma carga foi gerada e nenhum eco voltou" \
+        "$(head -c 200 <<<"$bench")"
+  else
+    bad "não consegui ler o resultado do benchmark; a asserção não foi medida" "$(head -c 160 <<<"$bench")"
+  fi
+  M6=1
+
+  limpa_q
+}
+
 battery_fresh
 battery_upgrade
 battery_confirm_revert
@@ -6625,6 +6861,7 @@ battery_comportamento
 battery_vlan_no_balanceamento
 battery_fixacao_saida
 battery_registro_de_fluxo
+battery_controle_de_fila
 battery_fechar_gerencia
 
 head_ "Resumo"
