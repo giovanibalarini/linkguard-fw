@@ -106,7 +106,13 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	// forward reaching user_rules is pre-Phase-C1 state, never a target.
 	b.WriteString("\tchain mark_hosts {\n")
 	b.WriteString("\t\ttype filter hook prerouting priority mangle; policy accept;\n")
-	b.WriteString("\t\tcounter meta mark set ip saddr map @host_wan\n")
+	wans := make([]WANMark, 0, len(wanInterfaces))
+	for _, iface := range wanInterfaces {
+		wans = append(wans, WANMark{Interface: iface})
+	}
+	for _, tokens := range markHostsChainRules(wans) {
+		fmt.Fprintf(&b, "\t\t%s\n", strings.Join(tokens, " "))
+	}
 	b.WriteString("\t}\n\n")
 	b.WriteString("\tchain forward {\n")
 	b.WriteString("\t\ttype filter hook forward priority filter; policy accept;\n")

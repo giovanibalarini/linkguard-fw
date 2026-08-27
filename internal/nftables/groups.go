@@ -188,6 +188,12 @@ var systemGroupForwardRules = map[string]func(logar bool) [][]string{
 		return comLog(logar, BlockLogPrefixDest,
 			[]string{"ip", "daddr", "@blocklist"},
 			[]string{"ip", "saddr", "@blocklist"},
+			// Endereços aprendidos do resolver são destinos. Não há regra de
+			// origem: o pedido da #123 é impedir a conexão para o domínio, sem
+			// transformar uma resposta recebida daquele CDN em bloqueio de toda
+			// conversa que compartilhe o mesmo endereço.
+			[]string{"ip", "daddr", "@" + DomBlockedSet},
+			[]string{"ip6", "daddr", "@" + DomBlockedSet6},
 		)
 	},
 }

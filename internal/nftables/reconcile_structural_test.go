@@ -182,16 +182,16 @@ func TestForwardChainNoLongerLetsUserRulesShadowTheBlocks(t *testing.T) {
 			adds = append(adds, c)
 		}
 	}
-	if len(adds) != 6 {
-		t.Fatalf("expected 6 rules added to forward (5 blocks + 1 group jump), got %d: %v", len(adds), adds)
+	if len(adds) != 8 {
+		t.Fatalf("expected 8 rules added to forward (7 blocks + 1 group jump), got %d: %v", len(adds), adds)
 	}
-	for i, want := range []string{"@blocked_hosts", "@blocked_hosts", "@blocked_macs", "@blocklist", "@blocklist"} {
+	for i, want := range []string{"@blocked_hosts", "@blocked_hosts", "@blocked_macs", "@blocklist", "@blocklist", "@dom_blocked", "@dom_blocked6"} {
 		if !strings.Contains(adds[i], want) {
 			t.Errorf("forward rule %d = %q, want it to contain %q", i, adds[i], want)
 		}
 	}
-	if !strings.Contains(adds[5], "jump grp_aaa") {
-		t.Errorf("last forward rule must be the group jump, got %q", adds[5])
+	if !strings.Contains(adds[7], "jump grp_aaa") {
+		t.Errorf("last forward rule must be the group jump, got %q", adds[7])
 	}
 	for _, c := range adds {
 		if strings.Contains(c, "jump "+UserChain) {
@@ -216,6 +216,43 @@ func TestReconcileStructuralChainsMarkHostsRule(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a mark_hosts rule containing %q; ran: %v", wantSubstr, exec.executed)
+	}
+}
+
+func TestDomainRoutingPrecedesManualHostOverrideAndNeverWritesConnmark(t *testing.T) {
+	rules := markHostsChainRules([]WANMark{
+		{Interface: "enp5s0", Mark: 100},
+		{Interface: "pppoe-wan", Mark: 300},
+	})
+	if len(rules) != 2 {
+		t.Fatalf("esperava regra de domínio seguida da regra por host, vieram %d: %v", len(rules), rules)
+	}
+	domain := strings.Join(rules[0], " ")
+	host := strings.Join(rules[1], " ")
+	for _, want := range []string{
+		`iifname != { "enp5s0", "pppoe-wan" }`,
+		"ct state new",
+		"meta mark 0x0",
+		"meta mark set ip daddr map @" + DomWanMap,
+	} {
+		if !strings.Contains(domain, want) {
+			t.Errorf("regra de domínio sem %q: %q", want, domain)
+		}
+	}
+	if !strings.Contains(host, "meta mark set ip saddr map @"+HostWanMap) {
+		t.Errorf("override manual por host não veio depois: %q", host)
+	}
+	for _, rule := range rules {
+		if strings.Contains(strings.Join(rule, " "), "ct mark") {
+			t.Fatalf("#194 proíbe escrever ct mark na mark_hosts: %v", rules)
+		}
+	}
+}
+
+func TestDomainRoutingIsOmittedWithoutAUsableWAN(t *testing.T) {
+	rules := markHostsChainRules([]WANMark{{Interface: "inválida;", Mark: 100}})
+	if len(rules) != 1 || !strings.Contains(strings.Join(rules[0], " "), "@"+HostWanMap) {
+		t.Fatalf("sem WAN válida só a regra por host deve permanecer: %v", rules)
 	}
 }
 
