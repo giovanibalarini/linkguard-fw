@@ -6349,18 +6349,32 @@ for _ in range(3):
   # expressaria; a segunda olhou `State.Ready`, que é prontidão interna do
   # coordenador e não tem relação com o coletor estar alimentando.
   #
-  # Medido: com o dnstap DESLIGADO a resposta traz `"ready": true` e zero
-  # endereços, e não há campo nenhum que separe "ninguém acessou" de "não estou
-  # medindo". A asserção aceita QUALQUER forma de dizer isso; o que ela reprova
-  # é a ausência de todas — porque zero sem ressalva é uma afirmação sobre a
-  # rede, e o produto não está em posição de fazê-la.
+  # Medido quando esta asserção nasceu: com o dnstap DESLIGADO a resposta trazia
+  # `"ready": true` e zero endereços, sem campo nenhum que separasse "ninguém
+  # acessou" de "não estou medindo".
+  #
+  # Depois disso o produto ganhou a ressalva, e batizou o campo de `observando`.
+  # Esta lista, escrita antes, não sabia a palavra — e passou a reprovar
+  # justamente o produto que já fazia o que ela cobrava. É a terceira forma de
+  # errar o alvo: não adivinhar o comportamento nem olhar o campo errado, mas
+  # deixar de acompanhar o vocabulário de quem se está medindo. Uma asserção que
+  # reprova o acerto ensina a ignorá-la, que é como uma falha de verdade passa.
+  #
+  # Medido de novo na VM, com o coletor desligado: `"vivo": true` junto de
+  # `"observando": false` — o alimentador de pé, sem observar nada. É essa a
+  # distinção que interessa, e o produto a publica.
+  #
+  # A asserção aceita QUALQUER forma de dizer isso; o que ela reprova é a
+  # ausência de todas — porque zero sem ressalva é uma afirmação sobre a rede, e
+  # o produto não está em posição de fazê-la.
   diz_desl=$(body GET /api/domain-targets "$tok" | python3 -c "
 import json,sys
 bruto=sys.stdin.read()
 d=json.loads(bruto)
 # qualquer sinal serve: um campo booleano de coletor/alimentador, uma razão de
 # suspensão, ou um texto que mencione o coletor.
-sinais=('dnstap','collector','coletor','feeder','alimentador','not_measuring','nao_medindo')
+sinais=('dnstap','collector','coletor','feeder','alimentador','not_measuring','nao_medindo',
+        'observando','observing')
 tem=any(s in bruto.lower() for s in sinais)
 r=d.get(\"ready\") if isinstance(d,dict) else None
 print(\"avisa\" if tem or r is False else \"cala\")" 2>/dev/null)
