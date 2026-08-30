@@ -219,6 +219,13 @@ Produtiza as linhas `mangle MARK` que hoje são editadas na mão.
 - [x] Criar grupos de host e atribuir a uma WAN (fwmark → tabela de rota).
 - [x] Implementar como `map` nft saddr→mark (uma regra, N hosts) —
       `meta mark set ip saddr map @host_wan`, exatamente uma regra.
+- [x] **Barrar e direcionar por domínio** (#123) — o alvo da regra deixa de ser
+      só endereço. Direcionar entra no mesmo mapa `host_wan` ("estes serviços
+      saem pela WAN2"); barrar entra na chain de destinos bloqueados que já
+      existia. Todo alvo nasce em **ensaio** — aprende os endereços e conta a
+      rotatividade sem escrever uma linha no kernel — e só escreve quando
+      promovido. Leia junto a armadilha do DNS em "Não-faça": isto é bom para
+      direcionar e fraco contra quem quer escapar.
 - [ ] **Identificar por MAC/reserva**, não por IP solto (ver Fase 5) — hoje o
       pin por IP dentro do range DHCP dinâmico é frágil. **Ainda não feito**:
       o mapa de direcionamento (`host_wan`) é indexado por IP puro; o vínculo
@@ -244,7 +251,10 @@ O servidor já roda `isc-dhcp-server` + `bind9`. Trazer pro painel.
       MAC.
 - [x] **DNS**: log de queries por host (visibilidade) + filtro opcional por
       blocklist (via `local-zone` do unbound). **DNS não é enforcement** — o
-      bloqueio real continua no firewall.
+      bloqueio real continua no firewall. Desde a #123 essa frase deixou de ser
+      só uma ressalva e virou o desenho: o resolver vê a **resposta** (#116) e
+      alimenta um `set` com timeout, a regra casa no set, e quem descarta o
+      pacote continua sendo o firewall. O DNS aponta o alvo; não o defende.
 
 ---
 
@@ -254,7 +264,12 @@ O servidor já roda `isc-dhcp-server` + `bind9`. Trazer pro painel.
   da WAN). Só agendado ou só para fluxos novos.
 - **Não** trocar SQLite por Postgres → mata o "binário único". Escala de métrica
   se resolve com rollup, não com outro banco.
-- **Não** tratar DNS como controle de acesso → burlável com DoH/DNS fixo.
+- **Não** tratar DNS como controle de acesso → burlável com DoH/DNS fixo. O
+  alvo por domínio (#123) **não revoga isto**. Errar o direcionamento manda
+  tráfego pelo link errado, e paciência; o mesmo mecanismo como bloqueio não
+  segura quem fixa IP no cliente, usa DoH ou VPN, e CDN grande ainda resolve
+  para dezenas de endereços rotativos e compartilhados. A tela tem de dizer
+  essa diferença, senão vende como controle o que é preferência de rota.
 - **Não** fixar host em WAN por IP dentro de range DHCP dinâmico → use MAC/reserva.
 - **Não** entregar backend sem o controle correspondente no painel → o admin
   fica dependente de SSH, que é justamente o que a plataforma existe para
