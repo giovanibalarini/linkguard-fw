@@ -1,8 +1,12 @@
 #!/bin/sh
 set -e
 
-CONFIG_DIR="/etc/linkguard-fw"
-DATA_DIR="/var/lib/linkguard-fw"
+# Os caminhos são sobrescrevíveis SÓ para que a decisão de mensagem abaixo
+# possa ser exercitada de verdade por um teste, rodando este arquivo em vez de
+# lendo o texto dele. O dpkg nunca define estas variáveis: em produção os
+# valores são os de sempre.
+CONFIG_DIR="${LINKGUARD_CONFIG_DIR:-/etc/linkguard-fw}"
+DATA_DIR="${LINKGUARD_DATA_DIR:-/var/lib/linkguard-fw}"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 
 case "$1" in
@@ -68,6 +72,7 @@ CONFIG
       echo "[INFO]   Change to 0.0.0.0 or a specific IP for remote access."
     fi
 
+    restarted=0
     if command -v systemctl >/dev/null 2>&1; then
       systemctl daemon-reload
       # On upgrade, restart the service if it is enabled so it picks up the new
@@ -75,10 +80,27 @@ CONFIG
       # install it is not enabled yet, so this is a no-op.
       if systemctl is-enabled --quiet linkguard-fw 2>/dev/null; then
         systemctl restart linkguard-fw 2>/dev/null || true
+        restarted=1
       fi
     fi
 
-    echo "[INFO] LinkGuard FW installed."
-    echo "[INFO] Edit ${CONFIG_FILE} then run: systemctl enable --now linkguard-fw"
+    # A mensagem final tem que descrever o que ACABOU de acontecer.
+    #
+    # Até 2026-08-31 estas duas linhas saíam sempre, e num upgrade o pacote
+    # reiniciava o serviço e em seguida mandava habilitá-lo — contradizendo a
+    # própria ação anterior. Num firewall em produção essa é a classe de
+    # mensagem que faz alguém mexer no que estava certo.
+    #
+    # `$2` é o sinal canônico do dpkg: vazio na instalação nova, versão
+    # anterior no upgrade.
+    if [ "${restarted}" = 1 ]; then
+      echo "[INFO] LinkGuard FW upgraded from ${2:-?}; the running service was restarted on the new binary."
+    elif [ -n "${2:-}" ]; then
+      echo "[INFO] LinkGuard FW upgraded from ${2}, but the service is not enabled."
+      echo "[INFO] Start it with: systemctl enable --now linkguard-fw"
+    else
+      echo "[INFO] LinkGuard FW installed."
+      echo "[INFO] Edit ${CONFIG_FILE} then run: systemctl enable --now linkguard-fw"
+    fi
     ;;
 esac
