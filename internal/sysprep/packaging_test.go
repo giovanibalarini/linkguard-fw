@@ -2,9 +2,11 @@ package sysprep
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -349,5 +351,101 @@ func TestControlFieldsAreSingleSourced(t *testing.T) {
 	}
 	if strings.Contains(wf, "dpkg-deb --build") {
 		t.Error("o workflow de release voltou a montar o pacote por conta própria em vez de chamar o Makefile")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A MENSAGEM FINAL DO POSTINST TEM QUE DESCREVER O QUE ACABOU DE ACONTECER.
+//
+// Até 2026-08-31 as duas últimas linhas saíam sempre. Num upgrade o pacote
+// reiniciava o serviço e, na linha seguinte, mandava habilitá-lo — negando a
+// própria ação anterior. Foi visto num deploy real do firewall de produção
+// (v1.0.186 → v1.0.192), e num firewall essa é a classe de mensagem que faz
+// alguém mexer no que já estava certo.
+//
+// Este teste RODA o postinst em vez de ler o texto dele. Ler o texto provaria
+// que as palavras mudaram; rodar prova que a decisão mudou — que é o que
+// falhou. Só o CONFIG_DIR é redirecionado; o resto do script é o de produção.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// runPostinst executa o postinst com um systemctl de mentira e devolve a saída.
+// `enabled` diz o que o `systemctl is-enabled` vai responder; `oldVersion` é o
+// `$2` do dpkg — vazio significa instalação nova.
+func runPostinst(t *testing.T, enabled bool, oldVersion string) string {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("o postinst é script de pacote Debian")
+	}
+
+	bin := t.TempDir()
+	code := 1
+	if enabled {
+		code = 0
+	}
+	// O dublê registra o que foi chamado e responde ao is-enabled conforme o
+	// caso sob teste. `daemon-reload` e `restart` viram no-op.
+	stub := "#!/bin/sh\ncase \"$1\" in\n  is-enabled) exit " +
+		strconv.Itoa(code) + " ;;\nesac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(stub), 0o755); err != nil {
+		t.Fatalf("escrever systemctl de mentira: %v", err)
+	}
+
+	args := []string{filepath.Join(repoRoot(t), "deploy/deb/postinst"), "configure"}
+	if oldVersion != "" {
+		args = append(args, oldVersion)
+	}
+	cmd := exec.Command("sh", args...)
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"LINKGUARD_CONFIG_DIR="+t.TempDir(),
+		"LINKGUARD_DATA_DIR="+t.TempDir(),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("postinst falhou: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+func TestOPostinstNaoMandaHabilitarOQueAcabouDeReiniciar(t *testing.T) {
+	out := runPostinst(t, true, "1.0.186")
+
+	if strings.Contains(out, "enable --now") {
+		t.Errorf("o postinst reiniciou o serviço e ainda assim mandou habilitá-lo:\n%s", out)
+	}
+	if !strings.Contains(out, "restarted") {
+		t.Errorf("o upgrade não disse que reiniciou o serviço, que é a única coisa que o "+
+			"admin precisa saber para não ir mexer:\n%s", out)
+	}
+	if !strings.Contains(out, "1.0.186") {
+		t.Errorf("o upgrade não disse de qual versão veio:\n%s", out)
+	}
+}
+
+func TestOPostinstAindaOrientaNaInstalacaoNova(t *testing.T) {
+	// A metade de silêncio deste par: consertar o upgrade não pode calar a
+	// instalação nova, onde o serviço REALMENTE não está habilitado e a
+	// orientação é a única coisa que faz o produto subir.
+	out := runPostinst(t, false, "")
+
+	if !strings.Contains(out, "enable --now") {
+		t.Errorf("a instalação nova deixou de dizer como subir o serviço:\n%s", out)
+	}
+	if strings.Contains(out, "upgraded") {
+		t.Errorf("a instalação nova se anunciou como upgrade:\n%s", out)
+	}
+}
+
+func TestOPostinstAvisaOUpgradeComServicoDesabilitado(t *testing.T) {
+	// Terceiro caso, e o que a lógica antiga acertava por acidente: upgrade
+	// numa máquina onde o serviço nunca foi habilitado. Aqui a orientação
+	// PRECISA sair — e não pode se disfarçar de instalação nova.
+	out := runPostinst(t, false, "1.0.186")
+
+	if !strings.Contains(out, "enable --now") {
+		t.Errorf("upgrade com serviço desabilitado precisa dizer como habilitá-lo:\n%s", out)
+	}
+	if strings.Contains(out, "restarted") {
+		t.Errorf("nada foi reiniciado, mas a mensagem diz que sim:\n%s", out)
 	}
 }
