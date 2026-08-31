@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
-import { portIsAbnormal, portState } from './portState.ts';
+import { ATIVIDADE_MIN, portIsAbnormal, portState } from './portState.ts';
 import type { IfaceKind, IfaceView } from '../types/index.ts';
 
 let n = 0;
@@ -76,6 +76,47 @@ const iface = (over: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// O LED DE ATIVIDADE TEM TRÊS ESTADOS, E O TERCEIRO É O QUE IMPORTA.
+//
+// `false` e `null` levam a leituras opostas: "ninguém está usando este cabo" e
+// "não estou medindo este cabo". Confundi-las é o defeito que o alvo por
+// domínio já pagou (#123), e num painel de portas ele reapareceria como um LED
+// apagado afirmando silêncio que ninguém observou.
+// ─────────────────────────────────────────────────────────────────────────────
+
+{
+  const parada = portState(iface({ carrier: true }), { rx: 0, tx: 0 });
+  check(parada.activity === false, 'medido e sem tráfego: apagado, e isso é uma AFIRMAÇÃO');
+
+  const semMedir = portState(iface({ carrier: true }));
+  check(semMedir.activity === null, 'chamador que não mede não vira "parada"');
+
+  const semAmostra = portState(iface({ carrier: true }), null);
+  check(semAmostra.activity === null, 'coleta sem duas amostras não vira "parada"');
+
+  check(semMedir.activity !== parada.activity, 'não medido e parado NÃO são o mesmo estado');
+}
+
+{
+  const chiado = portState(iface({ carrier: true }), { rx: ATIVIDADE_MIN / 4, tx: 0 });
+  check(chiado.activity === false, 'ARP e descoberta de vizinho não acendem o LED');
+
+  const real = portState(iface({ carrier: true }), { rx: ATIVIDADE_MIN, tx: 0 });
+  check(real.activity === true, 'tráfego no piso acende');
+
+  const somado = portState(iface({ carrier: true }), { rx: ATIVIDADE_MIN / 2, tx: ATIVIDADE_MIN / 2 });
+  check(somado.activity === true, 'o piso vale para rx + tx, não para cada direção');
+
+  check(ATIVIDADE_MIN > 0, 'zero não serve de piso: o LED piscaria sempre e viraria enfeite');
+}
+
+{
+  // VLAN não tem porta, e portanto não tem o que reportar — nem parada.
+  check(portState(iface({ kind: 'vlan' }), { rx: 9e9, tx: 9e9 }).activity === null,
+    'interface virtual não afirma atividade nem com taxa alta no mapa');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FIAÇÃO. Um estado que ninguém liga na tela não adianta existir.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -96,7 +137,14 @@ check(interfaces.includes("closest('a,button')"), 'o clique da linha não rouba 
 check(painel.includes("i.kind === 'physical'"), 'o painel traseiro só desenha porta que existe no metal');
 check(painel.includes('onIdentify'), 'o painel pisca a porta de verdade pelo ethtool');
 check(icone.includes('animate-pulse'), 'os LEDs piscam durante o identify');
-check(!/animate-(bounce|ping|spin)/.test(icone), 'nenhuma outra animação: LED que se mexe sem comando atrás afirma tráfego não medido');
+check(!/animate-(bounce|ping|spin)/.test(icone), 'nenhuma outra animação além do pisca');
+check(icone.includes("activity === null"), 'o ícone trata "não medido" como estado próprio, não como apagado');
+check(/rightBlinks\s*=\s*!degraded/.test(icone), 'erro no contador ganha do pisca de atividade: é o único estado acionável');
+
+const painelSrc = painel;
+check(painelSrc.includes('deriveRate'), 'a taxa vem da MESMA fórmula do resto do app, não de uma segunda conta');
+check(painelSrc.includes("'/api/system/status'"), 'a atividade vem de contador medido, não de adivinhação');
+check(/catch[\s\S]{0,220}setTaxas\(\{\}\)/.test(painelSrc), 'coleta que falha volta para "não medido", nunca para "parada"');
 
 for (const chave of [
   'net.if.port.up',
