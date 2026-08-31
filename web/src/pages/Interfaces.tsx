@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 import { Search, Pencil } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import { useI18n } from '../i18n';
 import InterfaceTraffic from '../components/InterfaceTraffic';
@@ -8,6 +8,9 @@ import Panel from '../components/ui/Panel';
 import Tabs, { type TabItem } from '../components/ui/Tabs';
 import Tag, { type TagVariant } from '../components/ui/Tag';
 import IconButton from '../components/ui/IconButton';
+import PortIcon from '../components/ui/PortIcon';
+import BackPanel from '../components/BackPanel';
+import { portIsAbnormal, portState } from '../lib/portState';
 import type { IfaceView, PendingChange, StableNameEntry } from '../types';
 
 // Groups by the Role the backend already computed (spec §5.1: Role is a
@@ -51,6 +54,31 @@ export default function Interfaces() {
   const [stableNames, setStableNames] = useState<StableNameEntry[]>([]);
   const [applyingStable, setApplyingStable] = useState(false);
   const [stableApplied, setStableApplied] = useState(false);
+
+  const navigate = useNavigate();
+
+  // Clicar na interface entra nas configurações dela. Só física, de propósito:
+  // a tela de edição recusa VLAN e bridge (net.ifedit.physicalOnly), e levar o
+  // admin a uma página que só sabe dizer não é pior do que não levar.
+  const settingsPath = (i: IfaceView) =>
+    i.kind === 'physical' ? `/interfaces/${encodeURIComponent(i.name)}/edit` : null;
+
+  // O clique da linha inteira não pode roubar o clique de quem já é clicável:
+  // sem esta guarda, "identificar" viraria navegação e o admin sairia da tela
+  // no lugar de piscar o LED da porta.
+  const openSettings = (i: IfaceView) => (e: MouseEvent) => {
+    const path = settingsPath(i);
+    if (!path) return;
+    if ((e.target as HTMLElement).closest('a,button')) return;
+    navigate(path);
+  };
+
+  const portLabel = (i: IfaceView) => {
+    const s = portState(i);
+    if (!s.physical) return t('net.if.port.virtual');
+    if (s.degraded) return t('net.if.port.degraded');
+    return s.link ? t('net.if.port.up') : t('net.if.port.down');
+  };
 
   const handleIdentify = async (name: string) => {
     setIdentifying(name);
@@ -219,6 +247,9 @@ export default function Interfaces() {
 
       {tab === 'overview' && (
         <Panel title={t('net.if.backPanel')}>
+          <div className="mb-4">
+            <BackPanel ifaces={visible} identifying={identifying} onIdentify={handleIdentify} />
+          </div>
           {(() => {
             const { wan, lan, unassigned } = groupByRole(visible);
             // Only count interfaces actually still hidden — a role-bearing
@@ -227,14 +258,27 @@ export default function Interfaces() {
             const systemIfaces = ifaces.filter((i) => i.live.system && i.role === 'unassigned');
             const byName = new Map(visible.map((i) => [i.name, i]));
             const renderRow = (i: IfaceView, indent = false) => {
-              const physAbnormal = i.kind === 'physical' && (!i.live.carrier || i.live.rx_errors > 0);
+              const physAbnormal = portIsAbnormal(i);
+              const path = settingsPath(i);
               return (
                 <div
                   key={i.name}
-                  className={`flex items-center justify-between gap-3 py-2 border-b border-gray-800/50 last:border-0 ${indent ? 'pl-6' : ''}`}
+                  onClick={openSettings(i)}
+                  className={`flex items-center justify-between gap-3 py-2 border-b border-gray-800/50 last:border-0 ${indent ? 'pl-6' : ''} ${path ? 'cursor-pointer hover:bg-gray-800/40' : ''}`}
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-white text-sm truncate">{i.alias || i.name}</span>
+                    <PortIcon state={portState(i)} label={portLabel(i)} />
+                    {path ? (
+                      <Link
+                        to={path}
+                        aria-label={t('net.if.openSettings', { name: i.alias || i.name })}
+                        className="text-white text-sm truncate hover:text-blue-400"
+                      >
+                        {i.alias || i.name}
+                      </Link>
+                    ) : (
+                      <span className="text-white text-sm truncate">{i.alias || i.name}</span>
+                    )}
                     {i.alias && <span className="text-gray-600 text-xs font-mono">{i.name}</span>}
                     <span className="text-gray-500 text-xs font-mono">
                       {i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr ?? '—'}
@@ -369,12 +413,20 @@ export default function Interfaces() {
               <div className="sm:hidden space-y-2">
                 {filtered.map((i) => {
                   const roleCfg = roleTag[i.role] ?? roleTag.unassigned;
-                  const physAbnormal = !i.live.carrier || i.live.rx_errors > 0 || i.live.tx_errors > 0;
+                  const physAbnormal = portIsAbnormal(i);
+                  const path = settingsPath(i);
                   return (
-                    <div key={i.name} className="rounded-lg border bg-gray-950/40 p-3 border-gray-800">
+                    <div
+                      key={i.name}
+                      onClick={openSettings(i)}
+                      className={`rounded-lg border bg-gray-950/40 p-3 border-gray-800 ${path ? 'cursor-pointer active:bg-gray-900/60' : ''}`}
+                    >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <div className="text-white font-medium truncate">{i.alias || i.name}</div>
+                          <div className="flex items-center gap-2">
+                            <PortIcon state={portState(i)} label={portLabel(i)} />
+                            <div className="text-white font-medium truncate">{i.alias || i.name}</div>
+                          </div>
                           {i.alias && <div className="text-gray-500 text-xs font-mono truncate">{i.name}</div>}
                           <Tag variant={roleCfg.variant} className="mt-1">{roleCfg.label}</Tag>
                         </div>
@@ -430,12 +482,22 @@ export default function Interfaces() {
                   <tbody>
                     {filtered.map((i) => {
                       const roleCfg = roleTag[i.role] ?? roleTag.unassigned;
-                      const physAbnormal = !i.live.carrier || i.live.rx_errors > 0 || i.live.tx_errors > 0;
+                      const physAbnormal = portIsAbnormal(i);
+                      const path = settingsPath(i);
                       return (
-                        <tr key={i.name} className="table-row">
+                        <tr
+                          key={i.name}
+                          onClick={openSettings(i)}
+                          className={`table-row ${path ? 'cursor-pointer hover:bg-gray-800/40' : ''}`}
+                        >
                           <td className="py-3 pr-4">
-                            <div className="text-white font-medium">{i.alias || i.name}</div>
-                            {i.alias && <div className="text-gray-500 text-xs font-mono">{i.name}</div>}
+                            <div className="flex items-center gap-2">
+                              <PortIcon state={portState(i)} label={portLabel(i)} />
+                              <div className="min-w-0">
+                                <div className="text-white font-medium truncate">{i.alias || i.name}</div>
+                                {i.alias && <div className="text-gray-500 text-xs font-mono truncate">{i.name}</div>}
+                              </div>
+                            </div>
                           </td>
                           <td className="py-3 pr-4 text-gray-400">{kindLabel[i.kind] ?? i.kind}</td>
                           <td className="py-3 pr-4 text-gray-400 font-mono">

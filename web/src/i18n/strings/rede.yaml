@@ -251,6 +251,27 @@ net.if.none:
 net.if.systemHidden:
   pt: "{n} interfaces de sistema ocultas · mostrar"
   en: "{n} system interfaces hidden · show"
+net.if.port.up:
+  pt: "porta com link ativo"
+  en: "port with link up"
+net.if.port.down:
+  pt: "porta sem link"
+  en: "port with no link"
+net.if.port.degraded:
+  pt: "porta com link ativo, mas o contador acusa erro"
+  en: "port with link up, but the counter reports errors"
+net.if.port.virtual:
+  pt: "interface virtual — não há porta física atrás dela"
+  en: "virtual interface — there is no physical port behind it"
+net.if.openSettings:
+  pt: "Abrir as configurações de {name}"
+  en: "Open {name} settings"
+net.if.port.noAddress:
+  pt: "sem endereço IPv4"
+  en: "no IPv4 address"
+net.if.panel.hint:
+  pt: "Clique numa porta para configurá-la. \"Identificar\" pisca o LED da porta na máquina."
+  en: "Click a port to configure it. \"Identify\" blinks that port's LED on the machine."
 net.if.stable.title:
   pt: "Nomes estáveis por MAC"
   en: "Stable names by MAC"
