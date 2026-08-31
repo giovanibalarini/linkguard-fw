@@ -224,6 +224,13 @@ var schemaMigrations = []migration{
 	// paralelo; mantê-lo em 17 faria a migração ser dada como aplicada numa
 	// base que nunca viu estas tabelas, e o serviço subiria sem elas.
 	{18, "wireguard: configuração e peers por usuário", upWireGuard},
+	// A 17 é do alvo por domínio e a 18 do WireGuard; as duas já estão no main.
+	// Este ramo nasceu pedindo a 17, e repetir número seria fatal: a migração
+	// seria dada como aplicada numa base que nunca a viu — em produção, que já
+	// rodou a 17, as tabelas do QoS simplesmente não existiriam.
+	{migrationLinkQoS, "links: configuração QoS por WAN", upAddLinkQoS},
+	{20, "stress test: lease de recuperação", upStressRecoveryLease},
+	{21, "QoS: journal durável de operações", upQoSOperationLease},
 }
 
 func upWireGuard(tx *sql.Tx) error {
@@ -255,15 +262,6 @@ func upWireGuard(tx *sql.Tx) error {
 		return err
 	}
 	return nil
-	// A 17 já foi consumida pelo alvo por domínio e JÁ RODOU em produção; a 18
-	// está reservada ao WireGuard (#203), que corre em paralelo com este ramo.
-	// A lacuna é segura de propósito: runMigrations marca cada versão
-	// individualmente em schema_migrations, não por marca d'água, então a 18
-	// aplica quando chegar. Número REPETIDO é que seria fatal — a migração
-	// seria dada como aplicada numa base que nunca a viu.
-	{migrationLinkQoS, "links: configuração QoS por WAN", upAddLinkQoS},
-	{20, "stress test: lease de recuperação", upStressRecoveryLease},
-	{21, "QoS: journal durável de operações", upQoSOperationLease},
 }
 
 const createSchemaMigrationsTable = `
