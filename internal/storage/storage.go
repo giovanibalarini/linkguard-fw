@@ -191,6 +191,16 @@ type migration struct {
 // que torna a primeira execução do runner segura em TODA instalação que já
 // existe — nelas a tabela nasce vazia, e sem sonda o runner tentaria aplicar de
 // novo dez migrações que já valem. Podem sair um release depois.
+// migrationLinkQoS é o número da migração do QoS por WAN.
+//
+// É constante nomeada porque o teste de upgrade precisa montar um banco no
+// estado imediatamente ANTERIOR a ela, e fazia isso com um 17 cravado. Quando
+// a renumeração empurrou o QoS para 19, o teste passou a marcar a 17 e a 18
+// como não aplicadas e a migração do alvo por domínio rodou contra um banco
+// sem a tabela dela. Com o número num lugar só, renumerar não pode mais
+// dessincronizar os dois.
+const migrationLinkQoS = 19
+
 var schemaMigrations = []migration{
 	{1, "traffic_samples para metric_samples", upTrafficSamplesToMetricSamples},
 	{2, "users.password_version", upAddPasswordVersion},
@@ -251,7 +261,7 @@ func upWireGuard(tx *sql.Tx) error {
 	// individualmente em schema_migrations, não por marca d'água, então a 18
 	// aplica quando chegar. Número REPETIDO é que seria fatal — a migração
 	// seria dada como aplicada numa base que nunca a viu.
-	{19, "links: configuração QoS por WAN", upAddLinkQoS},
+	{migrationLinkQoS, "links: configuração QoS por WAN", upAddLinkQoS},
 	{20, "stress test: lease de recuperação", upStressRecoveryLease},
 	{21, "QoS: journal durável de operações", upQoSOperationLease},
 }
