@@ -291,10 +291,7 @@ func (db *DB) DomainRoutingSnapshot(ctx context.Context) (DomainRoutingDBSnapsho
 		return snap, err
 	}
 
-	rows, err = tx.QueryContext(ctx, `
-		SELECT id, name, interface, ip_address, gateway, weight, dns_test,
-		       monitor_hosts, status, latency_ms, packet_loss, last_check,
-		       enabled, table_id, created_at, updated_at
+	rows, err = tx.QueryContext(ctx, linkSelectColumns+`
 		  FROM links ORDER BY name`)
 	if err != nil {
 		return snap, fmt.Errorf("listar links no snapshot: %w", err)

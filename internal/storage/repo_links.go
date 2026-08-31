@@ -15,13 +15,23 @@ var ErrLinkStateChanged = errors.New("link state changed")
 
 // ─── Links repository ────────────────────────────────────────────────────────
 
-// GetLinks returns all links ordered by name.
-func (db *DB) GetLinks() ([]Link, error) {
-	rows, err := db.conn.Query(`
+// linkSelectColumns é a FONTE ÚNICA das colunas que `scanLink` consome, na
+// ordem em que ele as consome.
+//
+// Ela existe porque a lista estava copiada em três consultas — duas aqui e uma
+// no DomainRoutingSnapshot — e as colunas do QoS (#121) foram adicionadas em
+// duas delas. A terceira continuou pedindo 16 colunas para um scanner que
+// passou a esperar 20, e só quebrou quando os dois ramos se encontraram. Uma
+// cópia a mais é uma chance a mais de a próxima coluna faltar em silêncio.
+const linkSelectColumns = `
 		SELECT id, name, interface, ip_address, gateway, weight, dns_test,
 		       monitor_hosts, status, latency_ms, packet_loss, last_check,
 		       enabled, table_id, qos_enabled, qos_upload_mbps,
-		       qos_download_mbps, qos_interactive, created_at, updated_at
+		       qos_download_mbps, qos_interactive, created_at, updated_at`
+
+// GetLinks returns all links ordered by name.
+func (db *DB) GetLinks() ([]Link, error) {
+	rows, err := db.conn.Query(linkSelectColumns + `
 		FROM links ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -41,11 +51,7 @@ func (db *DB) GetLinks() ([]Link, error) {
 
 // GetLink returns a single link by ID.
 func (db *DB) GetLink(id string) (*Link, error) {
-	row := db.conn.QueryRow(`
-		SELECT id, name, interface, ip_address, gateway, weight, dns_test,
-		       monitor_hosts, status, latency_ms, packet_loss, last_check,
-		       enabled, table_id, qos_enabled, qos_upload_mbps,
-		       qos_download_mbps, qos_interactive, created_at, updated_at
+	row := db.conn.QueryRow(linkSelectColumns+`
 		FROM links WHERE id = ?`, id)
 
 	l, err := scanLink(row)

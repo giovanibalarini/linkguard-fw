@@ -43,8 +43,11 @@ func TestLinkQoSMigrationUpgradesExistingDatabase(t *testing.T) {
 	if _, err := raw.Exec(createSchemaMigrationsTable); err != nil {
 		t.Fatalf("create schema_migrations: %v", err)
 	}
+	// Tudo ANTES da migração do QoS conta como já aplicado: é esse o estado
+	// que este teste quer exercitar. O número vem da constante, nunca cravado —
+	// ver migrationLinkQoS.
 	for _, migration := range schemaMigrations {
-		if migration.version >= 17 {
+		if migration.version >= migrationLinkQoS {
 			continue
 		}
 		if _, err := raw.Exec(
@@ -67,8 +70,8 @@ func TestLinkQoSMigrationUpgradesExistingDatabase(t *testing.T) {
 	}
 	defer db.Close()
 
-	if _, ok := appliedVersions(t, db)[17]; !ok {
-		t.Fatal("QoS migration version 17 was not recorded")
+	if _, ok := appliedVersions(t, db)[migrationLinkQoS]; !ok {
+		t.Fatalf("QoS migration version %d was not recorded", migrationLinkQoS)
 	}
 
 	link, err := db.GetLink("wan-before-qos")
