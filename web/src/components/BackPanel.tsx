@@ -1,8 +1,11 @@
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import client from '../api/client';
 import { useI18n } from '../i18n';
 import PortIcon from './ui/PortIcon';
 import { portState } from '../lib/portState';
-import type { IfaceView } from '../types';
+import { deriveRate, type InterfaceRate, type RateCounter } from '../lib/interfaceRates';
+import type { IfaceView, SystemMetrics } from '../types';
 
 interface BackPanelProps {
   ifaces: IfaceView[];
@@ -29,8 +32,53 @@ const ROLE_ACCENT: Record<string, string> = {
  * Só interface FÍSICA entra. VLAN e bridge continuam na lista abaixo, porque
  * não têm tomada atrás — desenhá-las aqui seria inventar hardware.
  */
+// useTaxas coleta os contadores e devolve bits/s por interface.
+//
+// Uma interface só aparece no mapa depois da SEGUNDA amostra — `deriveRate`
+// devolve null com uma só, e é isso que mantém o LED de atividade honesto nos
+// primeiros segundos: ausente do mapa significa "não medido", nunca "parada".
+// Se a coleta falhar, o mapa é zerado pelo mesmo motivo.
+function useTaxas(): Record<string, InterfaceRate> {
+  const [taxas, setTaxas] = useState<Record<string, InterfaceRate>>({});
+  const anterior = useRef<Record<string, RateCounter>>({});
+
+  useEffect(() => {
+    let vivo = true;
+    const ler = async () => {
+      try {
+        const { data } = await client.get<SystemMetrics>('/api/system/status');
+        if (!vivo) return;
+        const agora = Date.now();
+        const novas: Record<string, InterfaceRate> = {};
+        for (const m of data.interfaces ?? []) {
+          const taxa = deriveRate(anterior.current[m.name], m, agora);
+          if (taxa) novas[m.name] = taxa;
+          anterior.current[m.name] = { ts: agora, rx: m.rx_bytes, tx: m.tx_bytes };
+        }
+        setTaxas(novas);
+      } catch {
+        // Sem medição não se afirma silêncio: o mapa esvazia e todo LED de
+        // atividade volta para "não medido".
+        if (vivo) {
+          anterior.current = {};
+          setTaxas({});
+        }
+      }
+    };
+    ler();
+    const t = setInterval(ler, 3000);
+    return () => {
+      vivo = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  return taxas;
+}
+
 export default function BackPanel({ ifaces, identifying, onIdentify }: BackPanelProps) {
   const { t } = useI18n();
+  const taxas = useTaxas();
   const ports = ifaces.filter((i) => i.kind === 'physical');
   if (ports.length === 0) return null;
 
@@ -38,7 +86,7 @@ export default function BackPanel({ ifaces, identifying, onIdentify }: BackPanel
     <div className="rounded-xl border border-gray-800 bg-gradient-to-b from-gray-950 to-black/60 p-4">
       <div className="flex flex-wrap gap-2.5">
         {ports.map((i) => {
-          const s = portState(i);
+          const s = portState(i, taxas[i.name] ?? null);
           const ipv4 = i.live.addresses?.find((a) => a.family === 'ipv4')?.cidr;
           const accent = ROLE_ACCENT[i.role] ?? ROLE_ACCENT.unassigned;
           const blinking = identifying === i.name;
@@ -71,6 +119,15 @@ export default function BackPanel({ ifaces, identifying, onIdentify }: BackPanel
                       ? t('net.if.port.up')
                       : t('net.if.port.down')}
                 </div>
+                {s.link && !s.degraded && (
+                  <div className="text-gray-500">
+                    {s.activity === null
+                      ? t('net.if.port.act.unknown')
+                      : s.activity
+                        ? t('net.if.port.act.busy')
+                        : t('net.if.port.act.idle')}
+                  </div>
+                )}
               </div>
 
               {/* Piscar a porta é do lado do metal: chama ethtool --identify.

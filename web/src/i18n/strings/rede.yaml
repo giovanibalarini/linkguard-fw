@@ -269,6 +269,15 @@ net.if.openSettings:
 net.if.port.noAddress:
   pt: "sem endereço IPv4"
   en: "no IPv4 address"
+net.if.port.act.busy:
+  pt: "passando tráfego agora"
+  en: "passing traffic right now"
+net.if.port.act.idle:
+  pt: "medido, sem tráfego"
+  en: "measured, no traffic"
+net.if.port.act.unknown:
+  pt: "tráfego ainda não medido"
+  en: "traffic not measured yet"
 net.if.panel.hint:
   pt: "Clique numa porta para configurá-la. \"Identificar\" pisca o LED da porta na máquina."
   en: "Click a port to configure it. \"Identify\" blinks that port's LED on the machine."

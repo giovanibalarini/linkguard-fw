@@ -10,9 +10,9 @@ interface PortIconProps {
    */
   label?: string;
   /**
-   * Pisca os LEDs enquanto o `ethtool --identify` está piscando os de verdade.
-   * É a ÚNICA animação daqui, e ela é honesta: existe um comando rodando na
-   * placa naquele instante, e a tela está espelhando esse comando.
+   * Pisca os DOIS LEDs enquanto o `ethtool --identify` está piscando os de
+   * verdade na placa. Diferente do LED de atividade: aqui é a placa inteira
+   * chamando atenção, e por isso ganha os dois.
    */
   blink?: boolean;
   className?: string;
@@ -36,10 +36,27 @@ const PIN_X = Array.from({ length: 8 }, (_, i) => 7.3 + i * (9.4 / 7));
  */
 export default function PortIcon({ state, label, blink = false, className = 'w-5 h-5' }: PortIconProps) {
   const decorative = !label;
-  const { physical, link, degraded } = state;
+  const { physical, link, degraded, activity } = state;
   const bodyOpacity = physical ? (link ? 'opacity-90' : 'opacity-50') : 'opacity-40';
   const leftLed = link ? 'fill-emerald-400' : 'fill-gray-700';
-  const rightLed = degraded ? 'fill-amber-400' : link ? 'fill-emerald-400' : 'fill-gray-700';
+
+  // O LED direito, por ordem de precedência:
+  //
+  //   erro       — âmbar fixo. Ganha de tudo: é o único estado acionável.
+  //   sem link   — apagado.
+  //   medido     — verde, piscando com tráfego e apagado sem tráfego.
+  //   não medido — verde fraco. NÃO apagado, porque apagado aqui se leria
+  //                como "parada", e ninguém mediu para poder dizer isso.
+  const rightLed = degraded
+    ? 'fill-amber-400'
+    : !link
+      ? 'fill-gray-700'
+      : activity === null
+        ? 'fill-emerald-400 opacity-40'
+        : activity
+          ? 'fill-emerald-400'
+          : 'fill-gray-700';
+  const rightBlinks = !degraded && link && activity === true;
 
   return (
     <svg
@@ -76,9 +93,16 @@ export default function PortIcon({ state, label, blink = false, className = 'w-5
       {physical && (
         <g className={blink ? 'animate-pulse' : undefined}>
           {link && <circle cx="6.4" cy="7.4" r="2.6" className="fill-emerald-400 opacity-25" />}
-          {link && <circle cx="17.6" cy="7.4" r="2.6" className={`${degraded ? 'fill-amber-400' : 'fill-emerald-400'} opacity-25`} />}
+          {link && (activity !== false || degraded) && (
+            <circle cx="17.6" cy="7.4" r="2.6" className={`${degraded ? 'fill-amber-400' : 'fill-emerald-400'} opacity-25`} />
+          )}
           <circle cx="6.4" cy="7.4" r="1.3" className={leftLed} />
-          <circle cx="17.6" cy="7.4" r="1.3" className={rightLed} />
+          <circle
+            cx="17.6"
+            cy="7.4"
+            r="1.3"
+            className={`${rightLed} ${rightBlinks && !blink ? 'animate-pulse' : ''}`}
+          />
         </g>
       )}
     </svg>
