@@ -51,6 +51,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
+	"github.com/giovanibalarini/linkguard-fw/internal/platform"
 	"github.com/giovanibalarini/linkguard-fw/internal/qos"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
@@ -233,7 +234,13 @@ func run() int {
 	}
 	defer db.Close()
 
-	s, err := buildServices(cfg, db)
+	// Em que máquina estamos, e o que ela deixa o produto fazer. Tem que vir
+	// antes de buildServices porque é dali para baixo que o resto deriva, e
+	// depois de openStore porque o resultado é cacheado na tabela settings.
+	// Nunca derruba o boot — ver detectPlatformOnBoot.
+	plat := detectPlatformOnBoot(db)
+
+	s, err := buildServices(cfg, db, plat)
 	if err != nil {
 		return 1
 	}
@@ -360,6 +367,12 @@ type services struct {
 	cfg *config.Config
 	db  *storage.DB
 
+	// plat é a plataforma detectada no boot, por VALOR: não há
+	// platform.Current() global, e o zero-value é permissivo, então um
+	// caminho que esqueça de preenchê-la se comporta como o produto se
+	// comporta hoje. Ver internal/platform.
+	plat platform.Snapshot
+
 	// exec é o executor da aplicação (30 s). pkgExec é o dos gerenciadores de
 	// pacote (10 min) — ver pkgInstallTimeout.
 	exec    firewall.Executor
@@ -444,7 +457,7 @@ var secretKeyPath = "/etc/linkguard-fw/secret.key"
 // wireCallbacks fica com o que é de fato callback de evento e precisa do ctx.
 //
 // Os slog.Error ficam aqui pelo mesmo motivo de openStore.
-func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
+func buildServices(cfg *config.Config, db *storage.DB, plat platform.Snapshot) (*services, error) {
 	if err := secrets.CheckNotOrphaned(secretKeyPath, db); err != nil {
 		slog.Error("refusing to start", "err", err)
 		return nil, err
@@ -831,6 +844,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	return &services{
 		cfg:              cfg,
 		db:               db,
+		plat:             plat,
 		exec:             exec,
 		pkgExec:          pkgExec,
 		secretsSvc:       secretsSvc,

@@ -14,6 +14,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/monitoring"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
+	"github.com/giovanibalarini/linkguard-fw/internal/platform"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/timesync"
 	"github.com/giovanibalarini/linkguard-fw/internal/validate"
@@ -111,11 +112,21 @@ var knownSettingsValidators = map[string]func(raw string) error{
 //   - firewall_rules_apply / netsvc_last_apply: results of an apply that
 //     happened on the source machine. Restored, the panel would report a
 //     success (or failure) that never took place here.
+//
+//   - platform_snapshot: em que MÁQUINA o produto está (nuvem ou não, região,
+//     shape, limite de VNICs) e o que aquela máquina deixa o produto fazer.
+//     É a definição de estado local: restaurado, um backup tirado numa OCI de
+//     uma VNIC só diria a esta caixa que ela não tem multi-WAN. O detector
+//     tem a própria defesa — o instantâneo carrega um fingerprint da máquina
+//     e é descartado quando não bate (internal/platform) —, mas essa defesa
+//     só age no próximo boot, e platform.Load é lido sem detectar nada. A
+//     linha simplesmente não viaja.
 var machineLocalSettingKeys = map[string]bool{
 	nftables.LiveSnapshotSettingKey:  true,
 	firewallrules.ImportedSettingKey: true,
 	firewallrules.ApplyStatusKey:     true,
 	netsvcApplyStatusKey:             true,
+	platform.SnapshotSettingKey:      true,
 }
 
 // As três chaves abaixo espelham constantes não exportadas de

@@ -1,0 +1,47 @@
+{
+  "availabilityDomain": "Wgnm:SA-SAOPAULO-1-AD-1",
+  "faultDomain": "FAULT-DOMAIN-2",
+  "compartmentId": "ocid1.compartment.oc1..aaaaaaaagbtechcompartmentexampleuniqueid",
+  "displayName": "gbtech-bastion",
+  "hostname": "gbtech-bastion",
+  "id": "ocid1.instance.oc1.sa-saopaulo-1.antxeljrgbtechbastionexampleuniqueid",
+  "image": "ocid1.image.oc1.sa-saopaulo-1.aaaaaaaaubuntu2404minimalexampleuniqueid",
+  "metadata": {
+    "ssh_authorized_keys": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXEMPLOEXEMPLOEXEMPLOEXEMPLOEXEMPLOEX gov@estacao\n",
+    "user_data": "I2Nsb3VkLWNvbmZpZwpwYWNrYWdlX3VwZGF0ZTogdHJ1ZQo="
+  },
+  "ociAdName": "sa-saopaulo-1-ad-1",
+  "canonicalRegionName": "sa-saopaulo-1",
+  "region": "gru",
+  "regionInfo": {
+    "realmDomainComponent": "oraclecloud.com",
+    "realmKey": "oc1",
+    "regionIdentifier": "sa-saopaulo-1",
+    "regionKey": "GRU"
+  },
+  "shape": "VM.Standard.E2.1.Micro",
+  "shapeConfig": {
+    "maxVnicAttachments": 1,
+    "memoryInGBs": 1.0,
+    "networkingBandwidthInGbps": 0.48,
+    "ocpus": 1.0
+  },
+  "state": "Running",
+  "tenantId": "ocid1.tenancy.oc1..aaaaaaaagbtechtenancyexampleuniqueid",
+  "timeCreated": 1751328000000,
+  "agentConfig": {
+    "monitoringDisabled": false,
+    "managementDisabled": false,
+    "allPluginsDisabled": false
+  },
+  "freeformTags": {
+    "managed-by": "terraform",
+    "project": "gbtech-oci"
+  },
+  "definedTags": {},
+  "systemTags": {
+    "orcl-cloud": {
+      "free-tier-retained": "true"
+    }
+  }
+}

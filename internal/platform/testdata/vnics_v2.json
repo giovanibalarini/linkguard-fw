@@ -1,0 +1,10 @@
+[
+  {
+    "macAddr": "02:00:17:0A:19:30",
+    "privateIp": "10.0.0.10",
+    "subnetCidrBlock": "10.0.0.0/24",
+    "virtualRouterIp": "10.0.0.1",
+    "vlanTag": 1531,
+    "vnicId": "ocid1.vnic.oc1.sa-saopaulo-1.abtxeljrgbtechbastionvnicexampleuniqueid"
+  }
+]

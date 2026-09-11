@@ -11,6 +11,7 @@ import (
 
 	"github.com/giovanibalarini/linkguard-fw/internal/config"
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
+	"github.com/giovanibalarini/linkguard-fw/internal/platform"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
@@ -71,7 +72,11 @@ func buildTestServices(t *testing.T) *services {
 		FailoverEnabled:      false,
 	}
 
-	s, err := buildServices(cfg, db)
+	// A plataforma entra como DESCONHECIDA de propósito: é o estado permissivo
+	// (todas as capacidades ligadas), que é o comportamento do produto em
+	// produção hoje. Montar o produto aqui sobre um instantâneo de nuvem faria
+	// estes testes medirem uma máquina que nenhum cliente tem.
+	s, err := buildServices(cfg, db, platform.UnknownSnapshot())
 	if err != nil {
 		t.Fatalf("buildServices: %v", err)
 	}
