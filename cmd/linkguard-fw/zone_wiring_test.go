@@ -8,8 +8,10 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/platform"
+	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 )
 
 // TestMainLigaOEixoDasRegrasAPlataforma é um guarda de deriva no mesmo espírito
@@ -121,4 +123,130 @@ func joinTokens(toks []string) string {
 		out += t
 	}
 	return out
+}
+
+// bancoDeTeste abre um banco vazio, como o de uma instalação recém-feita.
+func bancoDeTeste(t *testing.T) *storage.DB {
+	t.Helper()
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// TestAMaquinaNovaNaoHerdaARedeDeCasaDeQuemEscreveuOProduto trava um vazamento
+// real, encontrado numa VM da OCI de verdade: as regras nasceram com
+// `ip saddr { 10.0.0.0/24, 192.168.3.0/24 }`, e aquele /24 é a rede doméstica
+// cravada em netsvc.DefaultConfig() — gateway 192.168.3.3 e tudo.
+//
+// Numa instalação nova não existe netsvc_config no banco, então ler o
+// DefaultConfig punha a rede de um terceiro dentro do firewall do cliente,
+// tratada como "dentro". Este é um produto de prateleira: quem instala tem de
+// receber a própria topologia, não a de quem escreveu.
+func TestAMaquinaNovaNaoHerdaARedeDeCasaDeQuemEscreveuOProduto(t *testing.T) {
+	db := bancoDeTeste(t)
+	fatos := platform.Facts{
+		Kind: platform.KindOCI,
+		OCI: &platform.OCIFacts{
+			MaxVNICAttachments: 1,
+			VNICs:              []platform.OCIVNIC{{SubnetCIDR: "10.0.0.0/24"}},
+		},
+	}
+	snap := platform.Snapshot{Format: platform.SnapshotFormat, Facts: fatos, Capabilities: platform.DeriveCapabilities(fatos)}
+
+	redes := redesLocais(db, snap)
+
+	for _, r := range redes {
+		if r == netsvc.DefaultConfig().SubnetCIDR {
+			t.Fatalf("a rede do DefaultConfig (%s) vazou para as regras de uma máquina que nunca a configurou: %v", r, redes)
+		}
+	}
+	if len(redes) != 1 || redes[0] != "10.0.0.0/24" {
+		t.Errorf("a VM tinha de conhecer só a própria sub-rede, obtive %v", redes)
+	}
+}
+
+// TestARedeConfiguradaPeloAdminEntraNoEixo é o outro lado: quando o admin
+// configurou de fato a rede pela tela, ela conta — é a LAN do painel.
+func TestARedeConfiguradaPeloAdminEntraNoEixo(t *testing.T) {
+	db := bancoDeTeste(t)
+	if err := db.SetSetting("netsvc_config", `{"subnet_cidr":"172.20.0.0/16"}`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	fatos := platform.Facts{
+		Kind: platform.KindOCI,
+		OCI: &platform.OCIFacts{
+			MaxVNICAttachments: 1,
+			VNICs:              []platform.OCIVNIC{{SubnetCIDR: "10.0.0.0/24"}},
+		},
+	}
+	snap := platform.Snapshot{Format: platform.SnapshotFormat, Facts: fatos, Capabilities: platform.DeriveCapabilities(fatos)}
+
+	redes := redesLocais(db, snap)
+
+	temConfigurada, temDaPlataforma := false, false
+	for _, r := range redes {
+		if r == "172.20.0.0/16" {
+			temConfigurada = true
+		}
+		if r == "10.0.0.0/24" {
+			temDaPlataforma = true
+		}
+	}
+	if !temConfigurada || !temDaPlataforma {
+		t.Errorf("as duas redes verdadeiras tinham de entrar, obtive %v", redes)
+	}
+}
+
+// TestConfigIlegivelNaoApagaARedeDaPlataforma: JSON corrompido não pode virar
+// silêncio — a mesma disciplina de ntpInputStateFrom e de hostflows.
+func TestConfigIlegivelNaoApagaARedeDaPlataforma(t *testing.T) {
+	db := bancoDeTeste(t)
+	if err := db.SetSetting("netsvc_config", `{isto não é json`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	fatos := platform.Facts{
+		Kind: platform.KindOCI,
+		OCI: &platform.OCIFacts{
+			MaxVNICAttachments: 1,
+			VNICs:              []platform.OCIVNIC{{SubnetCIDR: "10.0.0.0/24"}},
+		},
+	}
+	snap := platform.Snapshot{Format: platform.SnapshotFormat, Facts: fatos, Capabilities: platform.DeriveCapabilities(fatos)}
+
+	redes := redesLocais(db, snap)
+
+	if len(redes) != 1 || redes[0] != "10.0.0.0/24" {
+		t.Errorf("a rede da plataforma tinha de sobreviver a uma config ilegível, obtive %v", redes)
+	}
+}
+
+// TestAListaAntiLockoutNaoNasceComARedeDeOutraPessoa é o mesmo vazamento do
+// teste acima, no sítio onde ele é PIOR: AdminAccess.LANNetworks alimenta as
+// regras que existem para o admin não se trancar para fora. Numa caixa nova a
+// lista nascia com 192.168.3.0/24 — uma rede que aquela máquina não tem e que
+// o dono dela nunca viu.
+func TestAListaAntiLockoutNaoNasceComARedeDeOutraPessoa(t *testing.T) {
+	db := bancoDeTeste(t)
+	if got := redeConfigurada(db); got != "" {
+		t.Errorf("sem netsvc_config gravado a resposta tem de ser vazia, obtive %q", got)
+	}
+	if got := redeConfigurada(db); got == netsvc.DefaultConfig().SubnetCIDR {
+		t.Errorf("o DefaultConfig vazou: %q", got)
+	}
+}
+
+// TestOnPremNaoRegridePorqueLaAConfiguracaoEstaGravada prende o motivo de este
+// conserto ser seguro para a máquina que roda 24/7: lá o netsvc_config existe,
+// então a leitura devolve exatamente o que devolvia antes.
+func TestOnPremNaoRegridePorqueLaAConfiguracaoEstaGravada(t *testing.T) {
+	db := bancoDeTeste(t)
+	if err := db.SetSetting("netsvc_config", `{"subnet_cidr":"192.168.3.0/24","interface":"br10"}`); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	if got := redeConfigurada(db); got != "192.168.3.0/24" {
+		t.Errorf("a rede configurada da produção tem de sobreviver, obtive %q", got)
+	}
 }

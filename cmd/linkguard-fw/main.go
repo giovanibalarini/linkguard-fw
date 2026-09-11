@@ -621,13 +621,13 @@ func buildServices(cfg *config.Config, db *storage.DB, plat platform.Snapshot) (
 		}, nil
 	})
 	nftSvc.SetAdminAccessSource(func() (nftables.AdminAccess, error) {
-		netCfg := netsvc.DefaultConfig()
-		if raw, _ := db.GetSetting("netsvc_config"); raw != "" {
-			_ = json.Unmarshal([]byte(raw), &netCfg)
-		}
+		// redeConfigurada e NÃO o DefaultConfig: ver o comentário lá. Semeando
+		// com o default, toda caixa que nunca configurou o netsvc nascia com
+		// 192.168.3.0/24 aqui dentro — na lista que existe justamente para o
+		// admin não se trancar para fora.
 		var redes []string
-		if netCfg.SubnetCIDR != "" {
-			redes = append(redes, netCfg.SubnetCIDR)
+		if cidr := redeConfigurada(db); cidr != "" {
+			redes = append(redes, cidr)
 		}
 		// A porta do painel NÃO é fixa: 8080 é o default do binário, 9997 o do
 		// .deb, e quem põe proxy usa outra. Fixá-la aqui deixaria o anti-lockout
