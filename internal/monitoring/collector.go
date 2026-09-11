@@ -33,6 +33,10 @@ type Collector struct {
 	bootIDFn    func() (string, error) // returns the kernel's current boot_id; overridable in tests
 
 	bootPersist BootPersistSource // nil until SetBootPersistSource; see checkBootPersist
+	// wanSource é a lista efetiva de WANs desta máquina — as cadastradas ou,
+	// numa VM de nuvem em que ninguém cadastrou nada, o uplink derivado da
+	// plataforma. nil até SetWANSource; ver enabledWANInterfaces.
+	wanSource func() ([]string, error)
 
 	ifaceExists    func(string) bool // overridable in tests; nil means the real /sys/class/net check
 	resolvConfPath string            // overridable in tests; empty means defaultResolvConfPath

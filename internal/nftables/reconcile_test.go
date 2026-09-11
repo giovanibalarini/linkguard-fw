@@ -532,3 +532,199 @@ func TestReconcileNTPInputIsIdempotent(t *testing.T) {
 		t.Errorf("second run issued a different command set:\nfirst=%v\nsecond=%v", first, exec.executed)
 	}
 }
+
+// ─── O masquerade qualificado (o incremento do uplink) ───────────────────────
+
+// TestEmHairpinOMasqueradeQualificaPeloDestinoENaoPelaOrigem é a segunda metade
+// do incremento, e a que o produto PROMETE MEDIR.
+//
+// Numa VM de VNIC única entra e sai pela MESMA placa, então `oifname` sozinho
+// casa também o tráfego leste-oeste da nuvem: o nó de uma sub-rede falando com
+// o de outra sai mascarado como se fosse esta máquina, e a identidade de origem
+// evapora. Em Kubernetes isso não é só medição — é o IP de origem que a política
+// de rede do cluster lê.
+//
+// A PRIMEIRA TENTATIVA QUALIFICOU PELA ORIGEM E QUEBROU EM PRODUÇÃO. Num
+// gateway de trânsito quem precisa de NAT é quem está ATRÁS, noutra sub-rede:
+// dois nós k3s em 10.0.1.0/24 com o default route apontado para o bastion
+// saíram sem SNAT, com endereço privado, e a resposta não tinha como voltar.
+// Descobrir "quais redes estão atrás de mim" é impossível — a fabric só informa
+// o CIDR desta VNIC. A pergunta certa é "isto vai para a Internet?".
+func TestEmHairpinOMasqueradeQualificaPeloDestinoENaoPelaOrigem(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetZoneFactsSource(func() (ZoneFacts, error) {
+		return ZoneFacts{Hairpin: true, LocalNets: []string{"10.0.0.0/24"}, PathMTU: 1500}, nil
+	})
+
+	if err := s.ReconcileMasquerade(context.Background(), []string{"ens3"}); err != nil {
+		t.Fatalf("ReconcileMasquerade: %v", err)
+	}
+
+	var regra string
+	for _, c := range exec.executed {
+		if strings.Contains(c, "add rule") {
+			regra = c
+		}
+	}
+	want := `nft add rule inet linkguard postrouting oifname { "ens3" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } counter masquerade`
+	if regra != want {
+		t.Errorf("regra de NAT:\n  %q\nqueria:\n  %q", regra, want)
+	}
+	// `counter` NÃO É DECORAÇÃO: é o que permite ao operador ver que a regra
+	// está sendo usada numa chain que ele não pode listar por host.
+	if !strings.Contains(regra, "counter") {
+		t.Error("a regra de NAT da nuvem saiu sem contador")
+	}
+}
+
+// TestEmVariasWANsOMasqueradeContinuaSemContadorESemQualificacao trava a chain
+// postrouting da caixa de produção.
+//
+// Alimentar a zona com CIDRs e com MTU de caminho não pode mudar um byte aqui:
+// com placas separadas, o que sai pela WAN veio de dentro por definição, e
+// acrescentar `counter` reescreveria a chain de uma máquina que está
+// funcionando 24/7 para resolver um problema que ela não tem.
+func TestEmVariasWANsOMasqueradeContinuaSemContadorESemQualificacao(t *testing.T) {
+	rodar := func(fonte func() (ZoneFacts, error)) string {
+		exec := &fakeReconcileExec{}
+		s := &Service{exec: exec}
+		if fonte != nil {
+			s.SetZoneFactsSource(fonte)
+		}
+		if err := s.ReconcileMasquerade(context.Background(), []string{"ppp0", "enp2s0"}); err != nil {
+			t.Fatalf("ReconcileMasquerade: %v", err)
+		}
+		for _, c := range exec.executed {
+			if strings.Contains(c, "add rule") {
+				return c
+			}
+		}
+		t.Fatal("nenhuma regra foi emitida numa caixa com duas WANs")
+		return ""
+	}
+
+	semFonte := rodar(nil)
+	comFonte := rodar(func() (ZoneFacts, error) {
+		return ZoneFacts{Hairpin: false, LocalNets: []string{"192.168.3.0/24"}, PathMTU: 1500}, nil
+	})
+
+	want := `nft add rule inet linkguard postrouting oifname { "ppp0", "enp2s0" } masquerade`
+	if semFonte != want {
+		t.Errorf("sem a fonte da plataforma a regra mudou:\n  %q\nqueria:\n  %q", semFonte, want)
+	}
+	if comFonte != want {
+		t.Errorf("alimentar a plataforma mudou a chain de NAT da produção:\n  %q\nqueria:\n  %q", comFonte, want)
+	}
+	// A ORDEM DE CADASTRO É CONTRATO: ppp0 primeiro, não em ordem alfabética.
+	if strings.Index(comFonte, "ppp0") > strings.Index(comFonte, "enp2s0") {
+		t.Errorf("a ordem das WANs foi trocada: %q", comFonte)
+	}
+}
+
+// TestEmHairpinSemRedeLocalONATSaiLargoEmVezDeAChainFicarVazia prende o ramo
+// degradado.
+//
+// Sem CIDR de dentro não dá para qualificar, e `ip saddr { }` — o set anônimo
+// vazio — é recusado pelo nft. A escolha é entre uma regra larga demais, que
+// degrada a MEDIÇÃO, e uma chain vazia, que tira a máquina da Internet. A
+// promessa de primeira ordem deste produto é que a máquina nova saia para a
+// Internet, então a regra sai larga, com contador e com aviso.
+func TestEmHairpinSemRedeLocalONATSaiLargoEmVezDeAChainFicarVazia(t *testing.T) {
+	exec := &fakeReconcileExec{}
+	s := &Service{exec: exec}
+	s.SetZoneFactsSource(func() (ZoneFacts, error) {
+		return ZoneFacts{Hairpin: true, PathMTU: 1500}, nil
+	})
+
+	if err := s.ReconcileMasquerade(context.Background(), []string{"ens3"}); err != nil {
+		t.Fatalf("ReconcileMasquerade: %v", err)
+	}
+
+	var regra string
+	for _, c := range exec.executed {
+		if strings.Contains(c, "add rule") {
+			regra = c
+		}
+		if strings.Contains(c, "saddr { }") {
+			t.Fatalf("emitiu um set anônimo vazio, que o nft recusa: %q", c)
+		}
+	}
+	want := `nft add rule inet linkguard postrouting oifname { "ens3" } counter masquerade`
+	if regra != want {
+		t.Errorf("regra de NAT degradada:\n  %q\nqueria:\n  %q", regra, want)
+	}
+}
+
+// TestAGuardaDeFonteVaziaDoMasqueradeContinuaIntacta é a afirmação que este
+// incremento NÃO podia quebrar, e por isso é reafirmada do lado de cá.
+//
+// A guarda está certa: agir sobre uma fonte de verdade vazia é estritamente
+// menos seguro do que não fazer nada, porque derrubaria a regra de NAT que
+// estiver viva por causa de um SELECT que falhou ou de um link recém-apagado.
+// O que o uplink implícito mudou não foi a guarda — foi a lista deixar de
+// chegar vazia numa máquina em que a plataforma sabe responder.
+func TestAGuardaDeFonteVaziaDoMasqueradeContinuaIntacta(t *testing.T) {
+	casos := map[string]func() (ZoneFacts, error){
+		"sem fonte de plataforma": nil,
+		"numa máquina de nuvem com rede local conhecida": func() (ZoneFacts, error) {
+			return ZoneFacts{Hairpin: true, LocalNets: []string{"10.0.0.0/24"}, PathMTU: 1500}, nil
+		},
+	}
+	for nome, fonte := range casos {
+		t.Run(nome, func(t *testing.T) {
+			exec := &fakeReconcileExec{}
+			s := &Service{exec: exec}
+			if fonte != nil {
+				s.SetZoneFactsSource(fonte)
+			}
+			if err := s.ReconcileMasquerade(context.Background(), nil); err != nil {
+				t.Fatalf("ReconcileMasquerade: %v", err)
+			}
+			if len(exec.executed) != 0 {
+				t.Errorf("com a fonte de verdade VAZIA a chain tinha de ficar intocada; rodou: %v", exec.executed)
+			}
+		})
+	}
+}
+
+// TestOMasqueradeDoBootstrapEODaReconciliacaoSaoAMesmaRegra: instalação nova ==
+// caixa atualizada.
+//
+// Duas cópias da mesma regra numa chain de NAT é a instalação nova divergindo
+// no primeiro boot — e numa chain de NAT isso é a identidade de origem
+// aparecendo e sumindo conforme quem escreveu por último.
+func TestOMasqueradeDoBootstrapEODaReconciliacaoSaoAMesmaRegra(t *testing.T) {
+	casos := []struct {
+		nome  string
+		wans  []string
+		fatos ZoneFacts
+	}{
+		{"produção de duas WANs", []string{"ppp0", "enp2s0"}, ZoneFacts{LocalNets: []string{"192.168.3.0/24"}}},
+		{"VM de nuvem com uplink implícito", []string{"ens3"}, ZoneFacts{Hairpin: true, LocalNets: []string{"10.0.0.0/24"}, PathMTU: 1500}},
+		{"VM de nuvem sem rede local", []string{"ens3"}, ZoneFacts{Hairpin: true, PathMTU: 1500}},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			exec := &fakeReconcileExec{}
+			s := &Service{exec: exec}
+			s.SetZoneFactsSource(func() (ZoneFacts, error) { return c.fatos, nil })
+			if err := s.ReconcileMasquerade(context.Background(), c.wans); err != nil {
+				t.Fatalf("ReconcileMasquerade: %v", err)
+			}
+			var daReconciliacao string
+			for _, cmd := range exec.executed {
+				if i := strings.Index(cmd, "postrouting "); strings.Contains(cmd, "add rule") && i >= 0 {
+					daReconciliacao = cmd[i+len("postrouting "):]
+				}
+			}
+			if daReconciliacao == "" {
+				t.Fatal("a reconciliação não emitiu regra nenhuma")
+			}
+			if doBootstrap := buildBootstrapRuleset(c.wans, c.fatos); !strings.Contains(doBootstrap, "\t\t"+daReconciliacao+"\n") {
+				t.Errorf("o ruleset de instalação nova não contém a MESMA regra que a reconciliação escreve.\nreconciliação: %q\nbootstrap:\n%s",
+					daReconciliacao, doBootstrap)
+			}
+		})
+	}
+}

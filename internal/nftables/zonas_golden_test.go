@@ -76,7 +76,15 @@ type cenario struct {
 	// renderizar por CIDR em vez de por interface. Falso nos três cenários
 	// originais, que são caixas on-prem — e é justamente por isso que os
 	// goldens deles não podem mudar quando a zona passa a existir.
-	hairpin   bool
+	hairpin bool
+	// pathMTU é o que o CAMINHO até a Internet suporta — NÃO o que a interface
+	// anuncia. 0 é "não sei", e "não sei" é o valor de toda caixa on-prem: é
+	// ele que mantém o ajuste de MSS da produção saindo por `rt mtu`.
+	//
+	// NÃO ENTRA NA LINHA `# entrada:` DE GOLDEN NENHUM. O cabeçalho faz parte
+	// do arquivo, e acrescentar um campo ali apareceria como diff num golden de
+	// produção que não mudou de comportamento nenhum.
+	pathMTU   int
 	acesso    AdminAccess
 	grupos    []StoredGroup
 	ntpRedes  []string
@@ -157,6 +165,73 @@ func cenarios() []cenario {
 			ntpServir: true,
 		},
 		{
+			nome: "oci_uplink_implicito",
+			descricao: "a VM da OCI de verdade: UMA VNIC, NENHUM link cadastrado, e o uplink " +
+				"(ens3) derivado da plataforma. O caminho externo suporta 1500 mesmo com a " +
+				"placa anunciando 9000 — é o cenário que o produto tem de fazer funcionar de primeira.",
+			wans:     []string{"ens3"},
+			wanMarks: nil, // sem linha em `links` não há TableID, não há marca, não há policy routing
+			lanNets:  []string{"10.0.0.0/24"},
+			hairpin:  true,
+			pathMTU:  1500,
+			acesso: AdminAccess{
+				SSHPorts:    []int{22},
+				PanelPort:   9997,
+				LANNetworks: []string{"10.0.0.0/24"},
+				WANIsDHCP:   true,
+			},
+			grupos: []StoredGroup{{
+				ID:        "6f1c2d3e4a5b",
+				Name:      "Acesso ao painel",
+				ChainName: "grp_6f1c2d3e4a5b",
+				Position:  10,
+				Enabled:   true,
+				Scope:     ScopeInput,
+				CondSaddr: "10.0.0.0/24",
+			}},
+			ntpRedes:  []string{"10.0.0.0/24"},
+			ntpServir: true,
+		},
+		{
+			nome: "hairpin_sem_mtu",
+			descricao: "a mesma VM de uma placa, com uplink e rede local conhecidos, mas SEM MTU " +
+				"de caminho (pathMTU = 0): uma nuvem que o produto ainda não sabe medir. O " +
+				"masquerade qualificado sai assim mesmo; a mss_clamp nasce VAZIA em vez de " +
+				"inventar número.",
+			wans:    []string{"ens3"},
+			lanNets: []string{"10.0.0.0/24"},
+			hairpin: true,
+			pathMTU: 0,
+			acesso: AdminAccess{
+				SSHPorts:    []int{22},
+				PanelPort:   9997,
+				LANNetworks: []string{"10.0.0.0/24"},
+				WANIsDHCP:   true,
+			},
+			grupos:    gruposProducao,
+			ntpRedes:  []string{"10.0.0.0/24"},
+			ntpServir: true,
+		},
+		{
+			nome: "hairpin_sem_rede",
+			descricao: "VM de uma placa com uplink e MTU de caminho conhecidos e NENHUMA rede " +
+				"local: o ramo degradado. O NAT sai LARGO, com counter, porque a promessa de " +
+				"primeira ordem é a máquina sair para a Internet — e ninguém emite " +
+				"`ip saddr { }`, que o nft recusa.",
+			wans:    []string{"ens3"},
+			lanNets: nil,
+			hairpin: true,
+			pathMTU: 1500,
+			acesso: AdminAccess{
+				SSHPorts:  []int{22},
+				PanelPort: 9997,
+				WANIsDHCP: true,
+			},
+			grupos:    nil,
+			ntpRedes:  nil,
+			ntpServir: false,
+		},
+		{
 			nome: "sem_wan",
 			descricao: "caixa recém-instalada: a LAN já está configurada, nenhum link WAN foi " +
 				"cadastrado ainda. Hoje vários Ensure* desistem ANTES de criar a chain, e é " +
@@ -180,7 +255,7 @@ func cenarios() []cenario {
 // continuar byte a byte os mesmos com a zona LIGADA e alimentada. Se ligar a
 // zona mudasse um byte na topologia do dono, seria aqui que apareceria.
 func (c cenario) zona(ifaces []string) Zone {
-	return NewZone(ifaces, c.lanNets, c.hairpin)
+	return NewZone(ifaces, c.lanNets, c.hairpin, c.pathMTU)
 }
 
 // zonaDasMarcas é a zona das chains que derivam das WANMark. A lista de
@@ -193,7 +268,7 @@ func (c cenario) zonaDasMarcas() Zone {
 
 // fatos é o que o Service leria da plataforma neste cenário.
 func (c cenario) fatos() ZoneFacts {
-	return ZoneFacts{Hairpin: c.hairpin, LocalNets: c.lanNets}
+	return ZoneFacts{Hairpin: c.hairpin, LocalNets: c.lanNets, PathMTU: c.pathMTU}
 }
 
 // ligarZona pluga os fatos da plataforma no Service, como main.go faz.
@@ -236,6 +311,30 @@ func TestOsGeradoresCasamPorCIDRNaMaquinaDeUmaPlacaSo(t *testing.T) {
 
 // conferirGeradores congela a saída de TODO gerador que hoje deriva do eixo
 // WAN/LAN, um arquivo por gerador.
+// TestOsGeradoresAcendemONATEOAjusteDeMSSNaVMDeNuvemSemLinkCadastrado é o
+// cenário que este incremento existe para fazer funcionar: a VM recém-criada,
+// com ZERO link cadastrado, cujo uplink saiu da plataforma.
+//
+// Os dois arquivos a ler são masqueradeRules — que passa a qualificar a origem
+// e a contar — e mssClampRules, que deixa de nascer vazia porque agora existe
+// um número honesto para usar.
+func TestOsGeradoresAcendemONATEOAjusteDeMSSNaVMDeNuvemSemLinkCadastrado(t *testing.T) {
+	conferirGeradores(t, cenarioChamado(t, "oci_uplink_implicito"))
+}
+
+// TestSemMTUDeCaminhoOsGeradoresAindaFazemNATMasNaoAjustamMSS separa as duas
+// metades: o NAT não depende do número, o ajuste de MSS depende.
+func TestSemMTUDeCaminhoOsGeradoresAindaFazemNATMasNaoAjustamMSS(t *testing.T) {
+	conferirGeradores(t, cenarioChamado(t, "hairpin_sem_mtu"))
+}
+
+// TestSemRedeLocalConhecidaONATSaiLargoENinguemEmiteSetVazio prende o ramo
+// degradado. `ip saddr { }` é recusado pelo nft, então a alternativa à regra
+// larga seria chain de NAT vazia — isto é, a máquina sem Internet.
+func TestSemRedeLocalConhecidaONATSaiLargoENinguemEmiteSetVazio(t *testing.T) {
+	conferirGeradores(t, cenarioChamado(t, "hairpin_sem_rede"))
+}
+
 func conferirGeradores(t *testing.T, c cenario) {
 	t.Helper()
 
@@ -258,6 +357,15 @@ func conferirGeradores(t *testing.T, c cenario) {
 			arquivo: "acctChainRules",
 			entrada: fmt.Sprintf("wanIfaces = %q", sanitizeInterfaces(c.wans)),
 			regras:  acctChainRules(c.zona(sanitizeInterfaces(c.wans))),
+		},
+		{
+			// O gerador que este incremento criou. Nos dois cenários on-prem a
+			// saída tem de ser IDÊNTICA à linha de `add rule` do golden de
+			// comandos de ReconcileMasquerade — é essa comparação que prova que
+			// unificar as duas cópias da regra não mudou a chain da produção.
+			arquivo: "masqueradeRules",
+			entrada: fmt.Sprintf("wanIfaces = %q", sanitizeInterfaces(c.wans)),
+			regras:  masqueradeRules(c.zona(sanitizeInterfaces(c.wans))),
 		},
 		{
 			arquivo: "mssClampRules",
@@ -413,6 +521,24 @@ func TestOsMetodosPublicosEmitemOEixoDeCIDRNaMaquinaDeUmaPlacaSo(t *testing.T) {
 	conferirComandos(t, cenarioChamado(t, "hairpin_1nic"))
 }
 
+// TestOsMetodosPublicosAcendemONATSozinhoNaVMDeNuvem é a camada B do mesmo
+// cenário: a sequência EXATA de comandos que uma VM da OCI recém-instalada
+// recebe quando o uplink vem da plataforma e ninguém cadastrou link nenhum.
+//
+// ReconcileMasquerade deixa de recusar — não porque a guarda saiu, mas porque a
+// fonte de verdade parou de chegar vazia.
+func TestOsMetodosPublicosAcendemONATSozinhoNaVMDeNuvem(t *testing.T) {
+	conferirComandos(t, cenarioChamado(t, "oci_uplink_implicito"))
+}
+
+func TestOsMetodosPublicosFazemNATSemMTUDeCaminhoEDeixamAMSSClampVazia(t *testing.T) {
+	conferirComandos(t, cenarioChamado(t, "hairpin_sem_mtu"))
+}
+
+func TestOsMetodosPublicosFazemNATLargoQuandoNaoHaRedeLocalConhecida(t *testing.T) {
+	conferirComandos(t, cenarioChamado(t, "hairpin_sem_rede"))
+}
+
 func conferirComandos(t *testing.T, c cenario) {
 	t.Helper()
 
@@ -464,9 +590,11 @@ func conferirComandos(t *testing.T, c cenario) {
 			},
 		},
 		{
-			// FORA DO ESCOPO DO INCREMENTO, e congelado justamente por isso: a
-			// recusa de agir com fonte vazia é deliberada, e o golden do
-			// cenário sem_wan existe para provar que ela continuou intocada.
+			// A GUARDA DE FONTE VAZIA CONTINUA INTOCADA, e o golden do cenário
+			// sem_wan existe para provar isso: lá esta chamada ainda não emite
+			// comando nenhum. O que o incremento do uplink mudou não foi a
+			// guarda — foi a lista que chega até aqui deixar de ser vazia numa
+			// VM de nuvem.
 			arquivo: "ReconcileMasquerade",
 			entrada: fmt.Sprintf("wanInterfaces = %q", c.wans),
 			rodar: func(ctx context.Context, s *Service) string {
@@ -569,6 +697,7 @@ func TestAMesmaEntradaProduzAMesmaSaidaEmCinquentaExecucoesSeguidas(t *testing.T
 			geradores := map[string]func() [][]string{
 				"acctChainRules":        func() [][]string { return acctChainRules(c.zona(sanitizeInterfaces(c.wans))) },
 				"mssClampRules":         func() [][]string { return mssClampRules(c.zona(sanitizeInterfaces(c.wans))) },
+				"masqueradeRules":       func() [][]string { return masqueradeRules(c.zona(sanitizeInterfaces(c.wans))) },
 				"flowsChainRules":       func() [][]string { return flowsChainRules(c.zona(sanitizeInterfaces(c.wans))) },
 				"connMarkChainRules":    func() [][]string { return connMarkChainRules(c.zonaDasMarcas(), sanitizeWANMarks(c.wanMarks)) },
 				"connMarkOutChainRules": func() [][]string { return connMarkOutChainRules(c.zonaDasMarcas(), sanitizeWANMarks(c.wanMarks)) },

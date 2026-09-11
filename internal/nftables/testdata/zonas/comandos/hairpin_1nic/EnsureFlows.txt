@@ -23,5 +23,5 @@
           cmd   nft flush chain inet linkguard_flows flows
  5. exec  argv  "nft" "add" "rule" "inet" "linkguard_flows" "flows" "ip" "saddr" "{ 10.0.0.0/24 }" "meta" "l4proto" "{" "tcp," "udp" "}" "update" "@flows" "{" "ip" "saddr" "." "ip" "daddr" "." "th" "dport" "}"
           cmd   nft add rule inet linkguard_flows flows ip saddr { 10.0.0.0/24 } meta l4proto { tcp, udp } update @flows { ip saddr . ip daddr . th dport }
- 6. exec  argv  "nft" "add" "rule" "inet" "linkguard_flows" "flows" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "meta" "l4proto" "{" "tcp," "udp" "}" "update" "@flows" "{" "ip" "daddr" "." "ip" "saddr" "." "th" "sport" "}"
-          cmd   nft add rule inet linkguard_flows flows ip saddr != { 10.0.0.0/24 } meta l4proto { tcp, udp } update @flows { ip daddr . ip saddr . th sport }
+ 6. exec  argv  "nft" "add" "rule" "inet" "linkguard_flows" "flows" "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "meta" "l4proto" "{" "tcp," "udp" "}" "update" "@flows" "{" "ip" "daddr" "." "ip" "saddr" "." "th" "sport" "}"
+          cmd   nft add rule inet linkguard_flows flows iifname != "lo" ip saddr != { 10.0.0.0/24 } meta l4proto { tcp, udp } update @flows { ip daddr . ip saddr . th sport }

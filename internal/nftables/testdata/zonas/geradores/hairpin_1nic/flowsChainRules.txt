@@ -12,5 +12,5 @@
 
  1. argv  "ip" "saddr" "{ 10.0.0.0/24 }" "meta" "l4proto" "{" "tcp," "udp" "}" "update" "@flows" "{" "ip" "saddr" "." "ip" "daddr" "." "th" "dport" "}"
     nft   ip saddr { 10.0.0.0/24 } meta l4proto { tcp, udp } update @flows { ip saddr . ip daddr . th dport }
- 2. argv  "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "meta" "l4proto" "{" "tcp," "udp" "}" "update" "@flows" "{" "ip" "daddr" "." "ip" "saddr" "." "th" "sport" "}"
-    nft   ip saddr != { 10.0.0.0/24 } meta l4proto { tcp, udp } update @flows { ip daddr . ip saddr . th sport }
+ 2. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "meta" "l4proto" "{" "tcp," "udp" "}" "update" "@flows" "{" "ip" "daddr" "." "ip" "saddr" "." "th" "sport" "}"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } meta l4proto { tcp, udp } update @flows { ip daddr . ip saddr . th sport }

@@ -140,6 +140,19 @@ type Config struct {
 	// na mesma chamada, e um setter chamado depois chegaria com as rotas já
 	// registradas apontando para um campo nil.
 	HostQuota *hostquota.Service
+	// WANSource é a derivação canônica de "quais são as WANs desta máquina" —
+	// as cadastradas ou, numa VM de nuvem em que ninguém cadastrou nada, o
+	// uplink que o produto derivou da plataforma. Vem pela Config, e não por
+	// setter, pelo mesmo motivo do DomainRouting logo abaixo: New monta o
+	// roteador na mesma chamada.
+	//
+	// Nil cai no laço de sempre sobre a tabela `links` — o comportamento de
+	// todo binário anterior a esta entrega. Ver handlers.fonteDeWANs.
+	WANSource func() ([]string, error)
+	// Uplink responde o que a tela de Links mostra quando ninguém cadastrou
+	// nada. Nil responde "não sei", e o painel simplesmente não mostra o
+	// cartão. Ver handlers.UplinkView.
+	Uplink func() handlers.UplinkView
 	// DomainRouting coordena intenção persistida e runtime dnstap/nft. Como o
 	// roteador nasce em New, ele também precisa chegar pela Config.
 	DomainRouting *domainrouting.Coordinator
@@ -315,6 +328,12 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		if s.fluxosSvc != nil {
 			linksH.SetFluxos(s.fluxosSvc)
 		}
+		// A lista de WANs que as reconciliações derivadas de link usam. Sem
+		// ela, apagar o último link numa VM de nuvem derrubaria o masquerade do
+		// uplink implícito em vez de voltar para ele.
+		if cfg.WANSource != nil {
+			linksH.SetWANSource(cfg.WANSource)
+		}
 		r.With(require(auth.PermLinksRead)).Get("/api/links", linksH.List)
 		r.With(require(auth.PermLinksWrite)).Post("/api/links", linksH.Create)
 		r.With(require(auth.PermLinksWrite)).Post("/api/links/auto-detect", linksH.AutoDetect)
@@ -325,6 +344,13 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 			qosH := handlers.NewQosHandler(s.qosSvc, s.db)
 			registerQosRoutes(r, require, qosH)
 		}
+
+		// O uplink efetivo desta máquina — SOMENTE LEITURA, e sob a permissão
+		// de links porque é disso que ele fala. É a única forma de a tela
+		// explicar por que uma VM de nuvem sem link cadastrado está, mesmo
+		// assim, saindo para a Internet.
+		uplinkH := handlers.NewUplinkHandler(cfg.Uplink)
+		r.With(require(auth.PermLinksRead)).Get("/api/uplink", uplinkH.Get)
 
 		// Regras por domínio podem bloquear ou escolher uma WAN, mas seu dono no
 		// RBAC é Links: leitura acompanha links.read e toda mutação links.write.
@@ -660,6 +686,9 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		// permissão de OLHAR traga junto a de aumentar a retenção.
 		if s.fluxosSvc != nil {
 			fluxosH := handlers.NewFluxosHandler(s.fluxosSvc, s.db)
+			if cfg.WANSource != nil {
+				fluxosH.SetWANSource(cfg.WANSource)
+			}
 			r.With(require(auth.PermTrafficFlows)).Get("/api/hosts/traffic/flows", fluxosH.Consultar)
 			r.With(require(auth.PermSystemWrite)).Get("/api/hosts/traffic/flows/config", fluxosH.GetConfig)
 			r.With(require(auth.PermSystemWrite)).Put("/api/hosts/traffic/flows/config", fluxosH.SetConfig)

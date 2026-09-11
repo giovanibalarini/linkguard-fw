@@ -37,6 +37,18 @@ const masqueradeChain = "postrouting"
 // Idempotent by construction: the same WAN set always yields the same two
 // commands and the same final chain contents. A no-op in dry-run mode, same
 // convention as the rest of the package.
+//
+// A FORMA DA REGRA DEPENDE DA PLATAFORMA, e o conteúdo dela vem inteiro de
+// masqueradeRules — nunca daqui. Numa caixa de várias interfaces sai a regra
+// de sempre, byte a byte; numa VM em que entra e sai pela mesma placa ela
+// qualifica a origem pelas redes locais e carrega `counter`, porque ali
+// `oifname` sozinho mascararia também o trânsito interno da nuvem e apagaria a
+// identidade de origem que este produto existe para medir.
+//
+// A RECUSA COM LISTA VAZIA CONTINUA SENDO A PRIMEIRA COISA QUE ESTA FUNÇÃO FAZ,
+// e continua certa. Numa VM de nuvem recém-instalada a lista deixou de chegar
+// vazia — quem a preenche é o uplink derivado da plataforma, em
+// cmd/linkguard-fw/uplink.go —, e foi isso que mudou, não a guarda.
 func (s *Service) ReconcileMasquerade(ctx context.Context, wanInterfaces []string) error {
 	if s.exec.IsDryRun() {
 		return nil
@@ -55,18 +67,33 @@ func (s *Service) ReconcileMasquerade(ctx context.Context, wanInterfaces []strin
 		return nil
 	}
 
+	// A MESMA LEITURA DE PLATAFORMA QUE OS OUTROS Ensure* FAZEM. Em caixa de
+	// várias interfaces a zona renderiza por interface e a regra sai byte a
+	// byte a de sempre; em hairpin ela qualifica a origem. Ver masqueradeRules.
+	z, err := s.zone(ifaces)
+	if err != nil {
+		return err
+	}
+	regras := masqueradeRules(z)
+	if z.Hairpin() && !z.Discriminates() {
+		slog.Warn("NAT aplicado SEM qualificar a origem; o tráfego interno da nuvem sai mascarado "+
+			"e a medição por host perde a identidade de origem",
+			"motivo", motivoDeChainVazia(z), "uplink", ifaces)
+	}
+
 	if _, err := s.exec.Execute(ctx, "nft", "flush", "chain", Family, Table, masqueradeChain); err != nil {
 		return fmt.Errorf("limpar chain %s: %w", masqueradeChain, err)
 	}
 
-	quoted := make([]string, len(ifaces))
-	for i, iface := range ifaces {
-		quoted[i] = fmt.Sprintf("%q", iface)
-	}
-	set := fmt.Sprintf("{ %s }", strings.Join(quoted, ", "))
-	if _, err := s.exec.Execute(ctx, "nft", "add", "rule", Family, Table, masqueradeChain,
-		"oifname", set, "masquerade"); err != nil {
-		return fmt.Errorf("aplicar regra de masquerade: %w", err)
+	// À MÃO, E NÃO POR rebuildChain, de propósito: rebuildChainIn ENGOLE a
+	// falha de uma regra e segue adiante, enquanto esta função DEVOLVE o erro.
+	// Numa chain de NAT a diferença é entre "o produto avisou que não há saída"
+	// e "o produto disse que estava tudo bem com a rede fora do ar".
+	for _, regra := range regras {
+		args := append([]string{"add", "rule", Family, Table, masqueradeChain}, regra...)
+		if _, err := s.exec.Execute(ctx, "nft", args...); err != nil {
+			return fmt.Errorf("aplicar regra de masquerade: %w", err)
+		}
 	}
 
 	slog.Info("regra de NAT reconciliada a partir das WANs configuradas", "interfaces", ifaces)
@@ -76,6 +103,75 @@ func (s *Service) ReconcileMasquerade(ctx context.Context, wanInterfaces []strin
 	}
 	return nil
 }
+
+// masqueradeRules é a definição canônica da chain postrouting — a única fonte
+// do que ela contém, como acctChainRules é para a acct e markHostsChainRules
+// para a mark_hosts.
+//
+// EXISTE PORQUE HAVIA DUAS. ReconcileMasquerade montava o set à mão e
+// buildBootstrapRuleset montava outro, com literal próprio. Duas cópias da
+// mesma regra numa chain de NAT é a instalação nova divergindo da caixa
+// atualizada no primeiro boot — a invariante que bootstrap.go repete em cada
+// bloco.
+//
+// Devolve nil com lista vazia, e QUEM CHAMA é que decide o que fazer com isso:
+// ReconcileMasquerade se recusa a tocar na chain (ver a guarda lá em cima) e o
+// bootstrap escreve uma chain sem regra.
+func masqueradeRules(z Zone) [][]string {
+	if len(z.WANIfaces()) == 0 {
+		return nil
+	}
+	if !z.Hairpin() {
+		// VÁRIAS INTERFACES: INTOCADO. Sem `counter`, sem qualificação de
+		// origem. Acrescentar `counter` aqui reescreveria a chain postrouting
+		// da caixa de produção, e é o golden de onprem_2wan que diz não.
+		//
+		// A qualificação também não faria falta: com placas separadas, o que
+		// sai pela WAN veio de dentro por definição — o trânsito leste-oeste
+		// que o ramo de hairpin precisa excluir não existe aqui.
+		return [][]string{zoneRule(z.ToExternal(), "masquerade")}
+	}
+	// HAIRPIN. Entra e sai pela MESMA placa, então `oifname` sozinho casa
+	// TAMBÉM o tráfego leste-oeste da nuvem: o nó de uma sub-rede falando com o
+	// de outra sai mascarado como se fosse esta máquina, e a identidade de
+	// origem — que é o que o produto promete medir — evapora. Em Kubernetes
+	// isso não é só medição: é o IP de origem que a política de rede do cluster
+	// lê.
+	if !z.Discriminates() {
+		// Sem CIDR de dentro não dá para qualificar, e `ip saddr { }` é um set
+		// anônimo vazio que o nft recusa. NAT SOLTO MESMO ASSIM: a promessa de
+		// primeira ordem deste produto é "a máquina nova sai para a Internet".
+		// Uma chain vazia aqui quebra a rede; uma regra larga demais degrada a
+		// medição. Quem chama registra o motivo.
+		return [][]string{zoneRule(z.ToExternal(), "counter", "masquerade")}
+	}
+	// QUALIFICA PELO DESTINO, NÃO PELA ORIGEM. Trocado depois de um incidente
+	// medido: qualificar por `ip saddr { locais }` mascarava só quem estivesse
+	// na sub-rede DESTA máquina, e num gateway de trânsito quem precisa de NAT
+	// é justamente quem está ATRÁS dele, noutra sub-rede. Num bastion real, com
+	// dois nós k3s em 10.0.1.0/24 mandando o default route para cá, a regra
+	// qualificada por origem simplesmente não casava: o tráfego saía sem SNAT,
+	// com endereço privado, e a resposta não tinha como voltar.
+	//
+	// Descobrir "quais redes estão atrás de mim" não é possível: a fabric não
+	// diz o CIDR da nuvem, só o da sub-rede desta VNIC. Mas a pergunta certa
+	// nunca foi essa — é "isto vai para a Internet?". O que vai para endereço
+	// privado é trânsito interno e continua SEM máscara, que é como a
+	// identidade de origem sobrevive para a contabilidade e para a política de
+	// rede do cluster. O que vai para endereço público é mascarado, venha de
+	// onde vier.
+	return [][]string{zoneRule(z.ToExternal(),
+		"ip", "daddr", "!=", redesPrivadasSet,
+		"counter", "masquerade",
+	)}
+}
+
+// redesPrivadasSet é o espaço RFC 1918 como set anônimo de nft.
+//
+// É o complemento de "a Internet" para efeito de NAT numa nuvem privada. Não
+// inclui link-local (169.254.0.0/16) de propósito: o serviço de metadados da
+// fabric vive lá, é alcançado pela própria máquina e nunca é trânsito.
+const redesPrivadasSet = "{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }"
 
 // InputChain is the first `hook input` chain this project has ever created
 // (added 2026-08-11 for "serve NTP to the LAN" — see

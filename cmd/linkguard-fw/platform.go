@@ -85,6 +85,26 @@ func redesLocais(db *storage.DB, plat platform.Snapshot) []string {
 			}
 		}
 	}
+
+	// NUM GATEWAY DE TRÂNSITO, "DENTRO" É O ESPAÇO PRIVADO INTEIRO — não a
+	// sub-rede desta placa.
+	//
+	// Aprendido num deploy que quebrou. A fabric só informa o CIDR da VNIC
+	// desta máquina (10.0.0.0/24), mas quem passa por um gateway está, por
+	// definição, ATRÁS dele, noutra sub-rede: os nós k3s em 10.0.1.0/24. Com
+	// "dentro" limitado à própria sub-rede, a contabilidade por host não via
+	// ninguém e a proteção de entrada tratava o vizinho da nuvem como Internet.
+	//
+	// Descobrir a lista exata de redes atrás é impossível, e chutar seria pior.
+	// Mas a pergunta certa é outra: quem chega com endereço PRIVADO não veio da
+	// Internet. Isso é verdade em qualquer nuvem e em qualquer topologia, e é o
+	// mesmo raciocínio que faz o masquerade qualificar pelo destino.
+	//
+	// Só em hairpin: numa caixa com placas separadas o eixo é a interface e
+	// esta lista não é consultada para decidir o que é de fora.
+	if !plat.Capable().RoutedTransit {
+		redes = append(redes, "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+	}
 	return redes
 }
 

@@ -38,10 +38,41 @@ type pacote struct {
 // FALHA O TESTE diante de uma forma que não conhece, de propósito: um
 // avaliador que devolvesse "não casou" para o que não entende deixaria um eixo
 // novo passar como se fosse tratado.
+// casaPrefixoDeZona avalia o prefixo de zona de uma regra contra um pacote.
+//
+// O prefixo pode ser COMPOSTO: desde o conserto do loopback, o "veio de fora" em
+// hairpin é `iifname != "lo" ip saddr != { … }`, dois eixos encadeados que só
+// casam JUNTOS. Por isso a função consome todos os eixos consecutivos do começo
+// da regra e devolve a conjunção — avaliar só o primeiro aprovaria uma regra
+// que na prática não casa o pacote.
 func casaPrefixoDeZona(t *testing.T, regra []string, p pacote) (casou bool, consumidos int) {
 	t.Helper()
+	todos := true
+	pos := 0
+	for {
+		ok, n := casaUmEixo(t, regra[pos:], p)
+		if n == 0 {
+			break
+		}
+		todos = todos && ok
+		pos += n
+		if pos >= len(regra) {
+			break
+		}
+	}
+	if pos == 0 {
+		t.Fatalf("prefixo de zona desconhecido em %v.\nSe um eixo novo foi acrescentado a Zone, "+
+			"ensine-o a este avaliador — senão estes testes aprovam sem avaliar nada.", regra)
+	}
+	return todos, pos
+}
+
+// casaUmEixo avalia UM eixo. Devolve consumidos=0 quando o começo da fatia não é
+// um eixo de zona, que é como casaPrefixoDeZona sabe onde parar.
+func casaUmEixo(t *testing.T, regra []string, p pacote) (casou bool, consumidos int) {
+	t.Helper()
 	if len(regra) < 2 {
-		t.Fatalf("regra curta demais para ter prefixo de zona: %v", regra)
+		return false, 0
 	}
 
 	negado := func(i int) (bool, int) {
@@ -70,14 +101,18 @@ func casaPrefixoDeZona(t *testing.T, regra []string, p pacote) (casou bool, cons
 		dentro := contémEndereco(t, regra[i], valor)
 		return dentro != neg, i + 1
 	}
-	t.Fatalf("prefixo de zona desconhecido em %v.\nSe um eixo novo foi acrescentado a Zone, "+
-		"ensine-o a este avaliador — senão estes testes aprovam sem avaliar nada.", regra)
 	return false, 0
 }
 
-// contémInterface lê `{ "wan1", "wan2" }` — o literal que Zone.ifaceSet monta.
+// contémInterface lê `{ "wan1", "wan2" }` — o literal que Zone.ifaceSet monta —
+// e também o nome SOLTO entre aspas, que é como a exclusão de loopback aparece
+// (`iifname != "lo"`). Sem o segundo caso o avaliador chamava itensDoSet num
+// valor que não é set e derrubava o teste com "esperava um set anônimo".
 func contémInterface(t *testing.T, set, iface string) bool {
 	t.Helper()
+	if !strings.HasPrefix(strings.TrimSpace(set), "{") {
+		return strings.Trim(set, `"`) == iface
+	}
 	for _, nome := range itensDoSet(t, set) {
 		if strings.Trim(nome, `"`) == iface {
 			return true
@@ -402,9 +437,43 @@ func TestEmHairpinAsLinhasDeIPv6FicamNoEixoDeInterface(t *testing.T) {
 	}
 
 	// E o descarte é v4-only. Este teste NÃO aprova isso: ele o REGISTRA.
+	//
+	// A forma esperada passou a ser `iifname != "lo" ip saddr != { … }`: a
+	// exclusão do loopback é obrigatória e tem teste próprio logo abaixo.
 	descarte := regras[len(regras)-1]
-	if descarte[0] != "ip" || descarte[1] != "saddr" {
+	if indiceDe(descarte, "saddr") < 0 {
 		t.Fatalf("o descarte mudou de forma: %v", descarte)
+	}
+}
+
+// TestEmHairpinODescarteDeEntradaNaoAlcancaOLoopback prende um incidente REAL,
+// medido num bastion em produção e não num teste.
+//
+// A forma multi-placa do "veio de fora" é `iifname { wan1, wan2 }`, e dela
+// decorre de graça uma propriedade que ninguém tinha escrito: o loopback nunca
+// casa, porque "lo" não é WAN. A forma de CIDR perdeu isso — 127.0.0.1 de fato
+// não está na rede local —, e o descarte final passou a derrubar conexão NOVA
+// de 127.0.0.1 para 127.0.0.53, por onde todo processo da máquina fala com o
+// systemd-resolved.
+//
+// O sintoma foi DNS parar de resolver enquanto TCP direto por IP continuava
+// funcionando. Nenhum teste de mesa pegava: nenhum deles tem resolver local.
+func TestEmHairpinODescarteDeEntradaNaoAlcancaOLoopback(t *testing.T) {
+	z := NewZone([]string{"ens3"}, []string{"10.0.0.0/24"}, true, 1500)
+
+	fora := z.FromExternal()
+	i := -1
+	for k, tok := range fora {
+		if strings.Contains(tok, "lo") && strings.Contains(tok, `"`) {
+			i = k
+			break
+		}
+	}
+	if i < 0 {
+		t.Fatalf("FromExternal em hairpin tem de excluir o loopback explicitamente, obtive %v", fora)
+	}
+	if i < 1 || fora[i-1] != "!=" {
+		t.Errorf("o loopback tem de ser EXCLUÍDO (iifname != \"lo\"), não casado: %v", fora)
 	}
 }
 
@@ -556,15 +625,21 @@ func TestLigarAZonaNaoMudaUmByteNaTopologiaDeProducao(t *testing.T) {
 	marcas := []WANMark{{Interface: "ppp0", Mark: 0x64}, {Interface: "enp2s0", Mark: 0xc8}}
 	acesso := AdminAccess{SSHPorts: []int{22}, PanelPort: 9997, LANNetworks: []string{"192.168.3.0/24"}}
 
-	semRedes := NewZone(wans, nil, false)
-	comRedes := NewZone(wans, []string{"192.168.3.0/24", "192.168.9.0/24"}, false)
+	// A zona "com" vai alimentada nos DOIS eixos que a plataforma sabe afirmar:
+	// os CIDRs de dentro e a MTU do caminho externo. A MTU entra aqui porque o
+	// ajuste de MSS aprendeu a usá-la, e o ramo que a usa é escolhido por
+	// PerLink() — numa caixa de várias interfaces ele não pode ser alcançado
+	// NEM com o número preenchido. Se a ordem dos ramos de mssClampRules um dia
+	// se inverter, é esta linha que fica vermelha.
+	semRedes := NewZone(wans, nil, false, 0)
+	comRedes := NewZone(wans, []string{"192.168.3.0/24", "192.168.9.0/24"}, false, 1500)
 
 	geradores := map[string]func(Zone) [][]string{
 		"acctChainRules":  acctChainRules,
 		"mssClampRules":   mssClampRules,
 		"flowsChainRules": flowsChainRules,
 		"markHostsChainRules": func(z Zone) [][]string {
-			return markHostsChainRules(NewZone(wanMarkIfaces(marcas), z.localNets, z.hairpin))
+			return markHostsChainRules(NewZone(wanMarkIfaces(marcas), z.localNets, z.hairpin, z.pathMTU))
 		},
 		"connMarkChainRules":    func(z Zone) [][]string { return connMarkChainRules(z, marcas) },
 		"connMarkOutChainRules": func(z Zone) [][]string { return connMarkOutChainRules(z, marcas) },
@@ -572,6 +647,7 @@ func TestLigarAZonaNaoMudaUmByteNaTopologiaDeProducao(t *testing.T) {
 		"restoreOutbound":       func(z Zone) [][]string { return [][]string{restoreOutboundMarkRule(z)} },
 		"abuseRules":            func(z Zone) [][]string { return abuseRules(z, "{ 22, 9997 }") },
 		"WANInputRules":         func(z Zone) [][]string { return WANInputRules(z, acesso, false, true, 51820) },
+		"masqueradeRules":       masqueradeRules,
 	}
 	for nome, gerar := range geradores {
 		t.Run(nome, func(t *testing.T) {
@@ -584,7 +660,7 @@ func TestLigarAZonaNaoMudaUmByteNaTopologiaDeProducao(t *testing.T) {
 	}
 
 	// E o bootstrap, que embute mark_hosts como texto.
-	if a, b := buildBootstrapRuleset(wans, ZoneFacts{}), buildBootstrapRuleset(wans, ZoneFacts{LocalNets: []string{"192.168.3.0/24"}}); a != b {
+	if a, b := buildBootstrapRuleset(wans, ZoneFacts{}), buildBootstrapRuleset(wans, ZoneFacts{LocalNets: []string{"192.168.3.0/24"}, PathMTU: 1500}); a != b {
 		t.Error("o ruleset de instalação nova mudou só por a zona ter redes locais alimentadas")
 	}
 }
@@ -624,5 +700,42 @@ func TestErroAoLerAPlataformaAbortaEmVezDeVirarCaixaComum(t *testing.T) {
 	}
 	if err := s.EnsureConnMark(context.Background(), []WANMark{{Interface: "ens3", Mark: 1}}); err == nil {
 		t.Error("EnsureConnMark seguiu em frente sem saber em que máquina está")
+	}
+}
+
+// TestEmHairpinOMasqueradeCobreQuemEstaAtrasDoGateway prende o segundo incidente
+// do mesmo deploy: a regra qualificada por `ip saddr { locais }` só mascarava
+// quem estivesse na sub-rede DESTA máquina.
+//
+// Num gateway de trânsito quem precisa de NAT é justamente quem está atrás,
+// noutra sub-rede. Medido num bastion real: dois nós k3s em 10.0.1.0/24 com o
+// default route apontado para cá saíram SEM SNAT, com endereço privado, e a
+// resposta não tinha como voltar. Descobrir "quais redes estão atrás de mim" é
+// impossível — a fabric só informa o CIDR desta VNIC —, então a pergunta certa
+// é outra: isto vai para a Internet?
+func TestEmHairpinOMasqueradeCobreQuemEstaAtrasDoGateway(t *testing.T) {
+	z := NewZone([]string{"ens3"}, []string{"10.0.0.0/24"}, true, 1500)
+
+	regras := masqueradeRules(z)
+	if len(regras) != 1 {
+		t.Fatalf("esperava uma regra de masquerade, obtive %d: %v", len(regras), regras)
+	}
+	r := regras[0]
+
+	if i := indiceDe(r, "saddr"); i >= 0 {
+		t.Errorf("o masquerade NÃO pode qualificar por origem — quem está atrás do gateway "+
+			"nunca está na sub-rede desta VNIC: %v", r)
+	}
+	i := indiceDe(r, "daddr")
+	if i < 0 || r[i+1] != "!=" {
+		t.Fatalf("o masquerade tem de excluir destinos privados por `ip daddr !=`: %v", r)
+	}
+	for _, faixa := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
+		if !strings.Contains(r[i+2], faixa) {
+			t.Errorf("a faixa privada %s ficou de fora da exceção: %q", faixa, r[i+2])
+		}
+	}
+	if indiceDe(r, "counter") < 0 {
+		t.Error("sem counter não há como saber se o NAT está fazendo alguma coisa")
 	}
 }

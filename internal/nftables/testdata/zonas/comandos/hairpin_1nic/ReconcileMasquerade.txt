@@ -15,7 +15,7 @@
 
  1. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "postrouting"
           cmd   nft flush chain inet linkguard postrouting
- 2. exec  argv  "nft" "add" "rule" "inet" "linkguard" "postrouting" "oifname" "{ \"ens3\" }" "masquerade"
-          cmd   nft add rule inet linkguard postrouting oifname { "ens3" } masquerade
+ 2. exec  argv  "nft" "add" "rule" "inet" "linkguard" "postrouting" "oifname" "{ \"ens3\" }" "ip" "daddr" "!=" "{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }" "counter" "masquerade"
+          cmd   nft add rule inet linkguard postrouting oifname { "ens3" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } counter masquerade
  3. read  argv  "nft" "list" "table" "inet" "linkguard"
           cmd   nft list table inet linkguard

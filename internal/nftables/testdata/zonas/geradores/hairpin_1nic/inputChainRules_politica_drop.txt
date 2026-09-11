@@ -39,19 +39,19 @@
     nft   iifname { "ens3" } icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } counter accept
 13. argv  "iifname" "{ \"ens3\" }" "icmpv6" "type" "{ packet-too-big, time-exceeded, parameter-problem, destination-unreachable }" "counter" "accept"
     nft   iifname { "ens3" } icmpv6 type { packet-too-big, time-exceeded, parameter-problem, destination-unreachable } counter accept
-14. argv  "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "68" "counter" "accept"
-    nft   ip saddr != { 10.0.0.0/24 } udp dport 68 counter accept
+14. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "68" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } udp dport 68 counter accept
 15. argv  "iifname" "{ \"ens3\" }" "udp" "dport" "546" "counter" "accept"
     nft   iifname { "ens3" } udp dport 546 counter accept
-16. argv  "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "status" "dnat" "counter" "accept"
-    nft   ip saddr != { 10.0.0.0/24 } ct status dnat counter accept
-17. argv  "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "icmp" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
-    nft   ip saddr != { 10.0.0.0/24 } icmp type echo-request limit rate 5/second counter accept
+16. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "status" "dnat" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } ct status dnat counter accept
+17. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "icmp" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } icmp type echo-request limit rate 5/second counter accept
 18. argv  "iifname" "{ \"ens3\" }" "icmpv6" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
     nft   iifname { "ens3" } icmpv6 type echo-request limit rate 5/second counter accept
-19. argv  "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "tcp" "dport" "{ 22, 9997 }" "counter" "accept"
-    nft   ip saddr != { 10.0.0.0/24 } tcp dport { 22, 9997 } counter accept
-20. argv  "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "51820" "counter" "accept"
-    nft   ip saddr != { 10.0.0.0/24 } udp dport 51820 counter accept
-21. argv  "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "state" "new" "counter" "drop"
-    nft   ip saddr != { 10.0.0.0/24 } ct state new counter drop
+19. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "tcp" "dport" "{ 22, 9997 }" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } tcp dport { 22, 9997 } counter accept
+20. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "51820" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } udp dport 51820 counter accept
+21. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "state" "new" "counter" "drop"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } ct state new counter drop

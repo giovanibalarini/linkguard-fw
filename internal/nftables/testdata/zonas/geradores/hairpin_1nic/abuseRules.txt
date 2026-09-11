@@ -12,5 +12,5 @@
 
  1. argv  "ip" "saddr" "@abusers" "counter" "drop"
     nft   ip saddr @abusers counter drop
- 2. argv  "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "tcp" "dport" "{ 22, 9997 }" "ct" "state" "new" "limit" "rate" "over" "10/minute" "counter" "add" "@abusers" "{" "ip" "saddr" "}"
-    nft   ip saddr != { 10.0.0.0/24 } tcp dport { 22, 9997 } ct state new limit rate over 10/minute counter add @abusers { ip saddr }
+ 2. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "tcp" "dport" "{ 22, 9997 }" "ct" "state" "new" "limit" "rate" "over" "10/minute" "counter" "add" "@abusers" "{" "ip" "saddr" "}"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } tcp dport { 22, 9997 } ct state new limit rate over 10/minute counter add @abusers { ip saddr }

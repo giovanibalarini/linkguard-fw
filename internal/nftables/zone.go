@@ -63,6 +63,9 @@ type Zone struct {
 	localNets []string
 	// hairpin == !platform.Capabilities.RoutedTransit.
 	hairpin bool
+	// pathMTU é o que o CAMINHO para fora suporta, em bytes, JÁ higienizado
+	// por sanitizePathMTU — 0 quando desconhecido. Ver ZoneFacts.PathMTU.
+	pathMTU int
 }
 
 // ZoneFacts é o que este pacote precisa saber da plataforma — e SÓ isso.
@@ -77,6 +80,16 @@ type ZoneFacts struct {
 	Hairpin bool
 	// LocalNets são os CIDRs que contam como "dentro" quando Hairpin é true.
 	LocalNets []string
+
+	// PathMTU é o que o CAMINHO para fora suporta, em bytes. 0 = desconhecido,
+	// e desconhecido é o valor PERMISSIVO: o ajuste de MSS segue por `rt mtu`,
+	// byte a byte o que a produção emite hoje.
+	//
+	// NÃO É A MTU DA INTERFACE. Numa VM da OCI a ens3 ANUNCIA 9000 e o caminho
+	// externo aceita 1500 (medido, `ping -M do`). Uma regra que clampasse para
+	// 8960 é pior do que nenhuma — ver mssclamp.go. platform.NetFacts grafa a
+	// distinção em dois campos separados (LinkMTU vs. PathMTU) pela mesma razão.
+	PathMTU int
 }
 
 // NewZone monta a zona.
@@ -87,16 +100,43 @@ type ZoneFacts struct {
 // idempotentes, então higienizar de novo o que já veio limpo não muda nada —
 // e higienizar o que veio sujo é a diferença entre uma regra recusada e uma
 // injeção de comando.
-func NewZone(wanIfaces, localNets []string, hairpin bool) Zone {
+func NewZone(wanIfaces, localNets []string, hairpin bool, pathMTU int) Zone {
 	return Zone{
 		wanIfaces: sanitizeInterfaces(wanIfaces),
 		localNets: sanitizeNetworks(localNets),
 		hairpin:   hairpin,
+		pathMTU:   sanitizePathMTU(pathMTU),
 	}
+}
+
+// sanitizePathMTU transforma em 0 — isto é, em "não sei" — todo número que não
+// pode ser MTU de caminho nenhum.
+//
+// O PISO É 576, o mínimo de remontagem do IPv4: abaixo dele o valor é lixo, e
+// um clamp derivado de lixo TRAVA conexão em vez de corrigi-la — o oposto
+// exato do que o ajuste de MSS existe para fazer. O teto é 65535, o maior
+// datagrama IPv4 que existe; acima disso é campo de JSON corrompido, não MTU.
+//
+// Higienizar aqui, e não no gerador, é o mesmo motivo de sanitizeInterfaces
+// estar em NewZone: o número vai para dentro de um argv do nft, e a fonte dele
+// é um instantâneo lido de disco.
+func sanitizePathMTU(mtu int) int {
+	if mtu < mssClampMinPathMTU || mtu > 65535 {
+		return 0
+	}
+	return mtu
 }
 
 // Hairpin diz se entra e sai pela mesma interface.
 func (z Zone) Hairpin() bool { return z.hairpin }
+
+// PathMTU é o que o caminho para fora suporta, em bytes; 0 quando desconhecido
+// ou fora de faixa.
+//
+// O NOME CARREGA A DISTINÇÃO, e ela é o incremento inteiro: não é MTU(), porque
+// não é a MTU que a interface anuncia. Quem quiser a segunda está pedindo a
+// pergunta errada — ver o campo em ZoneFacts.
+func (z Zone) PathMTU() int { return z.pathMTU }
 
 // PerLink diz se casar por interface INDIVIDUAL decide alguma coisa aqui.
 //
@@ -176,9 +216,36 @@ func (z Zone) ToLocal() []string {
 //	hairpin:   {"ip", "saddr", "!=", "{ 10.0.0.0/24 }"}
 func (z Zone) FromExternal() []string {
 	if z.hairpin {
-		return []string{"ip", "saddr", "!=", z.netSet()}
+		// `iifname != "lo"` NÃO É ENFEITE, É O CONSERTO DE UM INCIDENTE REAL.
+		//
+		// A forma multi-placa casa `iifname { wan1, wan2 }`, e daí decorre de
+		// graça uma propriedade que ninguém tinha escrito: o loopback NUNCA
+		// casa, porque "lo" não é uma WAN. A forma de CIDR perdeu isso —
+		// `ip saddr != { 10.0.0.0/24 }` casa 127.0.0.1, que de fato não está na
+		// rede local.
+		//
+		// Consequência medida num bastion de verdade: o descarte final de
+		// WANInputRules passou a derrubar conexão NOVA de 127.0.0.1 para
+		// 127.0.0.53, que é por onde todo processo da máquina fala com o
+		// systemd-resolved. O sintoma foi DNS parar de resolver enquanto TCP
+		// direto por IP continuava funcionando — e nenhum teste de mesa pega
+		// isso, porque nenhum deles tem um resolver local.
+		return []string{"iifname", "!=", `"lo"`, "ip", "saddr", "!=", z.netSet()}
 	}
 	return []string{"iifname", z.ifaceSet()}
+}
+
+// ToExternal: "o pacote SAI por uma das WANs". Casa por interface em QUALQUER
+// plataforma, e é por isso que não é o espelho de ToLocal.
+//
+// NÃO COLAPSA PARA CIDR EM HAIRPIN, de propósito. Quem consome isto é o
+// masquerade, e masquerade é uma decisão sobre a PLACA por onde o pacote
+// efetivamente sai: trocada por `ip daddr != { locais }`, a regra mascararia
+// também o que sai para lugar nenhum e deixaria de dizer o que quer dizer.
+//
+//	sempre: {"oifname", `{ "wan1", "wan2" }`}
+func (z Zone) ToExternal() []string {
+	return []string{"oifname", z.ifaceSet()}
 }
 
 // FromExternalByIface casa SEMPRE por interface, em qualquer plataforma.
@@ -290,7 +357,7 @@ func (s *Service) zone(wanIfaces []string) (Zone, error) {
 	if err != nil {
 		return Zone{}, err
 	}
-	return NewZone(wanIfaces, f.LocalNets, f.Hairpin), nil
+	return NewZone(wanIfaces, f.LocalNets, f.Hairpin, f.PathMTU), nil
 }
 
 // zoneRule concatena o prefixo devolvido por um renderizador com o resto da
@@ -314,6 +381,13 @@ func zoneRule(prefixo []string, resto ...string) []string {
 // descobrir se falta cadastrar um link, se a plataforma não suporta o recurso
 // ou se alguma coisa quebrou. Estes três motivos são os únicos possíveis, e
 // dizê-los é a diferença entre um alerta e um enigma.
+//
+// O QUE NÃO ENTRA AQUI: motivo que valha para UMA chain só. A frase desta
+// função vai para o aviso de cinco chamadores diferentes, e um motivo
+// específico posto aqui faz os outros quatro MENTIREM — a conn_mark de uma VM
+// de nuvem nasce vazia porque há um link só para marcar, nunca porque falta uma
+// MTU. Quem tem motivo próprio escreve a própria função e cai nesta como
+// último caso: ver motivoDeMSSClampVazia, em mssclamp.go.
 func motivoDeChainVazia(z Zone) string {
 	switch {
 	case len(z.wanIfaces) == 0:

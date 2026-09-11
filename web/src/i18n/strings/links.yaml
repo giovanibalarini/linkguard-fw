@@ -1166,3 +1166,29 @@ links.domains.validation.blockLink:
 links.domains.validation.note:
   pt: "A observação deve ter até 500 caracteres e não pode conter controles ou quebras de linha."
   en: "The note must have at most 500 characters and contain no control characters or line breaks."
+
+# ─── Uplink automático (uplink implícito) ────────────────────────────────────
+# O cartão que a tela mostra quando NINGUÉM cadastrou link e a máquina está
+# saindo para a Internet pela placa que a plataforma afirmou. É a única forma de
+# o operador entender por que a caixa funciona sem ele ter configurado nada.
+links.uplink.title:
+  pt: "Uplink automático"
+  en: "Automatic uplink"
+links.uplink.desc:
+  pt: "Nenhum link WAN foi cadastrado. A saída para a Internet foi detectada pela plataforma e o tráfego já está sendo liberado por NAT."
+  en: "No WAN link has been configured. The path to the Internet was detected from the platform and traffic is already being NATed."
+links.uplink.iface:
+  pt: "Interface"
+  en: "Interface"
+links.uplink.mtu:
+  pt: "MTU do caminho"
+  en: "Path MTU"
+links.uplink.mtu.unknown:
+  pt: "desconhecida"
+  en: "unknown"
+links.uplink.platform:
+  pt: "Plataforma"
+  en: "Platform"
+links.uplink.hint:
+  pt: "Cadastre um link WAN para assumir o controle: o cadastro sempre vence a detecção automática."
+  en: "Add a WAN link to take over: a configured link always wins over automatic detection."

@@ -45,21 +45,21 @@
           cmd   nft add rule inet linkguard input iifname { "ens3" } icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } counter accept
 15. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "{ \"ens3\" }" "icmpv6" "type" "{ packet-too-big, time-exceeded, parameter-problem, destination-unreachable }" "counter" "accept"
           cmd   nft add rule inet linkguard input iifname { "ens3" } icmpv6 type { packet-too-big, time-exceeded, parameter-problem, destination-unreachable } counter accept
-16. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "68" "counter" "accept"
-          cmd   nft add rule inet linkguard input ip saddr != { 10.0.0.0/24 } udp dport 68 counter accept
+16. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "68" "counter" "accept"
+          cmd   nft add rule inet linkguard input iifname != "lo" ip saddr != { 10.0.0.0/24 } udp dport 68 counter accept
 17. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "{ \"ens3\" }" "udp" "dport" "546" "counter" "accept"
           cmd   nft add rule inet linkguard input iifname { "ens3" } udp dport 546 counter accept
-18. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "status" "dnat" "counter" "accept"
-          cmd   nft add rule inet linkguard input ip saddr != { 10.0.0.0/24 } ct status dnat counter accept
-19. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "icmp" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
-          cmd   nft add rule inet linkguard input ip saddr != { 10.0.0.0/24 } icmp type echo-request limit rate 5/second counter accept
+18. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "status" "dnat" "counter" "accept"
+          cmd   nft add rule inet linkguard input iifname != "lo" ip saddr != { 10.0.0.0/24 } ct status dnat counter accept
+19. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "icmp" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
+          cmd   nft add rule inet linkguard input iifname != "lo" ip saddr != { 10.0.0.0/24 } icmp type echo-request limit rate 5/second counter accept
 20. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "{ \"ens3\" }" "icmpv6" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
           cmd   nft add rule inet linkguard input iifname { "ens3" } icmpv6 type echo-request limit rate 5/second counter accept
-21. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "tcp" "dport" "{ 22, 9997 }" "counter" "accept"
-          cmd   nft add rule inet linkguard input ip saddr != { 10.0.0.0/24 } tcp dport { 22, 9997 } counter accept
-22. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "51820" "counter" "accept"
-          cmd   nft add rule inet linkguard input ip saddr != { 10.0.0.0/24 } udp dport 51820 counter accept
-23. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "state" "new" "counter" "drop"
-          cmd   nft add rule inet linkguard input ip saddr != { 10.0.0.0/24 } ct state new counter drop
+21. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "tcp" "dport" "{ 22, 9997 }" "counter" "accept"
+          cmd   nft add rule inet linkguard input iifname != "lo" ip saddr != { 10.0.0.0/24 } tcp dport { 22, 9997 } counter accept
+22. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "51820" "counter" "accept"
+          cmd   nft add rule inet linkguard input iifname != "lo" ip saddr != { 10.0.0.0/24 } udp dport 51820 counter accept
+23. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "state" "new" "counter" "drop"
+          cmd   nft add rule inet linkguard input iifname != "lo" ip saddr != { 10.0.0.0/24 } ct state new counter drop
 24. read  argv  "nft" "list" "table" "inet" "linkguard"
           cmd   nft list table inet linkguard

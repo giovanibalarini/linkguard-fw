@@ -395,3 +395,84 @@ func TestCheckWANInterfacesDoesNotJudgeWhenLinksUnreadable(t *testing.T) {
 		t.Error("wan:interface must not be reported when GetLinks() fails")
 	}
 }
+
+// ─── O vigia de NAT e o uplink implícito ─────────────────────────────────────
+
+// TestOVigiaDeNATEntendeARegraQualificada é uma dependência FRÁGIL escrita
+// explicitamente para não ficar implícita.
+//
+// A regra de NAT de uma máquina de nuvem passou a ser
+// `ip saddr { 10.0.0.0/24 } oifname { "ens3" } counter masquerade`, e
+// quotedInterfaceRe casa `"(...)"` — o CIDR entra sem aspas justamente por
+// netSet montar o set anônimo desse jeito. Se um dia o CIDR passar a sair
+// aspado, este vigia acusaria "10.0.0.0/24" como interface configurada a mais e
+// o item "Regra de NAT" ficaria permanentemente vermelho numa caixa perfeita —
+// o falso positivo que treina o operador a ignorar a tela.
+func TestOVigiaDeNATEntendeARegraQualificada(t *testing.T) {
+	ifaces, found := parseMasqueradeInterfaces(
+		`		ip saddr { 10.0.0.0/24 } oifname { "ens3" } counter masquerade`)
+	if !found {
+		t.Fatal("o vigia não reconheceu a regra qualificada como masquerade: NAT ligado seria reportado como desligado")
+	}
+	if len(ifaces) != 1 || ifaces[0] != "ens3" {
+		t.Errorf("interfaces extraídas = %v, queria [ens3] (o CIDR não pode virar nome de interface)", ifaces)
+	}
+}
+
+// TestOVigiaDeNATVeAMaquinaDeNuvemQuandoOUplinkVemDaPlataforma fecha o ponto
+// cego da plataforma-alvo.
+//
+// Sem a fonte injetada, enabledWANInterfaces varre a tabela `links`, devolve
+// vazio numa VM de nuvem e checkFirewallNAT retorna cedo: o item "Regra de NAT"
+// NUNCA emite veredito justamente onde o NAT passou a ser escrito sem ninguém
+// cadastrar link — isto é, o incidente que este vigia existe para pegar não
+// seria pego ali.
+func TestOVigiaDeNATVeAMaquinaDeNuvemQuandoOUplinkVemDaPlataforma(t *testing.T) {
+	c := newDriftTestCollector(t)
+	// Nenhum link cadastrado: é o estado de uma VM recém-instalada.
+	c.SetWANSource(func() ([]string, error) { return []string{"ens3"}, nil })
+	c.ifaceExists = func(name string) bool { return name == "ens3" }
+	c.exec = &driftExec{responses: map[string]string{
+		"nft list chain inet linkguard postrouting": `		ip saddr { 10.0.0.0/24 } oifname { "ens3" } counter masquerade`,
+	}}
+
+	c.checkFirewallNAT()
+
+	up, known := c.healthState("firewall:nat")
+	if !known {
+		t.Fatal("o vigia continuou mudo numa máquina que TEM NAT: com uplink implícito ele tem de julgar")
+	}
+	if !up {
+		t.Error("o vigia acusou deriva numa regra que cobre exatamente o uplink efetivo")
+	}
+}
+
+// TestSemFonteDeWANsOVigiaContinuaDerivandoDoBanco: fonte ausente é o
+// comportamento de todo binário anterior a esta entrega, e não um erro.
+func TestSemFonteDeWANsOVigiaContinuaDerivandoDoBanco(t *testing.T) {
+	c := newDriftTestCollector(t)
+	seedLink(t, c, "WAN VIVO", "enp5s0", true)
+	seedLink(t, c, "WAN DESLIGADA", "enp6s0", false)
+
+	got := c.enabledWANInterfaces()
+	if len(got) != 1 || got[0] != "enp5s0" {
+		t.Errorf("sem fonte injetada o vigia tinha de ler os links habilitados do banco, obtive %v", got)
+	}
+}
+
+// TestErroDaFonteDeWANsNaoViraVeredito: um SELECT que falhou não é "esta
+// máquina não tem WAN". Sem saber o que foi configurado não há veredito a dar,
+// e silêncio nunca pode virar "está tudo bem".
+func TestErroDaFonteDeWANsNaoViraVeredito(t *testing.T) {
+	c := newDriftTestCollector(t)
+	c.SetWANSource(func() ([]string, error) { return nil, errors.New("banco fora do ar") })
+	c.exec = &driftExec{responses: map[string]string{
+		"nft list chain inet linkguard postrouting": `		oifname { "ens3" } masquerade`,
+	}}
+
+	c.checkFirewallNAT()
+
+	if _, known := c.healthState("firewall:nat"); known {
+		t.Error("o vigia emitiu veredito sobre o NAT sem conseguir ler quais são as WANs")
+	}
+}

@@ -81,7 +81,7 @@ func TestAPlataformaDesconhecidaMantemOEixoDeInterface(t *testing.T) {
 				t.Errorf("%s virou hairpin: o eixo das regras mudaria numa caixa que nunca foi detectada", nome)
 			}
 			// E a zona montada com esses fatos tem de renderizar por interface.
-			z := nftables.NewZone([]string{"ppp0", "enp2s0"}, []string{"192.168.3.0/24"}, !snap.Capable().RoutedTransit)
+			z := nftables.NewZone([]string{"ppp0", "enp2s0"}, []string{"192.168.3.0/24"}, !snap.Capable().RoutedTransit, 0)
 			if z.Hairpin() {
 				t.Error("a zona ficou em hairpin com plataforma desconhecida")
 			}
@@ -104,7 +104,7 @@ func TestNaOCIDeUmaVNICOEixoViraCIDR(t *testing.T) {
 	if snap.Capable().RoutedTransit {
 		t.Fatal("uma VM de uma VNIC só não pode ser tratada como caixa de trânsito roteado")
 	}
-	z := nftables.NewZone([]string{"ens3"}, []string{"10.0.0.0/24"}, !snap.Capable().RoutedTransit)
+	z := nftables.NewZone([]string{"ens3"}, []string{"10.0.0.0/24"}, !snap.Capable().RoutedTransit, 0)
 	if !z.Hairpin() || !z.Discriminates() {
 		t.Fatalf("a zona da VM de uma placa tinha de ser hairpin e discriminar: hairpin=%t discrimina=%t",
 			z.Hairpin(), z.Discriminates())
@@ -163,9 +163,23 @@ func TestAMaquinaNovaNaoHerdaARedeDeCasaDeQuemEscreveuOProduto(t *testing.T) {
 			t.Fatalf("a rede do DefaultConfig (%s) vazou para as regras de uma máquina que nunca a configurou: %v", r, redes)
 		}
 	}
-	if len(redes) != 1 || redes[0] != "10.0.0.0/24" {
-		t.Errorf("a VM tinha de conhecer só a própria sub-rede, obtive %v", redes)
+	if !contem(redes, "10.0.0.0/24") {
+		t.Errorf("a sub-rede da própria VNIC tinha de estar na lista, obtive %v", redes)
 	}
+	// Num gateway de trânsito o espaço privado também é "dentro" — ver
+	// redesLocais. O que NÃO pode estar é a rede de outra pessoa.
+	if !contem(redes, "10.0.0.0/8") {
+		t.Errorf("num gateway o espaço privado tinha de contar como dentro, obtive %v", redes)
+	}
+}
+
+func contem(xs []string, alvo string) bool {
+	for _, x := range xs {
+		if x == alvo {
+			return true
+		}
+	}
+	return false
 }
 
 // TestARedeConfiguradaPeloAdminEntraNoEixo é o outro lado: quando o admin
@@ -218,8 +232,11 @@ func TestConfigIlegivelNaoApagaARedeDaPlataforma(t *testing.T) {
 
 	redes := redesLocais(db, snap)
 
-	if len(redes) != 1 || redes[0] != "10.0.0.0/24" {
+	if !contem(redes, "10.0.0.0/24") {
 		t.Errorf("a rede da plataforma tinha de sobreviver a uma config ilegível, obtive %v", redes)
+	}
+	if contem(redes, netsvc.DefaultConfig().SubnetCIDR) && netsvc.DefaultConfig().SubnetCIDR != "192.168.0.0/16" {
+		t.Errorf("o DefaultConfig vazou mesmo com config ilegível: %v", redes)
 	}
 }
 

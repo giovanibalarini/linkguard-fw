@@ -76,6 +76,6 @@
 | 
 | 	chain postrouting {
 | 		type nat hook postrouting priority srcnat; policy accept;
-| 		oifname { "ens3" } masquerade
+| 		oifname { "ens3" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } counter masquerade
 | 	}
 | }

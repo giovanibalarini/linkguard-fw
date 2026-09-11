@@ -33,6 +33,25 @@ export interface WanLink {
   updated_at: string;
 }
 
+// ─── Uplink efetivo ─────────────────────────────────────────────────────────
+
+// Uplink é por onde a máquina sai para a Internet AGORA — o que o admin
+// cadastrou ou, quando ele não cadastrou nada, o que a plataforma afirmou.
+//
+// NÃO É UM WanLink, e a diferença é o ponto: não tem id, não tem table_id, não
+// tem monitor nem failover, e nada nele pode ser editado ou apagado. O servidor
+// o serve numa rota própria (GET /api/uplink) exatamente para a tela não
+// oferecer as ações de link sobre uma coisa que não é link.
+export interface Uplink {
+  interface: string;
+  // path_mtu é o que o CAMINHO suporta, não o que a placa anuncia. 0 =
+  // desconhecido, e a tela tem de dizer "desconhecida", nunca "0".
+  path_mtu: number;
+  implicit: boolean;
+  source: 'platform' | 'link' | 'none';
+  platform: string;
+}
+
 // ─── Queue control per WAN (issue #121) ─────────────────────────────────────
 
 export interface QosConfig {

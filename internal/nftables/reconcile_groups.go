@@ -706,7 +706,7 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 	z, zerr := s.zone(wans)
 	if zerr != nil {
 		slog.Warn("não foi possível ler a plataforma para o pré-voo da chain input; a proteção de entrada é validada pelo eixo de interface, como numa caixa comum", "err", zerr)
-		z = NewZone(wans, nil, false)
+		z = NewZone(wans, nil, false, 0)
 	}
 	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, z, fechada, cont, wireGuardPort), ensureInput)
 }
