@@ -1,0 +1,31 @@
+# alvo:    EnsureConnMark
+# cenário: sem_wan
+# sobre:   caixa recém-instalada: a LAN já está configurada, nenhum link WAN foi
+#          cadastrado ainda. Hoje vários Ensure* desistem ANTES de criar a chain, e é esse
+#          fato — a chain não nascer — que este cenário prende.
+# entrada: wans = []
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `cmd ` é o mesmo comando como se lê no shell.
+#          exec = Execute, read = ExecuteRead (o `nft list table` do Persist
+#          aparece aqui: é a prova de que o Persist rodou).
+# retorno: nil
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. exec  argv  "nft" "add" "chain" "inet" "linkguard" "conn_mark" "{ type filter hook prerouting priority mangle + 10; policy accept; }"
+          cmd   nft add chain inet linkguard conn_mark { type filter hook prerouting priority mangle + 10; policy accept; }
+ 2. exec  argv  "nft" "add" "chain" "inet" "linkguard" "output_mark" "{ type route hook output priority mangle; policy accept; }"
+          cmd   nft add chain inet linkguard output_mark { type route hook output priority mangle; policy accept; }
+ 3. exec  argv  "nft" "add" "chain" "inet" "linkguard" "conn_mark_out" "{ type filter hook forward priority mangle; policy accept; }"
+          cmd   nft add chain inet linkguard conn_mark_out { type filter hook forward priority mangle; policy accept; }
+ 4. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "conn_mark"
+          cmd   nft flush chain inet linkguard conn_mark
+ 5. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "output_mark"
+          cmd   nft flush chain inet linkguard output_mark
+ 6. exec  argv  "nft" "add" "rule" "inet" "linkguard" "output_mark" "ct" "mark" "!=" "0x0" "ct" "mark" "and" "0x10000" "==" "0x0" "ct" "direction" "reply" "counter" "meta" "mark" "set" "ct" "mark"
+          cmd   nft add rule inet linkguard output_mark ct mark != 0x0 ct mark and 0x10000 == 0x0 ct direction reply counter meta mark set ct mark
+ 7. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "conn_mark_out"
+          cmd   nft flush chain inet linkguard conn_mark_out
+ 8. read  argv  "nft" "list" "table" "inet" "linkguard"
+          cmd   nft list table inet linkguard

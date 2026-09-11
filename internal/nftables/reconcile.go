@@ -257,7 +257,36 @@ func forwardChainRules(groups []StoredGroup, logarBloqueios bool) [][]string {
 // Não se escreve `ct mark` aqui. O bit 0x10000 e o pinning de conexão pertencem
 // a conn_mark_out (#194); duplicar essa escrita reintroduziria a colisão que a
 // issue corrigiu.
-func markHostsChainRules(wans []WANMark) [][]string {
+func markHostsChainRules(z Zone) [][]string {
+	rules := make([][]string, 0, 2)
+	// Este `if` sempre existiu — era `len(ifaces) > 0` — e é o contraexemplo
+	// que mostrou a forma certa aos outros geradores: a regra do eixo é
+	// OMITIDA quando não há como discriminar, em vez de emitida com um set
+	// vazio que o nft recusa. A linha do @host_wan abaixo é incondicional e a
+	// chain nunca fica sem conteúdo.
+	if z.Discriminates() {
+		rules = append(rules, zoneRule(z.FromLocal(),
+			"ct", "state", "new", "meta", "mark", "0x0", "counter",
+			"meta", "mark", "set", "ip", "daddr", "map", "@"+DomWanMap,
+		))
+	}
+	rules = append(rules, []string{"counter", "meta", "mark", "set", "ip", "saddr", "map", "@" + HostWanMap})
+	return rules
+}
+
+// wanMarkIfaces extrai as interfaces de uma lista de WANMark na forma que a
+// mark_hosts sempre usou: sem nome inseguro, sem repetição, e ORDENADAS.
+//
+// A ORDENAÇÃO É CONTRATO, e é o motivo de esta função existir em vez de um
+// `for` no lugar. A chain mark_hosts da produção tem as WANs em ordem
+// alfabética; a mss_clamp e a acct têm na ordem do cadastro. As duas formas
+// estão congeladas em golden. Quem monta a Zone para a mark_hosts monta com
+// ESTA lista — uma zona construída com a ordem do cadastro reescreveria a
+// chain de uma caixa que está no ar.
+//
+// NÃO filtra por Mark: buildBootstrapRuleset chama com WANMark{Interface: …} e
+// marca zero, porque no bootstrap as marcas ainda não foram atribuídas.
+func wanMarkIfaces(wans []WANMark) []string {
 	ifaces := make([]string, 0, len(wans))
 	vistos := make(map[string]bool, len(wans))
 	for _, wan := range wans {
@@ -268,21 +297,7 @@ func markHostsChainRules(wans []WANMark) [][]string {
 		ifaces = append(ifaces, wan.Interface)
 	}
 	sort.Strings(ifaces)
-
-	rules := make([][]string, 0, 2)
-	if len(ifaces) > 0 {
-		quoted := make([]string, len(ifaces))
-		for j, iface := range ifaces {
-			quoted[j] = fmt.Sprintf("%q", iface)
-		}
-		rules = append(rules, []string{
-			"iifname", "!=", "{ " + strings.Join(quoted, ", ") + " }",
-			"ct", "state", "new", "meta", "mark", "0x0", "counter",
-			"meta", "mark", "set", "ip", "daddr", "map", "@" + DomWanMap,
-		})
-	}
-	rules = append(rules, []string{"counter", "meta", "mark", "set", "ip", "saddr", "map", "@" + HostWanMap})
-	return rules
+	return ifaces
 }
 
 // ReconcileStructuralChains rebuilds the mark_hosts chain from its canonical
@@ -321,7 +336,14 @@ func (s *Service) ReconcileStructuralChains(ctx context.Context, wans ...WANMark
 		return nil
 	}
 
-	if err := s.rebuildChain(ctx, MarkHostsChain, markHostsChainRules(wans)); err != nil {
+	// A zona sai da lista ORDENADA de interfaces, e não da ordem em que os
+	// links foram cadastrados: é a forma que esta chain tem em produção hoje.
+	// Ver wanMarkIfaces.
+	z, err := s.zone(wanMarkIfaces(wans))
+	if err != nil {
+		return err
+	}
+	if err := s.rebuildChain(ctx, MarkHostsChain, markHostsChainRules(z)); err != nil {
 		return err
 	}
 
@@ -553,7 +575,7 @@ func (s *Service) CheckChainEnsuring(ctx context.Context, chain string, tokenSet
 //
 // Grupo do sistema nunca entra aqui: o conteúdo dele é um named set de
 // bloqueio de tráfego atravessando, e o lugar dele é a forward.
-func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool, policy Policy, access AdminAccess, wanIfaces []string, gerenciaFechada, contencao bool, wireGuardPorts ...int) [][]string {
+func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool, policy Policy, access AdminAccess, z Zone, gerenciaFechada, contencao bool, wireGuardPorts ...int) [][]string {
 	// Incondicional: sem toggle, sem depender de grupo nenhum. Um firewall
 	// que só quebra PMTUD depois que o admin cria o grupo errado é um
 	// firewall que guarda a armadilha armada esperando.
@@ -622,7 +644,7 @@ func inputChainRules(groups []StoredGroup, ntpNetworks []string, ntpServing bool
 	// decisão (#119): um grupo de escopo input que libere algo vindo da WAN
 	// precisa ser avaliado antes, senão o produto anularia em silêncio uma
 	// decisão explícita do admin. Ver waninput.go.
-	rules = append(rules, WANInputRules(wanIfaces, access, gerenciaFechada, contencao, wireGuardPorts...)...)
+	rules = append(rules, WANInputRules(z, access, gerenciaFechada, contencao, wireGuardPorts...)...)
 	return rules
 }
 
@@ -744,7 +766,11 @@ func (s *Service) reconcileInputChain(ctx context.Context, groups []StoredGroup,
 		"{", "type", "filter", "hook", "input", "priority", "filter", ";", "policy", string(policy), ";", "}"); err != nil {
 		return fmt.Errorf("criar chain %s: %w", InputChain, err)
 	}
-	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans, fechada, contencao, wireGuardPort))
+	z, err := s.zone(wans)
+	if err != nil {
+		return err
+	}
+	return s.rebuildChain(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, z, fechada, contencao, wireGuardPort))
 }
 
 // ReconcileNTPInput reconcilia a chain input a partir do toggle "servir NTP

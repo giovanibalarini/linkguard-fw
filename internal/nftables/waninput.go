@@ -1,7 +1,6 @@
 package nftables
 
 import (
-	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -87,48 +86,49 @@ import (
 // nasce sem link nenhum, o resultado é byte a byte o de antes. Um firewall que
 // descartasse "tudo que vem da WAN" sem saber quais são as WANs descartaria
 // nada ou tudo, e as duas respostas estão erradas.
-func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada, contencaoLigada bool, wireGuardPorts ...int) [][]string {
-	nomes := make([]string, 0, len(wanIfaces))
-	vistos := map[string]bool{}
-	for _, iface := range wanIfaces {
-		if iface == "" || vistos[iface] {
-			continue
-		}
-		if !reIface.MatchString(iface) {
-			// Este nome vem do banco e é interpolado no argv do nft, que junta
-			// os argumentos e parseia o resultado — mesma porta que reIface
-			// fecha nos outros geradores deste pacote.
-			slog.Error("interface ignorada ao montar a proteção de entrada da WAN: nome inseguro",
-				"interface", iface)
-			continue
-		}
-		vistos[iface] = true
-		nomes = append(nomes, fmt.Sprintf("%q", iface))
-	}
-	if len(nomes) == 0 {
+func WANInputRules(z Zone, access AdminAccess, gerenciaFechada, contencaoLigada bool, wireGuardPorts ...int) [][]string {
+	if !z.Discriminates() {
 		return nil
 	}
-	set := "{ " + strings.Join(nomes, ", ") + " }"
+
+	// AS DUAS FORMAS DE DIZER "VEIO DE FORA", E POR QUE SÃO DUAS.
+	//
+	// `deFora` é o eixo da plataforma: interface na caixa de várias NICs, CIDR
+	// de origem na de VNIC única. É ele que conserta o defeito desta chain em
+	// hairpin — `iifname { ens3 }` casa TUDO ali, e o descarte final cortava
+	// DNS, NTP e painel vindos das outras máquinas da própria rede.
+	//
+	// `porIface` é o eixo de interface SEMPRE, e existe só para as linhas
+	// exclusivamente IPv6. Na família `inet`, `ip saddr` casa apenas IPv4 (ver
+	// sanitizeNetworks): renderizadas pelo eixo de CIDR, essas quatro linhas
+	// deixariam de casar qualquer pacote e o IPv6 perderia a vizinhança, os
+	// erros de PMTUD e o cliente DHCPv6 — com `policy drop`, IPv6 pararia por
+	// inteiro. Em hairpin elas casam mais do que deveriam; as quatro são
+	// `accept` de infraestrutura, então casar demais não afrouxa nada que já
+	// não estivesse liberado. Ver o aviso no fim desta função para o lado que
+	// NÃO se resolve assim.
+	deFora := z.FromExternal()
+	porIface := z.FromExternalByIface()
 
 	regras := [][]string{
 		// Vizinhança e descoberta de roteador. Primeiro porque, sem isto, nada
 		// de IPv6 funciona depois — inclusive as liberações abaixo, que seriam
 		// aceitas e nunca alcançadas.
-		{"iifname", set, "icmpv6", "type",
+		zoneRule(porIface, "icmpv6", "type",
 			"{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert }",
-			"counter", "accept"},
+			"counter", "accept"),
 
 		// Os erros de ICMPv6 que não podem sumir: PMTUD e diagnóstico.
-		{"iifname", set, "icmpv6", "type",
+		zoneRule(porIface, "icmpv6", "type",
 			"{ packet-too-big, time-exceeded, parameter-problem, destination-unreachable }",
-			"counter", "accept"},
+			"counter", "accept"),
 
 		// A caixa como CLIENTE de DHCP, nas duas famílias.
-		{"iifname", set, "udp", "dport", "68", "counter", "accept"},
-		{"iifname", set, "udp", "dport", "546", "counter", "accept"},
+		zoneRule(deFora, "udp", "dport", "68", "counter", "accept"),
+		zoneRule(porIface, "udp", "dport", "546", "counter", "accept"),
 
 		// Encaminhamento de porta que aponta para a própria máquina.
-		{"iifname", set, "ct", "status", "dnat", "counter", "accept"},
+		zoneRule(deFora, "ct", "status", "dnat", "counter", "accept"),
 	}
 
 	// AS PORTAS DE GERÊNCIA FICAM ABERTAS, E ISTO É UMA CORREÇÃO, NÃO UM
@@ -179,8 +179,8 @@ func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada, cont
 	// pacote que EXCEDE a taxa não casa esta regra e cai no descarte abaixo. É
 	// isso que torna o limite um limite de verdade, e não um enfeite.
 	regras = append(regras,
-		[]string{"iifname", set, "icmp", "type", "echo-request", "limit", "rate", "5/second", "counter", "accept"},
-		[]string{"iifname", set, "icmpv6", "type", "echo-request", "limit", "rate", "5/second", "counter", "accept"},
+		zoneRule(deFora, "icmp", "type", "echo-request", "limit", "rate", "5/second", "counter", "accept"),
+		zoneRule(porIface, "icmpv6", "type", "echo-request", "limit", "rate", "5/second", "counter", "accept"),
 	)
 
 	// O FECHAMENTO É PARÂMETRO PRÓPRIO, E NÃO UM CAMPO DE AdminAccess, e a
@@ -213,9 +213,9 @@ func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada, cont
 			// distinguir automação legítima de varredura só pela taxa — quem usa
 			// a API de fora parece igual a um scanner.
 			if contencaoLigada {
-				regras = append(regras, abuseRules(wanIfaces, portas)...)
+				regras = append(regras, abuseRules(z, portas)...)
 			}
-			regras = append(regras, []string{"iifname", set, "tcp", "dport", portas, "counter", "accept"})
+			regras = append(regras, zoneRule(deFora, "tcp", "dport", portas, "counter", "accept"))
 		}
 	}
 
@@ -226,14 +226,33 @@ func WANInputRules(wanIfaces []string, access AdminAccess, gerenciaFechada, cont
 	// handshake entrou e marca a resposta no hook output.
 	if len(wireGuardPorts) > 0 {
 		if port := wireGuardPorts[0]; port >= 1 && port <= 65535 {
-			regras = append(regras, []string{"iifname", set, "udp", "dport", strconv.Itoa(port), "counter", "accept"})
+			regras = append(regras, zoneRule(deFora, "udp", "dport", strconv.Itoa(port), "counter", "accept"))
 		}
 	}
 
 	// O QUE ESTA LINHA FAZ: descarta o que chega pelas WANs sem ter sido
 	// pedido de dentro. `ct state new` é o que garante que ela não toca em
 	// resposta de conexão de saída.
-	return append(regras, []string{"iifname", set, "ct", "state", "new", "counter", "drop"})
+	//
+	// EM HAIRPIN ESTE DESCARTE PASSA A VALER SÓ PARA IPv4, E ISSO É UMA
+	// LACUNA ENTREGUE ABERTA, não um detalhe. `ip saddr != { rede local }` não
+	// casa pacote IPv6 nenhum na família `inet`, então o que chega de fora por
+	// IPv6 deixa de ser descartado e cai na `policy accept` da chain. A saída
+	// honesta é `ip6 saddr != { prefixo local }`, e ela precisa do prefixo
+	// IPv6 de dentro — que fonte nenhuma deste produto conhece hoje: nem o
+	// netsvc, que só guarda a sub-rede IPv4, nem o IMDS, cujo subnet_cidr é v4.
+	//
+	// Emitir um descarte v6 sem esse prefixo seria descartar TAMBÉM o que vem
+	// da própria rede, inclusive a vizinhança que as linhas acima liberam —
+	// isto é, trocar uma exposição por uma queda. Este produto já escolheu
+	// entre as duas coisas (ver o bloco sobre as portas de gerência, acima) e
+	// escolheu não trancar. O que não pode é isso acontecer calado, então
+	// acontece com aviso.
+	if z.Hairpin() {
+		slog.Warn("proteção de entrada: nesta máquina o descarte vale só para IPv4; o que chegar de fora por IPv6 NÃO é descartado (falta o prefixo IPv6 da rede local)",
+			"wans", z.WANIfaces())
+	}
+	return append(regras, zoneRule(deFora, "ct", "state", "new", "counter", "drop"))
 }
 
 // portasDeGerencia devolve o set de portas que não podem ser fechadas sem o

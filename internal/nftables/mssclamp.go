@@ -41,14 +41,30 @@ func (s *Service) EnsureMSSClamp(ctx context.Context, wanInterfaces []string) er
 		return nil
 	}
 	ifaces := sanitizeInterfaces(wanInterfaces)
-	if len(ifaces) == 0 {
-		slog.Warn("ajuste de MSS: nenhuma interface WAN válida; a chain não foi reconciliada")
-		return nil
+	z, err := s.zone(ifaces)
+	if err != nil {
+		return err
 	}
+	// A CHAIN É CRIADA SEMPRE, MESMO QUE NASÇA VAZIA, e isto é a correção de
+	// uma desistência antiga: até aqui esta função devolvia nil ANTES do `add
+	// chain` quando não havia WAN cadastrada, e o resultado era uma caixa em
+	// que a mss_clamp simplesmente NÃO EXISTIA — nem vazia. Quem fosse
+	// conferir o ruleset não achava a chain e não tinha como saber se a
+	// feature estava desligada ou quebrada.
+	//
+	// Chain vazia é o estado honesto: a estrutura está montada, e não há regra
+	// porque não há link cadastrado. É seguro porque a chain é `policy accept`
+	// e não decide nada sozinha. (Para o registro de conversa a conclusão é a
+	// OPOSTA — ver EnsureFlows.)
 	if out, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, MSSClampChain, mssClampChainSpec); err != nil {
 		return fmt.Errorf("criar chain %s: %w (%s)", MSSClampChain, err, out)
 	}
-	if err := s.rebuildChain(ctx, MSSClampChain, mssClampRules(ifaces)); err != nil {
+	regras := mssClampRules(z)
+	if len(regras) == 0 {
+		slog.Warn("ajuste de MSS: a chain foi criada VAZIA",
+			"motivo", motivoDeChainVazia(z), "wans", ifaces)
+	}
+	if err := s.rebuildChain(ctx, MSSClampChain, regras); err != nil {
 		return err
 	}
 	slog.Info("ajuste de MSS reconciliado", "wans", ifaces)
@@ -64,15 +80,27 @@ func (s *Service) EnsureMSSClamp(ctx context.Context, wanInterfaces []string) er
 // `tcp flags syn / syn,rst` casa SYN e SYN-ACK e ignora RST — o MSS só é
 // negociado no aperto de mão, e mexer em qualquer outro pacote seria mexer
 // numa conexão já estabelecida.
-func mssClampRules(wanIfaces []string) [][]string {
-	regras := make([][]string, 0, len(wanIfaces))
-	for _, iface := range wanIfaces {
-		regras = append(regras, []string{
-			"oifname", fmt.Sprintf("%q", iface),
+func mssClampRules(z Zone) [][]string {
+	// EM HAIRPIN ESTA CHAIN FICA VAZIA, DE PROPÓSITO. Numa VM de VNIC única
+	// existe um caminho só para fora: "ajustar o MSS por link" não tem link
+	// para escolher, e `rt mtu` leria a MTU que a interface ANUNCIA — 9000 na
+	// OCI —, não a que o caminho realmente suporta (1500, medido). Uma regra
+	// que casa tudo e clampa para um valor errado é pior do que nenhuma: ela
+	// dá a impressão de que o ajuste está feito.
+	//
+	// O clamp correto para essa plataforma usa a MTU externa REAL, que
+	// platform.Facts já carrega, e é matéria do incremento do uplink.
+	if !z.PerLink() {
+		return nil
+	}
+	ifaces := z.WANIfaces()
+	regras := make([][]string, 0, len(ifaces))
+	for _, iface := range ifaces {
+		regras = append(regras, zoneRule(z.ToExternalIface(iface),
 			"tcp", "flags", "syn", "/", "syn,rst",
 			"counter",
 			"tcp", "option", "maxseg", "size", "set", "rt", "mtu",
-		})
+		))
 	}
 	return regras
 }

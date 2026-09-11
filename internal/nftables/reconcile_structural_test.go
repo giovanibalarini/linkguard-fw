@@ -220,10 +220,10 @@ func TestReconcileStructuralChainsMarkHostsRule(t *testing.T) {
 }
 
 func TestDomainRoutingPrecedesManualHostOverrideAndNeverWritesConnmark(t *testing.T) {
-	rules := markHostsChainRules([]WANMark{
+	rules := markHostsChainRules(zonaDasMarcasDe([]WANMark{
 		{Interface: "enp5s0", Mark: 100},
 		{Interface: "pppoe-wan", Mark: 300},
-	})
+	}))
 	if len(rules) != 2 {
 		t.Fatalf("esperava regra de domínio seguida da regra por host, vieram %d: %v", len(rules), rules)
 	}
@@ -250,7 +250,7 @@ func TestDomainRoutingPrecedesManualHostOverrideAndNeverWritesConnmark(t *testin
 }
 
 func TestDomainRoutingIsOmittedWithoutAUsableWAN(t *testing.T) {
-	rules := markHostsChainRules([]WANMark{{Interface: "inválida;", Mark: 100}})
+	rules := markHostsChainRules(zonaDasMarcasDe([]WANMark{{Interface: "inválida;", Mark: 100}}))
 	if len(rules) != 1 || !strings.Contains(strings.Join(rules[0], " "), "@"+HostWanMap) {
 		t.Fatalf("sem WAN válida só a regra por host deve permanecer: %v", rules)
 	}

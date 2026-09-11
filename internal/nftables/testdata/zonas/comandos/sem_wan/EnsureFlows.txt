@@ -1,0 +1,16 @@
+# alvo:    EnsureFlows
+# cenário: sem_wan
+# sobre:   caixa recém-instalada: a LAN já está configurada, nenhum link WAN foi
+#          cadastrado ainda. Hoje vários Ensure* desistem ANTES de criar a chain, e é esse
+#          fato — a chain não nascer — que este cenário prende.
+# entrada: wanInterfaces = [], cfg = {janela 15 min, teto 32768}
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `cmd ` é o mesmo comando como se lê no shell.
+#          exec = Execute, read = ExecuteRead (o `nft list table` do Persist
+#          aparece aqui: é a prova de que o Persist rodou).
+# retorno: nenhum link WAN configurado: a medição precisa saber o que é a WAN para saber o que é a LAN
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+(nenhum comando)

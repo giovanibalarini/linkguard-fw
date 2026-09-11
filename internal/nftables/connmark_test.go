@@ -7,7 +7,7 @@ import (
 )
 
 func TestConnMarkChainRules(t *testing.T) {
-	regras := connMarkChainRules([]WANMark{
+	regras := connMarkChainRulesDe([]WANMark{
 		{Interface: "wan1", Mark: 100},
 		{Interface: "wan2", Mark: 101},
 	})
@@ -46,7 +46,7 @@ func TestARestauracaoNoPreroutingSoAgeSobreOQueVeioDaLAN(t *testing.T) {
 	// só na regra nova que criou o defeito: a regra velha continuou lendo
 	// `ct mark` com o significado antigo.
 	wans := []WANMark{{Interface: "wan1", Mark: 100}, {Interface: "wan2", Mark: 101}}
-	for _, r := range [][]string{restoreReplyMarkRule(wans), restoreOutboundMarkRule(wans)} {
+	for _, r := range [][]string{restoreReplyMarkRule(zonaDasMarcasDe(wans)), restoreOutboundMarkRule(zonaDasMarcasDe(wans))} {
 		got := strings.Join(r, " ")
 		if !strings.HasPrefix(got, `iifname != { "wan1", "wan2" }`) {
 			t.Errorf("restauração do prerouting sem o guarda de interface: %q", got)
@@ -72,7 +72,7 @@ func TestARestauracaoSoValeParaADirecaoDeResposta(t *testing.T) {
 	//
 	// Sintoma: o painel mostra o encaminhamento aplicado, a tradução está na
 	// chain de DNAT, e o servidor interno não responde de fora.
-	entrada := restoreReplyMarkRule([]WANMark{{Interface: "wan1", Mark: 100}})
+	entrada := restoreReplyMarkRule(zonaDasMarcasDe([]WANMark{{Interface: "wan1", Mark: 100}}))
 	for _, r := range [][]string{entrada, outputMarkChainRules()[0]} {
 		got := strings.Join(r, " ")
 		if !strings.Contains(got, "ct direction reply") {
@@ -88,7 +88,7 @@ func TestARestauracaoEhSempreAUltima(t *testing.T) {
 	// Se a restauração viesse antes da memória, uma conexão nova entrando pela
 	// WAN teria a marca restaurada (zero) DEPOIS de gravada — e o caminho de
 	// volta se perderia justamente na conexão que a feature existe para tratar.
-	regras := connMarkChainRules([]WANMark{{Interface: "wan1", Mark: 100}})
+	regras := connMarkChainRulesDe([]WANMark{{Interface: "wan1", Mark: 100}})
 	ultima := strings.Join(regras[len(regras)-1], " ")
 	if !strings.Contains(ultima, "meta mark set ct mark") {
 		t.Errorf("a última regra não é a de restauração: %q", ultima)
@@ -98,7 +98,7 @@ func TestARestauracaoEhSempreAUltima(t *testing.T) {
 func TestMemoriaSoValeParaConexaoNova(t *testing.T) {
 	// Sem `ct state new`, um pacote chegando pela outra WAN no meio da conversa
 	// reescreveria a marca e mudaria o caminho de volta no meio do caminho.
-	regras := connMarkChainRules([]WANMark{{Interface: "wan1", Mark: 100}})
+	regras := connMarkChainRulesDe([]WANMark{{Interface: "wan1", Mark: 100}})
 	if !strings.Contains(strings.Join(regras[0], " "), "ct state new") {
 		t.Errorf("a regra de memória casa qualquer estado: %q", regras[0])
 	}
@@ -126,17 +126,46 @@ func TestSanitizeWANMarks(t *testing.T) {
 	}
 }
 
-func TestEnsureConnMarkSemWANNaoCriaNada(t *testing.T) {
-	// Só a regra de restauração, sem nenhuma de memória, restauraria marcas que
-	// ninguém grava — e a chain existiria dando a impressão de estar ligada.
+// TestEnsureConnMarkSemWANCriaAsChainsVaziasMasNaoRestauraMarcaNenhuma é a
+// virada deliberada de um teste que afirmava o contrário, e a parte delicada é
+// a segunda metade do nome.
+//
+// A METADE QUE CONTINUA VALENDO, E É A QUE IMPORTA: só a regra de restauração,
+// sem nenhuma de memória, restauraria marcas que ninguém grava. Pior: sem o
+// guarda `iifname !=` ela marcaria a direção ORIGINAL de conexão vinda de fora,
+// que é a armadilha da #120 — o SYN de um encaminhamento de porta voltando para
+// o provedor. As duas regras de restauração continuam OMITIDAS.
+//
+// A METADE QUE MUDOU: as três chains passam a existir. E a output_mark ganha a
+// regra dela, que é ganho líquido — ela nunca dependeu de WAN nenhuma
+// (outputMarkChainRules não tem parâmetro), e antes era apagada junto com as
+// outras duas por um early-return que pegava demais.
+func TestEnsureConnMarkSemWANCriaAsChainsVaziasMasNaoRestauraMarcaNenhuma(t *testing.T) {
 	ex := &execFalso{}
 	s := &Service{exec: ex}
 	if err := s.EnsureConnMark(context.Background(), []WANMark{{Interface: "wan1", Mark: 0}}); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
+	for _, chain := range []string{"conn_mark ", "conn_mark_out", "output_mark"} {
+		var achou bool
+		for _, c := range ex.comandos {
+			if strings.Contains(c, "add chain inet linkguard "+chain) {
+				achou = true
+			}
+		}
+		if !achou {
+			t.Errorf("a chain %q tinha de nascer mesmo vazia\ncomandos: %v", strings.TrimSpace(chain), ex.comandos)
+		}
+	}
 	for _, c := range ex.comandos {
-		if strings.Contains(c, "nft") {
-			t.Errorf("executou nft sem WAN válida: %q", c)
+		if !strings.Contains(c, "add rule") {
+			continue
+		}
+		if !strings.Contains(c, "output_mark") {
+			t.Errorf("regra emitida numa chain que tinha de ficar vazia: %q", c)
+		}
+		if strings.Contains(c, "iifname") {
+			t.Errorf("regra de restauração emitida SEM o guarda de interface — é a armadilha da #120: %q", c)
 		}
 	}
 }
@@ -169,7 +198,7 @@ func TestConexaoDaLANEhFixadaNaWANEmQueSaiu(t *testing.T) {
 	// origem para o endereço da WAN antiga, o que faz o provedor descartar por
 	// uRPF. Download reabre conexão e parece travar; chamada de vídeo e jogo
 	// online morrem.
-	regras := connMarkOutChainRules([]WANMark{
+	regras := connMarkOutChainRulesDe([]WANMark{
 		{Interface: "wan1", Mark: 100},
 		{Interface: "wan2", Mark: 101},
 	})
@@ -188,7 +217,7 @@ func TestAMemoriaDeSaidaNaoSobrescreveAMemoriaDeEntrada(t *testing.T) {
 	// As duas metades desta feature já se atropelaram uma vez (#120). A memória
 	// de saída só grava quando não há marca — a decisão de quem ENTROU manda,
 	// porque é ela que sustenta o encaminhamento de porta.
-	for _, r := range connMarkOutChainRules([]WANMark{{Interface: "wan1", Mark: 100}}) {
+	for _, r := range connMarkOutChainRulesDe([]WANMark{{Interface: "wan1", Mark: 100}}) {
 		got := strings.Join(r, " ")
 		if !strings.Contains(got, "ct mark == 0x0") {
 			t.Errorf("memória de saída sem o guarda de marca zero: %q", got)
@@ -204,9 +233,9 @@ func TestARestauracaoDeSaidaSoValeParaQuemVeioDaLAN(t *testing.T) {
 	// de saída casa a direção ORIGINAL, que é exatamente a direção que mandava o
 	// SYN de um encaminhamento de porta de volta para o provedor. O que a torna
 	// segura é o pacote ter de ter ENTRADO POR ONDE NÃO É WAN.
-	r := strings.Join(restoreOutboundMarkRule([]WANMark{
+	r := strings.Join(restoreOutboundMarkRule(zonaDasMarcasDe([]WANMark{
 		{Interface: "wan1", Mark: 100}, {Interface: "wan2", Mark: 101},
-	}), " ")
+	})), " ")
 	if !strings.Contains(r, `iifname != { "wan1", "wan2" }`) {
 		t.Errorf("restauração de saída sem excluir as WANs de entrada: %q", r)
 	}
@@ -223,7 +252,7 @@ func TestFixacaoPorHostGanhaDaMemoriaDeConexao(t *testing.T) {
 	// priority mangle (-150) e a conn_mark em mangle+10 (-140), então quando o
 	// admin fixou o aparelho a marca já está posta — e a restauração de saída
 	// exige marca zero para agir.
-	r := strings.Join(restoreOutboundMarkRule([]WANMark{{Interface: "wan1", Mark: 100}}), " ")
+	r := strings.Join(restoreOutboundMarkRule(zonaDasMarcasDe([]WANMark{{Interface: "wan1", Mark: 100}})), " ")
 	if !strings.Contains(r, "meta mark == 0x0") {
 		t.Fatalf("sem o guarda, a memória de conexão sobrescreveria o direcionamento por host: %q", r)
 	}
@@ -257,8 +286,8 @@ func TestARestauracaoDeOutputIgnoraConexaoNascidaNaLAN(t *testing.T) {
 // antigo.
 func TestAsDuasMetadesGravamMarcasDISTINGUIVEIS(t *testing.T) {
 	wans := []WANMark{{Interface: "wan1", Mark: 100}}
-	entrada := strings.Join(connMarkChainRules(wans)[0], " ")
-	saida := strings.Join(connMarkOutChainRules(wans)[0], " ")
+	entrada := strings.Join(connMarkChainRulesDe(wans)[0], " ")
+	saida := strings.Join(connMarkOutChainRulesDe(wans)[0], " ")
 
 	if !strings.Contains(entrada, "ct mark set 0x64") {
 		t.Errorf("a memória de ENTRADA devia gravar o table_id puro: %q", entrada)
@@ -278,7 +307,7 @@ func TestAsDuasMetadesGravamMarcasDISTINGUIVEIS(t *testing.T) {
 // pacote cairia na tabela principal, e a fixação inteira seria um enfeite que
 // não muda caminho nenhum — verde em toda leitura de chain e inútil no fio.
 func TestARestauracaoDeSaidaDevolveOTableIdSemOBit(t *testing.T) {
-	r := strings.Join(restoreOutboundMarkRule([]WANMark{{Interface: "wan1", Mark: 100}}), " ")
+	r := strings.Join(restoreOutboundMarkRule(zonaDasMarcasDe([]WANMark{{Interface: "wan1", Mark: 100}})), " ")
 	if !strings.Contains(r, "meta mark set ct mark and 0xffff") {
 		t.Errorf("a restauração de saída não tira o bit: %q — a ip rule não casaria", r)
 	}

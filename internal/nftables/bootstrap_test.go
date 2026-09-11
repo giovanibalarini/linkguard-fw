@@ -162,7 +162,7 @@ func TestBootstrapThenRestoreAppliesSavedState(t *testing.T) {
 }
 
 func TestBuildBootstrapRulesetContainsCoreStructure(t *testing.T) {
-	rs := buildBootstrapRuleset([]string{"enp5s0"})
+	rs := buildBootstrapRuleset([]string{"enp5s0"}, ZoneFacts{})
 	for _, want := range []string{
 		"table inet linkguard {",
 		"map host_wan {",
@@ -192,7 +192,7 @@ func TestBuildBootstrapRulesetContainsCoreStructure(t *testing.T) {
 // ReconcileNTPInput (see its doc comment / spec §2). A fresh box and an
 // upgraded box must converge on the exact same chain.
 func TestBuildBootstrapRulesetInputChainPolicyIsAccept(t *testing.T) {
-	rs := buildBootstrapRuleset([]string{"enp5s0"})
+	rs := buildBootstrapRuleset([]string{"enp5s0"}, ZoneFacts{})
 	i := strings.Index(rs, "chain input {")
 	if i < 0 {
 		t.Fatal("bootstrap ruleset missing chain input")
@@ -218,7 +218,7 @@ func TestBuildBootstrapRulesetInputChainPolicyIsAccept(t *testing.T) {
 // it, Phase A's whole point (surfacing those counts on the panel) would
 // have nothing to show on a freshly bootstrapped box.
 func TestBuildBootstrapRulesetForwardAndMarkHostsCarryCounter(t *testing.T) {
-	rs := buildBootstrapRuleset([]string{"enp5s0"})
+	rs := buildBootstrapRuleset([]string{"enp5s0"}, ZoneFacts{})
 	for _, want := range []string{
 		"counter jump user_rules",
 		"ip saddr @blocked_hosts counter drop",
@@ -243,7 +243,7 @@ func TestBuildBootstrapRulesetForwardAndMarkHostsCarryCounter(t *testing.T) {
 // voltar a duplicar a fonte de um lado só, este teste pega a divergência sem
 // precisar saber que administrativeBlockRules existe.
 func TestBootstrapForwardBlocksMatchForwardChainRulesForSystemGroups(t *testing.T) {
-	rs := buildBootstrapRuleset(nil)
+	rs := buildBootstrapRuleset(nil, ZoneFacts{})
 	groups := []StoredGroup{
 		{ID: "h", Kind: GroupKindBlockedHosts, ChainName: SystemChainBlockedHosts, Enabled: true, Position: 0},
 		{ID: "l", Kind: GroupKindBlocklist, ChainName: SystemChainBlocklist, Enabled: true, Position: 1},
@@ -257,7 +257,7 @@ func TestBootstrapForwardBlocksMatchForwardChainRulesForSystemGroups(t *testing.
 }
 
 func TestBuildBootstrapRulesetSanitizesInterfaces(t *testing.T) {
-	rs := buildBootstrapRuleset([]string{"enp5s0", `evil"; flush ruleset; #`, "enp5s0"})
+	rs := buildBootstrapRuleset([]string{"enp5s0", `evil"; flush ruleset; #`, "enp5s0"}, ZoneFacts{})
 	if strings.Contains(rs, "evil") || strings.Contains(rs, "flush ruleset;") {
 		t.Errorf("invalid interface name leaked into generated ruleset:\n%s", rs)
 	}
@@ -269,7 +269,7 @@ func TestBuildBootstrapRulesetSanitizesInterfaces(t *testing.T) {
 }
 
 func TestBuildBootstrapRulesetEmptyInterfacesOmitsMasquerade(t *testing.T) {
-	rs := buildBootstrapRuleset(nil)
+	rs := buildBootstrapRuleset(nil, ZoneFacts{})
 	if strings.Contains(rs, "masquerade") {
 		t.Errorf("expected no masquerade rule with zero WAN interfaces:\n%s", rs)
 	}

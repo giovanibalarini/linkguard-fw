@@ -601,6 +601,25 @@ func buildServices(cfg *config.Config, db *storage.DB, plat platform.Snapshot) (
 	// e tem de valer na reconciliação seguinte, sem reiniciar nada.
 	nftSvc.SetEdgeContainmentSource(frSvc.EdgeContainment)
 	nftSvc.SetForwardPolicySource(frSvc.ForwardPolicy)
+	// O EIXO DAS REGRAS DE FIREWALL SAI DAQUI.
+	//
+	// Numa caixa com várias interfaces, "veio de dentro" é `iifname != { WANs
+	// }` — a forma que a produção tem hoje, byte a byte. Numa VM de nuvem com
+	// UMA placa, entra e sai pela mesma interface e essa frase não discrimina
+	// nada: o eixo passa a ser o CIDR da rede local. Ver internal/nftables/zone.go.
+	//
+	// Lido a cada reconciliação, e não capturado uma vez: a sub-rede pode ser
+	// configurada pela tela depois do boot, e o eixo tem de acompanhar sem
+	// reiniciar nada — mesma disciplina das outras fontes acima.
+	nftSvc.SetZoneFactsSource(func() (nftables.ZoneFacts, error) {
+		return nftables.ZoneFacts{
+			// Capable() e não o campo Capabilities: um instantâneo vazio ou de
+			// plataforma desconhecida devolve o conjunto PERMISSIVO, isto é,
+			// RoutedTransit true, isto é, o eixo de interface de sempre.
+			Hairpin:   !plat.Capable().RoutedTransit,
+			LocalNets: redesLocais(db, plat),
+		}, nil
+	})
 	nftSvc.SetAdminAccessSource(func() (nftables.AdminAccess, error) {
 		netCfg := netsvc.DefaultConfig()
 		if raw, _ := db.GetSetting("netsvc_config"); raw != "" {

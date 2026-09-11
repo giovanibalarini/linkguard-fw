@@ -230,24 +230,32 @@ func flowsSetSpec(c FlowsConfig) string {
 // sabe de qual cabeçalho tirar a porta, e a regra é recusada. É também o que
 // deixa ICMP de fora — uma das quatro coisas que a tela precisa dizer que não
 // sabe.
-func flowsChainRules(wanIfaces []string) [][]string {
-	quoted := make([]string, len(wanIfaces))
-	for i, iface := range wanIfaces {
-		quoted[i] = fmt.Sprintf("%q", iface)
+func flowsChainRules(z Zone) [][]string {
+	if !z.Discriminates() {
+		return nil
 	}
-	set := "{ " + strings.Join(quoted, ", ") + " }"
 	return [][]string{
 		// SUBIDA e LAN→LAN: a origem é local, a chave sai na ordem natural.
-		{"iifname", "!=", set, "meta", "l4proto", "{", "tcp,", "udp", "}",
-			"update", "@" + FlowsSet, "{", "ip", "saddr", ".", "ip", "daddr", ".", "th", "dport", "}"},
+		zoneRule(z.FromLocal(), "meta", "l4proto", "{", "tcp,", "udp", "}",
+			"update", "@"+FlowsSet, "{", "ip", "saddr", ".", "ip", "daddr", ".", "th", "dport", "}"),
 		// DESCIDA: o pacote veio da WAN, então quem é local é o DESTINO e a
 		// porta do serviço é a de ORIGEM. Invertendo os três campos, o pacote
 		// de volta cai na mesma tupla da ida e soma no mesmo contador — sem
 		// isto a coluna de volume seria só o que o aparelho enviou. Ver o
 		// bloco "POR QUE SÃO DUAS REGRAS" no topo, inclusive a razão de esta
 		// casar `iifname {wan}` e não `oifname !=`.
-		{"iifname", set, "meta", "l4proto", "{", "tcp,", "udp", "}",
-			"update", "@" + FlowsSet, "{", "ip", "daddr", ".", "ip", "saddr", ".", "th", "sport", "}"},
+		//
+		// E É AQUI QUE O EIXO DE INTERFACE PRODUZIA O FANTASMA numa máquina de
+		// VNIC única: a primeira regra não casava nada e esta casava TUDO, de
+		// modo que a IDA também era gravada por ela — com os campos
+		// invertidos, o endereço da internet no lugar do host. Cada conversa
+		// virava duas linhas, uma certa e uma espelhada, comendo metade do
+		// teto do set. Pelo eixo de CIDR as duas regras voltam a ser
+		// complementares: a ida casa a primeira, a volta casa esta, e as duas
+		// escrevem a MESMA tupla, que é o que faz o contador somar em vez de
+		// duplicar.
+		zoneRule(z.FromExternal(), "meta", "l4proto", "{", "tcp,", "udp", "}",
+			"update", "@"+FlowsSet, "{", "ip", "daddr", ".", "ip", "saddr", ".", "th", "sport", "}"),
 	}
 }
 
@@ -273,7 +281,11 @@ func (s *Service) EnsureFlows(ctx context.Context, wanInterfaces []string, cfg F
 		return nil
 	}
 	ifaces := sanitizeInterfaces(wanInterfaces)
-	if len(ifaces) == 0 {
+	z, err := s.zone(ifaces)
+	if err != nil {
+		return err
+	}
+	if !z.Discriminates() {
 		// Sem saber quais interfaces são WAN não há como distinguir host local
 		// de endereço da internet, e registrar tudo encheria o set com o
 		// tráfego de entrada. Mesma decisão de EnsureAccounting diante de fonte
@@ -292,8 +304,17 @@ func (s *Service) EnsureFlows(ctx context.Context, wanInterfaces []string, cfg F
 		// DISTINGUIR: o handler traduz em recado ("não há link WAN configurado")
 		// e a reconciliação do boot a tolera com WARN — no boot a lista de WANs
 		// pode estar legitimamente vazia numa caixa recém-instalada.
-		slog.Warn("registro de conversa: nenhuma interface WAN configurada; a chain não foi reconciliada",
-			"solicitado", wanInterfaces)
+		//
+		// E ESTA É A CHAIN QUE NÃO PODE NASCER VAZIA, ao contrário de acct,
+		// mss_clamp e conn_mark, que passaram a nascer. A diferença é a
+		// prioridade: esta é uma base chain no hook forward. Vazia, ela
+		// atravessaria todo o tráfego da rede sem medir nada enquanto Flows()
+		// responderia com sucesso um set vazio — a tela lendo "esta rede não
+		// falou com ninguém" quando a verdade é "não há medição montada". As
+		// outras três são estruturas de contagem e de marca que, vazias, não
+		// afirmam nada. Vazio aqui MENTE; lá, não.
+		slog.Warn("registro de conversa: a chain não foi reconciliada",
+			"motivo", motivoDeChainVazia(z), "solicitado", wanInterfaces)
 		return ErrSemWAN
 	}
 
@@ -306,7 +327,7 @@ func (s *Service) EnsureFlows(ctx context.Context, wanInterfaces []string, cfg F
 	if out, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, FlowsTable, FlowsChain, flowsChainSpec); err != nil {
 		return fmt.Errorf("criar chain %s: %w (%s)", FlowsChain, err, strings.TrimSpace(out))
 	}
-	if err := s.rebuildChainIn(ctx, FlowsTable, FlowsChain, flowsChainRules(ifaces)); err != nil {
+	if err := s.rebuildChainIn(ctx, FlowsTable, FlowsChain, flowsChainRules(z)); err != nil {
 		// DERRUBA O QUE FOI MONTADO. rebuildChainIn coleta as recusas e segue em
 		// frente, então uma regra rejeitada deixava DE PÉ a tabela, o set e a
 		// base chain no hook forward: uma chain que atravessa todo o tráfego da

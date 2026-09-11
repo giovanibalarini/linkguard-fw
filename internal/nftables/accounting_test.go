@@ -66,7 +66,7 @@ func TestParseCounterSetIgnoraOQueNaoEhElemento(t *testing.T) {
 }
 
 func TestAcctChainRules(t *testing.T) {
-	regras := acctChainRules([]string{"wan1", "wan2"})
+	regras := acctChainRules(zonaOnPrem("wan1", "wan2"))
 	if len(regras) != 2 {
 		t.Fatalf("queria 2 regras, veio %d", len(regras))
 	}
@@ -84,7 +84,7 @@ func TestAcctChainRulesEscapaONomeDaInterface(t *testing.T) {
 	// O nome vai para dentro de um argv do nft. Aspas são obrigatórias — sem
 	// elas um nome com hífen ou ponto quebra a regra inteira, e a chain fica
 	// sem contabilidade nenhuma.
-	regras := acctChainRules([]string{"enp5s0.100"})
+	regras := acctChainRules(zonaOnPrem("enp5s0.100"))
 	if !strings.Contains(strings.Join(regras[0], " "), `{ "enp5s0.100" }`) {
 		t.Errorf("nome não veio entre aspas: %v", regras[0])
 	}
@@ -124,18 +124,43 @@ func (e *execFalso) IsDryRun() bool { return e.dryRun }
 
 func (e *execFalso) WriteFile(string, []byte, os.FileMode) error { return nil }
 
-func TestEnsureAccountingSemWANNaoTocaEmNada(t *testing.T) {
-	// Sem saber quais interfaces são WAN, contar tudo encheria o set com
-	// endereços da internet. Não agir é a resposta certa — a mesma decisão do
-	// ReconcileMasquerade diante de fonte vazia.
+// TestEnsureAccountingSemWANCriaAEstruturaVaziaEmVezDeNaoTocarEmNada é a virada
+// deliberada de um teste que afirmava o contrário.
+//
+// A METADE QUE CONTINUA VALENDO: sem saber quais interfaces são WAN, contar
+// tudo encheria o set com endereços da internet. Nenhuma REGRA é emitida, e
+// essa parte da decisão antiga está intacta.
+//
+// A METADE QUE MUDOU: os sets e a chain passam a ser criados assim mesmo. Antes
+// eles não existiam na caixa recém-instalada, e HostCounters batia num set
+// inexistente — a leitura falhava por um motivo que não tinha nada a ver com o
+// que estava errado. Estrutura vazia troca "erro estranho" por "zero, e o aviso
+// diz que falta cadastrar o link".
+func TestEnsureAccountingSemWANCriaAEstruturaVaziaEmVezDeNaoTocarEmNada(t *testing.T) {
 	ex := &execFalso{}
 	s := &Service{exec: ex}
 	if err := s.EnsureAccounting(context.Background(), nil); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
+	precisa := []string{
+		"add set inet linkguard acct_up",
+		"add set inet linkguard acct_down",
+		"add chain inet linkguard acct",
+	}
+	for _, quero := range precisa {
+		var achou bool
+		for _, c := range ex.comandos {
+			if strings.Contains(c, quero) {
+				achou = true
+			}
+		}
+		if !achou {
+			t.Errorf("a estrutura da contabilidade tinha de nascer mesmo vazia; faltou %q\ncomandos: %v", quero, ex.comandos)
+		}
+	}
 	for _, c := range ex.comandos {
-		if strings.Contains(c, "nft") {
-			t.Errorf("executou nft sem WAN configurada: %q", c)
+		if strings.Contains(c, "add rule") {
+			t.Errorf("emitiu regra de contabilidade sem saber quem é local: %q", c)
 		}
 	}
 }

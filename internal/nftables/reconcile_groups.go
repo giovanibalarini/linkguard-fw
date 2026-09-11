@@ -697,5 +697,16 @@ func (s *Service) CheckGroups(ctx context.Context, groups []StoredGroup) error {
 		slog.Warn("não foi possível ler a porta WireGuard para o pré-voo; a liberação VPN não entra no candidato", "err", wgErr)
 		wireGuardPort = 0
 	}
-	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, wans, fechada, cont, wireGuardPort), ensureInput)
+	// A plataforma decide o EIXO das regras de entrada (interface ou CIDR de
+	// origem), e o pré-voo tem de validar a mesma forma que o apply escreve.
+	// Erro aqui degrada como os de cima, e pelo mesmo motivo: este caminho não
+	// escreve no kernel, e reprovar a mutação do admin por causa de uma
+	// leitura que falhou seria transformar um pré-voo em tranca. Na hora de
+	// APLICAR, reconcileInputChain aborta com o mesmo erro.
+	z, zerr := s.zone(wans)
+	if zerr != nil {
+		slog.Warn("não foi possível ler a plataforma para o pré-voo da chain input; a proteção de entrada é validada pelo eixo de interface, como numa caixa comum", "err", zerr)
+		z = NewZone(wans, nil, false)
+	}
+	return s.CheckChainEnsuring(ctx, InputChain, inputChainRules(groups, ntpNetworks, ntpServing, policy, access, z, fechada, cont, wireGuardPort), ensureInput)
 }
