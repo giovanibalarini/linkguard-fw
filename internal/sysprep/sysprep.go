@@ -200,6 +200,10 @@ var Entries = []Entry{
 		Path: "/etc/sysctl.d", Dir: true, Mode: 0o755,
 		Why: "drop-in de sysctl (conntrack accounting); entrada sem `-` na unidade",
 	},
+	{
+		Path: "/etc/wireguard", Dir: true, Mode: 0o700,
+		Why: "configuração e chaves da VPN WireGuard; precisa existir desde o start para ser gravável sob ProtectSystem=strict",
+	},
 }
 
 // Prepare creates whatever is missing, under root (""/"/" for the real

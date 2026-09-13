@@ -1482,3 +1482,41 @@ func TestMaquinaPeladaInstalaOsTresPacotesESegue(t *testing.T) {
 		t.Errorf("nada faltou; não podia haver aviso: %v", res.Warnings)
 	}
 }
+
+// TestInterfaceInexistenteNaoFalhaOApplyDoDNS garante que, se a interface de LAN
+// configurada (ou default) não existir nesta máquina (ex: VM de nuvem ou máquina
+// nova), o Kea é ignorado com aviso, mas o DNS é aplicado com sucesso sem travar
+// os chamadores dependentes (como a reconciliação da VPN WireGuard).
+func TestInterfaceInexistenteNaoFalhaOApplyDoDNS(t *testing.T) {
+	e := &recExec{}
+	s := newTestSvc(t, e)
+
+	cfg := netsvc.DefaultConfig()
+	cfg.Interface = "naoexiste0"
+
+	res, err := s.ReloadConfigs(context.Background(), cfg, nil, nil, "")
+	if err != nil {
+		t.Fatalf("ReloadConfigs falhou com interface inexistente: %v", err)
+	}
+	if len(res.Warnings) == 0 {
+		t.Fatal("esperava aviso sobre interface inexistente, obtive nenhum")
+	}
+	encontrouAviso := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "naoexiste0") {
+			encontrouAviso = true
+			break
+		}
+	}
+	if !encontrouAviso {
+		t.Errorf("aviso não menciona a interface inexistente: %v", res.Warnings)
+	}
+	// O unbound foi escrito e o Kea não
+	if _, err := os.Stat(s.unboundConf); err != nil {
+		t.Errorf("unbound.conf deveria ter sido escrito: %v", err)
+	}
+	if _, err := os.Stat(s.keaConf); err == nil {
+		t.Errorf("kea.conf não deveria ter sido escrito para interface inexistente")
+	}
+}
+

@@ -244,7 +244,9 @@ func (s *Service) applyEnabled(ctx context.Context, c Config) error {
 	old, _ := os.ReadFile(s.configPath)
 	changed := string(old) != content
 	if changed {
-		tmp := s.configPath + ".tmp-" + uuid.NewString()
+		// wg-quick exige estritamente por regex que o arquivo termine em .conf e
+		// o nome base da interface tenha no máximo 15 caracteres (^[a-zA-Z0-9_=+.-]{1,15}\.conf$).
+		tmp := filepath.Join(dir, fmt.Sprintf("lgchk%x.conf", time.Now().UnixNano()&0xffffff))
 		cleanup := true
 		defer func() {
 			if cleanup {

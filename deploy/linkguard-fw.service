@@ -103,7 +103,7 @@ ProtectSystem=strict
 # /etc/resolv.conf (sempre presente) e /etc/dhcp (do isc-dhcp-client, que
 # este pacote não declara em lugar nenhum — num box só com WAN estática, ou
 # no Debian 13, ele legitimamente não existe).
-ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/sysctl.d -/etc/nftables.conf -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp -/etc/apparmor.d/local
+ReadWritePaths=/var/lib/linkguard-fw /etc/linkguard-fw /etc/sysctl.d -/etc/nftables.conf -/etc/kea -/etc/unbound -/etc/systemd/network -/etc/chrony/conf.d -/etc/resolv.conf -/etc/dhcp -/etc/apparmor.d/local -/etc/wireguard
 
 # RuntimeDirectory cria /run/linkguard-fw ANTES do serviço subir, já gravável,
 # e o remove quando ele para (issue #116).
