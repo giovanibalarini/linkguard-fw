@@ -85,6 +85,20 @@ type Service struct {
 	// Ausente resolve para DESLIGADA — ver EdgeContainmentSettingKey.
 	edgeContainmentSource func() (bool, error)
 
+	// zoneFactsSource diz se esta máquina é hairpin — entra e sai pela mesma
+	// interface — e quais são as redes locais. É o que transforma o eixo das
+	// regras de INTERFACE em CIDR numa VM de VNIC única; ver zone.go.
+	//
+	// Ausente resolve para ZoneFacts{} — hairpin false, sem CIDR —, que faz toda
+	// Zone renderizar por interface, byte a byte o que a produção emite hoje. É
+	// o mesmo zero-value permissivo de platform.Snapshot, e pela mesma razão: o
+	// caminho que esquecer de ligar a fonte não pode mudar de comportamento.
+	//
+	// Erro de leitura PROPAGA, pelo mesmo contrato de wanInterfaces: uma leitura
+	// que falhou não é "esta máquina não é hairpin", e obedecer a esse silêncio
+	// escreveria a chain no eixo errado numa caixa que depende do outro.
+	zoneFactsSource func() (ZoneFacts, error)
+
 	// ipv6FwdPath é o sysctl que a tela lê para dizer se IPv6 é roteado
 	// (#119, fase 3). Campo, e não const, pelo mesmo motivo de
 	// routes.Service.fwdPath: o teste aponta para um arquivo temporário em vez

@@ -1,0 +1,23 @@
+# alvo:    ReconcileStructuralChains
+# cenário: hairpin_1nic
+# sobre:   uma VM de nuvem com UMA placa de rede: entra e sai pela mesma interface, e o eixo
+#          das regras passa a ser o CIDR de dentro. É o comportamento NOVO, e o contraste
+#          com onprem_1wan é o ponto.
+# entrada: wans = [{"ens3" 0x64}]
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `cmd ` é o mesmo comando como se lê no shell.
+#          exec = Execute, read = ExecuteRead (o `nft list table` do Persist
+#          aparece aqui: é a prova de que o Persist rodou).
+# retorno: nil
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "mark_hosts"
+          cmd   nft flush chain inet linkguard mark_hosts
+ 2. exec  argv  "nft" "add" "rule" "inet" "linkguard" "mark_hosts" "ip" "saddr" "{ 10.0.0.0/24 }" "ct" "state" "new" "meta" "mark" "0x0" "counter" "meta" "mark" "set" "ip" "daddr" "map" "@dom_wan"
+          cmd   nft add rule inet linkguard mark_hosts ip saddr { 10.0.0.0/24 } ct state new meta mark 0x0 counter meta mark set ip daddr map @dom_wan
+ 3. exec  argv  "nft" "add" "rule" "inet" "linkguard" "mark_hosts" "counter" "meta" "mark" "set" "ip" "saddr" "map" "@host_wan"
+          cmd   nft add rule inet linkguard mark_hosts counter meta mark set ip saddr map @host_wan
+ 4. read  argv  "nft" "list" "table" "inet" "linkguard"
+          cmd   nft list table inet linkguard

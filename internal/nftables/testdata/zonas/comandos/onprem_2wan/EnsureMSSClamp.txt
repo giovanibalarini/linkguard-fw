@@ -1,0 +1,24 @@
+# alvo:    EnsureMSSClamp
+# cenário: onprem_2wan
+# sobre:   a máquina de produção do dono: duas WANs (uma PPPoE, uma ethernet) mais uma
+#          LAN em 192.168.3.0/24. É esta saída que não pode mudar.
+# entrada: wanInterfaces = ["ppp0" "enp2s0"]
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `cmd ` é o mesmo comando como se lê no shell.
+#          exec = Execute, read = ExecuteRead (o `nft list table` do Persist
+#          aparece aqui: é a prova de que o Persist rodou).
+# retorno: nil
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. exec  argv  "nft" "add" "chain" "inet" "linkguard" "mss_clamp" "{ type filter hook forward priority mangle; policy accept; }"
+          cmd   nft add chain inet linkguard mss_clamp { type filter hook forward priority mangle; policy accept; }
+ 2. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "mss_clamp"
+          cmd   nft flush chain inet linkguard mss_clamp
+ 3. exec  argv  "nft" "add" "rule" "inet" "linkguard" "mss_clamp" "oifname" "\"ppp0\"" "tcp" "flags" "syn" "/" "syn,rst" "counter" "tcp" "option" "maxseg" "size" "set" "rt" "mtu"
+          cmd   nft add rule inet linkguard mss_clamp oifname "ppp0" tcp flags syn / syn,rst counter tcp option maxseg size set rt mtu
+ 4. exec  argv  "nft" "add" "rule" "inet" "linkguard" "mss_clamp" "oifname" "\"enp2s0\"" "tcp" "flags" "syn" "/" "syn,rst" "counter" "tcp" "option" "maxseg" "size" "set" "rt" "mtu"
+          cmd   nft add rule inet linkguard mss_clamp oifname "enp2s0" tcp flags syn / syn,rst counter tcp option maxseg size set rt mtu
+ 5. read  argv  "nft" "list" "table" "inet" "linkguard"
+          cmd   nft list table inet linkguard

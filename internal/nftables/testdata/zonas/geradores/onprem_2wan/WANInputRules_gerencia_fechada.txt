@@ -1,0 +1,31 @@
+# alvo:    WANInputRules_gerencia_fechada
+# cenário: onprem_2wan
+# sobre:   a máquina de produção do dono: duas WANs (uma PPPoE, uma ethernet) mais uma
+#          LAN em 192.168.3.0/24. É esta saída que não pode mudar.
+# entrada: wanIfaces = ["ppp0" "enp2s0"], access = {ssh [22], painel 9997, lan
+#          ["192.168.3.0/24"], wan por dhcp true}, gerenciaFechada = true, contencaoLigada =
+#          true, wireGuardPorts = [51820]
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `nft ` é a mesma regra como o nft a lê.
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "icmpv6" "type" "{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert }" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } counter accept
+ 2. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "icmpv6" "type" "{ packet-too-big, time-exceeded, parameter-problem, destination-unreachable }" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } icmpv6 type { packet-too-big, time-exceeded, parameter-problem, destination-unreachable } counter accept
+ 3. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "udp" "dport" "68" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } udp dport 68 counter accept
+ 4. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "udp" "dport" "546" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } udp dport 546 counter accept
+ 5. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "ct" "status" "dnat" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } ct status dnat counter accept
+ 6. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "icmp" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } icmp type echo-request limit rate 5/second counter accept
+ 7. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "icmpv6" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } icmpv6 type echo-request limit rate 5/second counter accept
+ 8. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "udp" "dport" "51820" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } udp dport 51820 counter accept
+ 9. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "ct" "state" "new" "counter" "drop"
+    nft   iifname { "ppp0", "enp2s0" } ct state new counter drop

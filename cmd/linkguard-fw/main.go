@@ -51,6 +51,7 @@ import (
 	"github.com/giovanibalarini/linkguard-fw/internal/netsvc"
 	"github.com/giovanibalarini/linkguard-fw/internal/nftables"
 	"github.com/giovanibalarini/linkguard-fw/internal/notify"
+	"github.com/giovanibalarini/linkguard-fw/internal/platform"
 	"github.com/giovanibalarini/linkguard-fw/internal/qos"
 	"github.com/giovanibalarini/linkguard-fw/internal/routes"
 	"github.com/giovanibalarini/linkguard-fw/internal/secrets"
@@ -233,7 +234,13 @@ func run() int {
 	}
 	defer db.Close()
 
-	s, err := buildServices(cfg, db)
+	// Em que máquina estamos, e o que ela deixa o produto fazer. Tem que vir
+	// antes de buildServices porque é dali para baixo que o resto deriva, e
+	// depois de openStore porque o resultado é cacheado na tabela settings.
+	// Nunca derruba o boot — ver detectPlatformOnBoot.
+	plat := detectPlatformOnBoot(db)
+
+	s, err := buildServices(cfg, db, plat)
 	if err != nil {
 		return 1
 	}
@@ -360,6 +367,12 @@ type services struct {
 	cfg *config.Config
 	db  *storage.DB
 
+	// plat é a plataforma detectada no boot, por VALOR: não há
+	// platform.Current() global, e o zero-value é permissivo, então um
+	// caminho que esqueça de preenchê-la se comporta como o produto se
+	// comporta hoje. Ver internal/platform.
+	plat platform.Snapshot
+
 	// exec é o executor da aplicação (30 s). pkgExec é o dos gerenciadores de
 	// pacote (10 min) — ver pkgInstallTimeout.
 	exec    firewall.Executor
@@ -444,7 +457,7 @@ var secretKeyPath = "/etc/linkguard-fw/secret.key"
 // wireCallbacks fica com o que é de fato callback de evento e precisa do ctx.
 //
 // Os slog.Error ficam aqui pelo mesmo motivo de openStore.
-func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
+func buildServices(cfg *config.Config, db *storage.DB, plat platform.Snapshot) (*services, error) {
 	if err := secrets.CheckNotOrphaned(secretKeyPath, db); err != nil {
 		slog.Error("refusing to start", "err", err)
 		return nil, err
@@ -588,14 +601,52 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// e tem de valer na reconciliação seguinte, sem reiniciar nada.
 	nftSvc.SetEdgeContainmentSource(frSvc.EdgeContainment)
 	nftSvc.SetForwardPolicySource(frSvc.ForwardPolicy)
+	// O EIXO DAS REGRAS DE FIREWALL SAI DAQUI.
+	//
+	// Numa caixa com várias interfaces, "veio de dentro" é `iifname != { WANs
+	// }` — a forma que a produção tem hoje, byte a byte. Numa VM de nuvem com
+	// UMA placa, entra e sai pela mesma interface e essa frase não discrimina
+	// nada: o eixo passa a ser o CIDR da rede local. Ver internal/nftables/zone.go.
+	//
+	// Lido a cada reconciliação, e não capturado uma vez: a sub-rede pode ser
+	// configurada pela tela depois do boot, e o eixo tem de acompanhar sem
+	// reiniciar nada — mesma disciplina das outras fontes acima.
+	nftSvc.SetZoneFactsSource(func() (nftables.ZoneFacts, error) {
+		return nftables.ZoneFacts{
+			// Capable() e não o campo Capabilities: um instantâneo vazio ou de
+			// plataforma desconhecida devolve o conjunto PERMISSIVO, isto é,
+			// RoutedTransit true, isto é, o eixo de interface de sempre.
+			Hairpin:   !plat.Capable().RoutedTransit,
+			LocalNets: redesLocais(db, plat),
+			// A MTU do CAMINHO externo, quando a plataforma a afirma — e 0,
+			// que é "não sei", em todo o resto. É o número que o ajuste de MSS
+			// usa numa VM de nuvem, onde `rt mtu` leria a MTU que a placa
+			// ANUNCIA (9000) em vez da que o caminho suporta (1500).
+			//
+			// uplinkDaPlataforma, E NÃO uplinkEfetivo: A MTU DO CAMINHO É UM
+			// FATO DA REDE, NÃO UMA CONSEQUÊNCIA DE QUEM ESCOLHEU O UPLINK.
+			// Pelo efetivo, cadastrar o link pela tela — que é o que já foi
+			// feito no bastion — zerava este número, e aí a mss_clamp não
+			// voltava para `rt mtu` coisa nenhuma: `rt mtu` mora no ramo
+			// PerLink(), que é falso em hairpin, então a chain simplesmente
+			// nascia VAZIA e o `docker pull` voltava a pendurar sem nada
+			// falhar. O caminho continua suportando 1500 quer o admin tenha
+			// digitado "ens3" num formulário, quer não.
+			//
+			// A guarda continua estreita do mesmo jeito, porque é a mesma:
+			// nuvem + IMDS autoritativo + VNIC única. Fora disso o número é 0 e
+			// a produção segue por `rt mtu`, byte a byte.
+			PathMTU: uplinkDaPlataforma(plat).PathMTU,
+		}, nil
+	})
 	nftSvc.SetAdminAccessSource(func() (nftables.AdminAccess, error) {
-		netCfg := netsvc.DefaultConfig()
-		if raw, _ := db.GetSetting("netsvc_config"); raw != "" {
-			_ = json.Unmarshal([]byte(raw), &netCfg)
-		}
+		// redeConfigurada e NÃO o DefaultConfig: ver o comentário lá. Semeando
+		// com o default, toda caixa que nunca configurou o netsvc nascia com
+		// 192.168.3.0/24 aqui dentro — na lista que existe justamente para o
+		// admin não se trancar para fora.
 		var redes []string
-		if netCfg.SubnetCIDR != "" {
-			redes = append(redes, netCfg.SubnetCIDR)
+		if cidr := redeConfigurada(db); cidr != "" {
+			redes = append(redes, cidr)
 		}
 		// A porta do painel NÃO é fixa: 8080 é o default do binário, 9997 o do
 		// .deb, e quem põe proxy usa outra. Fixá-la aqui deixaria o anti-lockout
@@ -608,6 +659,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		return nftables.AdminAccess{
 			PanelPort:   cfg.Port,
 			SSHPorts:    system.SSHPorts(context.Background(), exec),
+			ExtraPorts:  cfg.ExtraPorts,
 			LANNetworks: redes,
 			WANIsDHCP:   anyWANIsDHCP(db),
 		}, nil
@@ -645,19 +697,12 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// a contabilidade, e pelo mesmo motivo lê a cada reconciliação em vez de
 	// guardar em memória: trocar a interface de um link tem de valer na
 	// reconciliação seguinte, sem reiniciar nada.
-	nftSvc.SetWANInterfacesSource(func() ([]string, error) {
-		ls, err := db.GetLinks()
-		if err != nil {
-			return nil, err
-		}
-		ifaces := make([]string, 0, len(ls))
-		for _, l := range ls {
-			if l.Enabled && l.Interface != "" {
-				ifaces = append(ifaces, l.Interface)
-			}
-		}
-		return ifaces, nil
-	})
+	//
+	// E é wansEfetivas, e não o laço sobre os links: numa VM de nuvem sem link
+	// cadastrado a lista passa a ser a do uplink derivado da plataforma, e a
+	// proteção de entrada (mais a tela de exposição) deixa de dizer "sem WAN
+	// conhecida" numa máquina que tem uma.
+	nftSvc.SetWANInterfacesSource(func() ([]string, error) { return wansEfetivas(db, plat) })
 
 	rrdSvc := tsdb.NewService(db)
 
@@ -735,6 +780,11 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	// journal, que é exatamente o que o §10 da validação em VM mediu. Guardada
 	// contra deriva por TestMainWiresTheBootPersistSource.
 	metricsCollector.SetBootPersistSource(nftSvc)
+	// O vigia de NAT compara o kernel contra a MESMA lista que o firewall
+	// escreve. Sem esta linha ele retorna cedo com lista vazia numa VM de
+	// nuvem, isto é, fica cego exatamente na plataforma em que o NAT passou a
+	// ser escrito sem ninguém cadastrar link nenhum.
+	metricsCollector.SetWANSource(func() ([]string, error) { return wansEfetivas(db, plat) })
 	backupSched := backup.NewScheduler(db, secretsSvc, notifySvc, alertSvc, version)
 	journalSched := monitoring.NewJournalScheduler(metricsCollector)
 	updatesSched := monitoring.NewUpdatesScheduler(metricsCollector)
@@ -816,9 +866,14 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 		Fluxos:        fluxosSvc,
 		HostQuota:     hostQuotaSvc,
 		DomainRouting: domainRouting,
-		WireGuard:     wgSvc,
-		QoS:           qosSvc,
-		StressTest:    stressSvc,
+		// A MESMA derivação que o firewall usa para decidir o que escrever: a
+		// tela e o kernel não podem discordar sobre quais são as WANs desta
+		// máquina. Ver cmd/linkguard-fw/uplink.go.
+		WANSource:  func() ([]string, error) { return wansEfetivas(db, plat) },
+		Uplink:     func() handlers.UplinkView { return uplinkParaTela(db, plat) },
+		WireGuard:  wgSvc,
+		QoS:        qosSvc,
+		StressTest: stressSvc,
 	}, db, exec, linkSvc, iptSvc, routeSvc, failoverSvc, balancerSvc, alertSvc, authSvc, hostSvc, netifSvc, nftSvc, frSvc, netSvc, notifySvc, trafficSvc, quotaSvc, ddnsSvc, sysCollector, rrdSvc, promReg, metricsCollector, secretsSvc, aiClient, backupSched)
 
 	interval := time.Duration(cfg.MonitorInterval) * time.Second
@@ -831,6 +886,7 @@ func buildServices(cfg *config.Config, db *storage.DB) (*services, error) {
 	return &services{
 		cfg:              cfg,
 		db:               db,
+		plat:             plat,
 		exec:             exec,
 		pkgExec:          pkgExec,
 		secretsSvc:       secretsSvc,
@@ -1110,9 +1166,21 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 		} else {
 			reconcileQoSOnBoot(ctx, qosSvc, db.GetLinks)
 
-			wanInterfaces := make([]string, 0, len(configuredLinks))
-			for _, l := range configuredLinks {
-				wanInterfaces = append(wanInterfaces, l.Interface)
+			// A TABELA NASCE JÁ COM O NAT. wansEfetivas devolve as WANs
+			// cadastradas ou, quando não há nenhuma e a plataforma sabe
+			// responder, o uplink implícito — que é o que faz uma VM de nuvem
+			// recém-criada bootar liberando tráfego em vez de com a chain
+			// postrouting vazia.
+			//
+			// Erro de leitura NÃO cancela o bootstrap: sem tabela a máquina
+			// fica sem firewall nenhum, o que é pior do que uma tabela criada
+			// sem a linha de masquerade — que é exatamente o que acontecia
+			// antes desta entrega. A reconciliação logo abaixo, no mesmo boot,
+			// escreve a regra assim que a leitura voltar.
+			wanInterfaces, err := wansEfetivas(db, s.plat)
+			if err != nil {
+				slog.Warn("não foi possível derivar as WANs para o bootstrap da tabela; ela nasce sem a regra de NAT e a reconciliação seguinte a escreve", "err", err)
+				wanInterfaces = nil
 			}
 			if nftSvc.EnsureTable(ctx, wanInterfaces) {
 				// The table was just created empty — restore whatever was saved on
@@ -1147,11 +1215,18 @@ func startBackground(ctx context.Context, s *services) *sync.WaitGroup {
 			// box, so before this the NAT rule kept whatever interface names it was
 			// born with — in production a renamed NIC (enp4s0 -> enp5s0) silently
 			// took WAN1's NAT down until an operator intervened by hand.
-			enabledWANs := make([]string, 0, len(configuredLinks))
-			for _, l := range configuredLinks {
-				if l.Enabled && l.Interface != "" {
-					enabledWANs = append(enabledWANs, l.Interface)
-				}
+			//
+			// A LISTA SAI DE wansEfetivas, e é aqui que o produto passa a
+			// funcionar de primeira: numa VM de nuvem sem link cadastrado ela
+			// devolve o uplink que a plataforma afirma, e ReconcileMasquerade
+			// — com a guarda de lista vazia INTACTA — finalmente tem o que
+			// escrever. Erro de leitura deixa a lista vazia de propósito: a
+			// guarda então mantém a regra que já estiver valendo, em vez de
+			// derrubá-la por causa de um SELECT que falhou.
+			enabledWANs, err := wansEfetivas(db, s.plat)
+			if err != nil {
+				slog.Warn("não foi possível derivar as WANs no boot; as reconciliações deste ciclo seguem com lista vazia e nada é derrubado", "err", err)
+				enabledWANs = nil
 			}
 			if err := nftSvc.ReconcileMasquerade(ctx, enabledWANs); err != nil {
 				slog.Warn("não foi possível reconciliar a regra de NAT no boot", "err", err)

@@ -1,0 +1,26 @@
+# alvo:    EnsureAccounting
+# cenário: hairpin_sem_rede
+# sobre:   VM de uma placa com uplink e MTU de caminho conhecidos e NENHUMA rede local: o
+#          ramo degradado. O NAT sai LARGO, com counter, porque a promessa de primeira ordem
+#          é a máquina sair para a Internet — e ninguém emite `ip saddr { }`, que o nft
+#          recusa.
+# entrada: wanInterfaces = ["ens3"]
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `cmd ` é o mesmo comando como se lê no shell.
+#          exec = Execute, read = ExecuteRead (o `nft list table` do Persist
+#          aparece aqui: é a prova de que o Persist rodou).
+# retorno: nil
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. exec  argv  "nft" "add" "set" "inet" "linkguard" "acct_up" "{ type ipv4_addr; size 65535; flags dynamic,timeout; timeout 1d; counter; }"
+          cmd   nft add set inet linkguard acct_up { type ipv4_addr; size 65535; flags dynamic,timeout; timeout 1d; counter; }
+ 2. exec  argv  "nft" "add" "set" "inet" "linkguard" "acct_down" "{ type ipv4_addr; size 65535; flags dynamic,timeout; timeout 1d; counter; }"
+          cmd   nft add set inet linkguard acct_down { type ipv4_addr; size 65535; flags dynamic,timeout; timeout 1d; counter; }
+ 3. exec  argv  "nft" "add" "chain" "inet" "linkguard" "acct" "{ type filter hook forward priority filter + 10; policy accept; }"
+          cmd   nft add chain inet linkguard acct { type filter hook forward priority filter + 10; policy accept; }
+ 4. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "acct"
+          cmd   nft flush chain inet linkguard acct
+ 5. read  argv  "nft" "list" "table" "inet" "linkguard"
+          cmd   nft list table inet linkguard

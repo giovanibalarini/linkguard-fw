@@ -1,0 +1,24 @@
+# alvo:    EnsureMSSClamp
+# cenário: oci_uplink_implicito
+# sobre:   a VM da OCI de verdade: UMA VNIC, NENHUM link cadastrado, e o uplink (ens3)
+#          derivado da plataforma. O caminho externo suporta 1500 mesmo com a placa
+#          anunciando 9000 — é o cenário que o produto tem de fazer funcionar de
+#          primeira.
+# entrada: wanInterfaces = ["ens3"]
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `cmd ` é o mesmo comando como se lê no shell.
+#          exec = Execute, read = ExecuteRead (o `nft list table` do Persist
+#          aparece aqui: é a prova de que o Persist rodou).
+# retorno: nil
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. exec  argv  "nft" "add" "chain" "inet" "linkguard" "mss_clamp" "{ type filter hook forward priority mangle; policy accept; }"
+          cmd   nft add chain inet linkguard mss_clamp { type filter hook forward priority mangle; policy accept; }
+ 2. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "mss_clamp"
+          cmd   nft flush chain inet linkguard mss_clamp
+ 3. exec  argv  "nft" "add" "rule" "inet" "linkguard" "mss_clamp" "oifname" "{ \"ens3\" }" "tcp" "flags" "syn" "/" "syn,rst" "tcp" "option" "maxseg" "size" ">" "1460" "counter" "tcp" "option" "maxseg" "size" "set" "1460"
+          cmd   nft add rule inet linkguard mss_clamp oifname { "ens3" } tcp flags syn / syn,rst tcp option maxseg size > 1460 counter tcp option maxseg size set 1460
+ 4. read  argv  "nft" "list" "table" "inet" "linkguard"
+          cmd   nft list table inet linkguard

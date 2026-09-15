@@ -38,6 +38,10 @@ type LinksHandler struct {
 	domainRouting domainRoutingReconciler
 	qosSvc        qosService
 	qosLocker     qosInterfaceLocker
+	// wanSource é a lista efetiva de WANs — as cadastradas ou, numa máquina de
+	// nuvem em que ninguém cadastrou nada, o uplink que a plataforma afirma.
+	// Ver fonteDeWANs, em helpers.go.
+	wanSource fonteDeWANs
 }
 
 var (
@@ -57,6 +61,14 @@ type reconciliadorDeFluxos interface {
 func (h *LinksHandler) SetFluxos(r reconciliadorDeFluxos) { h.fluxos = r }
 
 func (h *LinksHandler) SetDomainRouting(r domainRoutingReconciler) { h.domainRouting = r }
+
+// SetWANSource liga o handler à derivação canônica das WANs.
+//
+// SEM ISTO, tudo o que reconcileWANDerived reconstrói continuaria derivando só
+// da tabela `links`: numa VM de nuvem, apagar o último link derrubaria o
+// masquerade do uplink implícito em vez de voltar para ele, e a reconciliação
+// seguinte ao boot discordaria da do boot. Ligar é obrigação do main.
+func (h *LinksHandler) SetWANSource(src fonteDeWANs) { h.wanSource = src }
 
 // NewLinksHandler creates the handler. nftSvc is needed because changing a
 // link's interface must also rebuild the firewall's NAT rule — before
@@ -92,7 +104,7 @@ func (h *LinksHandler) reconcileWANDerived(ctx context.Context) {
 	if h.nftSvc == nil {
 		return
 	}
-	ifaces, err := enabledWANInterfaces(h.db)
+	ifaces, err := wansDe(h.wanSource, h.db)
 	if err != nil {
 		slog.Warn("não foi possível carregar links para reconciliar as regras derivadas das WANs", "err", err)
 		return

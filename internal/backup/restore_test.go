@@ -60,8 +60,11 @@ func backupWith(settings map[string]string) backup.BackupData {
 // não tem campo para regras de firewall), faz o próximo boot pular o
 // ImportOnce e o Reconcile esvaziar a chain user_rules viva contra um banco
 // vazio. firewall_rules_apply e netsvc_last_apply são resultados de um apply
-// que aconteceu na máquina de origem. Nenhuma das quatro é configuração: são
-// estado daquela máquina.
+// que aconteceu na máquina de origem. platform_snapshot é a plataforma
+// detectada no boot (nuvem ou não, região, shape, limite de VNICs) e as
+// capacidades derivadas dela: restaurado, um backup tirado numa OCI de uma
+// VNIC só diria a esta caixa que ela não tem multi-WAN. Nenhuma das cinco é
+// configuração: são estado daquela máquina.
 func TestApplySkipsMachineLocalStateKeys(t *testing.T) {
 	db := newRestoreDB(t)
 
@@ -71,6 +74,7 @@ func TestApplySkipsMachineLocalStateKeys(t *testing.T) {
 		"firewall_rules_imported": "true",
 		"firewall_rules_apply":    `{"ok":true,"at":1}`,
 		"netsvc_last_apply":       `{"ok":true,"at":1}`,
+		"platform_snapshot":       `{"format":1,"facts":{"kind":"oci","fingerprint":"outramaquina00"},"capabilities":{"multi_wan":false}}`,
 	})
 
 	res, err := backup.Apply(db, data)
@@ -78,7 +82,7 @@ func TestApplySkipsMachineLocalStateKeys(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	for _, k := range []string{"nft_live_snapshot", "firewall_rules_imported", "firewall_rules_apply", "netsvc_last_apply"} {
+	for _, k := range []string{"nft_live_snapshot", "firewall_rules_imported", "firewall_rules_apply", "netsvc_last_apply", "platform_snapshot"} {
 		if v, _ := db.GetSetting(k); v != "" {
 			t.Errorf("%q é estado local da máquina e não pode ser restaurado, mas foi gravado: %q", k, v)
 		}
@@ -89,8 +93,8 @@ func TestApplySkipsMachineLocalStateKeys(t *testing.T) {
 	if res.Settings != 1 {
 		t.Errorf("a contagem de settings restauradas não pode incluir as chaves puladas, obtive %d", res.Settings)
 	}
-	if res.SkippedLocal != 4 {
-		t.Errorf("SkippedLocal = %d, esperava 4", res.SkippedLocal)
+	if res.SkippedLocal != 5 {
+		t.Errorf("SkippedLocal = %d, esperava 5", res.SkippedLocal)
 	}
 }
 

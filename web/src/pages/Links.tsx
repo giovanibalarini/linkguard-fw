@@ -13,7 +13,7 @@ import { useI18n } from '../i18n';
 import Panel from '../components/ui/Panel';
 import Modal from '../components/ui/Modal';
 import IconButton from '../components/ui/IconButton';
-import type { WanLink, SystemMetrics, InterfaceMetrics, QosUpdateRequest } from '../types';
+import type { WanLink, SystemMetrics, InterfaceMetrics, QosUpdateRequest, Uplink } from '../types';
 
 const emptyLink: Partial<WanLink> = {
   name: '',
@@ -30,6 +30,9 @@ export default function Links() {
   const { can } = useAuth();
   const { t } = useI18n();
   const [links, setLinks] = useState<WanLink[]>([]);
+  // O uplink que a máquina está usando de fato. Só vira cartão quando é
+  // IMPLÍCITO: com link cadastrado a tabela abaixo já conta a história.
+  const [uplink, setUplink] = useState<Uplink | null>(null);
   const [interfaces, setInterfaces] = useState<InterfaceMetrics[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -60,6 +63,15 @@ export default function Links() {
         client.get<SystemMetrics>('/api/system/status'),
       ]);
       setLinks(res.data ?? []);
+      // Numa chamada à parte, e tolerante a falha: um binário mais antigo não
+      // tem a rota, e a tela de Links não pode deixar de carregar por causa de
+      // um cartão informativo.
+      try {
+        const up = await client.get<Uplink>('/api/uplink');
+        setUplink(up.data ?? null);
+      } catch {
+        setUplink(null);
+      }
       const discovered = (sysRes.data?.interfaces ?? [])
         .filter((iface) => iface.name && iface.name !== 'lo');
       setInterfaces(discovered);
@@ -353,6 +365,43 @@ export default function Links() {
 
       {success && (
         <div className="card border border-green-500/30 bg-green-500/10 text-green-400 text-sm">{success}</div>
+      )}
+
+      {/* O UPLINK AUTOMÁTICO.
+          Aparece só quando ninguém cadastrou link e a plataforma respondeu por
+          onde se sai — isto é, quando a máquina está funcionando por uma
+          decisão que o admin não tomou. Sem este cartão, a tela diria "nenhum
+          link configurado" numa caixa que está, sim, liberando tráfego: a
+          contradição que faz o operador desconfiar do produto.
+
+          SOMENTE LEITURA, sem botão nenhum. O que se muda aqui é a realidade da
+          máquina, não um registro — e cadastrar um link é justamente o que
+          substitui isto. */}
+      {!loading && uplink?.implicit && uplink.interface && (
+        <div className="card border border-blue-500/30 bg-blue-500/5">
+          <div className="flex items-start gap-3">
+            <Network className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <div className="text-white font-medium">{t('links.uplink.title')}</div>
+              <p className="text-gray-400 text-sm mt-1">{t('links.uplink.desc')}</p>
+              <div className="flex flex-wrap gap-x-6 gap-y-1 mt-3 text-sm">
+                <span className="text-gray-500">
+                  {t('links.uplink.iface')}: <span className="text-gray-200 font-mono">{uplink.interface}</span>
+                </span>
+                <span className="text-gray-500">
+                  {t('links.uplink.mtu')}:{' '}
+                  <span className="text-gray-200 font-mono">
+                    {uplink.path_mtu > 0 ? uplink.path_mtu : t('links.uplink.mtu.unknown')}
+                  </span>
+                </span>
+                <span className="text-gray-500">
+                  {t('links.uplink.platform')}: <span className="text-gray-200 font-mono">{uplink.platform}</span>
+                </span>
+              </div>
+              <p className="text-gray-600 text-xs mt-2">{t('links.uplink.hint')}</p>
+            </div>
+          </div>
+        </div>
       )}
 
       {!loading && <DomainTargets links={links} canEdit={can('links.write')} />}

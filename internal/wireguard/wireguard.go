@@ -30,13 +30,22 @@ type Config struct {
 }
 
 type Peer struct {
-	UserID          string `json:"user_id"`
-	Username        string `json:"username"`
-	PublicKey       string `json:"public_key"`
-	Address         string `json:"address"`
-	FirewallGroupID string `json:"firewall_group_id"`
-	CreatedAt       int64  `json:"created_at,omitempty"`
-	RotatedAt       int64  `json:"rotated_at,omitempty"`
+	UserID            string   `json:"user_id"`
+	Username          string   `json:"username"`
+	PublicKey         string   `json:"public_key"`
+	Address           string   `json:"address"`
+	FirewallGroupID   string   `json:"firewall_group_id"`
+	AccessMode        string   `json:"access_mode,omitempty"`
+	AllowedHostGroups []string `json:"allowed_host_groups,omitempty"`
+	AllowedPorts      string   `json:"allowed_ports,omitempty"`
+	CreatedAt         int64    `json:"created_at,omitempty"`
+	RotatedAt         int64    `json:"rotated_at,omitempty"`
+	Online            bool     `json:"online"`
+	Endpoint          string   `json:"endpoint,omitempty"`
+	LatestHandshake   int64    `json:"latest_handshake,omitempty"`
+	TransferRx        int64    `json:"transfer_rx"`
+	TransferTx        int64    `json:"transfer_tx"`
+	LatencyMs         float64  `json:"latency_ms,omitempty"`
 }
 
 func DefaultConfig() Config {

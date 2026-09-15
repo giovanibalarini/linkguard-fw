@@ -1,0 +1,33 @@
+# alvo:    ReconcileInputProtection_politica_drop
+# cenário: hairpin_sem_rede
+# sobre:   VM de uma placa com uplink e MTU de caminho conhecidos e NENHUMA rede local: o
+#          ramo degradado. O NAT sai LARGO, com counter, porque a promessa de primeira ordem
+#          é a máquina sair para a Internet — e ninguém emite `ip saddr { }`, que o nft
+#          recusa.
+# entrada: fontes ligadas: grupos = 0, ntp = []/servindo=false, política = "drop", wans =
+#          ["ens3"], gerência fechada = false, contenção = false, wireguard = 51820
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `cmd ` é o mesmo comando como se lê no shell.
+#          exec = Execute, read = ExecuteRead (o `nft list table` do Persist
+#          aparece aqui: é a prova de que o Persist rodou).
+# retorno: nil
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. exec  argv  "nft" "add" "chain" "inet" "linkguard" "input" "{" "type" "filter" "hook" "input" "priority" "filter" ";" "policy" "drop" ";" "}"
+          cmd   nft add chain inet linkguard input { type filter hook input priority filter ; policy drop ; }
+ 2. exec  argv  "nft" "flush" "chain" "inet" "linkguard" "input"
+          cmd   nft flush chain inet linkguard input
+ 3. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "ct" "state" "related" "counter" "accept"
+          cmd   nft add rule inet linkguard input ct state related counter accept
+ 4. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "iif" "lo" "counter" "accept"
+          cmd   nft add rule inet linkguard input iif lo counter accept
+ 5. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "icmpv6" "type" "{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert }" "counter" "accept"
+          cmd   nft add rule inet linkguard input icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } counter accept
+ 6. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "tcp" "dport" "{ 22, 9997 }" "counter" "accept"
+          cmd   nft add rule inet linkguard input tcp dport { 22, 9997 } counter accept
+ 7. exec  argv  "nft" "add" "rule" "inet" "linkguard" "input" "udp" "dport" "68" "counter" "accept"
+          cmd   nft add rule inet linkguard input udp dport 68 counter accept
+ 8. read  argv  "nft" "list" "table" "inet" "linkguard"
+          cmd   nft list table inet linkguard

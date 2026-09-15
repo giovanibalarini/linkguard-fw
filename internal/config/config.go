@@ -12,6 +12,8 @@ type Config struct {
 	// Server settings
 	ListenAddr string `json:"listen_addr"`
 	Port       int    `json:"port"`
+	// ExtraPorts defines additional TCP ports to keep open on the host (e.g. reverse proxy 80, 443).
+	ExtraPorts []int `json:"extra_ports"`
 
 	// Database
 	DBPath string `json:"db_path"`

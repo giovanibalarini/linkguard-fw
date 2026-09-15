@@ -661,7 +661,13 @@ func (s *Service) ReloadConfigs(ctx context.Context, c netsvc.Config, res []nets
 	// mudo do subsistema inteiro.
 	var falhas []string
 	keaOK := true
-	if err := s.validateKea(ctx, keaContent); err != nil {
+	if strings.TrimSpace(c.Interface) == "" {
+		keaOK = false
+		warnings = append(warnings, "nenhuma interface LAN configurada; o servidor DHCP não foi iniciado")
+	} else if err := s.interfaceExiste(ctx, c.Interface); err != nil {
+		keaOK = false
+		warnings = append(warnings, err.Error())
+	} else if err := s.validateKea(ctx, keaContent); err != nil {
 		keaOK = false
 		falhas = append(falhas, fmt.Sprintf("config do Kea inválida (o DHCP continua com a configuração anterior): %v", err))
 	}
@@ -850,6 +856,27 @@ func (s *Service) enderecoBindavel(ctx context.Context, addr string) error {
 		}
 	}
 	return fmt.Errorf("o endereço %s não existe em nenhuma interface desta máquina, então o servidor de DNS não pode escutar nele: os aparelhos da rede não vão receber DNS deste firewall até o endereço existir. O resto da configuração foi aplicado", addr)
+}
+
+func (s *Service) interfaceExiste(ctx context.Context, iface string) error {
+	iface = strings.TrimSpace(iface)
+	if iface == "" {
+		return nil
+	}
+	out, err := s.exec.ExecuteRead(ctx, "ip", "-o", "link", "show")
+	if err != nil {
+		return nil
+	}
+	for _, linha := range strings.Split(out, "\n") {
+		partes := strings.Fields(linha)
+		if len(partes) >= 2 {
+			nome := strings.TrimSuffix(partes[1], ":")
+			if nome == iface {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("a interface %q não existe nesta máquina: o DHCP não foi aplicado", iface)
 }
 
 // validateKea writes the candidate config to a temp file and runs the Kea

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/giovanibalarini/linkguard-fw/internal/auth"
 	"github.com/giovanibalarini/linkguard-fw/internal/storage"
 	"github.com/giovanibalarini/linkguard-fw/internal/wireguard"
@@ -36,6 +38,9 @@ func (s *wireGuardServiceStub) Enroll(_ context.Context, userID string) (wiregua
 }
 func (s *wireGuardServiceStub) Revoke(_ context.Context, userID string) error {
 	s.revokedUserID = userID
+	return nil
+}
+func (s *wireGuardServiceStub) SetPeerAccess(_ context.Context, userID, accessMode string, allowedHostGroups []string, allowedPorts string) error {
 	return nil
 }
 func (s *wireGuardServiceStub) RecordIntegrationError(err error) { s.recorded = err }
@@ -130,3 +135,29 @@ func TestWireGuardEnrollmentSurvivesIntegrationFailure(t *testing.T) {
 		t.Fatalf("integration failure not reported/recorded: body=%s recorded=%v", w.Body.String(), svc.recorded)
 	}
 }
+
+func TestWireGuardSetPeerAccess(t *testing.T) {
+	db := newWireGuardHandlerTestDB(t)
+	svc := &wireGuardServiceStub{}
+	h := NewWireGuardHandler(db, svc, wireGuardReconcilerStub{}, wireGuardInputStub{})
+
+	r := chi.NewRouter()
+	r.Put("/api/vpn/peers/{userID}/access", h.SetPeerAccess)
+
+	body := `{"access_mode":"restricted","allowed_host_groups":["hg-1"],"allowed_ports":"22,80"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/vpn/peers/u-123/access", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	logs, err := db.GetAuditLogs(10)
+	if err != nil || len(logs) == 0 {
+		t.Fatalf("audit logs missing: %v", err)
+	}
+	if logs[0].Action != "vpn.peer_access" {
+		t.Fatalf("audit action = %q, want vpn.peer_access", logs[0].Action)
+	}
+}
+

@@ -37,7 +37,24 @@ func (s *Service) EnsureTable(ctx context.Context, wanInterfaces []string) bool 
 		return false // already exists — nothing to do
 	}
 
-	ruleset := buildBootstrapRuleset(wanInterfaces)
+	// A MESMA PLATAFORMA QUE A PRIMEIRA RECONCILIAÇÃO VAI USAR. O bootstrap
+	// embute mark_hosts como TEXTO, e a invariante deste arquivo é "instalação
+	// nova == caixa atualizada": se ele nascesse no eixo de interface e o
+	// primeiro ReconcileStructuralChains reescrevesse a chain no eixo de CIDR,
+	// a caixa divergiria de si mesma no primeiro boot.
+	//
+	// Erro de leitura NÃO cancela o bootstrap, e esta é a única exceção ao
+	// contrato de propagação das zonas: sem tabela a máquina fica sem firewall
+	// nenhum, o que é pior do que uma tabela criada no eixo permissivo — que é
+	// exatamente a que toda caixa existente tem. A reconciliação seguinte, que
+	// roda segundos depois no mesmo boot, corrige a forma se os fatos ficarem
+	// legíveis.
+	facts, err := s.zoneFacts()
+	if err != nil {
+		slog.Warn("não foi possível ler a plataforma antes de criar a tabela; ela nasce com o eixo de interface, e a primeira reconciliação ajusta", "err", err)
+		facts = ZoneFacts{}
+	}
+	ruleset := buildBootstrapRuleset(wanInterfaces, facts)
 	f, err := os.CreateTemp("", "linkguard-bootstrap-*.conf")
 	if err != nil {
 		slog.Warn("could not create nftables bootstrap file; firewall table was not created", "err", err)
@@ -72,7 +89,7 @@ func (s *Service) EnsureTable(ctx context.Context, wanInterfaces []string) bool 
 // interface names are dropped rather than interpolated raw: this text is fed
 // straight to `nft -f`, so an unvalidated name could inject extra nft
 // commands (mirrors the reIface guard used elsewhere in this package).
-func buildBootstrapRuleset(wanInterfaces []string) string {
+func buildBootstrapRuleset(wanInterfaces []string, facts ZoneFacts) string {
 	var b strings.Builder
 	b.WriteString("table inet linkguard {\n")
 	b.WriteString("\tmap host_wan {\n\t\ttype ipv4_addr : mark\n\t}\n\n")
@@ -110,7 +127,9 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	for _, iface := range wanInterfaces {
 		wans = append(wans, WANMark{Interface: iface})
 	}
-	for _, tokens := range markHostsChainRules(wans) {
+	// wanMarkIfaces, e não a ordem do cadastro: é a lista ORDENADA que
+	// ReconcileStructuralChains usa, e as duas têm de produzir a mesma chain.
+	for _, tokens := range markHostsChainRules(NewZone(wanMarkIfaces(wans), facts.LocalNets, facts.Hairpin, facts.PathMTU)) {
 		fmt.Fprintf(&b, "\t\t%s\n", strings.Join(tokens, " "))
 	}
 	b.WriteString("\t}\n\n")
@@ -140,12 +159,14 @@ func buildBootstrapRuleset(wanInterfaces []string) string {
 	b.WriteString("\t}\n\n")
 	b.WriteString("\tchain postrouting {\n")
 	b.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
-	if ifaces := sanitizeInterfaces(wanInterfaces); len(ifaces) > 0 {
-		quoted := make([]string, len(ifaces))
-		for i, iface := range ifaces {
-			quoted[i] = fmt.Sprintf("%q", iface)
-		}
-		fmt.Fprintf(&b, "\t\toifname { %s } masquerade\n", strings.Join(quoted, ", "))
+	// A MESMA fonte que ReconcileMasquerade usa, e não um literal próprio: é o
+	// mesmo motivo declarado no bloco da mark_hosts, logo acima. Uma instalação
+	// nova que nascesse com a regra larga e fosse reescrita com a regra
+	// qualificada pela primeira reconciliação divergiria de si mesma no
+	// primeiro boot — e numa chain de NAT isso é a identidade de origem
+	// aparecendo e sumindo conforme a hora do dia.
+	for _, tokens := range masqueradeRules(NewZone(wanInterfaces, facts.LocalNets, facts.Hairpin, facts.PathMTU)) {
+		fmt.Fprintf(&b, "\t\t%s\n", strings.Join(tokens, " "))
 	}
 	b.WriteString("\t}\n")
 	b.WriteString("}\n")

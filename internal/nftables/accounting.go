@@ -91,16 +91,25 @@ func (s *Service) EnsureAccounting(ctx context.Context, wanInterfaces []string) 
 		return nil
 	}
 	ifaces := sanitizeInterfaces(wanInterfaces)
-	if len(ifaces) == 0 {
-		// Sem saber quais interfaces são WAN não há como distinguir host local
-		// de endereço da internet, e contar tudo encheria o set. Mesma decisão
-		// do ReconcileMasquerade diante de uma fonte vazia: não agir é mais
-		// seguro do que agir errado.
-		slog.Warn("contabilidade por host: nenhuma interface WAN configurada; a chain não foi reconciliada",
-			"solicitado", wanInterfaces)
-		return nil
+	z, err := s.zone(ifaces)
+	if err != nil {
+		return err
 	}
 
+	// OS SETS E A CHAIN NASCEM SEMPRE, MESMO SEM REGRA NENHUMA.
+	//
+	// Até aqui esta função desistia ANTES desta linha quando não havia WAN
+	// cadastrada, e o efeito era pior do que "a contabilidade não conta": na
+	// caixa recém-instalada os sets acct_up/acct_down e a chain acct não
+	// existiam, então HostCounters batia num set inexistente e a leitura
+	// falhava por um motivo que não tinha nada a ver com o que estava errado.
+	// Criar a estrutura vazia troca "erro estranho" por "zero, e o aviso diz
+	// que falta cadastrar o link".
+	//
+	// O que NÃO muda é a regra: sem zona que discrimine, acctChainRules
+	// devolve nada e a chain fica vazia. Contar sem saber quem é local
+	// encheria o set com a internet inteira — essa parte da decisão antiga
+	// continua valendo, e é ela que a zona preserva.
 	for _, set := range []string{AcctUpSet, AcctDownSet} {
 		if out, err := s.exec.Execute(ctx, "nft", "add", "set", Family, Table, set, acctSetSpec); err != nil {
 			return fmt.Errorf("criar set %s: %w (%s)", set, err, strings.TrimSpace(out))
@@ -110,7 +119,12 @@ func (s *Service) EnsureAccounting(ctx context.Context, wanInterfaces []string) 
 		return fmt.Errorf("criar chain %s: %w (%s)", AcctChain, err, strings.TrimSpace(out))
 	}
 
-	if err := s.rebuildChain(ctx, AcctChain, acctChainRules(ifaces)); err != nil {
+	regras := acctChainRules(z)
+	if len(regras) == 0 {
+		slog.Warn("contabilidade por host: a chain foi criada VAZIA; nada será contado até isto mudar",
+			"motivo", motivoDeChainVazia(z), "solicitado", wanInterfaces)
+	}
+	if err := s.rebuildChain(ctx, AcctChain, regras); err != nil {
 		return err
 	}
 	slog.Info("contabilidade por host reconciliada", "wans", ifaces)
@@ -123,17 +137,18 @@ func (s *Service) EnsureAccounting(ctx context.Context, wanInterfaces []string) 
 
 // acctChainRules é a definição canônica da chain — a única fonte do que ela
 // contém, do mesmo jeito que markHostsChainRules é para a mark_hosts.
-func acctChainRules(wanIfaces []string) [][]string {
-	quoted := make([]string, len(wanIfaces))
-	for i, iface := range wanIfaces {
-		quoted[i] = fmt.Sprintf("%q", iface)
+func acctChainRules(z Zone) [][]string {
+	// Sem zona que discrimine não há como dizer quem é local, e uma regra
+	// guardada por um set anônimo VAZIO (`iifname != {  }`) é recusada pelo
+	// nft. A chain fica vazia; quem a criou avisa por quê.
+	if !z.Discriminates() {
+		return nil
 	}
-	set := "{ " + strings.Join(quoted, ", ") + " }"
 	return [][]string{
 		// Saiu de um host local em direção à WAN: upload dele.
-		{"iifname", "!=", set, "update", "@" + AcctUpSet, "{", "ip", "saddr", "}"},
+		zoneRule(z.FromLocal(), "update", "@"+AcctUpSet, "{", "ip", "saddr", "}"),
 		// Vai para um host local: download dele.
-		{"oifname", "!=", set, "update", "@" + AcctDownSet, "{", "ip", "daddr", "}"},
+		zoneRule(z.ToLocal(), "update", "@"+AcctDownSet, "{", "ip", "daddr", "}"),
 	}
 }
 

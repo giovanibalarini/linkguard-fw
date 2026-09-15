@@ -30,7 +30,7 @@ import (
 // do serviço é a de origem. Invertendo os três, o pacote de volta cai na
 // MESMA tupla da ida e soma no mesmo contador. Validado contra o nft 1.1.3.
 func TestFlowsChainRulesContaOSentidoDeVoltaDaConversa(t *testing.T) {
-	regras := flowsChainRules([]string{"wan1", "wan2"})
+	regras := flowsChainRules(zonaOnPrem("wan1", "wan2"))
 	if len(regras) != 2 {
 		t.Fatalf("queria 2 regras (subida e descida), veio %d: %v", len(regras), regras)
 	}
@@ -53,7 +53,7 @@ func TestFlowsChainRulesContaOSentidoDeVoltaDaConversa(t *testing.T) {
 // `iifname` NA lista, as duas ficam mutuamente exclusivas: nenhum pacote paga
 // dois `update`, e o custo por pacote continua sendo uma escrita de set.
 func TestFlowsChainRulesNaoContaOMesmoPacoteDuasVezes(t *testing.T) {
-	regras := flowsChainRules([]string{"wan1"})
+	regras := flowsChainRules(zonaOnPrem("wan1"))
 	if len(regras) != 2 {
 		t.Fatalf("queria 2 regras, veio %d", len(regras))
 	}

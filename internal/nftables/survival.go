@@ -66,6 +66,8 @@ type AdminAccess struct {
 	// PanelPort é a porta do painel. Vem da config, e NÃO é fixa: o default do
 	// binário é 8080 e o do pacote .deb é 9997. Zero deixa o painel de fora.
 	PanelPort int
+	// ExtraPorts são portas adicionais de gerência/proxy (ex: 80, 443 para reverse proxy).
+	ExtraPorts []int
 	// LANNetworks são as redes que servem DHCP e DNS a partir desta máquina.
 	// Vazio omite as linhas correspondentes.
 	LANNetworks []string

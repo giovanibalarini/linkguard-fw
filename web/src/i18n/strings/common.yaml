@@ -145,6 +145,9 @@ fw.tab.posture:
 fw.tab.groups:
   pt: "Grupos de regras"
   en: "Rule groups"
+fw.tab.hostgroups:
+  pt: "Grupos de hosts"
+  en: "Host groups"
 fw.tab.steering:
   pt: "Direcionamento por WAN"
   en: "WAN steering"

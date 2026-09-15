@@ -28,12 +28,22 @@ import (
 type FluxosHandler struct {
 	svc *hostflows.Servico
 	db  *storage.DB
+	// wanSource é a lista efetiva de WANs. Ver fonteDeWANs, em helpers.go.
+	wanSource fonteDeWANs
 }
 
 // NewFluxosHandler cria o handler.
 func NewFluxosHandler(svc *hostflows.Servico, db *storage.DB) *FluxosHandler {
 	return &FluxosHandler{svc: svc, db: db}
 }
+
+// SetWANSource liga o handler à derivação canônica das WANs.
+//
+// SEM ISTO A TELA FICA INCOERENTE: numa VM de nuvem com uplink implícito ativo,
+// o firewall já mede pela interface certa, e ligar o registro de conversa
+// continuaria respondendo "não há link WAN habilitado" — a mesma máquina
+// dizendo as duas coisas.
+func (h *FluxosHandler) SetWANSource(src fonteDeWANs) { h.wanSource = src }
 
 // Consultar devolve com quem um host falou na janela.
 //
@@ -106,7 +116,7 @@ func (h *FluxosHandler) SetConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "corpo inválido")
 		return
 	}
-	wans, err := enabledWANInterfaces(h.db)
+	wans, err := wansDe(h.wanSource, h.db)
 	if err != nil {
 		writeInternalError(w, err)
 		return

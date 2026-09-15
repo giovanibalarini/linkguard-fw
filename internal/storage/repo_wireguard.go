@@ -2,7 +2,9 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -23,14 +25,17 @@ type WireGuardConfig struct {
 // WireGuardPeer ties one local panel user to one tunnel identity and one
 // firewall group. SecretName is deliberately excluded from JSON.
 type WireGuardPeer struct {
-	UserID          string    `json:"user_id"`
-	Username        string    `json:"username"`
-	PublicKey       string    `json:"public_key"`
-	Address         string    `json:"address"`
-	SecretName      string    `json:"-"`
-	FirewallGroupID string    `json:"firewall_group_id"`
-	CreatedAt       time.Time `json:"created_at"`
-	RotatedAt       time.Time `json:"rotated_at"`
+	UserID            string    `json:"user_id"`
+	Username          string    `json:"username"`
+	PublicKey         string    `json:"public_key"`
+	Address           string    `json:"address"`
+	SecretName        string    `json:"-"`
+	FirewallGroupID   string    `json:"firewall_group_id"`
+	AccessMode        string    `json:"access_mode"`
+	AllowedHostGroups []string  `json:"allowed_host_groups"`
+	AllowedPorts      string    `json:"allowed_ports"`
+	CreatedAt         time.Time `json:"created_at"`
+	RotatedAt         time.Time `json:"rotated_at"`
 }
 
 func (db *DB) GetWireGuardConfig() (*WireGuardConfig, error) {
@@ -74,9 +79,17 @@ func (db *DB) SaveWireGuardConfig(c *WireGuardConfig) error {
 
 func scanWireGuardPeer(scanner interface{ Scan(...any) error }) (*WireGuardPeer, error) {
 	var p WireGuardPeer
+	var allowedGroupsJSON string
 	if err := scanner.Scan(&p.UserID, &p.Username, &p.PublicKey, &p.Address, &p.SecretName,
-		&p.FirewallGroupID, &p.CreatedAt, &p.RotatedAt); err != nil {
+		&p.FirewallGroupID, &p.AccessMode, &allowedGroupsJSON, &p.AllowedPorts, &p.CreatedAt, &p.RotatedAt); err != nil {
 		return nil, err
+	}
+	if p.AccessMode == "" {
+		p.AccessMode = "full"
+	}
+	_ = json.Unmarshal([]byte(allowedGroupsJSON), &p.AllowedHostGroups)
+	if p.AllowedHostGroups == nil {
+		p.AllowedHostGroups = []string{}
 	}
 	return &p, nil
 }
@@ -84,7 +97,8 @@ func scanWireGuardPeer(scanner interface{ Scan(...any) error }) (*WireGuardPeer,
 func (db *DB) GetWireGuardPeer(userID string) (*WireGuardPeer, error) {
 	p, err := scanWireGuardPeer(db.conn.QueryRow(`
 		SELECT p.user_id, u.username, p.public_key, p.address, p.secret_name,
-		       p.firewall_group_id, p.created_at, p.rotated_at
+		       p.firewall_group_id, p.access_mode, p.allowed_host_groups, p.allowed_ports,
+		       p.created_at, p.rotated_at
 		  FROM wireguard_peers p JOIN users u ON u.id = p.user_id
 		 WHERE p.user_id = ?`, userID))
 	if err == sql.ErrNoRows {
@@ -96,7 +110,8 @@ func (db *DB) GetWireGuardPeer(userID string) (*WireGuardPeer, error) {
 func (db *DB) ListWireGuardPeers() ([]WireGuardPeer, error) {
 	rows, err := db.conn.Query(`
 		SELECT p.user_id, u.username, p.public_key, p.address, p.secret_name,
-		       p.firewall_group_id, p.created_at, p.rotated_at
+		       p.firewall_group_id, p.access_mode, p.allowed_host_groups, p.allowed_ports,
+		       p.created_at, p.rotated_at
 		  FROM wireguard_peers p JOIN users u ON u.id = p.user_id
 		 ORDER BY u.username, p.user_id`)
 	if err != nil {
@@ -135,13 +150,23 @@ func (db *DB) UpsertWireGuardPeer(p *WireGuardPeer, g *FirewallGroup) (*WireGuar
 	var old *WireGuardPeer
 	row := tx.QueryRow(`
 		SELECT p.user_id, u.username, p.public_key, p.address, p.secret_name,
-		       p.firewall_group_id, p.created_at, p.rotated_at
+		       p.firewall_group_id, p.access_mode, p.allowed_host_groups, p.allowed_ports,
+		       p.created_at, p.rotated_at
 		  FROM wireguard_peers p JOIN users u ON u.id = p.user_id
 		 WHERE p.user_id = ?`, p.UserID)
 	if prior, scanErr := scanWireGuardPeer(row); scanErr == nil {
 		old = prior
 		p.Address = prior.Address
 		p.FirewallGroupID = prior.FirewallGroupID
+		if p.AccessMode == "" {
+			p.AccessMode = prior.AccessMode
+		}
+		if len(p.AllowedHostGroups) == 0 {
+			p.AllowedHostGroups = prior.AllowedHostGroups
+		}
+		if p.AllowedPorts == "" {
+			p.AllowedPorts = prior.AllowedPorts
+		}
 		g.ID = prior.FirewallGroupID
 		if _, err := tx.Exec(`
 			UPDATE firewall_groups
@@ -184,16 +209,28 @@ func (db *DB) UpsertWireGuardPeer(p *WireGuardPeer, g *FirewallGroup) (*WireGuar
 		p.CreatedAt = old.CreatedAt
 	}
 	p.RotatedAt = now
+	if p.AccessMode == "" {
+		p.AccessMode = "full"
+	}
+	if p.AllowedHostGroups == nil {
+		p.AllowedHostGroups = []string{}
+	}
+	groupsJSON, _ := json.Marshal(p.AllowedHostGroups)
 	if _, err := tx.Exec(`
 		INSERT INTO wireguard_peers
-			(user_id, public_key, address, secret_name, firewall_group_id, created_at, rotated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+			(user_id, public_key, address, secret_name, firewall_group_id,
+			 access_mode, allowed_host_groups, allowed_ports, created_at, rotated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			public_key=excluded.public_key, address=excluded.address,
 			secret_name=excluded.secret_name,
 			firewall_group_id=excluded.firewall_group_id,
+			access_mode=excluded.access_mode,
+			allowed_host_groups=excluded.allowed_host_groups,
+			allowed_ports=excluded.allowed_ports,
 			rotated_at=excluded.rotated_at`,
 		p.UserID, p.PublicKey, p.Address, p.SecretName, p.FirewallGroupID,
+		p.AccessMode, string(groupsJSON), p.AllowedPorts,
 		p.CreatedAt, p.RotatedAt); err != nil {
 		return nil, err
 	}
@@ -201,6 +238,35 @@ func (db *DB) UpsertWireGuardPeer(p *WireGuardPeer, g *FirewallGroup) (*WireGuar
 		return nil, err
 	}
 	return old, nil
+}
+
+func (db *DB) UpdateWireGuardPeerAccess(userID, accessMode string, allowedHostGroups []string, allowedPorts string) error {
+	if accessMode != "full" && accessMode != "restricted" {
+		accessMode = "full"
+	}
+	if allowedHostGroups == nil {
+		allowedHostGroups = []string{}
+	}
+	groupsJSON, err := json.Marshal(allowedHostGroups)
+	if err != nil {
+		return err
+	}
+	res, err := db.conn.Exec(`
+		UPDATE wireguard_peers
+		   SET access_mode = ?, allowed_host_groups = ?, allowed_ports = ?
+		 WHERE user_id = ?`,
+		accessMode, string(groupsJSON), strings.TrimSpace(allowedPorts), userID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("peer não encontrado")
+	}
+	return nil
 }
 
 // DeleteWireGuardPeer removes the peer, its managed group and every rule in
@@ -214,7 +280,8 @@ func (db *DB) DeleteWireGuardPeer(userID string) (*WireGuardPeer, error) {
 	defer tx.Rollback() //nolint:errcheck
 	p, err := scanWireGuardPeer(tx.QueryRow(`
 		SELECT p.user_id, u.username, p.public_key, p.address, p.secret_name,
-		       p.firewall_group_id, p.created_at, p.rotated_at
+		       p.firewall_group_id, p.access_mode, p.allowed_host_groups, p.allowed_ports,
+		       p.created_at, p.rotated_at
 		  FROM wireguard_peers p JOIN users u ON u.id = p.user_id
 		 WHERE p.user_id = ?`, userID))
 	if err == sql.ErrNoRows {

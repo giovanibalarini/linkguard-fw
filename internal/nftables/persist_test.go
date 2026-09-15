@@ -156,6 +156,20 @@ func TestPersistWritesTheServiceConfPath(t *testing.T) {
 	exec := &recordExec{tableOut: "table inet linkguard {\n}\n"}
 	s := NewService(exec)
 
+	// O ConfPath do PACOTE é global (ver TestMain), então qualquer teste que
+	// rode antes deste e persista sem injetar caminho deixa o arquivo criado —
+	// e a asserção de baixo passaria a falhar por ordem de execução, não por
+	// defeito. Isolar aqui é o que torna este teste uma afirmação sobre Persist
+	// em vez de uma afirmação sobre quem correu antes.
+	//
+	// Não é hipótese: com as chains passando a nascer vazias sem WAN
+	// cadastrada, EnsureAccounting e EnsureMSSClamp chegam ao Persist em
+	// caminhos onde antes desistiam, e este teste começou a falhar já em
+	// -count=1.
+	anterior := ConfPath
+	ConfPath = filepath.Join(t.TempDir(), "padrao-do-pacote.conf")
+	defer func() { ConfPath = anterior }()
+
 	meu := filepath.Join(t.TempDir(), "nftables.conf")
 	s.SetConfPath(meu)
 

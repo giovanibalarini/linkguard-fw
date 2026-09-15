@@ -1,0 +1,34 @@
+# alvo:    WANInputRules
+# cenário: hairpin_1nic
+# sobre:   uma VM de nuvem com UMA placa de rede: entra e sai pela mesma interface, e o eixo
+#          das regras passa a ser o CIDR de dentro. É o comportamento NOVO, e o contraste
+#          com onprem_1wan é o ponto.
+# entrada: wanIfaces = ["ens3"], access = {ssh [22], painel 9997, lan ["10.0.0.0/24"], wan
+#          por dhcp true}, gerenciaFechada = false, contencaoLigada = false, wireGuardPorts
+#          = [51820]
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `nft ` é a mesma regra como o nft a lê.
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. argv  "iifname" "{ \"ens3\" }" "icmpv6" "type" "{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert }" "counter" "accept"
+    nft   iifname { "ens3" } icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } counter accept
+ 2. argv  "iifname" "{ \"ens3\" }" "icmpv6" "type" "{ packet-too-big, time-exceeded, parameter-problem, destination-unreachable }" "counter" "accept"
+    nft   iifname { "ens3" } icmpv6 type { packet-too-big, time-exceeded, parameter-problem, destination-unreachable } counter accept
+ 3. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "68" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } udp dport 68 counter accept
+ 4. argv  "iifname" "{ \"ens3\" }" "udp" "dport" "546" "counter" "accept"
+    nft   iifname { "ens3" } udp dport 546 counter accept
+ 5. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "status" "dnat" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } ct status dnat counter accept
+ 6. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "icmp" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } icmp type echo-request limit rate 5/second counter accept
+ 7. argv  "iifname" "{ \"ens3\" }" "icmpv6" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
+    nft   iifname { "ens3" } icmpv6 type echo-request limit rate 5/second counter accept
+ 8. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "tcp" "dport" "{ 22, 9997 }" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } tcp dport { 22, 9997 } counter accept
+ 9. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "udp" "dport" "51820" "counter" "accept"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } udp dport 51820 counter accept
+10. argv  "iifname" "!=" "\"lo\"" "ip" "saddr" "!=" "{ 10.0.0.0/24 }" "ct" "state" "new" "counter" "drop"
+    nft   iifname != "lo" ip saddr != { 10.0.0.0/24 } ct state new counter drop

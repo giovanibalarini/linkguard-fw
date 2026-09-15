@@ -1,0 +1,13 @@
+# alvo:    restoreOutboundMarkRule
+# cenário: onprem_2wan
+# sobre:   a máquina de produção do dono: duas WANs (uma PPPoE, uma ethernet) mais uma
+#          LAN em 192.168.3.0/24. É esta saída que não pode mudar.
+# entrada: wans = [{"enp2s0" 0xc8} {"ppp0" 0x64}]
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `nft ` é a mesma regra como o nft a lê.
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. argv  "iifname" "!=" "{ \"enp2s0\", \"ppp0\" }" "ct" "mark" "and" "0x10000" "==" "0x10000" "ct" "direction" "original" "meta" "mark" "==" "0x0" "counter" "meta" "mark" "set" "ct" "mark" "and" "0xffff"
+    nft   iifname != { "enp2s0", "ppp0" } ct mark and 0x10000 == 0x10000 ct direction original meta mark == 0x0 counter meta mark set ct mark and 0xffff

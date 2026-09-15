@@ -168,7 +168,7 @@ func TestFlowsChainRulesEscopaPeloQueNaoEhWAN(t *testing.T) {
 	// ENTRADA cria uma tupla para CADA endereço da internet que responde, e um
 	// set de 8192 elementos enche em minutos — a medição some e a memória do
 	// kernel vai junto.
-	regras := flowsChainRules([]string{"wan1", "wan2"})
+	regras := flowsChainRules(zonaOnPrem("wan1", "wan2"))
 	// DUAS regras desde a revisão: a de subida (aqui) e a de descida, que conta
 	// o pacote de volta — ver TestFlowsChainRulesContaOSentidoDeVoltaDaConversa
 	// em flows_revisao_test.go.
@@ -187,7 +187,7 @@ func TestFlowsChainRulesEscapaONomeDaInterface(t *testing.T) {
 	// O nome vai para dentro de um argv do nft. Sem aspas, um nome com ponto
 	// (enp5s0.100, uma VLAN) quebra a regra inteira — e a chain fica sem regra
 	// nenhuma, com a tela mostrando "ninguém falou com ninguém".
-	regras := flowsChainRules([]string{"enp5s0.100"})
+	regras := flowsChainRules(zonaOnPrem("enp5s0.100"))
 	if !strings.Contains(strings.Join(regras[0], " "), "{ \"enp5s0.100\" }") {
 		t.Errorf("nome não veio entre aspas: %v", regras[0])
 	}

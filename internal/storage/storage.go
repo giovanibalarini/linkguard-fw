@@ -231,6 +231,7 @@ var schemaMigrations = []migration{
 	{migrationLinkQoS, "links: configuração QoS por WAN", upAddLinkQoS},
 	{20, "stress test: lease de recuperação", upStressRecoveryLease},
 	{21, "QoS: journal durável de operações", upQoSOperationLease},
+	{22, "host_groups: grupos de ativos para firewall e ZTNA", upHostGroups},
 }
 
 func upWireGuard(tx *sql.Tx) error {
@@ -260,6 +261,50 @@ func upWireGuard(tx *sql.Tx) error {
 			rotated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`); err != nil {
 		return err
+	}
+	return nil
+}
+
+func upHostGroups(tx *sql.Tx) error {
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS host_groups (
+			id          TEXT PRIMARY KEY,
+			name        TEXT NOT NULL UNIQUE,
+			description TEXT NOT NULL DEFAULT '',
+			hosts       TEXT NOT NULL DEFAULT '[]',
+			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`); err != nil {
+		return err
+	}
+	var tableExists bool
+	var hasAccessMode bool
+	rows, err := tx.Query(`PRAGMA table_info(wireguard_peers)`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			tableExists = true
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dfltValue any
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err == nil {
+				if name == "access_mode" {
+					hasAccessMode = true
+				}
+			}
+		}
+	}
+	if tableExists && !hasAccessMode {
+		if _, err := tx.Exec(`ALTER TABLE wireguard_peers ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'full'`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`ALTER TABLE wireguard_peers ADD COLUMN allowed_host_groups TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`ALTER TABLE wireguard_peers ADD COLUMN allowed_ports TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
 	}
 	return nil
 }

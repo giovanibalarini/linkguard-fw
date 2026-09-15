@@ -1,0 +1,56 @@
+# alvo:    inputChainRules_politica_drop
+# cenário: onprem_2wan
+# sobre:   a máquina de produção do dono: duas WANs (uma PPPoE, uma ethernet) mais uma
+#          LAN em 192.168.3.0/24. É esta saída que não pode mudar.
+# entrada: groups = 1 grupo(s) de escopo input, ntpNetworks = ["192.168.3.0/24"], ntpServing
+#          = true, policy = "drop", access = {ssh [22], painel 9997, lan ["192.168.3.0/24"],
+#          wan por dhcp true}, wanIfaces = ["ppp0" "enp2s0"], gerenciaFechada = false,
+#          contencao = false, wireGuardPorts = [51820]
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `nft ` é a mesma regra como o nft a lê.
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. argv  "ct" "state" "related" "counter" "accept"
+    nft   ct state related counter accept
+ 2. argv  "iif" "lo" "counter" "accept"
+    nft   iif lo counter accept
+ 3. argv  "icmpv6" "type" "{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert }" "counter" "accept"
+    nft   icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } counter accept
+ 4. argv  "tcp" "dport" "{ 22, 9997 }" "counter" "accept"
+    nft   tcp dport { 22, 9997 } counter accept
+ 5. argv  "udp" "dport" "67" "ip" "saddr" "{ 192.168.3.0/24 }" "counter" "accept"
+    nft   udp dport 67 ip saddr { 192.168.3.0/24 } counter accept
+ 6. argv  "udp" "dport" "53" "ip" "saddr" "{ 192.168.3.0/24 }" "counter" "accept"
+    nft   udp dport 53 ip saddr { 192.168.3.0/24 } counter accept
+ 7. argv  "tcp" "dport" "53" "ip" "saddr" "{ 192.168.3.0/24 }" "counter" "accept"
+    nft   tcp dport 53 ip saddr { 192.168.3.0/24 } counter accept
+ 8. argv  "udp" "dport" "68" "counter" "accept"
+    nft   udp dport 68 counter accept
+ 9. argv  "udp" "dport" "123" "ip" "saddr" "{ 192.168.3.0/24 }" "counter" "accept"
+    nft   udp dport 123 ip saddr { 192.168.3.0/24 } counter accept
+10. argv  "udp" "dport" "123" "counter" "drop"
+    nft   udp dport 123 counter drop
+11. argv  "ip" "saddr" "192.168.3.0/24" "counter" "jump" "grp_6f1c2d3e4a5b"
+    nft   ip saddr 192.168.3.0/24 counter jump grp_6f1c2d3e4a5b
+12. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "icmpv6" "type" "{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert }" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } counter accept
+13. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "icmpv6" "type" "{ packet-too-big, time-exceeded, parameter-problem, destination-unreachable }" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } icmpv6 type { packet-too-big, time-exceeded, parameter-problem, destination-unreachable } counter accept
+14. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "udp" "dport" "68" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } udp dport 68 counter accept
+15. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "udp" "dport" "546" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } udp dport 546 counter accept
+16. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "ct" "status" "dnat" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } ct status dnat counter accept
+17. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "icmp" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } icmp type echo-request limit rate 5/second counter accept
+18. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "icmpv6" "type" "echo-request" "limit" "rate" "5/second" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } icmpv6 type echo-request limit rate 5/second counter accept
+19. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "tcp" "dport" "{ 22, 9997 }" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } tcp dport { 22, 9997 } counter accept
+20. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "udp" "dport" "51820" "counter" "accept"
+    nft   iifname { "ppp0", "enp2s0" } udp dport 51820 counter accept
+21. argv  "iifname" "{ \"ppp0\", \"enp2s0\" }" "ct" "state" "new" "counter" "drop"
+    nft   iifname { "ppp0", "enp2s0" } ct state new counter drop

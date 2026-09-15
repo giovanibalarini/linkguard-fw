@@ -121,10 +121,38 @@ func (c *Collector) checkBootPersist() {
 	}
 }
 
+// SetWANSource liga o vigia à derivação canônica das WANs — a mesma que o
+// firewall usa para decidir o que escrever.
+//
+// FUNÇÃO INJETADA, e não internal/platform importado aqui: a resposta certa
+// numa VM de nuvem sem link cadastrado é o uplink que o produto derivou
+// sozinho, e quem sabe isso é cmd/linkguard-fw. Ausente resolve para o laço de
+// sempre sobre a tabela `links`, que é o comportamento de todo binário anterior
+// a esta entrega.
+//
+// O QUE ISTO CONSERTA: sem a fonte, checkFirewallNAT retorna cedo com lista
+// vazia e o item "Regra de NAT" NUNCA emite veredito numa máquina de nuvem —
+// isto é, o vigia fica cego exatamente na plataforma em que o NAT passou a ser
+// escrito sem ninguém cadastrar nada, e o incidente que ele existe para pegar
+// não seria pego ali.
+func (c *Collector) SetWANSource(src func() ([]string, error)) { c.wanSource = src }
+
 // enabledWANInterfaces returns the interfaces of every enabled WAN link —
 // the source of truth both checkWANInterfaces and checkFirewallNAT compare
 // reality against.
+//
+// Erro de leitura devolve lista vazia, e aqui isso é o certo: sem saber o que
+// foi configurado não há veredito a dar, e os dois chamadores tratam lista
+// vazia como "nada a verificar neste tique". É o silêncio deliberado de todo
+// early-return deste arquivo — nunca um "está tudo bem".
 func (c *Collector) enabledWANInterfaces() []string {
+	if c.wanSource != nil {
+		ifaces, err := c.wanSource()
+		if err != nil {
+			return nil
+		}
+		return ifaces
+	}
 	ls, err := c.db.GetLinks()
 	if err != nil {
 		return nil

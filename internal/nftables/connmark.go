@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 )
 
 // Marcação de conexão para roteamento de retorno (issue #120).
@@ -110,16 +109,23 @@ func (s *Service) EnsureConnMark(ctx context.Context, wans []WANMark) error {
 		return nil
 	}
 	limpas := sanitizeWANMarks(wans)
-	if len(limpas) == 0 {
-		// Sem WAN conhecida não há o que lembrar. Escrever só a regra de
-		// restauração seria pior que nada: ela restauraria marcas que ninguém
-		// grava, e a chain existiria dando a impressão de que a feature está
-		// ligada.
-		slog.Warn("marcação de conexão: nenhuma WAN válida; as chains não foram reconciliadas",
-			"solicitado", len(wans))
-		return nil
+	z, err := s.zone(wanMarkIfaces(limpas))
+	if err != nil {
+		return err
 	}
 
+	// AS TRÊS CHAINS NASCEM SEMPRE, E O CONTEÚDO É QUE VARIA.
+	//
+	// Antes esta função desistia ANTES dos três `add chain` quando não havia
+	// WAN válida, e a caixa recém-instalada ficava sem conn_mark, sem
+	// conn_mark_out e sem output_mark — nem vazias. O raciocínio de então
+	// continua certo no que ele dizia (escrever a restauração sem ninguém
+	// gravando marca é enfeite com cara de feature), mas a conclusão pegava
+	// demais: ela apagava também a output_mark, cuja única regra NÃO depende
+	// de WAN nenhuma e é correta em qualquer máquina.
+	//
+	// Agora: as três chains existem; conn_mark e conn_mark_out ficam vazias
+	// quando não há por qual link decidir, e output_mark ganha a regra dela.
 	if out, err := s.exec.Execute(ctx, "nft", "add", "chain", Family, Table, ConnMarkChain, connMarkChainSpec); err != nil {
 		return fmt.Errorf("criar chain %s: %w (%s)", ConnMarkChain, err, out)
 	}
@@ -130,13 +136,18 @@ func (s *Service) EnsureConnMark(ctx context.Context, wans []WANMark) error {
 		return fmt.Errorf("criar chain %s: %w (%s)", ConnMarkOutChain, err, out)
 	}
 
-	if err := s.rebuildChain(ctx, ConnMarkChain, connMarkChainRules(limpas)); err != nil {
+	entrada := connMarkChainRules(z, limpas)
+	if len(entrada) == 0 {
+		slog.Warn("marcação de conexão: as chains conn_mark e conn_mark_out foram criadas VAZIAS",
+			"motivo", motivoDeChainVazia(z), "solicitado", len(wans))
+	}
+	if err := s.rebuildChain(ctx, ConnMarkChain, entrada); err != nil {
 		return err
 	}
 	if err := s.rebuildChain(ctx, OutputMarkChain, outputMarkChainRules()); err != nil {
 		return err
 	}
-	if err := s.rebuildChain(ctx, ConnMarkOutChain, connMarkOutChainRules(limpas)); err != nil {
+	if err := s.rebuildChain(ctx, ConnMarkOutChain, connMarkOutChainRules(z, limpas)); err != nil {
 		return err
 	}
 	slog.Info("marcação de conexão reconciliada", "wans", len(limpas))
@@ -153,16 +164,32 @@ func (s *Service) EnsureConnMark(ctx context.Context, wans []WANMark) error {
 // `ct state new` na regra de memória não é economia: sem ele, um pacote que
 // chega pela WAN errada no meio de uma conversa reescreveria a marca da
 // conexão e mudaria o caminho de volta no meio do caminho.
-func connMarkChainRules(wans []WANMark) [][]string {
-	regras := make([][]string, 0, len(wans)+1)
+func connMarkChainRules(z Zone, wans []WANMark) [][]string {
+	// EM HAIRPIN ESTA CHAIN FICA VAZIA, e é a conclusão honesta, não uma
+	// desistência. Numa VM de VNIC única existe um caminho só: a marca "esta
+	// conexão entrou pela WAN X" não tem X para escolher, nenhuma `ip rule
+	// fwmark` a consome, e platform.DeriveCapabilities já desligou MultiWAN,
+	// LinkFailover, LoadBalancing e PerLinkPolicyRouting na mesma máquina.
+	// Renderizar as regras por CIDR escreveria marcas que ninguém lê — estado
+	// com cara de roteamento por link onde não existe roteamento por link.
+	if !z.PerLink() {
+		return nil
+	}
+	regras := make([][]string, 0, len(wans)+2)
 	for _, w := range wans {
-		regras = append(regras, []string{
-			"iifname", fmt.Sprintf("%q", w.Interface),
+		regras = append(regras, zoneRule(z.FromExternalIface(w.Interface),
 			"ct", "state", "new", "counter",
 			"ct", "mark", "set", fmt.Sprintf("0x%x", w.Mark),
-		})
+		))
 	}
-	return append(regras, restoreReplyMarkRule(wans), restoreOutboundMarkRule(wans))
+	// Sem zona que discrimine, as duas regras de restauração renderizariam
+	// `iifname != {  }` — o set anônimo vazio, que o nft RECUSA. Elas têm de
+	// ser OMITIDAS, e não desguarnecidas: emiti-las sem o `iifname !=` é
+	// exatamente a armadilha da #120 documentada logo abaixo.
+	if !z.Discriminates() {
+		return regras
+	}
+	return append(regras, restoreReplyMarkRule(z), restoreOutboundMarkRule(z))
 }
 
 // restoreReplyMarkRule é a restauração da metade de ENTRADA (#120), com o
@@ -194,18 +221,16 @@ func connMarkChainRules(wans []WANMark) [][]string {
 // aqui a memória da conexão TEM de vencer o @host_wan. O pacote é o host da LAN
 // respondendo a quem o procurou de fora, e ele precisa sair pela WAN por onde a
 // conexão entrou, mesmo que o admin tenha fixado aquele aparelho em outra.
-func restoreReplyMarkRule(wans []WANMark) []string {
-	return append([]string{"iifname", "!=", setDeInterfaces(wans)}, restoreMarkRule()...)
-}
-
-// setDeInterfaces monta `{ "wanA", "wanB" }` como um token só, na forma que o
-// resto do pacote já usa (ver acctChainRules).
-func setDeInterfaces(wans []WANMark) string {
-	nomes := make([]string, len(wans))
-	for i, w := range wans {
-		nomes[i] = fmt.Sprintf("%q", w.Interface)
+func restoreReplyMarkRule(z Zone) []string {
+	// Guarda em PROFUNDIDADE: connMarkChainRules já não chama esta função sem
+	// zona que discrimine, mas o `iifname != { }` que sairia daqui é a regra
+	// que o nft recusa E a armadilha da #120 ao mesmo tempo. Uma função que só
+	// é segura porque quem chama lembrou de conferir é uma função que vai ser
+	// chamada errado um dia.
+	if !z.Discriminates() {
+		return nil
 	}
-	return "{ " + strings.Join(nomes, ", ") + " }"
+	return zoneRule(z.FromLocal(), restoreMarkRule()...)
 }
 
 func outputMarkChainRules() [][]string {
@@ -245,15 +270,19 @@ func outputMarkChainRules() [][]string {
 //     de o primeiro pacote chegar ao forward em alguns caminhos; `ct mark == 0`
 //     já garante gravação única, e é uma condição sobre o ESTADO GUARDADO, não
 //     sobre o instante.
-func connMarkOutChainRules(wans []WANMark) [][]string {
+func connMarkOutChainRules(z Zone, wans []WANMark) [][]string {
+	// Vazia em hairpin, pela mesma razão de connMarkChainRules: lembrar por
+	// qual link a conexão saiu não decide nada quando há um link só.
+	if !z.PerLink() {
+		return nil
+	}
 	regras := make([][]string, 0, len(wans))
 	for _, w := range wans {
-		regras = append(regras, []string{
-			"oifname", fmt.Sprintf("%q", w.Interface),
+		regras = append(regras, zoneRule(z.ToExternalIface(w.Interface),
 			"ct", "direction", "original",
 			"ct", "mark", "==", "0x0", "counter",
 			"ct", "mark", "set", fmt.Sprintf("0x%x", w.Mark|marcaDeSaida),
-		})
+		))
 	}
 	return regras
 }
@@ -271,15 +300,21 @@ func connMarkOutChainRules(wans []WANMark) [][]string {
 // mark_hosts roda em `priority mangle` (-150) e esta chain em `mangle + 10`
 // (-140): quando o admin fixou o aparelho numa WAN, a marca já está posta e
 // esta regra não a toca. Fixação escolhida por gente vence memória de conexão.
-func restoreOutboundMarkRule(wans []WANMark) []string {
-	return []string{
-		"iifname", "!=", setDeInterfaces(wans),
+func restoreOutboundMarkRule(z Zone) []string {
+	// Mesma guarda em profundidade de restoreReplyMarkRule, e pelo mesmo
+	// motivo: sem o `iifname !=` esta regra marca a direção original de uma
+	// conexão que entrou de fora, que é exatamente o que mandava o SYN de um
+	// encaminhamento de porta de volta para o provedor.
+	if !z.Discriminates() {
+		return nil
+	}
+	return zoneRule(z.FromLocal(),
 		"ct", "mark", "and", fmt.Sprintf("0x%x", marcaDeSaida), "==", fmt.Sprintf("0x%x", marcaDeSaida),
 		"ct", "direction", "original",
 		"meta", "mark", "==", "0x0", "counter",
 		// `and` para tirar o bit: a `ip rule fwmark` casa o table_id puro.
 		"meta", "mark", "set", "ct", "mark", "and", fmt.Sprintf("0x%x", mascaraDaTabela),
-	}
+	)
 }
 
 // restoreMarkRule devolve a marca guardada na conexão ao pacote. O `!= 0x0` é

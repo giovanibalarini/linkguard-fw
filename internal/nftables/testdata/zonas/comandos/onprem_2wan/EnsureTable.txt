@@ -1,0 +1,90 @@
+# alvo:    EnsureTable
+# cenário: onprem_2wan
+# sobre:   a máquina de produção do dono: duas WANs (uma PPPoE, uma ethernet) mais uma
+#          LAN em 192.168.3.0/24. É esta saída que não pode mudar.
+# entrada: wanInterfaces = ["ppp0" "enp2s0"] (a tabela ainda NÃO existe na máquina)
+# formato: `argv` é o CONTRATO (um token por argumento, entre aspas);
+#          `cmd ` é o mesmo comando como se lê no shell.
+#          exec = Execute, read = ExecuteRead (o `nft list table` do Persist
+#          aparece aqui: é a prova de que o Persist rodou).
+# retorno: criou a tabela = true
+#
+# GERADO POR zonas_golden_test.go. Um diff aqui é uma mudança no que o
+# firewall manda ao kernel — nunca edite este arquivo para fazer um teste passar.
+
+ 1. read  argv  "nft" "list" "table" "inet" "linkguard"
+          cmd   nft list table inet linkguard
+ 2. exec  argv  "nft" "-f" "<tmp>"
+          cmd   nft -f <tmp>
+          conteúdo:
+          | table inet linkguard {
+          | 	map host_wan {
+          | 		type ipv4_addr : mark
+          | 	}
+          | 
+          | 	set blocklist {
+          | 		type ipv4_addr
+          | 		flags interval
+          | 	}
+          | 
+          | 	set blocked_hosts {
+          | 		type ipv4_addr
+          | 	}
+          | 
+          | 	set blocked_macs {
+          | 		type ether_addr
+          | 	}
+          | 
+          | 	set dom_blocked {
+          | 		type ipv4_addr
+          | 		flags timeout
+          | 		timeout 1h
+          | 		size 8192
+          | 	}
+          | 
+          | 	set dom_blocked6 {
+          | 		type ipv6_addr
+          | 		flags timeout
+          | 		timeout 1h
+          | 		size 8192
+          | 	}
+          | 
+          | 	map dom_wan {
+          | 		type ipv4_addr : mark
+          | 		flags timeout
+          | 		timeout 1h
+          | 		size 8192
+          | 	}
+          | 
+          | 	chain user_rules {
+          | 	}
+          | 
+          | 	chain mark_hosts {
+          | 		type filter hook prerouting priority mangle; policy accept;
+          | 		iifname != { "enp2s0", "ppp0" } ct state new meta mark 0x0 counter meta mark set ip daddr map @dom_wan
+          | 		counter meta mark set ip saddr map @host_wan
+          | 	}
+          | 
+          | 	chain forward {
+          | 		type filter hook forward priority filter; policy accept;
+          | 		counter jump user_rules
+          | 		ip saddr @blocked_hosts counter drop
+          | 		ip daddr @blocked_hosts counter drop
+          | 		ether saddr @blocked_macs counter drop
+          | 		ip daddr @blocklist counter drop
+          | 		ip saddr @blocklist counter drop
+          | 		ip daddr @dom_blocked counter drop
+          | 		ip6 daddr @dom_blocked6 counter drop
+          | 	}
+          | 
+          | 	chain input {
+          | 		type filter hook input priority filter; policy accept;
+          | 	}
+          | 
+          | 	chain postrouting {
+          | 		type nat hook postrouting priority srcnat; policy accept;
+          | 		oifname { "ppp0", "enp2s0" } masquerade
+          | 	}
+          | }
+ 3. read  argv  "nft" "list" "table" "inet" "linkguard"
+          cmd   nft list table inet linkguard

@@ -69,38 +69,22 @@ func (s *Service) EnsureAbusersSet(ctx context.Context) error {
 // portas de gerência, senão o accept curto-circuita e a contenção não vale
 // nada. E a regra que contém vem logo depois, para medir a taxa de quem ainda
 // não está contido.
-func abuseRules(wanIfaces []string, portas string) [][]string {
-	if len(wanIfaces) == 0 || portas == "" {
+func abuseRules(z Zone, portas string) [][]string {
+	if !z.Discriminates() || portas == "" {
 		// Sem WAN não há de quem se defender por este caminho, e sem porta de
 		// gerência não há o que medir. Emitir a regra de descarte sozinha seria
 		// um set que nada alimenta — enfeite com cara de proteção.
 		return nil
 	}
-	set := "{ " + strings.Join(quoteIfaces(wanIfaces), ", ") + " }"
 	return [][]string{
 		// Contido é descartado, venha de onde vier. Pode ser global porque só
-		// origem vinda das WANs entra no set (regra abaixo).
+		// origem vinda de FORA entra no set (regra abaixo).
 		{"ip", "saddr", "@" + AbusersSet, "counter", "drop"},
 		// E quem excede a taxa entra. `over` casa o EXCEDENTE.
-		{"iifname", set, "tcp", "dport", portas, "ct", "state", "new",
+		zoneRule(z.FromExternal(), "tcp", "dport", portas, "ct", "state", "new",
 			"limit", "rate", "over", abusersRate,
-			"counter", "add", "@" + AbusersSet, "{", "ip", "saddr", "}"},
+			"counter", "add", "@"+AbusersSet, "{", "ip", "saddr", "}"),
 	}
-}
-
-// quoteIfaces prepara nomes de interface para o argv do nft, descartando o que
-// não passa pelo mesmo guarda dos outros geradores deste pacote.
-func quoteIfaces(ifaces []string) []string {
-	out := make([]string, 0, len(ifaces))
-	vistos := map[string]bool{}
-	for _, i := range ifaces {
-		if i == "" || vistos[i] || !reIface.MatchString(i) {
-			continue
-		}
-		vistos[i] = true
-		out = append(out, fmt.Sprintf("%q", i))
-	}
-	return out
 }
 
 // Contido é uma origem sob contenção, como a tela precisa mostrar.
