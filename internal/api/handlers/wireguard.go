@@ -20,6 +20,7 @@ type wireGuardService interface {
 	UpdateConfig(context.Context, wireguard.Config) error
 	Enroll(context.Context, string) (wireguard.Enrollment, error)
 	Revoke(context.Context, string) error
+	SetPeerAccess(context.Context, string, string, []string, string) error
 	RecordIntegrationError(error)
 }
 
@@ -163,4 +164,41 @@ func appendIfError(errs []error, err error) []error {
 		return append(errs, err)
 	}
 	return errs
+}
+
+type peerAccessBody struct {
+	AccessMode        string   `json:"access_mode"`
+	AllowedHostGroups []string `json:"allowed_host_groups"`
+	AllowedPorts      string   `json:"allowed_ports"`
+}
+
+func (h *WireGuardHandler) SetPeerAccess(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(chi.URLParam(r, "userID"))
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "userID é obrigatório")
+		return
+	}
+	var req peerAccessBody
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido")
+		return
+	}
+	req.AccessMode = strings.TrimSpace(req.AccessMode)
+	if req.AccessMode == "" {
+		req.AccessMode = "full"
+	}
+	if req.AccessMode != "full" && req.AccessMode != "restricted" {
+		writeError(w, http.StatusBadRequest, "modo de acesso inválido: use 'full' ou 'restricted'")
+		return
+	}
+	if err := h.svc.SetPeerAccess(r.Context(), userID, req.AccessMode, req.AllowedHostGroups, strings.TrimSpace(req.AllowedPorts)); err != nil {
+		auditAction(h.db, r, "vpn.peer_access", "vpn-user:"+userID, "erro: "+err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := h.reconcileIntegrations(r.Context()); err != nil {
+		h.svc.RecordIntegrationError(err)
+	}
+	auditAction(h.db, r, "vpn.peer_access", "vpn-user:"+userID, "modo: "+req.AccessMode)
+	writeJSON(w, http.StatusOK, map[string]bool{"saved": true})
 }

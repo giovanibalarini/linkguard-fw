@@ -13,6 +13,7 @@ import FirewallOverview from '../components/FirewallOverview';
 import FirewallGroups from '../components/FirewallGroups';
 import BlockLog from '../components/firewall/BlockLog';
 import FirewallPosture from '../components/firewall/FirewallPosture';
+import HostGroupsTab from '../components/firewall/HostGroupsTab';
 import WanSteering from '../components/WanSteering';
 import type { IptablesBackup, MsgLevel, NftChainInfo, SystemMetrics } from '../types';
 
@@ -26,7 +27,7 @@ import type { IptablesBackup, MsgLevel, NftChainInfo, SystemMetrics } from '../t
 // A postura vem logo depois da visão geral, e antes dos grupos: ela é a
 // pergunta de cima ("o que acontece com o tráfego que nenhuma regra
 // menciona?"), e as regras só fazem sentido depois de respondida.
-const TABS = ['overview', 'posture', 'groups', 'steering', 'portforward', 'blocklog', 'ruleset', 'backups'] as const;
+const TABS = ['overview', 'posture', 'groups', 'hostgroups', 'steering', 'portforward', 'blocklog', 'ruleset', 'backups'] as const;
 
 type Tab = (typeof TABS)[number];
 
@@ -171,6 +172,8 @@ export default function Firewall() {
         <FirewallPosture canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'groups' ? (
         <FirewallGroups ifaces={ifaces} canWrite={canWrite} onMsg={notify} />
+      ) : activeTab === 'hostgroups' ? (
+        <HostGroupsTab canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'steering' ? (
         <WanSteering canWrite={canWrite} onMsg={notify} />
       ) : activeTab === 'portforward' ? (

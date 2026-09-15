@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -222,13 +224,20 @@ func (s *Service) applyEnabled(ctx context.Context, c Config) error {
 		return err
 	}
 	for _, p := range storedPeers {
+		fallthroughMode := nftables.FallthroughContinue
+		if p.AccessMode == "restricted" {
+			fallthroughMode = nftables.FallthroughDrop
+		}
 		group := storage.FirewallGroup{ID: p.FirewallGroupID, Name: "VPN — " + p.Username,
 			ChainName: nftables.GroupChainName(p.FirewallGroupID), Enabled: true,
-			CondSaddr: p.Address, Fallthrough: nftables.FallthroughContinue,
+			CondSaddr: p.Address, Fallthrough: fallthroughMode,
 			Kind: nftables.GroupKindWireGuardPeer, Scope: nftables.ScopeForward,
 			ConnState: nftables.ConnStateAny}
 		if err := s.db.EnsureWireGuardPeerGroup(&group); err != nil {
 			return fmt.Errorf("não foi possível reconciliar o grupo do peer %s: %w", p.UserID, err)
+		}
+		if err := s.reconcilePeerZTNARules(ctx, p); err != nil {
+			return fmt.Errorf("não foi possível reconciliar regras ZTNA do peer %s: %w", p.UserID, err)
 		}
 	}
 	peers := peersFromStorage(storedPeers)
@@ -315,9 +324,26 @@ func (s *Service) ensureServerKey() (private, public string, err error) {
 func peersFromStorage(rows []storage.WireGuardPeer) []Peer {
 	out := make([]Peer, 0, len(rows))
 	for _, p := range rows {
-		out = append(out, Peer{UserID: p.UserID, Username: p.Username, PublicKey: p.PublicKey,
-			Address: p.Address, FirewallGroupID: p.FirewallGroupID,
-			CreatedAt: p.CreatedAt.Unix(), RotatedAt: p.RotatedAt.Unix()})
+		mode := p.AccessMode
+		if mode == "" {
+			mode = "full"
+		}
+		groups := p.AllowedHostGroups
+		if groups == nil {
+			groups = []string{}
+		}
+		out = append(out, Peer{
+			UserID:            p.UserID,
+			Username:          p.Username,
+			PublicKey:         p.PublicKey,
+			Address:           p.Address,
+			FirewallGroupID:   p.FirewallGroupID,
+			AccessMode:        mode,
+			AllowedHostGroups: groups,
+			AllowedPorts:      p.AllowedPorts,
+			CreatedAt:         p.CreatedAt.Unix(),
+			RotatedAt:         p.RotatedAt.Unix(),
+		})
 	}
 	return out
 }
@@ -446,6 +472,117 @@ func (s *Service) Revoke(ctx context.Context, userID string) error {
 	return applyErr
 }
 
+func (s *Service) SetPeerAccess(ctx context.Context, userID, accessMode string, allowedHostGroups []string, allowedPorts string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	peer, err := s.db.GetWireGuardPeer(userID)
+	if err != nil {
+		return err
+	}
+	if peer == nil {
+		return fmt.Errorf("peer não encontrado")
+	}
+
+	if err := s.db.UpdateWireGuardPeerAccess(userID, accessMode, allowedHostGroups, allowedPorts); err != nil {
+		return err
+	}
+
+	updated, err := s.db.GetWireGuardPeer(userID)
+	if err != nil || updated == nil {
+		return err
+	}
+
+	fallthroughMode := nftables.FallthroughContinue
+	if updated.AccessMode == "restricted" {
+		fallthroughMode = nftables.FallthroughDrop
+	}
+	group := storage.FirewallGroup{
+		ID:          updated.FirewallGroupID,
+		Name:        "VPN — " + updated.Username,
+		ChainName:   nftables.GroupChainName(updated.FirewallGroupID),
+		Enabled:     true,
+		CondSaddr:   updated.Address,
+		Fallthrough: fallthroughMode,
+		Kind:        nftables.GroupKindWireGuardPeer,
+		Scope:       nftables.ScopeForward,
+		ConnState:   nftables.ConnStateAny,
+	}
+	if err := s.db.EnsureWireGuardPeerGroup(&group); err != nil {
+		return err
+	}
+
+	if err := s.reconcilePeerZTNARules(ctx, *updated); err != nil {
+		return err
+	}
+
+	return s.reconcileLocked(ctx)
+}
+
+func (s *Service) reconcilePeerZTNARules(_ context.Context, p storage.WireGuardPeer) error {
+	rules, err := s.db.ListFirewallRules()
+	if err != nil {
+		return err
+	}
+	for _, r := range rules {
+		if r.GroupID == p.FirewallGroupID && strings.HasPrefix(r.Description, "ZTNA:") {
+			_ = s.db.DeleteFirewallRule(r.ID)
+		}
+	}
+
+	if p.AccessMode != "restricted" || len(p.AllowedHostGroups) == 0 {
+		return nil
+	}
+
+	for _, hgID := range p.AllowedHostGroups {
+		hg, err := s.db.GetHostGroup(hgID)
+		if err != nil || hg == nil {
+			continue
+		}
+		for _, host := range hg.Hosts {
+			host = strings.TrimSpace(host)
+			if host == "" {
+				continue
+			}
+			if p.AllowedPorts != "" {
+				ports := strings.Split(p.AllowedPorts, ",")
+				for _, port := range ports {
+					port = strings.TrimSpace(port)
+					if port == "" {
+						continue
+					}
+					rule := storage.FirewallRule{
+						GroupID:     p.FirewallGroupID,
+						Action:      "accept",
+						Daddr:       host,
+						Proto:       "tcp",
+						Dport:       port,
+						Description: "ZTNA: " + hg.Name + " (TCP:" + port + ")",
+					}
+					_ = s.db.CreateFirewallRule(&rule)
+				}
+				icmpRule := storage.FirewallRule{
+					GroupID:     p.FirewallGroupID,
+					Action:      "accept",
+					Daddr:       host,
+					Proto:       "icmp",
+					Description: "ZTNA: " + hg.Name + " (ICMP)",
+				}
+				_ = s.db.CreateFirewallRule(&icmpRule)
+			} else {
+				rule := storage.FirewallRule{
+					GroupID:     p.FirewallGroupID,
+					Action:      "accept",
+					Daddr:       host,
+					Description: "ZTNA: " + hg.Name,
+				}
+				_ = s.db.CreateFirewallRule(&rule)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Service) Overview(ctx context.Context) (Overview, error) {
 	c, err := s.Config()
 	if err != nil {
@@ -463,11 +600,126 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 	if private, err := s.secrets.Get(ServerSecret); err == nil && private != "" {
 		public, _ = PublicKey(private)
 	}
-	out := Overview{Config: c, PublicKey: public, Peers: peersFromStorage(rows), Running: s.isActive(ctx)}
+	peers := peersFromStorage(rows)
+	running := s.isActive(ctx)
+	if running {
+		s.enrichPeersTelemetry(ctx, peers)
+	}
+	out := Overview{Config: c, PublicKey: public, Peers: peers, Running: running}
 	if row != nil {
 		out.LastApplyOK, out.LastApplyError, out.LastAppliedAt = row.LastApplyOK, row.LastApplyError, row.LastAppliedAt
 	}
 	return out, nil
+}
+
+type peerDump struct {
+	endpoint        string
+	latestHandshake int64
+	transferRx      int64
+	transferTx      int64
+}
+
+func parseWgDump(raw string) map[string]peerDump {
+	out := make(map[string]peerDump)
+	lines := strings.Split(raw, "\n")
+	if len(lines) <= 1 {
+		return out
+	}
+	// Line 0 is interface info; lines 1+ are peer info.
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 8 {
+			continue
+		}
+		pubKey := strings.TrimSpace(fields[0])
+		endpoint := strings.TrimSpace(fields[2])
+		if endpoint == "(none)" {
+			endpoint = ""
+		}
+		handshake, _ := strconv.ParseInt(strings.TrimSpace(fields[4]), 10, 64)
+		rx, _ := strconv.ParseInt(strings.TrimSpace(fields[5]), 10, 64)
+		tx, _ := strconv.ParseInt(strings.TrimSpace(fields[6]), 10, 64)
+		out[pubKey] = peerDump{
+			endpoint:        endpoint,
+			latestHandshake: handshake,
+			transferRx:      rx,
+			transferTx:      tx,
+		}
+	}
+	return out
+}
+
+var (
+	pingTimeRE = regexp.MustCompile(`time=([0-9.]+)\s*ms`)
+	pingRttRE  = regexp.MustCompile(`rtt [^=]+=\s*[^/]+/([0-9.]+)`)
+)
+
+func parsePingOutput(output string) float64 {
+	if m := pingTimeRE.FindStringSubmatch(output); len(m) > 1 {
+		if val, err := strconv.ParseFloat(m[1], 64); err == nil {
+			return val
+		}
+	}
+	if m := pingRttRE.FindStringSubmatch(output); len(m) > 1 {
+		if val, err := strconv.ParseFloat(m[1], 64); err == nil {
+			return val
+		}
+	}
+	return 0
+}
+
+func (s *Service) measureLatency(ctx context.Context, ip string) float64 {
+	out, err := s.exec.ExecuteRead(ctx, "ping", "-c", "1", "-W", "1", "-w", "1", ip)
+	if err != nil {
+		return 0
+	}
+	return parsePingOutput(out)
+}
+
+func (s *Service) enrichPeersTelemetry(ctx context.Context, peers []Peer) {
+	if len(peers) == 0 {
+		return
+	}
+	raw, err := s.exec.ExecuteRead(ctx, "wg", "show", InterfaceName, "dump")
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return
+	}
+	dumpMap := parseWgDump(raw)
+	var onlineIndices []int
+	for i := range peers {
+		if data, ok := dumpMap[peers[i].PublicKey]; ok {
+			peers[i].Endpoint = data.endpoint
+			peers[i].LatestHandshake = data.latestHandshake
+			peers[i].TransferRx = data.transferRx
+			peers[i].TransferTx = data.transferTx
+			if data.latestHandshake > 0 && s.now().Sub(time.Unix(data.latestHandshake, 0)) <= 3*time.Minute {
+				peers[i].Online = true
+				onlineIndices = append(onlineIndices, i)
+			}
+		}
+	}
+	if len(onlineIndices) == 0 {
+		return
+	}
+	ctxPing, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, idx := range onlineIndices {
+		ip := strings.Split(peers[idx].Address, "/")[0]
+		if ip == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(pIdx int, targetIP string) {
+			defer wg.Done()
+			peers[pIdx].LatencyMs = s.measureLatency(ctxPing, targetIP)
+		}(idx, ip)
+	}
+	wg.Wait()
 }
 
 func (s *Service) isActive(ctx context.Context) bool {

@@ -1109,3 +1109,13 @@ export interface HostUsageCycle {
   tx_bytes: number;
   updated_at: number;
 }
+
+/** Grupo de hosts (endereços ou subredes IPv4) para firewall e ZTNA */
+export interface HostGroup {
+  id: string;
+  name: string;
+  description: string;
+  hosts: string[];
+  created_at: string;
+  updated_at: string;
+}

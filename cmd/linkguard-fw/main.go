@@ -659,6 +659,7 @@ func buildServices(cfg *config.Config, db *storage.DB, plat platform.Snapshot) (
 		return nftables.AdminAccess{
 			PanelPort:   cfg.Port,
 			SSHPorts:    system.SSHPorts(context.Background(), exec),
+			ExtraPorts:  cfg.ExtraPorts,
 			LANNetworks: redes,
 			WANIsDHCP:   anyWANIsDHCP(db),
 		}, nil

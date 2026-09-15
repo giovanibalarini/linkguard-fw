@@ -130,11 +130,44 @@ vpn.enrollment.vaultNote:
   en: "The identity stays tied to your user and is projected into its own firewall group."
 
 vpn.peers.title:
-  pt: "Usuários com acesso VPN"
-  en: "Users with VPN access"
+  pt: "Peers e Dispositivos com Acesso VPN"
+  en: "Peers and Devices with VPN Access"
 vpn.peers.empty:
   pt: "Nenhum usuário enrolado."
   en: "No enrolled users."
+vpn.peer.status:
+  pt: "Status"
+  en: "Status"
+vpn.peer.online:
+  pt: "Conectado"
+  en: "Online"
+vpn.peer.offline:
+  pt: "Desconectado"
+  en: "Offline"
+vpn.peer.user:
+  pt: "Usuário / Peer"
+  en: "User / Peer"
+vpn.peer.vpnIp:
+  pt: "IP VPN"
+  en: "VPN IP"
+vpn.peer.latency:
+  pt: "Latência"
+  en: "Latency"
+vpn.peer.endpoint:
+  pt: "Endpoint Remoto"
+  en: "Remote Endpoint"
+vpn.peer.handshake:
+  pt: "Último Handshake"
+  en: "Last Handshake"
+vpn.peer.transfer:
+  pt: "Tráfego (Down / Up)"
+  en: "Traffic (Down / Up)"
+vpn.peer.neverConnected:
+  pt: "Nunca conectou"
+  en: "Never connected"
+vpn.peer.you:
+  pt: "Você"
+  en: "You"
 vpn.peer.firewallGroup:
   pt: "grupo gerenciado no firewall"
   en: "managed firewall group"
@@ -154,3 +187,57 @@ vpn.peer.revoked:
 vpn.firewall.managed:
   pt: "Identidade e endereço gerenciados pela tela de VPN; as regras deste grupo continuam editáveis."
   en: "Identity and address are managed on the VPN screen; this group's rules remain editable."
+
+# ─── ZTNA / Controle de Acesso por Peer ──────────────────────────────────────
+vpn.peer.access:
+  pt: "Perfil de Acesso (ZTNA)"
+  en: "Access Profile (ZTNA)"
+vpn.peer.accessFull:
+  pt: "Acesso Total"
+  en: "Full Access"
+vpn.peer.accessRestricted:
+  pt: "Restrito (ZTNA)"
+  en: "Restricted (ZTNA)"
+vpn.peer.manageAccess:
+  pt: "Perfil de Acesso"
+  en: "Access Profile"
+vpn.peer.accessModalTitle:
+  pt: "Perfil de Acesso ZTNA — {user}"
+  en: "ZTNA Access Profile — {user}"
+vpn.peer.accessModalDesc:
+  pt: "Defina o nível de privilégio de rede deste usuário na VPN."
+  en: "Define the network privilege level of this VPN user."
+vpn.peer.modeFull:
+  pt: "Acesso Total (LAN + WAN)"
+  en: "Full Access (LAN + WAN)"
+vpn.peer.modeFullDesc:
+  pt: "O usuário tem acesso livre a todas as redes e serviços alcançáveis pelo firewall (comportamento padrão)."
+  en: "The user has unrestricted access to all networks and services reachable by the firewall (default)."
+vpn.peer.modeRestricted:
+  pt: "Restrito (Zero Trust / ZTNA)"
+  en: "Restricted (Zero Trust / ZTNA)"
+vpn.peer.modeRestrictedDesc:
+  pt: "O firewall bloqueia todo o tráfego deste peer por padrão, autorizando somente os Grupos de Hosts e portas selecionados abaixo."
+  en: "The firewall drops all traffic from this peer by default, permitting only the Host Groups and ports selected below."
+vpn.peer.allowedGroupsLabel:
+  pt: "Grupos de Hosts Permitidos"
+  en: "Allowed Host Groups"
+vpn.peer.noGroupsAvailable:
+  pt: "Nenhum grupo de hosts disponível. Crie grupos na aba Firewall > Grupos de Hosts."
+  en: "No host groups available. Create groups under Firewall > Host Groups."
+vpn.peer.allowedPortsLabel:
+  pt: "Portas Permitidas (opcional)"
+  en: "Allowed Ports (optional)"
+vpn.peer.allowedPortsPlaceholder:
+  pt: "ex: 22, 80, 443, 6443 (deixe em branco para todas as portas)"
+  en: "e.g. 22, 80, 443, 6443 (leave blank for all ports)"
+vpn.peer.allowedPortsHelp:
+  pt: "Lista de portas separadas por vírgula. Se vazio, todas as portas dos hosts permitidos são aceitas."
+  en: "Comma-separated port list. If blank, all ports on allowed hosts will be permitted."
+vpn.peer.saveAccess:
+  pt: "Salvar Perfil de Acesso"
+  en: "Save Access Profile"
+vpn.peer.accessSaved:
+  pt: "Perfil de acesso ZTNA atualizado com sucesso."
+  en: "ZTNA access profile updated successfully."
+

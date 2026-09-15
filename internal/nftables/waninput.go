@@ -274,6 +274,7 @@ func portasDeGerenciaLista(a AdminAccess) []int {
 	if a.PanelPort > 0 {
 		portas = append(portas, a.PanelPort)
 	}
+	portas = append(portas, a.ExtraPorts...)
 	sort.Ints(portas)
 	out := make([]int, 0, len(portas))
 	vista := map[int]bool{}

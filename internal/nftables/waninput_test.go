@@ -260,6 +260,12 @@ func TestPortaDoPainelNaoEhFixa(t *testing.T) {
 	if !strings.Contains(uma, "{ 9997 }") {
 		t.Errorf("porta repetida no set: %s", uma)
 	}
+
+	// ExtraPorts permite abrir portas adicionais de host/proxy (como 80, 443 para reverse proxy).
+	comExtra := strings.Join(linhas(WANInputRules(zonaOnPrem("wan0"), AdminAccess{SSHPorts: []int{22}, PanelPort: 9997, ExtraPorts: []int{80, 443}}, false, true)), "\n")
+	if !strings.Contains(comExtra, "{ 22, 80, 443, 9997 }") {
+		t.Errorf("portas extras não foram incluídas no set:\n%s", comExtra)
+	}
 }
 
 func TestSemSaberAsPortasAProtecaoNaoEhEmitida(t *testing.T) {

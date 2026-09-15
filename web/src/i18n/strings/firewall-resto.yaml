@@ -556,3 +556,60 @@ fwx.blocklog.kind.host:
 fwx.blocklog.kind.dest:
   pt: "destino bloqueado"
   en: "blocked destination"
+
+# ─── Grupos de Hosts (reutilizáveis em regras de firewall e VPN ZTNA) ─────────
+fwx.hostgroups.title:
+  pt: "Grupos de Hosts"
+  en: "Host Groups"
+fwx.hostgroups.subtitle:
+  pt: "Coleções reutilizáveis de IPs e subredes para regras de firewall e perfis de acesso ZTNA da VPN."
+  en: "Reusable collections of IPs and subnets for firewall rules and VPN ZTNA access profiles."
+fwx.hostgroups.btn_new:
+  pt: "Novo Grupo"
+  en: "New Group"
+fwx.hostgroups.empty:
+  pt: "Nenhum grupo de hosts cadastrado."
+  en: "No host groups registered."
+fwx.hostgroups.create_first:
+  pt: "Criar primeiro grupo de hosts"
+  en: "Create first host group"
+fwx.hostgroups.no_filter_matches:
+  pt: "Nenhum grupo corresponde ao filtro."
+  en: "No groups match the filter."
+fwx.hostgroups.hosts_label:
+  pt: "Hosts / IPs"
+  en: "Hosts / IPs"
+fwx.hostgroups.no_hosts:
+  pt: "Sem IPs cadastrados"
+  en: "No IPs registered"
+fwx.hostgroups.edit_title:
+  pt: "Editar Grupo de Hosts"
+  en: "Edit Host Group"
+fwx.hostgroups.new_title:
+  pt: "Novo Grupo de Hosts"
+  en: "New Host Group"
+fwx.hostgroups.field_name:
+  pt: "Nome do Grupo"
+  en: "Group Name"
+fwx.hostgroups.field_desc:
+  pt: "Descrição"
+  en: "Description"
+fwx.hostgroups.field_hosts:
+  pt: "Endereços IPv4 ou Subredes CIDR"
+  en: "IPv4 Addresses or CIDR Subnets"
+fwx.hostgroups.name_required:
+  pt: "Nome é obrigatório."
+  en: "Name is required."
+fwx.hostgroups.saved:
+  pt: "Grupo de hosts atualizado com sucesso."
+  en: "Host group updated successfully."
+fwx.hostgroups.created:
+  pt: "Grupo de hosts criado com sucesso."
+  en: "Host group created successfully."
+fwx.hostgroups.deleted:
+  pt: "Grupo de hosts excluído com sucesso."
+  en: "Host group deleted successfully."
+fwx.hostgroups.delete_confirm:
+  pt: "Excluir o grupo \"{name}\"? Se houver peers VPN usando este grupo, o acesso ZTNA deles será restrito."
+  en: "Delete host group \"{name}\"? If any VPN peers are using this group, their ZTNA access will be restricted."
+

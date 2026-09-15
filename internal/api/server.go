@@ -464,6 +464,14 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 		r.With(require(auth.PermFirewallWrite)).Put("/api/nftables/groups", nftH.UpdateGroup)
 		r.With(require(auth.PermFirewallWrite)).Delete("/api/nftables/groups", nftH.DeleteGroup)
 
+		// Grupos de Hosts (reutilizáveis em regras de firewall e perfis ZTNA da VPN)
+		hostGroupH := handlers.NewHostGroupHandler(s.db, s.wgSvc)
+		r.With(require(auth.PermFirewallRead)).Get("/api/hostgroups", hostGroupH.List)
+		r.With(require(auth.PermFirewallWrite)).Post("/api/hostgroups", hostGroupH.Create)
+		r.With(require(auth.PermFirewallRead)).Get("/api/hostgroups/{id}", hostGroupH.Get)
+		r.With(require(auth.PermFirewallWrite)).Put("/api/hostgroups/{id}", hostGroupH.Update)
+		r.With(require(auth.PermFirewallWrite)).Delete("/api/hostgroups/{id}", hostGroupH.Delete)
+
 		// Registro do que o firewall descarta (#122). Leitura com
 		// firewall.read; ligar/desligar muda as REGRAS, então é firewall.write.
 		blockLogH := handlers.NewBlockLogHandler(s.db, blocklog.NewService(s.exec), s.nftSvc, s.frSvc)
@@ -644,6 +652,7 @@ func (s *Server) buildRouter(cfg Config) *chi.Mux {
 			r.With(require(auth.PermVPNEnroll)).Post("/api/vpn/enrollment", vpnH.EnrollSelf)
 			r.With(require(auth.PermVPNEnroll)).Delete("/api/vpn/enrollment", vpnH.RevokeSelf)
 			r.With(require(auth.PermVPNWrite)).Delete("/api/vpn/peers/{userID}", vpnH.RevokePeer)
+			r.With(require(auth.PermVPNWrite)).Put("/api/vpn/peers/{userID}/access", vpnH.SetPeerAccess)
 		}
 
 		// DNS query log (unbound journal; opt-in via DNS log_queries)
